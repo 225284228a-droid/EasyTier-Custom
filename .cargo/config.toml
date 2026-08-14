@@ -1,0 +1,96 @@
+# region Native
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C",
+    "opt-level=z",
+    "--cfg",
+    'getrandom_backend="wasm_js"',
+]
+
+# region
+
+# region CI
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.riscv64gc-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.armv7-unknown-linux-musleabihf]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.armv7-unknown-linux-musleabi]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.arm-unknown-linux-musleabihf]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.arm-unknown-linux-musleabi]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.loongarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.mipsel-unknown-linux-musl]
+linker = "mipsel-unknown-linux-muslsf-gcc"
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-L",
+    "./musl_gcc/mipsel-unknown-linux-muslsf/mipsel-unknown-linux-muslsf/lib",
+    "-L",
+    "./musl_gcc/mipsel-unknown-linux-muslsf/mipsel-unknown-linux-muslsf/sysroot/usr/lib",
+    "-L",
+    "./musl_gcc/mipsel-unknown-linux-muslsf/lib/gcc/mipsel-unknown-linux-muslsf/15.1.0",
+    "-l",
+    "atomic",
+    "-l",
+    "ctz",
+    "-l",
+    "gcc",
+]
+
+[target.mips-unknown-linux-musl]
+linker = "mips-unknown-linux-muslsf-gcc"
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-L",
+    "./musl_gcc/mips-unknown-linux-muslsf/mips-unknown-linux-muslsf/lib",
+    "-L",
+    "./musl_gcc/mips-unknown-linux-muslsf/mips-unknown-linux-muslsf/sysroot/usr/lib",
+    "-L",
+    "./musl_gcc/mips-unknown-linux-muslsf/lib/gcc/mips-unknown-linux-muslsf/15.1.0",
+    "-l",
+    "atomic",
+    "-l",
+    "ctz",
+    "-l",
+    "gcc",
+]
+
+[target.aarch64-unknown-linux-ohos]
+ar = "/usr/local/ohos-sdk/linux/native/llvm/bin/llvm-ar"
+linker = "/home/runner/sdk/native/llvm/aarch64-unknown-linux-ohos-clang.sh"
+
+[target.aarch64-unknown-linux-ohos.env]
+PKG_CONFIG_PATH = "/usr/local/ohos-sdk/linux/native/sysroot/usr/lib/pkgconfig:/usr/local/ohos-sdk/linux/native/sysroot/usr/local/lib/pkgconfig"
+PKG_CONFIG_LIBDIR = "/usr/local/ohos-sdk/linux/native/sysroot/usr/lib:/usr/local/ohos-sdk/linux/native/sysroot/usr/local/lib"
+PKG_CONFIG_SYSROOT_DIR = "/usr/local/ohos-sdk/linux/native/sysroot"
+SYSROOT = "/usr/local/ohos-sdk/linux/native/sysroot"
+
+# endregion

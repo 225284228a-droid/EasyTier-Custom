@@ -1,0 +1,244 @@
+name: EasyTier GUI
+
+on:
+  push:
+    branches: ["develop", "main", "releases/**"]
+  pull_request:
+    branches: ["develop", "main"]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # necessary for windows
+    shell: bash
+
+jobs:
+  pre_job:
+    # continue-on-error: true # Uncomment once integration is finished
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Map a step output to a job output
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          # All of these options are optional, so you can remove them if you are happy with the defaults
+          concurrent_skipping: 'same_content_newer'
+          skip_after_successful_duplicate: 'true'
+          cancel_others: 'true'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-core/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/actions/**", "easytier-web/frontend-lib/**"]'
+  build-gui:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - TARGET: x86_64-unknown-linux-musl
+            OS: ubuntu-24.04
+            GUI_TARGET: x86_64-unknown-linux-gnu
+            ARTIFACT_NAME: linux-x86_64
+          - TARGET: aarch64-unknown-linux-musl
+            OS: ubuntu-24.04-arm
+            GUI_TARGET: aarch64-unknown-linux-gnu
+            ARTIFACT_NAME: linux-aarch64
+
+          - TARGET: x86_64-apple-darwin
+            OS: macos-latest
+            GUI_TARGET: x86_64-apple-darwin
+            ARTIFACT_NAME: macos-x86_64
+          - TARGET: aarch64-apple-darwin
+            OS: macos-latest
+            GUI_TARGET: aarch64-apple-darwin
+            ARTIFACT_NAME: macos-aarch64
+
+          - TARGET: x86_64-pc-windows-msvc
+            OS: windows-latest
+            GUI_TARGET: x86_64-pc-windows-msvc
+            ARTIFACT_NAME: windows-x86_64
+          - TARGET: i686-pc-windows-msvc
+            OS: windows-latest
+            GUI_TARGET: i686-pc-windows-msvc
+            ARTIFACT_NAME: windows-i686
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-11-arm
+            GUI_TARGET: aarch64-pc-windows-msvc
+            ARTIFACT_NAME: windows-arm64
+
+    runs-on: ${{ matrix.OS }}
+    env:
+      NAME: easytier
+      TARGET: ${{ matrix.TARGET }}
+      OS: ${{ matrix.OS }}
+      GUI_TARGET: ${{ matrix.GUI_TARGET }}
+      OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'    
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set current ref as env variable
+        run: |
+          echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> $GITHUB_ENV
+
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.TARGET }}
+          gui: true
+          pnpm: true
+          pnpm-build-filter: ''
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          prefix-key: ""
+          shared-key: "gui-registry"
+          cache-targets: "false"
+
+      - name: copy correct DLLs
+        if: ${{ contains(matrix.GUI_TARGET, 'windows') }}
+        run: |
+          case $TARGET in
+              x86_64*)  ARCH_DIR=x86_64 ;;
+              i686*)    ARCH_DIR=i686 ;;
+              aarch64*) ARCH_DIR=arm64 ;;
+          esac
+          if [[ -n "$ARCH_DIR" ]]; then
+              find "./easytier/third_party/${ARCH_DIR}" -maxdepth 1 -type f \( -name "*.dll" -o -name "*.sys" \) -exec cp {} ./easytier-gui/src-tauri/ \;
+          fi
+
+      - name: Validate macOS signing secrets
+        if: ${{ contains(matrix.GUI_TARGET, 'darwin') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} )); then
+            printf 'Missing macOS signing secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Build GUI
+        if: ${{ matrix.GUI_TARGET != '' && (!contains(matrix.GUI_TARGET, 'darwin') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) }}
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: ./easytier-gui
+          args: --verbose --target ${{ matrix.GUI_TARGET }}
+
+      - name: Build GUI (signed and notarized)
+        if: ${{ contains(matrix.GUI_TARGET, 'darwin') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        timeout-minutes: 60
+        uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: ./easytier-gui
+          args: --verbose --target ${{ matrix.GUI_TARGET }}
+
+      - name: Notarize and staple macOS DMG
+        if: ${{ contains(matrix.GUI_TARGET, 'darwin') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        timeout-minutes: 45
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          dmg_dir="./target/$GUI_TARGET/release/bundle/dmg"
+          if [[ ! -d "$dmg_dir" ]]; then
+            printf 'macOS DMG directory not found: %s\n' "$dmg_dir" >&2
+            exit 1
+          fi
+
+          dmgs=()
+          while IFS= read -r dmg; do
+            dmgs+=("$dmg")
+          done < <(find "$dmg_dir" -maxdepth 1 -type f -name "*.dmg" | sort)
+          if (( ${#dmgs[@]} == 0 )); then
+            printf 'No macOS DMG found in %s\n' "$dmg_dir" >&2
+            exit 1
+          fi
+
+          for dmg in "${dmgs[@]}"; do
+            printf 'Verifying signed DMG: %s\n' "$dmg"
+            codesign --verify --verbose=4 "$dmg"
+            codesign -dv --verbose=4 "$dmg"
+
+            printf 'Notarizing DMG: %s\n' "$dmg"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait \
+              --timeout 40m
+
+            printf 'Stapling DMG: %s\n' "$dmg"
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+          done
+
+      - name: Collect artifact
+        run: |
+          mkdir -p ./artifacts/objects/
+          
+          if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
+            TAG=$GITHUB_REF_NAME
+          else
+            TAG=$GITHUB_SHA
+          fi
+
+          # copy gui bundle, gui is built without specific target
+          if [[ $GUI_TARGET =~ windows ]]; then
+              mv ./target/$GUI_TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
+          elif [[ $GUI_TARGET =~ darwin ]]; then
+              mv ./target/$GUI_TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
+          elif [[ $GUI_TARGET =~ linux ]]; then
+              mv ./target/$GUI_TARGET/release/bundle/deb/*.deb ./artifacts/objects/
+              mv ./target/$GUI_TARGET/release/bundle/rpm/*.rpm ./artifacts/objects/
+              mv ./target/$GUI_TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
+          fi
+
+          mv ./artifacts/objects/* ./artifacts/
+          rm -rf ./artifacts/objects/
+
+      - name: Archive artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
+          path: |
+            ./artifacts/*
+
+  gui-result:
+    runs-on: ubuntu-latest
+    needs: [ pre_job, build-gui ]
+    if: needs.pre_job.result == 'success' && needs.pre_job.outputs.should_skip != 'true' && !cancelled()
+    steps:
+      - name: Mark result as failed
+        if: contains(needs.*.result, 'failure')
+        run: exit 1

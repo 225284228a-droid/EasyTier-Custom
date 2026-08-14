@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "easytier-core",
+    "easytier-proto",
+    "easytier",
+    "easytier-gui/src-tauri",
+    "easytier-web",
+    "easytier-contrib/easytier-mini",
+    "easytier-contrib/easytier-ffi",
+    "easytier-contrib/easytier-uptime",
+    "easytier-contrib/easytier-android-jni",
+]
+default-members = ["easytier", "easytier-web"]
+exclude = [
+    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+
+[profile.dev]
+panic = "unwind"
+debug = 2
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+
+[profile.mini]
+inherits = "release"
+opt-level = "z"
+strip = "symbols"
