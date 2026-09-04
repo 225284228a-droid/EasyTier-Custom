@@ -146,12 +146,14 @@ where
         ("wss", ListenerKind::TcpStream),
         ("wg", ListenerKind::UdpSession),
         ("quic", ListenerKind::UdpSession),
+        ("http3", ListenerKind::UdpSession),
     ] {
         if server_protocol.is_some_and(|protocol| protocol.supports_scheme(scheme)) {
             schemes = schemes.support(scheme, kind);
         }
     }
     schemes = schemes.disable_ipv6_shadow("quic");
+    schemes = schemes.disable_ipv6_shadow("http3");
     if server_protocol.is_some_and(|protocol| protocol.supports_scheme("faketcp"))
         && external_factory.is_some_and(|factory| factory.supports_scheme("faketcp"))
     {

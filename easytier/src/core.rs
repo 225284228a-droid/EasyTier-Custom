@@ -20,6 +20,7 @@ use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use easytier_core::config::normalize_secure_mode_config;
+use easytier_core::management::InstanceStateStore;
 use guarden::defer;
 use rust_i18n::t;
 use std::{
@@ -89,9 +90,11 @@ struct Cli {
         short = 'w',
         long,
         env = "ET_CONFIG_SERVER",
+        value_delimiter = ',',
+        num_args = 1..,
         help = t!("core_clap.config_server").to_string()
     )]
-    config_server: Option<String>,
+    config_server: Option<Vec<String>>,
 
     #[arg(
         long,
@@ -1384,37 +1387,53 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
 
+    // Shared instance enabled/disabled state store. Constructed once and
+    // injected into both the rpc-portal `ManagementServer` and the
+    // config-server `WebClient` so they share one in-memory cache instead of
+    // each opening the same `easytier-state.json` and clobbering each other's
+    // writes. Also used by the startup scan below.
+    let instance_state_store = Arc::new(InstanceStateStore::new(cli.config_dir.as_deref()));
+
     let _rpc_server = ApiRpcServer::new(
         cli.rpc_portal_options.rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
         manager.clone(),
+        instance_state_store.clone(),
     )?
     .serve()
     .await?;
 
-    let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
-        let wc = web_client::run_web_client(
-            config_server_url_s,
-            crate::common::MachineIdOptions {
-                explicit_machine_id: cli.machine_id.clone(),
-                state_dir: None,
-            },
-            cli.network_options.hostname.clone(),
-            cli.network_options.secure_mode.unwrap_or(false),
-            manager.clone(),
-            None,
-        )
-        .await
-        .inspect(|_| {
-            log::info!(
-                server = config_server_url_s,
-                "Web client started successfully...",
-            );
-
-            log::info!("Official config website: https://easytier.cn/web");
+    let _web_clients = if let Some(config_server_urls) = cli.config_server.as_ref() {
+        let machine_id = crate::common::resolve_machine_id(&crate::common::MachineIdOptions {
+            explicit_machine_id: cli.machine_id.clone(),
+            state_dir: None,
         })?;
+        let mut clients = Vec::with_capacity(config_server_urls.len());
+        for config_server_url_s in config_server_urls {
+            let wc = web_client::run_web_client(
+                config_server_url_s,
+                crate::common::MachineIdOptions {
+                    explicit_machine_id: Some(machine_id.to_string()),
+                    state_dir: None,
+                },
+                cli.network_options.hostname.clone(),
+                cli.network_options.secure_mode.unwrap_or(false),
+                manager.clone(),
+                None,
+                instance_state_store.clone(),
+            )
+            .await
+            .inspect(|_| {
+                log::info!(
+                    server = config_server_url_s,
+                    "Web client started successfully...",
+                );
 
-        Some(wc)
+                log::info!("Official config website: https://easytier.cn/web");
+            })?;
+            clients.push(wc);
+        }
+        Some(clients)
     } else {
         None
     };
@@ -1474,6 +1493,19 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         )
         .await?;
 
+        if source == ConfigFileSource::ConfigDir && !instance_state_store.is_enabled(&cfg.get_id())
+        {
+            log::info!(
+                "\
+                Skipping easytier config {:?}: instance {} was stopped before shutdown, \
+                enable it from the web console to run again.\n\
+                ",
+                config_file,
+                cfg.get_id()
+            );
+            continue;
+        }
+
         if cli.network_options.can_merge(
             &cfg,
             source,
@@ -1500,6 +1532,21 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             cfg.dump()
         );
         manager.run_network_instance(cfg, control)?;
+    }
+
+    // Garbage collect instance state entries whose config file no longer
+    // exists (e.g. the TOML was deleted by hand while the instance was
+    // stopped). Without this the web console keeps reporting these ids as
+    // disabled instances even though there is nothing to enable.
+    if let Some(config_dir) = cli.config_dir.as_ref() {
+        for id in instance_state_store.disabled_instance_ids() {
+            let path = config_dir.join(format!("{id}.toml"));
+            if !path.is_file() {
+                if let Err(error) = instance_state_store.remove(&id) {
+                    log::warn!(%error, %id, "failed to GC stale instance state entry");
+                }
+            }
+        }
     }
 
     if crate_cli_network {

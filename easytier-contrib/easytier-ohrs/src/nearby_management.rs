@@ -23,7 +23,9 @@ use async_trait::async_trait;
 use bytes::BytesMut;
 use easytier::{common::config::NetworkConfigExt as _, instance::factory::NativeInstanceFactory};
 use easytier_core::{
-    management::{ConfigFileControl, ProcessManagementRpc, UnsupportedConfigFileStorage},
+    management::{
+        ConfigFileControl, InstanceStateStore, ProcessManagementRpc, UnsupportedConfigFileStorage,
+    },
     packet::{PacketType, ZCPacket, ZCPacketType},
     rpc::{bidirect::BidirectRpcManager, client::Client, standalone::StandAloneServer},
     socket::{SocketListener, tcp::VirtualTcpSocket},
@@ -334,6 +336,7 @@ impl NearbyWebClientService {
                 INSTANCE_MANAGER.clone(),
                 Arc::new(()),
                 Arc::new(UnsupportedConfigFileStorage),
+                Arc::new(InstanceStateStore::in_memory()),
             ),
         }
     }

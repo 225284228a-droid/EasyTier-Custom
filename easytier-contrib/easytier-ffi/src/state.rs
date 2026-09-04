@@ -4,6 +4,7 @@ use easytier::instance::factory::{
     NativeInstanceManager, NativeProcessManagement, native_instance_manager_with_runtime,
     native_process_management,
 };
+use easytier_core::management::InstanceStateStore;
 use tokio::runtime::{Builder, Runtime};
 
 struct FfiOwnedInstanceHooks;
@@ -24,6 +25,7 @@ pub(crate) struct FfiContext {
     pub(crate) runtime: Runtime,
     pub(crate) manager: Arc<NativeInstanceManager>,
     pub(crate) process_management: NativeProcessManagement,
+    pub(crate) state_store: Arc<InstanceStateStore>,
 }
 
 impl FfiContext {
@@ -35,12 +37,17 @@ impl FfiContext {
         let manager = Arc::new(native_instance_manager_with_runtime(
             runtime.handle().clone(),
         ));
-        let process_management =
-            native_process_management(manager.clone(), Arc::new(FfiOwnedInstanceHooks));
+        let state_store = Arc::new(InstanceStateStore::in_memory());
+        let process_management = native_process_management(
+            manager.clone(),
+            Arc::new(FfiOwnedInstanceHooks),
+            state_store.clone(),
+        );
         Self {
             runtime,
             manager,
             process_management,
+            state_store,
         }
     }
 }

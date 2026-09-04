@@ -1,6 +1,7 @@
 #[cfg(feature = "management")]
 mod compiled;
 mod config_patch;
+mod config_state;
 mod instance_info;
 #[cfg(feature = "management")]
 mod logger_rpc;
@@ -38,6 +39,7 @@ use super::{
 #[cfg(feature = "management")]
 pub use compiled::register_instance_management_rpc;
 pub use config_patch::apply_config_patch;
+pub use config_state::{InstanceStateStore, STATE_FILE_NAME};
 pub use instance_info::network_instance_running_info;
 #[cfg(feature = "management")]
 pub use logger_rpc::{
@@ -76,6 +78,7 @@ pub fn register_management_rpc<F, H>(
     registry: &ServiceRegistry,
     hooks: Arc<dyn InstanceMutationHooks>,
     storage: Arc<dyn ConfigFileStorage>,
+    state_store: Arc<InstanceStateStore>,
     logger: Arc<dyn LoggerControl>,
 ) where
     F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
@@ -85,7 +88,12 @@ pub fn register_management_rpc<F, H>(
     register_instance_management_rpc(instances.clone(), registry);
     registry.register(LoggerRpcServer::new(LoggerManagementRpc::new(logger)), "");
     registry.register(
-        WebClientServiceServer::new(ProcessManagementRpc::<F>::new(instances, hooks, storage)),
+        WebClientServiceServer::new(ProcessManagementRpc::<F>::new(
+            instances,
+            hooks,
+            storage,
+            state_store,
+        )),
         "",
     );
 }
@@ -97,6 +105,7 @@ pub(crate) fn register_web_client_rpc<F, H>(
     registry: &ServiceRegistry,
     hooks: Arc<dyn InstanceMutationHooks>,
     storage: Arc<dyn ConfigFileStorage>,
+    state_store: Arc<InstanceStateStore>,
 ) where
     F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
     F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
@@ -105,7 +114,12 @@ pub(crate) fn register_web_client_rpc<F, H>(
     let config_rpc = super::instance_rpc::InstanceManagementRpc::<F>::new(instances.clone());
     registry.register(ConfigRpcServer::new(config_rpc), "");
     registry.register(
-        WebClientServiceServer::new(ProcessManagementRpc::<F>::new(instances, hooks, storage)),
+        WebClientServiceServer::new(ProcessManagementRpc::<F>::new(
+            instances,
+            hooks,
+            storage,
+            state_store,
+        )),
         "",
     );
 }

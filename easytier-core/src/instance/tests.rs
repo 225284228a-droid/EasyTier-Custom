@@ -943,7 +943,7 @@ hostname = "core-owned-config"
             instance::manager::InstanceFactory,
             management::{
                 ConfigFileControl, ConfigFilePermission, ConfigFileStorage, InstanceManager,
-                InstanceMutationHooks, ProcessManagementRpc,
+                InstanceMutationHooks, InstanceStateStore, ProcessManagementRpc,
             },
         };
         use easytier_proto::{
@@ -1068,6 +1068,7 @@ hostname = "core-owned-config"
             instances.clone(),
             hooks.clone(),
             storage.clone(),
+            Arc::new(InstanceStateStore::in_memory()),
         );
 
         let deletion = tokio::spawn(async move {
@@ -1116,8 +1117,8 @@ hostname = "core-owned-config"
             config::toml::TomlConfig,
             instance::manager::InstanceFactory,
             management::{
-                InstanceManager, ProcessManagementRpc, UnsupportedConfigFileStorage,
-                register_web_client_rpc,
+                InstanceManager, InstanceStateStore, ProcessManagementRpc,
+                UnsupportedConfigFileStorage, register_web_client_rpc,
             },
             rpc::service_registry::ServiceRegistry,
         };
@@ -1166,6 +1167,7 @@ hostname = "core-owned-config"
             &registry,
             Arc::new(()),
             Arc::new(UnsupportedConfigFileStorage),
+            Arc::new(InstanceStateStore::in_memory()),
         );
         assert_eq!(
             registry.get_method_name(&RpcDescriptor {
@@ -1189,6 +1191,7 @@ hostname = "core-owned-config"
             instances.clone(),
             Arc::new(()),
             Arc::new(UnsupportedConfigFileStorage),
+            Arc::new(InstanceStateStore::in_memory()),
         );
         let created = rpc
             .run_network_instance(
@@ -1234,7 +1237,8 @@ hostname = "core-owned-config"
             config::toml::TomlConfig,
             instance::manager::InstanceFactory,
             management::{
-                ConfigFileControl, InstanceManager, InstanceMutationHooks, ProcessManagement,
+                ConfigFileControl, ConfigFilePermission, ConfigFileStorage, InstanceManager,
+                InstanceMutationHooks, InstanceStateStore, ProcessManagement, ProcessManagementRpc,
                 UnsupportedConfigFileStorage,
             },
         };
@@ -1300,6 +1304,7 @@ hostname = "core-owned-config"
             instances.clone(),
             hooks.clone(),
             Arc::new(UnsupportedConfigFileStorage),
+            Arc::new(InstanceStateStore::in_memory()),
         );
 
         let deletion_management = management.clone();
@@ -1403,7 +1408,7 @@ hostname = "core-owned-config"
             instance::manager::InstanceFactory,
             management::{
                 ConfigFileControl, ConfigFilePermission, ConfigFileStorage, InstanceManager,
-                InstanceMutationHooks, ProcessManagementRpc,
+                InstanceMutationHooks, InstanceStateStore, ProcessManagementRpc,
             },
         };
         use easytier_proto::{
@@ -1509,6 +1514,7 @@ hostname = "core-owned-config"
             instances.clone(),
             Arc::new(RejectPostRun),
             storage.clone(),
+            Arc::new(InstanceStateStore::in_memory()),
         );
 
         let result = rpc

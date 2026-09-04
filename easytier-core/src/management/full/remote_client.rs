@@ -392,8 +392,8 @@ pub enum ListNetworkProps {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct ListNetworkInstanceIdsJsonResp {
-    running_inst_ids: Vec<easytier_proto::common::Uuid>,
-    disabled_inst_ids: Vec<easytier_proto::common::Uuid>,
+    pub running_inst_ids: Vec<easytier_proto::common::Uuid>,
+    pub disabled_inst_ids: Vec<easytier_proto::common::Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

@@ -2545,6 +2545,7 @@ version = "2.6.4"
 dependencies = [
  "anyhow",
  "easytier",
+ "easytier-core",
  "tokio",
 ]
 

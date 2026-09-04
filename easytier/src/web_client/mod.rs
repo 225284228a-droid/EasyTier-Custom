@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use easytier_core::{
     config::toml::ConfigLoader as _,
     connectivity::{manual::ManualTunnelConnector, protocol::raw::TunnelDialer},
-    management::{ConfigServerEndpoint, WebClientConfig},
+    management::{ConfigServerEndpoint, InstanceStateStore, WebClientConfig},
     socket::IpVersion,
     tunnel::Tunnel,
 };
@@ -44,6 +44,7 @@ impl WebClient {
         secure_mode: bool,
         manager: Arc<NativeInstanceManager>,
         hooks: Option<Arc<dyn WebClientHooks>>,
+        state_store: Arc<InstanceStateStore>,
     ) -> Self
     where
         T: TunnelDialer + 'static,
@@ -57,6 +58,7 @@ impl WebClient {
             device_os: web_client_device_os_info(),
             easytier_version: EASYTIER_VERSION.to_owned(),
             secure_mode,
+            support_local_configs: manager.config_dir().is_some(),
         };
         #[cfg(feature = "management")]
         let inner = easytier_core::management::WebClient::new(
@@ -65,6 +67,7 @@ impl WebClient {
             manager,
             hooks.unwrap_or_else(|| Arc::new(DefaultHooks)),
             Arc::new(NativeConfigFileStorage),
+            state_store,
             Arc::new(NativeLoggerControl),
         );
         #[cfg(not(feature = "management"))]
@@ -74,6 +77,7 @@ impl WebClient {
             manager,
             hooks.unwrap_or_else(|| Arc::new(DefaultHooks)),
             Arc::new(easytier_core::management::UnsupportedConfigFileStorage),
+            state_store,
         );
         Self { inner }
     }
@@ -131,6 +135,7 @@ pub async fn run_web_client(
     secure_mode: bool,
     manager: Arc<NativeInstanceManager>,
     hooks: Option<Arc<dyn WebClientHooks>>,
+    state_store: Arc<InstanceStateStore>,
 ) -> Result<WebClient> {
     let machine_id = resolve_machine_id(&machine_id_options)
         .with_context(|| "failed to resolve machine id for web client")?;
@@ -158,6 +163,7 @@ pub async fn run_web_client(
         secure_mode,
         manager,
         hooks,
+        state_store,
     ))
 }
 
@@ -166,6 +172,8 @@ mod tests {
     use std::sync::{Arc, atomic::AtomicBool};
 
     use crate::{common::MachineIdOptions, instance::factory::native_instance_manager};
+
+    use super::InstanceStateStore;
 
     #[tokio::test]
     async fn test_manager_wait() {
@@ -181,6 +189,7 @@ mod tests {
             false,
             manager.clone(),
             None,
+            Arc::new(InstanceStateStore::in_memory()),
         )
         .await
         .unwrap();
@@ -211,6 +220,7 @@ mod tests {
             false,
             manager,
             None,
+            Arc::new(InstanceStateStore::in_memory()),
         )
         .await
         .unwrap();

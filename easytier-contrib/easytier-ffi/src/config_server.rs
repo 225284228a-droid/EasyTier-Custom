@@ -403,6 +403,7 @@ pub(crate) unsafe fn start_config_server_client(
         secure_mode,
         ffi_context().manager.clone(),
         Some(hooks.clone()),
+        ffi_context().state_store.clone(),
     )) {
         Ok(client) => client,
         Err(err) => {

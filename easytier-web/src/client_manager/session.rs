@@ -103,6 +103,16 @@ impl SessionData {
         self.req.clone()
     }
 
+    /// Whether the connected core manages its network configs locally
+    /// (decentralized mode): configs live as TOML files in the core's config
+    /// dir and the web console only stores credentials.
+    pub fn support_local_configs(&self) -> bool {
+        self.req
+            .as_ref()
+            .map(|req| req.support_local_configs)
+            .unwrap_or(false)
+    }
+
     pub fn heartbeat_waiter(&self) -> broadcast::Receiver<HeartbeatRequest> {
         self.notifier.subscribe()
     }

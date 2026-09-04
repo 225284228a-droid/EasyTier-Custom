@@ -18,7 +18,10 @@ use crate::{
 };
 
 #[cfg(feature = "management")]
-use super::{ConfigFileStorage, InstanceMutationHooks, LoggerControl, register_management_rpc};
+use super::{
+    ConfigFileStorage, InstanceMutationHooks, InstanceStateStore, LoggerControl,
+    register_management_rpc,
+};
 use super::{InstanceManager, ManagementRpcServerHook, register_read_only_management_rpc};
 
 struct ManagementListener<L>
@@ -105,6 +108,7 @@ where
         instances: Arc<InstanceManager<F>>,
         hooks: Arc<dyn InstanceMutationHooks>,
         storage: Arc<dyn ConfigFileStorage>,
+        state_store: Arc<InstanceStateStore>,
         logger: Arc<dyn LoggerControl>,
     ) -> Self
     where
@@ -113,7 +117,14 @@ where
         H: CoreInstanceHost,
     {
         let server = ManagementListener::new(listener, instances.process_runtime());
-        register_management_rpc(instances, server.registry(), hooks, storage, logger);
+        register_management_rpc(
+            instances,
+            server.registry(),
+            hooks,
+            storage,
+            state_store,
+            logger,
+        );
         Self { listener: server }
     }
 

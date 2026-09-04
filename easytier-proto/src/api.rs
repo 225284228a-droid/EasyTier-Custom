@@ -376,6 +376,7 @@ mod tests {
                             part3: 3,
                             part4: 4,
                         }],
+                        disabled_inst_ids: vec![],
                     };
                     Ok(Bytes::from(resp.encode_to_vec()))
                 }

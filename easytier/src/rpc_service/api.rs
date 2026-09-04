@@ -4,7 +4,11 @@ use anyhow::Context;
 use cidr::IpCidr;
 #[cfg(feature = "management")]
 use easytier_core::management::ManagementServer;
-use easytier_core::{management::ReadOnlyManagementServer, socket::SocketListener, tunnel::Tunnel};
+use easytier_core::{
+    management::{InstanceStateStore, ReadOnlyManagementServer},
+    socket::SocketListener,
+    tunnel::Tunnel,
+};
 
 #[cfg(feature = "management")]
 use crate::{
@@ -33,9 +37,14 @@ impl ApiRpcServer<RuntimeRpcListener> {
         rpc_portal: Option<String>,
         rpc_portal_whitelist: Option<Vec<IpCidr>>,
         instance_manager: Arc<NativeInstanceManager>,
+        state_store: Arc<InstanceStateStore>,
     ) -> anyhow::Result<Self> {
         let rpc_addr = parse_rpc_portal(rpc_portal)?;
-        let mut server = Self::from_tunnel(runtime_rpc_listener(rpc_addr), instance_manager);
+        let mut server = Self::from_tunnel(
+            runtime_rpc_listener(rpc_addr),
+            instance_manager,
+            state_store,
+        );
         server.rpc_server.set_whitelist(rpc_portal_whitelist);
 
         Ok(server)
@@ -47,12 +56,17 @@ impl<T> ApiRpcServer<T>
 where
     T: SocketListener<Accepted = Box<dyn Tunnel>> + 'static,
 {
-    pub fn from_tunnel(tunnel: T, instance_manager: Arc<NativeInstanceManager>) -> Self {
+    pub fn from_tunnel(
+        tunnel: T,
+        instance_manager: Arc<NativeInstanceManager>,
+        state_store: Arc<InstanceStateStore>,
+    ) -> Self {
         let rpc_server = ManagementServer::new(
             tunnel,
             instance_manager,
             Arc::new(DefaultHooks),
             Arc::new(NativeConfigFileStorage),
+            state_store,
             Arc::new(NativeLoggerControl),
         );
         Self { rpc_server }
@@ -173,6 +187,7 @@ mod tests {
     };
 
     use super::{ApiRpcServer, parse_rpc_portal};
+    use easytier_core::management::InstanceStateStore;
 
     #[test]
     fn zero_rpc_portal_is_resolved_before_listener_binding() {
@@ -217,6 +232,7 @@ mod tests {
         let server = ApiRpcServer::from_tunnel(
             RingListener { accepted: receiver },
             Arc::new(native_instance_manager()),
+            Arc::new(InstanceStateStore::in_memory()),
         )
         .with_rx_timeout(Some(Duration::from_secs(1)))
         .serve()

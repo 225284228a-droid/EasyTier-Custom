@@ -89,7 +89,7 @@ pin-project-lite = "0.2.13"
 atomic_refcell = "0.1.13"
 atomic-write-file = { version = "0.2.3", optional = true }
 
-quinn = { version = "0.11.8", optional = true, features = ["ring"] }
+quinn = { version = "0.11.8", optional = true, features = ["ring", "rustls-ring"] }
 quinn-proto = { version = "0.11.12", optional = true }
 seahash = { version = "4.1.0", optional = true }
 
@@ -349,7 +349,7 @@ full = [
     "tcp-hole-punch",
 ]
 wireguard = ["vpn-portal", "dep:boringtun", "ring-crypto", "easytier-proto/wireguard"]
-quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "easytier-proto/quic"]
+quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "dep:rcgen", "easytier-proto/quic"]
 kcp = ["wrapped-transport", "easytier-core/proxy-packet", "dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["easytier-core/aes-gcm"]

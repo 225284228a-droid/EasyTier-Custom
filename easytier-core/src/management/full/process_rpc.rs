@@ -10,9 +10,13 @@ use easytier_proto::{
         DeleteNetworkInstanceResponse, GetNetworkInstanceConfigRequest,
         GetNetworkInstanceConfigResponse, ListNetworkInstanceMetaRequest,
         ListNetworkInstanceMetaResponse, ListNetworkInstanceRequest, ListNetworkInstanceResponse,
-        NetworkInstanceRunningInfoMap, NetworkMeta, RetainNetworkInstanceRequest,
-        RetainNetworkInstanceResponse, RunNetworkInstanceRequest, RunNetworkInstanceResponse,
-        ValidateConfigRequest, ValidateConfigResponse, WebClientService,
+        NetworkConfig, NetworkInstanceRunningInfoMap, NetworkMeta,
+        RemoveNetworkInstanceConfigRequest, RemoveNetworkInstanceConfigResponse,
+        RetainNetworkInstanceRequest, RetainNetworkInstanceResponse, RunNetworkInstanceRequest,
+        RunNetworkInstanceResponse, SaveNetworkInstanceConfigRequest,
+        SaveNetworkInstanceConfigResponse, SetNetworkInstanceEnabledRequest,
+        SetNetworkInstanceEnabledResponse, ValidateConfigRequest, ValidateConfigResponse,
+        WebClientService,
     },
     rpc_types::{self, controller::BaseController},
 };
@@ -26,6 +30,7 @@ use crate::{
     instance::{CoreInstance, CoreInstanceHost, manager::InstanceFactory},
 };
 
+use super::config_state::InstanceStateStore;
 use super::{
     ConfigFileControl, ConfigFilePermission, InstanceManager, config_source_from_rpc,
     config_source_to_rpc,
@@ -109,6 +114,7 @@ where
     hooks: Arc<dyn InstanceMutationHooks>,
     storage: Arc<dyn ConfigFileStorage>,
     mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    state_store: Arc<InstanceStateStore>,
 }
 
 impl<F> Clone for ProcessManagement<F>
@@ -121,6 +127,7 @@ where
             hooks: self.hooks.clone(),
             storage: self.storage.clone(),
             mutation_lock: self.mutation_lock.clone(),
+            state_store: self.state_store.clone(),
         }
     }
 }
@@ -135,6 +142,7 @@ where
         instances: Arc<InstanceManager<F>>,
         hooks: Arc<dyn InstanceMutationHooks>,
         storage: Arc<dyn ConfigFileStorage>,
+        state_store: Arc<InstanceStateStore>,
     ) -> Self {
         let mutation_lock = instances.mutation_lock();
         Self {
@@ -142,7 +150,13 @@ where
             hooks,
             storage,
             mutation_lock,
+            state_store,
         }
+    }
+
+    /// Instance-level enabled/disabled state store, shared with the caller.
+    pub fn state_store(&self) -> Arc<InstanceStateStore> {
+        self.state_store.clone()
     }
 
     async fn is_remote_removable(&self, control: &ConfigFileControl) -> bool {
@@ -225,6 +239,20 @@ where
             config.set_id(instance_id);
         }
         let _mutation = self.mutation_lock.lock().await;
+        self.run_network_instance_locked(config, instance_id, overwrite, requested_source)
+            .await
+    }
+
+    /// Core of [`run_network_instance`] assuming the caller already holds the
+    /// mutation lock. Used by `save_network_instance_config` to apply a saved
+    /// config to a running instance immediately without re-acquiring the lock.
+    async fn run_network_instance_locked(
+        &self,
+        config: TomlConfig,
+        instance_id: uuid::Uuid,
+        overwrite: bool,
+        requested_source: Option<ConfigSource>,
+    ) -> anyhow::Result<uuid::Uuid> {
         let remote_managed = self.hooks.manages_remote_config_instances();
 
         let mut replacing = false;
@@ -316,6 +344,9 @@ where
                 return Err(anyhow::anyhow!("post-run hook failed: {error}"));
             }
             tracing::warn!(%error, "post-run hook failed");
+        }
+        if let Err(error) = self.state_store.set_enabled(instance_id, true) {
+            tracing::warn!(%error, %instance_id, "failed to persist enabled state");
         }
         Ok(instance_id)
     }
@@ -416,6 +447,9 @@ where
             .delete_network_instances(removed.clone())
             .await?;
         self.notify_removed_instances(&removed).await?;
+        for instance_id in &removed {
+            let _ = self.state_store.remove(instance_id);
+        }
         for path in files {
             if remote_managed && self.storage.inspect(&path).await.is_read_only() {
                 continue;
@@ -428,6 +462,162 @@ where
             remaining_instance_ids: remaining,
             removed_instance_ids: removed,
         })
+    }
+
+    /// Persists a config file under the config dir without starting it and
+    /// marks the instance as disabled (saved but not running).
+    pub async fn save_network_instance_config(
+        &self,
+        config: TomlConfig,
+        requested_id: Option<uuid::Uuid>,
+        requested_source: Option<ConfigSource>,
+    ) -> anyhow::Result<uuid::Uuid> {
+        let mut instance_id = config.get_id();
+        if let Some(requested_id) = requested_id {
+            instance_id = requested_id;
+            config.set_id(instance_id);
+        }
+        let _mutation = self.mutation_lock.lock().await;
+        // Reject instance-name collisions against other running instances so a
+        // later `set_network_instance_enabled(true)` (which does not check
+        // names) cannot produce two concurrently running instances with the
+        // same name. `run_owned_network_instance` performs the same check.
+        let instance_name = config.get_inst_name();
+        if let Some(existing) =
+            super::resolve_optional_instance_by_name(self.instances.as_ref(), &instance_name)?
+        {
+            if existing.instance_id() != instance_id {
+                anyhow::bail!("instance name {instance_name} already exists");
+            }
+        }
+        if self.instances.instance(instance_id).is_some() {
+            // Running instance: persist the config and apply it immediately by
+            // restarting the instance with the new config. The locked variant
+            // is used because we already hold the mutation lock.
+            return self
+                .run_network_instance_locked(config, instance_id, true, requested_source)
+                .await;
+        }
+        let Some(config_dir) = self.instances.config_dir() else {
+            anyhow::bail!("config dir is not configured, cannot save config file");
+        };
+        let path = config_dir.join(format!("{instance_id}.toml"));
+        let existing = self.storage.inspect(&path).await;
+        if existing.is_read_only() {
+            anyhow::bail!(
+                "config file {} is read-only, cannot save config",
+                path.display()
+            );
+        }
+        config.set_network_config_source(requested_source.or(Some(ConfigSource::Web)));
+        self.storage
+            .write(&path, config.dump().as_bytes())
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to save config file: {error}"))?;
+        self.state_store.set_enabled(instance_id, false)?;
+        Ok(instance_id)
+    }
+
+    /// Enables or disables a locally managed instance. Disabling stops the
+    /// instance but keeps its config file; enabling restores it from the file.
+    pub async fn set_network_instance_enabled(
+        &self,
+        instance_id: uuid::Uuid,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        let _mutation = self.mutation_lock.lock().await;
+        if enabled {
+            if self.instances.instance(instance_id).is_some() {
+                return Ok(());
+            }
+            let Some(config_dir) = self.instances.config_dir() else {
+                anyhow::bail!("config dir is not configured, cannot restore instance");
+            };
+            let path = config_dir.join(format!("{instance_id}.toml"));
+            let contents = self
+                .storage
+                .read(&path)
+                .await
+                .map_err(|error| anyhow::anyhow!("failed to read config file: {error}"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "config file {} not found, cannot enable instance",
+                        path.display()
+                    )
+                })?;
+            let config_str = String::from_utf8(contents)
+                .map_err(|error| anyhow::anyhow!("config file is not valid utf8: {error}"))?;
+            let config =
+                TomlConfig::new_from_str_with_source(&path.display().to_string(), &config_str)
+                    .map_err(|error| {
+                        anyhow::anyhow!("failed to parse config file {}: {error}", path.display())
+                    })?;
+            let control = self.storage.inspect(&path).await;
+            self.instances.run_network_instance(config, control)?;
+        } else {
+            if self.instances.instance(instance_id).is_some() {
+                self.instances
+                    .delete_network_instances([instance_id])
+                    .await?;
+            }
+        }
+        self.state_store.set_enabled(instance_id, enabled)?;
+        Ok(())
+    }
+
+    /// Removes the config files and state entries for the given instances.
+    /// Running instances are left untouched.
+    pub async fn remove_network_instance_configs(
+        &self,
+        requested: &[uuid::Uuid],
+    ) -> anyhow::Result<Vec<uuid::Uuid>> {
+        let _mutation = self.mutation_lock.lock().await;
+        let mut removed = Vec::new();
+        for instance_id in requested {
+            let Some(config_dir) = self.instances.config_dir() else {
+                continue;
+            };
+            let path = config_dir.join(format!("{instance_id}.toml"));
+            let control = self.storage.inspect(&path).await;
+            if !control.is_read_only() && control.is_deletable() {
+                if let Err(error) = self.storage.remove(&path).await {
+                    tracing::warn!(%error, path = %path.display(), "failed to remove config file");
+                    continue;
+                }
+            }
+            self.state_store.remove(instance_id)?;
+            removed.push(*instance_id);
+        }
+        Ok(removed)
+    }
+
+    /// Reads a config from disk, falling back to the running instance config.
+    pub async fn get_network_instance_config_from_file(
+        &self,
+        instance_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<(NetworkConfig, ConfigSource)>> {
+        let Some(config_dir) = self.instances.config_dir() else {
+            return Ok(None);
+        };
+        let path = config_dir.join(format!("{instance_id}.toml"));
+        let contents = match self.storage.read(&path).await {
+            Ok(Some(contents)) => contents,
+            _ => return Ok(None),
+        };
+        let config_str = match String::from_utf8(contents) {
+            Ok(config_str) => config_str,
+            Err(_) => return Ok(None),
+        };
+        let config =
+            match TomlConfig::new_from_str_with_source(&path.display().to_string(), &config_str) {
+                Ok(config) => config,
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "failed to parse config file");
+                    return Ok(None);
+                }
+            };
+        let source = config.get_network_config_source();
+        Ok(Some((network_config_from_toml(&config), source)))
     }
 
     /// Starts one caller-owned Instance while preserving its static control.
@@ -553,9 +743,10 @@ where
         instances: Arc<InstanceManager<F>>,
         hooks: Arc<dyn InstanceMutationHooks>,
         storage: Arc<dyn ConfigFileStorage>,
+        state_store: Arc<InstanceStateStore>,
     ) -> Self {
         Self {
-            management: ProcessManagement::new(instances, hooks, storage),
+            management: ProcessManagement::new(instances, hooks, storage, state_store),
         }
     }
 }
@@ -660,6 +851,13 @@ where
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            disabled_inst_ids: self
+                .management
+                .state_store
+                .disabled_instance_ids()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         })
     }
 
@@ -692,28 +890,39 @@ where
             .inst_id
             .ok_or_else(|| anyhow::anyhow!("instance id is required"))?
             .into();
-        let control = self
-            .management
-            .instances
-            .config_control(instance_id)
-            .ok_or_else(|| anyhow::anyhow!("instance config control not found"))?;
-        if control.is_read_only() {
-            return Err(
-                anyhow::anyhow!("configuration for instance {instance_id} is read-only").into(),
-            );
-        }
-        Ok(GetNetworkInstanceConfigResponse {
-            config: self
-                .management
-                .instances
-                .config(instance_id)
-                .map(|config| network_config_from_toml(&config)),
-            source: config_source_to_rpc(
-                self.management
+        if let Some(control) = self.management.instances.config_control(instance_id) {
+            if control.is_read_only() {
+                return Err(anyhow::anyhow!(
+                    "configuration for instance {instance_id} is read-only"
+                )
+                .into());
+            }
+            return Ok(GetNetworkInstanceConfigResponse {
+                config: self
+                    .management
                     .instances
-                    .config_source(instance_id)
-                    .unwrap_or(ConfigSource::User),
-            ),
+                    .config(instance_id)
+                    .map(|config| network_config_from_toml(&config)),
+                source: config_source_to_rpc(
+                    self.management
+                        .instances
+                        .config_source(instance_id)
+                        .unwrap_or(ConfigSource::User),
+                ),
+            });
+        }
+        let (config, source) = self
+            .management
+            .get_network_instance_config_from_file(instance_id)
+            .await?
+            .ok_or_else(|| {
+                rpc_types::error::Error::from(anyhow::anyhow!(
+                    "No such network instance: {instance_id}"
+                ))
+            })?;
+        Ok(GetNetworkInstanceConfigResponse {
+            config: Some(config),
+            source: config_source_to_rpc(source),
         })
     }
 
@@ -722,8 +931,9 @@ where
         _: BaseController,
         request: ListNetworkInstanceMetaRequest,
     ) -> rpc_types::error::Result<ListNetworkInstanceMetaResponse> {
-        let mut metas = Vec::with_capacity(request.inst_ids.len());
-        for instance_id in request.inst_ids.into_iter().map(uuid::Uuid::from) {
+        let requested_ids = request.inst_ids.clone();
+        let mut metas = Vec::with_capacity(requested_ids.len());
+        for instance_id in requested_ids.iter().cloned().map(uuid::Uuid::from) {
             let Some(instance) = self.management.instances.instance(instance_id) else {
                 continue;
             };
@@ -741,6 +951,103 @@ where
                 source: config_source_to_rpc(config.get_network_config_source()),
             });
         }
+        for instance_id in self.management.state_store.disabled_instance_ids() {
+            // Only include disabled instances the caller explicitly asked for;
+            // skip any disabled instance not in the request, so the response is
+            // exactly the requested set (running ones above, disabled ones here).
+            if !request_contains(&requested_ids, instance_id) {
+                continue;
+            }
+            if let Some((config, source)) = self
+                .management
+                .get_network_instance_config_from_file(instance_id)
+                .await?
+            {
+                let network_name = config.network_name.unwrap_or_default();
+                metas.push(NetworkMeta {
+                    inst_id: Some(instance_id.into()),
+                    network_name: network_name.clone(),
+                    config_permission: 0,
+                    instance_name: network_name,
+                    source: config_source_to_rpc(source),
+                });
+            }
+        }
         Ok(ListNetworkInstanceMetaResponse { metas })
     }
+
+    async fn save_network_instance_config(
+        &self,
+        _: BaseController,
+        request: SaveNetworkInstanceConfigRequest,
+    ) -> rpc_types::error::Result<SaveNetworkInstanceConfigResponse> {
+        let config = request
+            .config
+            .ok_or_else(|| anyhow::anyhow!("config is required"))?
+            .gen_config()?;
+        let requested_id = request.inst_id.map(Into::into);
+        let requested_source = config_source_from_rpc(request.source);
+        let management = self.management.clone();
+        tokio::spawn(async move {
+            management
+                .save_network_instance_config(config, requested_id, requested_source)
+                .await
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
+        Ok(SaveNetworkInstanceConfigResponse {})
+    }
+
+    async fn set_network_instance_enabled(
+        &self,
+        _: BaseController,
+        request: SetNetworkInstanceEnabledRequest,
+    ) -> rpc_types::error::Result<SetNetworkInstanceEnabledResponse> {
+        let instance_id = request
+            .inst_id
+            .ok_or_else(|| anyhow::anyhow!("instance id is required"))?
+            .into();
+        let management = self.management.clone();
+        tokio::spawn(async move {
+            management
+                .set_network_instance_enabled(instance_id, request.enabled)
+                .await
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
+        Ok(SetNetworkInstanceEnabledResponse {})
+    }
+
+    async fn remove_network_instance_config(
+        &self,
+        _: BaseController,
+        request: RemoveNetworkInstanceConfigRequest,
+    ) -> rpc_types::error::Result<RemoveNetworkInstanceConfigResponse> {
+        let requested = request
+            .inst_ids
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<_>>();
+        let to_remove = requested.clone();
+        let management = self.management.clone();
+        let removed =
+            tokio::spawn(
+                async move { management.remove_network_instance_configs(&to_remove).await },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
+        Ok(RemoveNetworkInstanceConfigResponse {
+            remain_inst_ids: requested
+                .into_iter()
+                .filter(|id| !removed.contains(id))
+                .map(Into::into)
+                .collect(),
+        })
+    }
+}
+
+fn request_contains(inst_ids: &[easytier_proto::common::Uuid], instance_id: uuid::Uuid) -> bool {
+    inst_ids
+        .iter()
+        .any(|id| uuid::Uuid::from(*id) == instance_id)
 }

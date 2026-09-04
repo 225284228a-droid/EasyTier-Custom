@@ -64,6 +64,7 @@ use easytier::instance::factory::{NativeInstanceManager, native_instance_manager
 use easytier::proto::api::manage::NetworkConfig;
 use easytier::proto::api::manage::NetworkingMethod;
 use easytier::web_client::{WebClient, WebClientHooks, run_web_client};
+use easytier_core::management::InstanceStateStore;
 use kernel_bridge::{
     start_local_socket_server as start_local_socket_server_inner,
     stop_local_socket_server as stop_local_socket_server_inner,
@@ -257,6 +258,7 @@ fn run_config_server_instance(config_id: &str, config: &NetworkConfig) -> bool {
         secure_mode,
         INSTANCE_MANAGER.clone(),
         Some(hooks.clone()),
+        Arc::new(InstanceStateStore::in_memory()),
     ));
 
     let client = match client {
@@ -315,6 +317,7 @@ fn run_config_server_client(
         secure_mode,
         INSTANCE_MANAGER.clone(),
         Some(hooks.clone()),
+        Arc::new(InstanceStateStore::in_memory()),
     ));
 
     let client = match client {

@@ -178,7 +178,10 @@ message CollectNetworkInfoResponse { NetworkInstanceRunningInfoMap info = 1; }
 
 message ListNetworkInstanceRequest {}
 
-message ListNetworkInstanceResponse { repeated common.UUID inst_ids = 1; }
+message ListNetworkInstanceResponse {
+  repeated common.UUID inst_ids = 1;
+  repeated common.UUID disabled_inst_ids = 2;
+}
 
 message DeleteNetworkInstanceRequest { repeated common.UUID inst_ids = 1; }
 
@@ -197,6 +200,29 @@ message ListNetworkInstanceMetaRequest { repeated common.UUID inst_ids = 1; }
 
 message ListNetworkInstanceMetaResponse { repeated NetworkMeta metas = 1; }
 
+message SaveNetworkInstanceConfigRequest {
+  common.UUID inst_id = 1;
+  NetworkConfig config = 2;
+  ConfigSource source = 3;
+}
+
+message SaveNetworkInstanceConfigResponse {}
+
+message SetNetworkInstanceEnabledRequest {
+  common.UUID inst_id = 1;
+  bool enabled = 2;
+}
+
+message SetNetworkInstanceEnabledResponse {}
+
+message RemoveNetworkInstanceConfigRequest {
+  repeated common.UUID inst_ids = 1;
+}
+
+message RemoveNetworkInstanceConfigResponse {
+  repeated common.UUID remain_inst_ids = 1;
+}
+
 service WebClientService {
   rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse) {}
   rpc RunNetworkInstance(RunNetworkInstanceRequest)
@@ -213,4 +239,10 @@ service WebClientService {
       returns (GetNetworkInstanceConfigResponse) {}
   rpc ListNetworkInstanceMeta(ListNetworkInstanceMetaRequest)
       returns (ListNetworkInstanceMetaResponse) {}
+  rpc SaveNetworkInstanceConfig(SaveNetworkInstanceConfigRequest)
+      returns (SaveNetworkInstanceConfigResponse) {}
+  rpc SetNetworkInstanceEnabled(SetNetworkInstanceEnabledRequest)
+      returns (SetNetworkInstanceEnabledResponse) {}
+  rpc RemoveNetworkInstanceConfig(RemoveNetworkInstanceConfigRequest)
+      returns (RemoveNetworkInstanceConfigResponse) {}
 }

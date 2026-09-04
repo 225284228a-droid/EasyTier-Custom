@@ -8,6 +8,7 @@ use easytier::{
     rpc_service::ReadOnlyApiRpcServer,
     web_client::{WebClientHooks, parse_config_server_endpoint, run_web_client},
 };
+use easytier_core::management::InstanceStateStore;
 
 enum Command {
     Run(RunOptions),
@@ -152,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
                 options.secure_mode,
                 instances.clone(),
                 Some(Arc::new(MiniWebClientHooks)),
+                Arc::new(InstanceStateStore::in_memory()),
             )
             .await?,
         )

@@ -5,6 +5,8 @@ use easytier_core::connectivity::protocol::{ClientProtocolUpgrader, ServerProtoc
 use crate::{common::global_ctx::ArcGlobalCtx, socket::tcp::RuntimeTcpSocket};
 
 #[cfg(feature = "quic")]
+mod http3;
+#[cfg(feature = "quic")]
 mod quic;
 #[cfg(feature = "websocket")]
 mod websocket;
@@ -23,6 +25,8 @@ pub(super) fn client_adapters(global_ctx: &ArcGlobalCtx) -> Vec<ClientAdapter> {
         wireguard::client_adapter(global_ctx),
         #[cfg(feature = "quic")]
         quic::client_adapter(global_ctx),
+        #[cfg(feature = "quic")]
+        http3::client_adapter(global_ctx),
     ]
     .into_iter()
     .collect()
@@ -37,6 +41,8 @@ pub(super) fn server_adapters(global_ctx: &ArcGlobalCtx) -> Vec<ServerAdapter> {
         wireguard::server_adapter(global_ctx),
         #[cfg(feature = "quic")]
         quic::server_adapter(global_ctx),
+        #[cfg(feature = "quic")]
+        http3::server_adapter(global_ctx),
     ]
     .into_iter()
     .collect()

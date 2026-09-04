@@ -28,7 +28,7 @@ pub(crate) const fn protocol_transport(scheme: &str) -> Option<ProtocolTransport
         b"wg" => Some(ProtocolTransport::Udp(UdpSessionMode::Classified(
             crate::socket::udp::UdpSessionProtocol::WireGuard,
         ))),
-        b"quic" => Some(ProtocolTransport::Udp(UdpSessionMode::Classified(
+        b"quic" | b"http3" => Some(ProtocolTransport::Udp(UdpSessionMode::Classified(
             crate::socket::udp::UdpSessionProtocol::Quic,
         ))),
         _ => None,
@@ -47,6 +47,7 @@ pub const fn protocol_port_offset(scheme: &str) -> Option<u16> {
         b"wg" | b"ws" => Some(1),
         b"quic" | b"wss" => Some(2),
         b"faketcp" => Some(3),
+        b"http3" => Some(4),
         _ => None,
     }
 }
@@ -55,7 +56,7 @@ pub const fn protocol_port_offset(scheme: &str) -> Option<u16> {
 pub const fn protocol_default_port(scheme: &str) -> Option<u16> {
     match scheme.as_bytes() {
         b"ws" => Some(80),
-        b"wss" => Some(443),
+        b"wss" | b"http3" => Some(443),
         _ => match protocol_port_offset(scheme) {
             Some(offset) => Some(11010 + offset),
             None => None,
@@ -474,6 +475,7 @@ mod tests {
             ("ws", 1, 80),
             ("wss", 2, 443),
             ("faketcp", 3, 11013),
+            ("http3", 4, 443),
         ];
 
         for (scheme, offset, port) in cases {

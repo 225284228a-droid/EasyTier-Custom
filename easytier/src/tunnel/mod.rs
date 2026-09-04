@@ -9,6 +9,8 @@ use easytier_core::tunnel::{IpVersion, TunnelError};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 pub mod common;
+#[cfg(any(feature = "quic", feature = "websocket"))]
+pub(crate) mod insecure_tls;
 pub(crate) mod protocol;
 
 #[cfg(feature = "wireguard")]
@@ -16,6 +18,9 @@ pub mod wireguard;
 
 #[cfg(feature = "quic")]
 pub mod quic;
+
+#[cfg(feature = "quic")]
+pub mod http3;
 
 #[cfg(feature = "websocket")]
 pub mod websocket;
@@ -133,6 +138,8 @@ pub enum IpScheme {
     Wg,
     #[cfg(feature = "quic")]
     Quic,
+    #[cfg(feature = "quic")]
+    Http3,
     #[cfg(feature = "websocket")]
     Ws,
     #[cfg(feature = "websocket")]

@@ -75,11 +75,13 @@ pub fn native_compact_instance_manager_with_runtime(
 pub fn native_process_management(
     instances: Arc<NativeInstanceManager>,
     hooks: Arc<dyn easytier_core::management::InstanceMutationHooks>,
+    state_store: Arc<easytier_core::management::InstanceStateStore>,
 ) -> NativeProcessManagement {
     NativeProcessManagement::new(
         instances,
         hooks,
         Arc::new(easytier_core::management::UnsupportedConfigFileStorage),
+        state_store,
     )
 }
 

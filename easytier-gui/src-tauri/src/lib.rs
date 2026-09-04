@@ -24,6 +24,7 @@ use easytier::{
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
 };
+use easytier_core::management::InstanceStateStore;
 use easytier_core::management::config_source_to_rpc;
 use easytier_core::management::remote_client::{
     GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, ListNetworkProps, RemoteClientManager,
@@ -453,11 +454,15 @@ async fn init_rpc_connection(
                 }
             };
 
-            let rpc_server = ApiRpcServer::from_tunnel(tunnel, instance_manager.clone())
-                .with_rx_timeout(None)
-                .serve()
-                .await
-                .map_err(|e| e.to_string())?;
+            let rpc_server = ApiRpcServer::from_tunnel(
+                tunnel,
+                instance_manager.clone(),
+                Arc::new(InstanceStateStore::in_memory()),
+            )
+            .with_rx_timeout(None)
+            .serve()
+            .await
+            .map_err(|e| e.to_string())?;
             *rpc_server_guard = Some(RpcServer {
                 kind: desired_kind,
                 _server: rpc_server,
@@ -531,6 +536,7 @@ async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), Stri
         false,
         instance_manager,
         Some(hooks),
+        Arc::new(InstanceStateStore::in_memory()),
     )
     .await
     .with_context(|| "Failed to initialize web client")

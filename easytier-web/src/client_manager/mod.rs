@@ -9,18 +9,30 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use async_trait::async_trait;
 use dashmap::DashMap;
+use easytier::common::config::{ConfigSource, config_source_from_rpc, config_source_to_rpc};
 use easytier::proto::{
-    api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
+    api::manage::{
+        DeleteNetworkInstanceRequest, GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest,
+        RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
+        SaveNetworkInstanceConfigRequest, SetNetworkInstanceEnabledRequest, WebClientService,
+    },
+    rpc_types::controller::BaseController,
+    web::HeartbeatRequest,
 };
 use easytier_core::{
-    management::remote_client::{self, RemoteClientManager},
+    management::remote_client::{
+        self, ListNetworkInstanceIdsJsonResp, PersistentConfig, RemoteClientError,
+        RemoteClientManager, Storage as RemoteStorage,
+    },
     socket::SocketListener,
     tunnel::{Tunnel, web_security},
 };
 use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
+use uuid::Uuid;
 
 use crate::FeatureFlags;
 use crate::webhook::{ManagedNetworkConfig, SharedWebhookConfig};
@@ -217,6 +229,19 @@ impl ClientManager {
         config_revision: Option<String>,
         expected_config_revision: Option<String>,
     ) -> anyhow::Result<()> {
+        // Decentralized cores own their configs as local TOML files; the web
+        // console must not write/delete managed DB rows for them (that would
+        // create orphan rows that a stale reconcile could push back to the
+        // core). This flag is only known after the first heartbeat, which is
+        // the earliest such a reconcile request can be meaningfully applied.
+        if self.supports_local_configs(&(user_id, machine_id)).await {
+            tracing::info!(
+                user_id,
+                %machine_id,
+                "core manages local configs; ignoring managed config reconcile"
+            );
+            return Ok(());
+        }
         let expected_config_revision = match expected_config_revision.as_deref().map(str::trim) {
             None => managed_config::ExpectedConfigRevision::Any,
             Some("") => managed_config::ExpectedConfigRevision::Exact(None),
@@ -344,6 +369,7 @@ impl ClientManager {
     }
 }
 
+#[async_trait]
 impl
     RemoteClientManager<
         (UserIdInDb, uuid::Uuid),
@@ -366,7 +392,417 @@ impl
         user_running_network_configs::Model,
         sea_orm::DbErr,
     > {
-        self.storage.db()
+        self
+    }
+
+    async fn handle_list_network_instance_ids(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+    ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<sea_orm::DbErr>> {
+        if !self.supports_local_configs(&identify).await {
+            let client = self
+                .get_rpc_client(identify.clone())
+                .ok_or(RemoteClientError::ClientNotFound)?;
+            let ret = client
+                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+                .await?;
+
+            let running_inst_ids = ret.inst_ids.clone().into_iter().collect();
+
+            // collect networks that are disabled
+            let disabled_inst_ids = self
+                .get_storage()
+                .list_network_configs(identify, remote_client::ListNetworkProps::All)
+                .await
+                .map_err(RemoteClientError::PersistentError)?
+                .iter()
+                .map(|x| {
+                    Into::<easytier::proto::common::Uuid>::into(x.get_network_inst_id().to_string())
+                })
+                .filter(|id| !ret.inst_ids.contains(id))
+                .collect::<Vec<_>>();
+
+            return Ok(ListNetworkInstanceIdsJsonResp {
+                running_inst_ids,
+                disabled_inst_ids,
+            });
+        }
+
+        let client = self
+            .get_rpc_client(identify)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        let ret = client
+            .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+            .await?;
+        Ok(ListNetworkInstanceIdsJsonResp {
+            running_inst_ids: ret.inst_ids.into_iter().collect(),
+            disabled_inst_ids: ret.disabled_inst_ids.into_iter().collect(),
+        })
+    }
+
+    async fn handle_run_network_instance_with_source(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        config: easytier::proto::api::manage::NetworkConfig,
+        save: bool,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        if !self.supports_local_configs(&identify).await {
+            let client = self
+                .get_rpc_client(identify.clone())
+                .ok_or(RemoteClientError::ClientNotFound)?;
+            let resp = client
+                .run_network_instance(
+                    BaseController::default(),
+                    RunNetworkInstanceRequest {
+                        inst_id: None,
+                        config: Some(config.clone()),
+                        overwrite: true,
+                        source: config_source_to_rpc(source),
+                    },
+                )
+                .await?;
+
+            if save {
+                self.get_storage()
+                    .insert_or_update_user_network_config(
+                        identify,
+                        resp.inst_id.unwrap_or_default().into(),
+                        config,
+                        source,
+                    )
+                    .await
+                    .map_err(RemoteClientError::PersistentError)?;
+            }
+            return Ok(());
+        }
+
+        let client = self
+            .get_rpc_client(identify)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        client
+            .run_network_instance(
+                BaseController::default(),
+                RunNetworkInstanceRequest {
+                    inst_id: None,
+                    config: Some(config),
+                    overwrite: true,
+                    source: config_source_to_rpc(source),
+                },
+            )
+            .await?;
+        // The core persists the config file in its working directory; the web
+        // console keeps nothing.
+        Ok(())
+    }
+
+    async fn handle_remove_network_instances(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_ids: Vec<uuid::Uuid>,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        if inst_ids.is_empty() {
+            return Ok(());
+        }
+        let client = self
+            .get_rpc_client(identify.clone())
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        if !self.supports_local_configs(&identify).await {
+            self.get_storage()
+                .delete_network_configs(identify, &inst_ids)
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+
+            client
+                .delete_network_instance(
+                    BaseController::default(),
+                    DeleteNetworkInstanceRequest {
+                        inst_ids: inst_ids.into_iter().map(Into::into).collect(),
+                    },
+                )
+                .await?;
+            return Ok(());
+        }
+
+        client
+            .delete_network_instance(
+                BaseController::default(),
+                DeleteNetworkInstanceRequest {
+                    inst_ids: inst_ids.iter().cloned().map(Into::into).collect(),
+                },
+            )
+            .await?;
+        client
+            .remove_network_instance_config(
+                BaseController::default(),
+                RemoveNetworkInstanceConfigRequest {
+                    inst_ids: inst_ids.into_iter().map(Into::into).collect(),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_update_network_state(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+        disabled: bool,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        let client = self
+            .get_rpc_client(identify.clone())
+            .ok_or(RemoteClientError::ClientNotFound)?;
+
+        if !self.supports_local_configs(&identify).await {
+            let (cfg, source) = self
+                .handle_get_network_config_with_source(identify.clone(), inst_id)
+                .await?;
+
+            if disabled {
+                self.get_storage()
+                    .insert_or_update_user_network_config(
+                        identify.clone(),
+                        inst_id,
+                        cfg.clone(),
+                        source,
+                    )
+                    .await
+                    .map_err(RemoteClientError::PersistentError)?;
+
+                client
+                    .delete_network_instance(
+                        BaseController::default(),
+                        DeleteNetworkInstanceRequest {
+                            inst_ids: vec![inst_id.into()],
+                        },
+                    )
+                    .await?;
+            } else {
+                client
+                    .run_network_instance(
+                        BaseController::default(),
+                        RunNetworkInstanceRequest {
+                            inst_id: Some(inst_id.into()),
+                            config: Some(cfg),
+                            overwrite: true,
+                            source: config_source_to_rpc(source),
+                        },
+                    )
+                    .await?;
+            }
+
+            self.get_storage()
+                .update_network_config_state(identify, inst_id, disabled)
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+            return Ok(());
+        }
+
+        if disabled {
+            client
+                .set_network_instance_enabled(
+                    BaseController::default(),
+                    SetNetworkInstanceEnabledRequest {
+                        inst_id: Some(inst_id.into()),
+                        enabled: false,
+                    },
+                )
+                .await?;
+        } else {
+            // Enable restores the instance from its on-disk config file. This
+            // mirrors the disable path (which calls set_network_instance_enabled
+            // with enabled=false) and avoids the redundant NetworkConfig<->TOML
+            // round-trip + file rewrite that run_network_instance(overwrite=true)
+            // would perform.
+            client
+                .set_network_instance_enabled(
+                    BaseController::default(),
+                    SetNetworkInstanceEnabledRequest {
+                        inst_id: Some(inst_id.into()),
+                        enabled: true,
+                    },
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_save_network_config_with_source(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+        config: easytier::proto::api::manage::NetworkConfig,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        if !self.supports_local_configs(&identify).await {
+            self.get_storage()
+                .insert_or_update_user_network_config(identify.clone(), inst_id, config, source)
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+            self.get_storage()
+                .update_network_config_state(identify, inst_id, true)
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+            return Ok(());
+        }
+
+        let client = self
+            .get_rpc_client(identify)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        client
+            .save_network_instance_config(
+                BaseController::default(),
+                SaveNetworkInstanceConfigRequest {
+                    inst_id: Some(inst_id.into()),
+                    config: Some(config),
+                    source: config_source_to_rpc(source),
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_get_network_config_with_source(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+    ) -> Result<
+        (easytier::proto::api::manage::NetworkConfig, ConfigSource),
+        RemoteClientError<sea_orm::DbErr>,
+    > {
+        if !self.supports_local_configs(&identify).await {
+            if let Some(client) = self.get_rpc_client(identify.clone())
+                && let Ok(resp) = client
+                    .get_network_instance_config(
+                        BaseController::default(),
+                        GetNetworkInstanceConfigRequest {
+                            inst_id: Some(inst_id.into()),
+                        },
+                    )
+                    .await
+                && let Some(config) = resp.config
+            {
+                let source = if let Some(source) = config_source_from_rpc(resp.source) {
+                    source
+                } else {
+                    self.get_storage()
+                        .get_network_config(identify.clone(), &inst_id.to_string())
+                        .await
+                        .map_err(RemoteClientError::PersistentError)?
+                        .map(|cfg| cfg.get_runtime_network_config_source())
+                        .unwrap_or(ConfigSource::User)
+                };
+                return Ok((config, source));
+            }
+
+            let inst_id = inst_id.to_string();
+
+            let db_row = self
+                .get_storage()
+                .get_network_config(identify, &inst_id)
+                .await
+                .map_err(RemoteClientError::PersistentError)?
+                .ok_or(RemoteClientError::NotFound(format!(
+                    "No such network instance: {}",
+                    inst_id
+                )))?;
+
+            return Ok((
+                db_row
+                    .get_network_config()
+                    .map_err(RemoteClientError::PersistentError)?,
+                db_row.get_runtime_network_config_source(),
+            ));
+        }
+
+        let client = self
+            .get_rpc_client(identify)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        let resp = client
+            .get_network_instance_config(
+                BaseController::default(),
+                GetNetworkInstanceConfigRequest {
+                    inst_id: Some(inst_id.into()),
+                },
+            )
+            .await?;
+        let config = resp.config.ok_or_else(|| {
+            RemoteClientError::NotFound(format!("No such network instance: {}", inst_id))
+        })?;
+        Ok((
+            config,
+            config_source_from_rpc(resp.source).unwrap_or(ConfigSource::User),
+        ))
+    }
+}
+
+#[async_trait]
+impl
+    remote_client::Storage<
+        (UserIdInDb, uuid::Uuid),
+        user_running_network_configs::Model,
+        sea_orm::DbErr,
+    > for ClientManager
+{
+    async fn insert_or_update_user_network_config(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        network_inst_id: Uuid,
+        network_config: easytier::proto::api::manage::NetworkConfig,
+        source: ConfigSource,
+    ) -> Result<(), sea_orm::DbErr> {
+        self.db()
+            .insert_or_update_user_network_config(identify, network_inst_id, network_config, source)
+            .await
+    }
+
+    async fn delete_network_configs(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        network_inst_ids: &[Uuid],
+    ) -> Result<(), sea_orm::DbErr> {
+        self.db()
+            .delete_network_configs(identify, network_inst_ids)
+            .await
+    }
+
+    async fn update_network_config_state(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        network_inst_id: Uuid,
+        disabled: bool,
+    ) -> Result<(), sea_orm::DbErr> {
+        self.db()
+            .update_network_config_state(identify, network_inst_id, disabled)
+            .await
+    }
+
+    async fn list_network_configs(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        props: remote_client::ListNetworkProps,
+    ) -> Result<Vec<user_running_network_configs::Model>, sea_orm::DbErr> {
+        self.db().list_network_configs(identify, props).await
+    }
+
+    async fn get_network_config(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        network_inst_id: &str,
+    ) -> Result<Option<user_running_network_configs::Model>, sea_orm::DbErr> {
+        self.db()
+            .get_network_config(identify, network_inst_id)
+            .await
+    }
+}
+
+impl ClientManager {
+    async fn supports_local_configs(&self, identify: &(UserIdInDb, uuid::Uuid)) -> bool {
+        let (user_id, machine_id) = *identify;
+        let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) else {
+            return false;
+        };
+        session.data().read().await.support_local_configs()
     }
 }
 
@@ -396,6 +832,7 @@ mod tests {
         },
         web_client::{WebClient, run_web_client},
     };
+    use easytier_core::management::InstanceStateStore;
     use easytier_core::management::remote_client::Storage as RemoteStorage;
     use serde_json::json;
     use sqlx::Executor;
@@ -633,6 +1070,7 @@ mod tests {
             false,
             manager,
             None,
+            Arc::new(InstanceStateStore::in_memory()),
         )
         .await
         .unwrap()
@@ -866,6 +1304,7 @@ mod tests {
             false,
             Arc::new(native_instance_manager()),
             None,
+            Arc::new(InstanceStateStore::in_memory()),
         );
 
         wait_for_condition(

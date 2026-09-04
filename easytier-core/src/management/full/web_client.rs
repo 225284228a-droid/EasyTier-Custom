@@ -25,7 +25,9 @@ use crate::{
 
 #[cfg(not(feature = "management"))]
 use super::register_web_client_rpc;
-use super::{ConfigFileStorage, DaemonGuard, InstanceManager, InstanceMutationHooks};
+use super::{
+    ConfigFileStorage, DaemonGuard, InstanceManager, InstanceMutationHooks, InstanceStateStore,
+};
 #[cfg(feature = "management")]
 use super::{LoggerControl, register_management_rpc};
 
@@ -93,6 +95,10 @@ pub struct WebClientConfig {
     pub device_os: DeviceOsInfo,
     pub easytier_version: String,
     pub secure_mode: bool,
+    /// Whether this core manages network configs locally (TOML files in its
+    /// config dir). Advertised to the web console so it switches to the
+    /// decentralized management path.
+    pub support_local_configs: bool,
 }
 
 #[async_trait]
@@ -109,6 +115,7 @@ where
     instances: Arc<InstanceManager<F>>,
     hooks: Arc<dyn InstanceMutationHooks>,
     storage: Arc<dyn ConfigFileStorage>,
+    state_store: Arc<InstanceStateStore>,
     #[cfg(feature = "management")]
     logger: Arc<dyn LoggerControl>,
 }
@@ -127,6 +134,7 @@ where
             registry,
             self.hooks.clone(),
             self.storage.clone(),
+            self.state_store.clone(),
             self.logger.clone(),
         );
         #[cfg(not(feature = "management"))]
@@ -135,6 +143,7 @@ where
             registry,
             self.hooks.clone(),
             self.storage.clone(),
+            self.state_store.clone(),
         );
     }
 
@@ -169,6 +178,7 @@ where
         instances: Arc<InstanceManager<F>>,
         hooks: Arc<dyn InstanceMutationHooks>,
         storage: Arc<dyn ConfigFileStorage>,
+        state_store: Arc<InstanceStateStore>,
         #[cfg(feature = "management")] logger: Arc<dyn LoggerControl>,
     ) -> Self {
         let manager_guard = instances.register_daemon();
@@ -176,6 +186,7 @@ where
             instances,
             hooks,
             storage,
+            state_store,
             #[cfg(feature = "management")]
             logger,
         });
@@ -373,6 +384,7 @@ impl WebClientSession {
                     report_time: chrono::Local::now().to_rfc3339(),
                     device_os: Some(device_os.clone()),
                     support_config_source: true,
+                    support_local_configs: controller.config.support_local_configs,
                     running_network_instances,
                 };
 

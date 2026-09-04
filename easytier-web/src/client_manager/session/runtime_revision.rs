@@ -64,6 +64,15 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
         let Some(req) = recv_latest_heartbeat(&mut heartbeat_waiter).await else {
             return;
         };
+        // Decentralized cores are the authority for their own configs (TOML
+        // files in their working directory), so the web console must not
+        // reconcile anything against its own database. This flag only arrives
+        // with the first heartbeat, so it is checked here per round instead of
+        // at task start (where `req` is still `None`).
+        if req.support_local_configs {
+            tracing::info!("core manages local configs; skipping web config reconcile");
+            return;
+        }
         let Some(storage) = storage.upgrade() else {
             tracing::error!("Failed to get storage");
             return;
