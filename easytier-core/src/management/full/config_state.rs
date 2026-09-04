@@ -7,10 +7,12 @@
 
 use std::{
     collections::HashMap,
+    io::Write as _,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
+use atomic_write_file::{AtomicWriteFile, OpenOptions};
 use serde::{Deserialize, Serialize};
 
 pub const STATE_FILE_NAME: &str = "easytier-state.json";
@@ -33,9 +35,18 @@ fn read_state_file(path: &Path) -> Option<StateFile> {
 
 fn write_state_file(path: &Path, state: &StateFile) -> anyhow::Result<()> {
     let contents = serde_json::to_vec_pretty(state)?;
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &contents)?;
-    std::fs::rename(&tmp_path, path)?;
+    #[cfg(unix)]
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        atomic_write_file::unix::OpenOptionsExt::preserve_mode(&mut options, false);
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    }
+    #[cfg(not(unix))]
+    let options = OpenOptions::new();
+    let mut file: AtomicWriteFile = options.open(path)?;
+    file.write_all(&contents)?;
+    file.commit()?;
     Ok(())
 }
 

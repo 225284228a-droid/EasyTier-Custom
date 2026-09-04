@@ -86,6 +86,7 @@ const DISGUISE_QUERY_KEYS: [&str; 6] = ["sni", "host", "path", "ua", "accept_lan
 ///   the flow looks like an interactive HTTPS session instead of a steady pipe
 #[derive(Debug, Clone, Default)]
 pub struct WssDisguise {
+    enabled: bool,
     pub sni: Option<String>,
     pub host: Option<String>,
     pub path: Option<String>,
@@ -103,12 +104,28 @@ impl WssDisguise {
         };
         for (key, value) in url.query_pairs() {
             match key.as_ref() {
-                "sni" => disguise.sni = Some(value.into_owned()),
-                "host" => disguise.host = Some(value.into_owned()),
-                "path" => disguise.path = Some(value.into_owned()),
-                "ua" => disguise.user_agent = Some(value.into_owned()),
-                "accept_language" => disguise.accept_language = Some(value.into_owned()),
+                "sni" => {
+                    disguise.enabled = true;
+                    disguise.sni = Some(value.into_owned());
+                }
+                "host" => {
+                    disguise.enabled = true;
+                    disguise.host = Some(value.into_owned());
+                }
+                "path" => {
+                    disguise.enabled = true;
+                    disguise.path = Some(value.into_owned());
+                }
+                "ua" => {
+                    disguise.enabled = true;
+                    disguise.user_agent = Some(value.into_owned());
+                }
+                "accept_language" => {
+                    disguise.enabled = true;
+                    disguise.accept_language = Some(value.into_owned());
+                }
                 "padding" => {
+                    disguise.enabled = true;
                     let mut parts = value.split(',');
                     let interval_ms = parts.next().unwrap_or_default().parse::<u64>().ok();
                     if let Some(interval_ms) = interval_ms.filter(|ms| *ms > 0) {
@@ -176,6 +193,10 @@ impl WssDisguise {
 
     pub fn padding_enabled(&self) -> bool {
         self.padding_interval.is_some()
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -280,6 +301,15 @@ where
     }
 
     fn start_send(mut self: Pin<&mut Self>, packet: ZCPacket) -> Result<(), Self::Error> {
+        // Keep the official zero-copy fast path when padding is disabled. The
+        // queue is only needed when an optional disguise frame must precede
+        // the packet and the inner sink may accept one frame per readiness
+        // notification.
+        if self.padding.is_none() && self.pending.is_empty() {
+            return Pin::new(&mut self.inner)
+                .start_send(Message::binary(packet.tunnel_payload_bytes().freeze()))
+                .map_err(websocket_error);
+        }
         // Padding is generated here, in `start_send` - a method explicitly
         // allowed to begin sending. The padding frame is enqueued ahead of the
         // real packet so the next `poll_ready` drains them in wire order
@@ -518,37 +548,45 @@ where
     };
 
     let disguise = WssDisguise::from_url(&remote_url);
-    let request_uri = disguise
-        .request_uri(&remote_url)
-        .map_err(|error| TunnelError::InvalidProtocol(error.to_string()))?;
-    let mut client = ClientBuilder::new()
-        .uri(&request_uri)
-        .map_err(websocket_error)?
-        .max_headers(128);
-    client = client
-        .add_header(
-            http::header::USER_AGENT,
-            disguise.user_agent().parse().map_err(|_| {
-                TunnelError::InvalidProtocol("invalid User-Agent header".to_owned())
-            })?,
-        )
-        .map_err(websocket_error)?;
-    client = client
-        .add_header(
-            http::header::ACCEPT_LANGUAGE,
-            disguise.accept_language().parse().map_err(|_| {
-                TunnelError::InvalidProtocol("invalid Accept-Language header".to_owned())
-            })?,
-        )
-        .map_err(websocket_error)?;
-    client = client
-        .add_header(
-            http::header::ACCEPT,
-            "*/*"
-                .parse()
-                .map_err(|_| TunnelError::InvalidProtocol("invalid Accept header".to_owned()))?,
-        )
-        .map_err(websocket_error)?;
+    let mut client = if disguise.enabled() {
+        let request_uri = disguise
+            .request_uri(&remote_url)
+            .map_err(|error| TunnelError::InvalidProtocol(error.to_string()))?;
+        ClientBuilder::new()
+            .uri(&request_uri)
+            .map_err(websocket_error)?
+    } else {
+        // Preserve the official handshake exactly when no disguise query
+        // parameter is present.
+        ClientBuilder::from_uri(http::Uri::try_from(remote_url.to_string()).unwrap())
+    }
+    .max_headers(128);
+    if disguise.enabled() {
+        client = client
+            .add_header(
+                http::header::USER_AGENT,
+                disguise.user_agent().parse().map_err(|_| {
+                    TunnelError::InvalidProtocol("invalid User-Agent header".to_owned())
+                })?,
+            )
+            .map_err(websocket_error)?;
+        client = client
+            .add_header(
+                http::header::ACCEPT_LANGUAGE,
+                disguise.accept_language().parse().map_err(|_| {
+                    TunnelError::InvalidProtocol("invalid Accept-Language header".to_owned())
+                })?,
+            )
+            .map_err(websocket_error)?;
+        client = client
+            .add_header(
+                http::header::ACCEPT,
+                "*/*".parse().map_err(|_| {
+                    TunnelError::InvalidProtocol("invalid Accept header".to_owned())
+                })?,
+            )
+            .map_err(websocket_error)?;
+    }
 
     let stream: MaybeTlsStream<S> = if is_wss {
         init_crypto_provider();
@@ -588,6 +626,41 @@ pub mod tests {
 
     struct FailingWebSocketSink {
         close_called: bool,
+    }
+
+    #[derive(Default)]
+    struct RecordingWebSocketSink {
+        messages: Vec<Message>,
+    }
+
+    impl Sink<Message> for RecordingWebSocketSink {
+        type Error = io::Error;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.messages.push(item);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
     }
 
     impl Sink<Message> for FailingWebSocketSink {
@@ -637,6 +710,18 @@ pub mod tests {
             .expect_err("send should fail");
         sink.close().await.expect_err("close should fail");
         assert!(sink.inner.close_called);
+    }
+
+    #[tokio::test]
+    async fn packet_sink_without_padding_uses_direct_send_path() {
+        let mut sink = WebSocketPacketSink::new(RecordingWebSocketSink::default());
+        sink.send(ZCPacket::new_with_payload(b"direct packet"))
+            .await
+            .unwrap();
+
+        assert!(sink.pending.is_empty());
+        assert_eq!(sink.inner.messages.len(), 1);
+        assert!(sink.inner.messages[0].is_binary());
     }
 
     #[tokio::test]
@@ -724,6 +809,7 @@ pub mod tests {
                 .parse()
                 .unwrap();
         let disguise = WssDisguise::from_url(&url);
+        assert!(disguise.enabled());
         assert_eq!(disguise.sni(&url), "www.cloudflare.com");
         assert_eq!(disguise.user_agent(), "Mozilla/5.0");
         assert_eq!(
@@ -751,6 +837,7 @@ pub mod tests {
     fn wss_disguise_defaults_preserve_official_behavior() {
         let url: url::Url = "wss://host.example.com:443".parse().unwrap();
         let disguise = WssDisguise::from_url(&url);
+        assert!(!disguise.enabled());
         assert_eq!(disguise.sni(&url), "host.example.com");
         assert!(!disguise.padding_enabled());
         let request_uri = disguise.request_uri(&url).unwrap();

@@ -2336,6 +2336,7 @@ dependencies = [
  "hickory-proto",
  "hickory-resolver",
  "hickory-server",
+ "hkdf",
  "http",
  "humansize",
  "humantime-serde",
@@ -2372,6 +2373,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "service-manager",
+ "sha2",
  "shellexpand",
  "smoltcp",
  "socket2 0.5.10",
@@ -2432,6 +2434,7 @@ dependencies = [
  "async-ringbuf",
  "async-trait",
  "atomic-shim",
+ "atomic-write-file",
  "auto_impl",
  "base64 0.22.1",
  "bitflags 2.8.0",
@@ -2537,6 +2540,19 @@ dependencies = [
  "uuid",
  "winapi",
  "windows 0.52.0",
+]
+
+[[package]]
+name = "easytier-ios"
+version = "0.1.0"
+dependencies = [
+ "easytier-core",
+ "easytier-ffi",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

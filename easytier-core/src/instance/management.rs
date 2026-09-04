@@ -157,14 +157,8 @@ where
         let generated = self
             .peer_manager
             .credential_manager()
-            .generate_credential_with_options(
-                options.groups,
-                options.allow_relay,
-                options.allowed_proxy_cidrs,
-                options.ttl,
-                options.credential_id,
-                options.reusable,
-            );
+            .generate_credential_with_options(options)
+            .map_err(anyhow::Error::msg)?;
         self.peer_manager.notify_credential_changed();
         Ok(generated)
     }
@@ -176,7 +170,8 @@ where
         let revoked = self
             .peer_manager
             .credential_manager()
-            .revoke_credential(credential_id);
+            .revoke_credential(credential_id)
+            .map_err(anyhow::Error::msg)?;
         if revoked {
             self.peer_manager.notify_credential_changed();
         }
@@ -200,6 +195,18 @@ where
 
     pub fn credential_snapshots(&self) -> Vec<CredentialInfo> {
         self.peer_manager.credential_manager().list_credentials()
+    }
+
+    #[cfg(feature = "web-client")]
+    pub(crate) fn credential_manager(
+        &self,
+    ) -> Arc<crate::peers::credential_manager::CredentialManager> {
+        self.peer_manager.credential_manager()
+    }
+
+    #[cfg(feature = "web-client")]
+    pub(crate) fn notify_credential_changed(&self) {
+        self.peer_manager.notify_credential_changed();
     }
 
     pub fn metric_snapshots(&self) -> Vec<MetricSnapshot> {

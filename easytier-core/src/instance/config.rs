@@ -15,6 +15,7 @@ use crate::{
         manual::{ManualConnectorOptions, discovery::ManualEndpointDiscoveryConfig},
         stun::StunServerConfig,
     },
+    gateway::vpn_portal::{PortalClientConfig, PortalRuntimeConfig},
     listener::plan::ListenerRuntimeConfig,
     packet::CompressorAlgo,
     peers::{
@@ -172,6 +173,12 @@ impl CoreInstanceConfig {
         let flags = host.runtime_flags(config.get_flags());
         let instance_id = config.get_id();
         let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
+        let managed_credentials = config.get_managed_credentials();
+        if !managed_credentials.is_empty() && identity.network_secret.is_none() {
+            anyhow::bail!(
+                "only admin nodes with a network_secret can configure managed credentials"
+            );
+        }
         let network_name = identity.network_name.clone();
         let socket_context = SocketContext::default()
             .with_socket_mark(flags.socket_mark)
@@ -231,10 +238,6 @@ impl CoreInstanceConfig {
                 host_routing: host.host_routing,
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),
-                vpn_portal_cidr: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
-                    .then(|| config.get_vpn_portal_config())
-                    .flatten()
-                    .map(|portal| portal.client_cidr),
                 pinned_peers: peers
                     .iter()
                     .cloned()
@@ -328,6 +331,21 @@ impl CoreInstanceConfig {
         Ok(Self {
             instance_name: config.get_inst_name(),
             peer,
+            managed_credentials,
+            vpn_portal: (!host.ignore_unsupported_config || host.vpn_portal_enabled)
+                .then(|| config.get_vpn_portal_config())
+                .flatten()
+                .map(|config| PortalRuntimeConfig {
+                    clients: config
+                        .clients
+                        .into_iter()
+                        .map(|client| PortalClientConfig {
+                            name: client.name,
+                            virtual_ip: client.virtual_ip,
+                            groups: client.groups,
+                        })
+                        .collect(),
+                }),
             connectivity: CoreConnectivityConfig {
                 initial_peers: peers.into_iter().map(|peer| peer.uri).collect(),
                 listeners,
@@ -380,6 +398,8 @@ impl CoreInstanceConfig {
 
 #[cfg(test)]
 mod tests {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+
     use super::*;
 
     #[test]
@@ -443,6 +463,26 @@ stun_servers_v6 = ["custom-v6.example.com:3478"]
             normalized.connectivity.stun.udp_v6_servers,
             ["custom-v6.example.com:3478"]
         );
+    }
+
+    #[test]
+    fn credential_nodes_cannot_declare_managed_credentials() {
+        let config = TomlConfig::default();
+        config.set_network_identity(crate::config::toml::NetworkIdentity::new_credential(
+            "credential-network".to_owned(),
+        ));
+        config.set_managed_credentials(vec![crate::config::toml::ManagedCredentialConfig {
+            credential_id: "managed".to_owned(),
+            credential_secret: BASE64_STANDARD.encode([1u8; 32]),
+            groups: Vec::new(),
+            allow_relay: false,
+            allowed_proxy_cidrs: Vec::new(),
+            expiry_unix: 2_000_000_000,
+            reusable: true,
+        }]);
+
+        let error = CoreInstanceConfig::from_toml(&config).unwrap_err();
+        assert!(error.to_string().contains("only admin nodes"));
     }
 
     #[cfg(feature = "config-write")]

@@ -385,6 +385,24 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn http3_tls_uses_h3_alpn_and_explicit_sni() {
+        assert_eq!(
+            build_rustls_client_config().unwrap().alpn_protocols,
+            vec![b"h3".to_vec()]
+        );
+        assert_eq!(
+            build_rustls_server_config().unwrap().alpn_protocols,
+            vec![b"h3".to_vec()]
+        );
+
+        let disguised: url::Url = "http3://192.0.2.1:443?sni=www.example.com".parse().unwrap();
+        assert_eq!(resolve_sni(&disguised), "www.example.com");
+
+        let default: url::Url = "http3://origin.example.com:443".parse().unwrap();
+        assert_eq!(resolve_sni(&default), "origin.example.com");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn accepted_udp_session_supports_multiple_http3_connections() {
         tokio::time::timeout(Duration::from_secs(10), async {
