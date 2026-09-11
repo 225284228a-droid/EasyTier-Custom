@@ -2,6 +2,7 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Weak},
 };
 
@@ -13,7 +14,7 @@ use crate::{
         direct::DirectConnectorHost,
         hole_punch::port_mapping::{UdpPortMappingPlatform, start_udp_port_mapping},
         hole_punch::{HolePunchRpcRegistry, HolePunchTunnelSink},
-        protocol::ClientProtocolUpgrader,
+        protocol::{ClientProtocolUpgrader, ServerProtocolUpgrader},
         stun::{StunInfoProvider, StunSocketMapper},
     },
     proto::peer_rpc::UdpHolePunchRpcServer,
@@ -140,13 +141,22 @@ where
         events: Arc<dyn crate::events::CoreEventSink>,
         socket_context: SocketContext,
         protocol: Arc<dyn ClientProtocolUpgrader<HostTcpSocket<H>>>,
+        server_protocol: Arc<dyn ServerProtocolUpgrader<HostTcpSocket<H>>>,
     ) -> Self {
         let stun_mapper = stun.clone();
         let stun_info: Arc<dyn StunInfoProvider> = stun;
-        let transport_sink = Arc::new(ProtocolUdpHolePunchTransportSink::new(
-            protocol,
-            peer_source.clone(),
-        ));
+        let supports_http3 =
+            protocol.supports_scheme("http3") && server_protocol.supports_scheme("http3");
+        let transport_sink = Arc::new(if supports_http3 {
+            ProtocolUdpHolePunchTransportSink::with_http3_server(
+                protocol,
+                server_protocol,
+                peer_source.clone(),
+            )
+        } else {
+            ProtocolUdpHolePunchTransportSink::new(protocol, peer_source.clone())
+        });
+        let http3_mode = Arc::new(AtomicBool::new(false));
         let runtime = Arc::new(CoreUdpHolePunchRuntime::new(
             host,
             peer_source.clone(),
@@ -154,6 +164,7 @@ where
             platform,
             events,
             socket_context,
+            http3_mode.clone(),
         ));
         let sym_punch_lock = UdpSymPunchLock::default();
         let client = UdpHolePunchConnector::new(
@@ -179,11 +190,8 @@ where
     }
 
     pub(crate) async fn start(&self) -> anyhow::Result<()> {
-        if self
-            .peer_source
-            .p2p_policy_flags()
-            .disable_udp_hole_punching
-        {
+        let policy = self.peer_source.p2p_policy_flags();
+        if policy.disable_udp_hole_punching || policy.only_use_wss_http3_for_hole_punching {
             return Ok(());
         }
 
@@ -209,6 +217,7 @@ where
     HostUdpSocket<H>: VirtualUdpSocket,
 {
     layer: Arc<CoreUdpSessionLayer<H>>,
+    scheme: &'static str,
 }
 
 #[async_trait]
@@ -220,10 +229,11 @@ where
     async fn accept(&mut self) -> anyhow::Result<UdpPunchSocket> {
         let session = self.layer.accept().await?;
         let remote_addr = session.peer_addr()?;
-        Ok(UdpPunchSocket::new(
+        Ok(UdpPunchSocket::new_with_scheme(
             session,
             remote_addr,
             self.layer.clone(),
+            self.scheme,
         ))
     }
 }
@@ -274,6 +284,7 @@ where
     platform: Option<Arc<dyn UdpPortMappingPlatform>>,
     events: Arc<dyn crate::events::CoreEventSink>,
     socket_context: SocketContext,
+    http3_mode: Arc<AtomicBool>,
 }
 
 impl<H, P> CoreUdpHolePunchRuntime<H, P>
@@ -289,6 +300,7 @@ where
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         events: Arc<dyn crate::events::CoreEventSink>,
         socket_context: SocketContext,
+        http3_mode: Arc<AtomicBool>,
     ) -> Self {
         Self {
             host,
@@ -297,6 +309,15 @@ where
             platform,
             events,
             socket_context,
+            http3_mode,
+        }
+    }
+
+    fn punch_scheme(&self) -> &'static str {
+        if self.http3_mode.load(Ordering::Acquire) {
+            "http3"
+        } else {
+            "udp"
         }
     }
 
@@ -334,7 +355,10 @@ where
         let conn_counter = Arc::new(CoreUdpPunchConnCounter {
             layer: Arc::downgrade(&layer),
         });
-        let acceptor = Box::new(CoreUdpPunchAcceptor { layer });
+        let acceptor = Box::new(CoreUdpPunchAcceptor {
+            layer,
+            scheme: self.punch_scheme(),
+        });
 
         Ok(UdpPunchListener {
             socket,
@@ -342,6 +366,7 @@ where
             conn_counter,
             acceptor,
             port_mapping_lease: resolved.port_mapping_lease,
+            scheme: self.punch_scheme(),
         })
     }
 
@@ -451,7 +476,12 @@ where
                 "udp connect addr not match"
             );
         }
-        Ok(UdpPunchSocket::new(session, remote, layer))
+        Ok(UdpPunchSocket::new_with_scheme(
+            session,
+            remote,
+            layer,
+            self.punch_scheme(),
+        ))
     }
 }
 

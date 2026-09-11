@@ -40,6 +40,7 @@ const protos: { [proto: string]: number } = {
   wss: 11012,
   quic: 11012,
   faketcp: 11013,
+  http3: 11014,
   http: 80,
   https: 443,
   txt: 0,
@@ -81,6 +82,8 @@ interface BoolFlag {
   help: string
 }
 
+type DisguisedP2pMode = 'prefer' | 'disable' | 'only'
+
 const bool_flags: BoolFlag[] = [
   { field: 'latency_first', help: 'latency_first_help' },
   { field: 'use_smoltcp', help: 'use_smoltcp_help' },
@@ -89,6 +92,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
   { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
   { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
+  { field: 'enable_bbr', help: 'enable_bbr_help' },
   { field: 'disable_quic_input', help: 'disable_quic_input_help' },
   { field: 'disable_p2p', help: 'disable_p2p_help' },
   { field: 'p2p_only', help: 'p2p_only_help' },
@@ -109,6 +113,25 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
+
+const disguisedP2pMode = computed<DisguisedP2pMode>({
+  get() {
+    if (curNetwork.value.only_use_wss_http3_for_hole_punching) return 'only'
+    if (curNetwork.value.disable_wss_http3_for_p2p) return 'disable'
+    return 'prefer'
+  },
+  set(value: DisguisedP2pMode) {
+    curNetwork.value.prefer_wss_http3_for_p2p = value === 'prefer'
+    curNetwork.value.disable_wss_http3_for_p2p = value === 'disable'
+    curNetwork.value.only_use_wss_http3_for_hole_punching = value === 'only'
+  },
+})
+
+const disguisedP2pModeOptions = computed(() => [
+  { label: t('p2p_disguise_mode_prefer'), value: 'prefer' },
+  { label: t('p2p_disguise_mode_disable'), value: 'disable' },
+  { label: t('p2p_disguise_mode_only'), value: 'only' },
+])
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
@@ -333,6 +356,25 @@ function removeVpnPortalClient(index: number) {
                 </div>
               </div>
 
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center">
+                    <label for="p2p_disguise_mode">{{ t('p2p_disguise_mode') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_disguise_mode_help')"></span>
+                  </div>
+                  <SelectButton id="p2p_disguise_mode" v-model="disguisedP2pMode"
+                    :options="disguisedP2pModeOptions" option-label="label" option-value="value" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label for="sni">{{ t('sni') }}</label>
+                  <InputText id="sni" v-model="curNetwork.sni" aria-describedby="sni-help" :format="true"
+                    :placeholder="t('sni_placeholder')" />
+                </div>
+              </div>
+
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="username">{{ t('proxy_cidrs') }}</label>
@@ -531,7 +573,8 @@ function removeVpnPortalClient(index: number) {
                   <div v-for="(row, index) in curNetwork.port_forwards" :key="index" class="form-row">
                     <!-- Wide screen view -->
                     <div v-if="!isCompact" class="flex gap-2 items-end">
-                      <SelectButton v-model="row.proto" :options="portForwardProtocolOptions" :allow-empty="false" />
+                      <SelectButton id="port_forward_proto" v-model="row.proto"
+                        :options="portForwardProtocolOptions" :allow-empty="false" />
                       <div style="flex-grow: 4;">
                         <InputGroup>
                           <InputText v-model="row.bind_ip" :placeholder="t('port_forwards_bind_addr')" />
@@ -577,8 +620,8 @@ function removeVpnPortalClient(index: number) {
                   <Dialog v-model:visible="editingPortForward" modal :header="t('edit_port_forward')"
                     :style="{ width: '90vw', maxWidth: '600px' }">
                     <div v-if="editingPortForwardData" class="flex flex-col gap-4">
-                      <SelectButton v-model="editingPortForwardData.proto" :options="portForwardProtocolOptions"
-                        :allow-empty="false" />
+                      <SelectButton id="port_forward_proto_edit" v-model="editingPortForwardData.proto"
+                        :options="portForwardProtocolOptions" :allow-empty="false" />
                       <InputGroup>
                         <InputText v-model="editingPortForwardData.bind_ip"
                           :placeholder="t('port_forwards_bind_addr')" />

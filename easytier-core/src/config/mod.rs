@@ -18,6 +18,8 @@ pub mod toml;
 
 pub use encryption::EncryptionAlgorithm;
 
+use crate::proto::common::PeerFeatureFlag;
+
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",
     "stun.miwifi.com",
@@ -310,6 +312,50 @@ pub struct P2pPolicyFlags {
     pub lazy_p2p: bool,
     pub disable_p2p: bool,
     pub need_p2p: bool,
+    pub only_use_wss_http3_for_hole_punching: bool,
+    pub prefer_wss_http3_for_p2p: bool,
+    pub disable_wss_http3_for_p2p: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PeerDisguiseP2pFlags {
+    pub prefer_wss_http3_for_p2p: bool,
+    pub disable_wss_http3_for_p2p: bool,
+    pub only_use_wss_http3_for_p2p: bool,
+}
+
+impl From<&PeerFeatureFlag> for PeerDisguiseP2pFlags {
+    fn from(value: &PeerFeatureFlag) -> Self {
+        Self {
+            prefer_wss_http3_for_p2p: value.prefer_wss_http3_for_p2p,
+            disable_wss_http3_for_p2p: value.disable_wss_http3_for_p2p,
+            only_use_wss_http3_for_p2p: value.only_use_wss_http3_for_p2p,
+        }
+    }
+}
+
+impl P2pPolicyFlags {
+    pub fn wss_http3_p2p_allowed(&self) -> bool {
+        self.only_use_wss_http3_for_hole_punching
+            || (self.prefer_wss_http3_for_p2p && !self.disable_wss_http3_for_p2p)
+    }
+
+    pub fn wss_http3_p2p_preferred(&self) -> bool {
+        self.wss_http3_p2p_allowed() && !self.only_use_wss_http3_for_hole_punching
+    }
+
+    pub fn use_wss_http3_with_peer(&self, peer: &PeerDisguiseP2pFlags) -> bool {
+        if self.disable_wss_http3_for_p2p || peer.disable_wss_http3_for_p2p {
+            return false;
+        }
+        self.only_use_wss_http3_for_hole_punching
+            || peer.only_use_wss_http3_for_p2p
+            || (self.prefer_wss_http3_for_p2p && peer.prefer_wss_http3_for_p2p)
+    }
+
+    pub fn allow_raw_with_peer(&self, peer: &PeerDisguiseP2pFlags) -> bool {
+        !self.only_use_wss_http3_for_hole_punching && !peer.only_use_wss_http3_for_p2p
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -611,6 +657,40 @@ mod tests {
     use super::*;
     use base64::prelude::BASE64_STANDARD;
     use x25519_dalek::{PublicKey, StaticSecret};
+
+    fn flags(prefer: bool, disable: bool, only: bool) -> P2pPolicyFlags {
+        P2pPolicyFlags {
+            prefer_wss_http3_for_p2p: prefer,
+            disable_wss_http3_for_p2p: disable,
+            only_use_wss_http3_for_hole_punching: only,
+            ..Default::default()
+        }
+    }
+
+    fn peer(prefer: bool, disable: bool, only: bool) -> PeerDisguiseP2pFlags {
+        PeerDisguiseP2pFlags {
+            prefer_wss_http3_for_p2p: prefer,
+            disable_wss_http3_for_p2p: disable,
+            only_use_wss_http3_for_p2p: only,
+        }
+    }
+
+    #[test]
+    fn disguise_p2p_pairing_requires_both_prefer_or_one_only() {
+        let prefer = flags(true, false, false);
+        let standard = flags(false, false, false);
+        let disable = flags(false, true, false);
+        let only = flags(false, false, true);
+
+        assert!(prefer.use_wss_http3_with_peer(&peer(true, false, false)));
+        assert!(!prefer.use_wss_http3_with_peer(&peer(false, false, false)));
+        assert!(prefer.use_wss_http3_with_peer(&peer(false, false, true)));
+        assert!(only.use_wss_http3_with_peer(&peer(false, false, false)));
+        assert!(!prefer.use_wss_http3_with_peer(&peer(false, true, false)));
+        assert!(!disable.use_wss_http3_with_peer(&peer(false, false, true)));
+        assert!(standard.allow_raw_with_peer(&peer(false, false, false)));
+        assert!(!only.allow_raw_with_peer(&peer(false, false, false)));
+    }
 
     fn digest(network_name: &str, network_secret: &str) -> NetworkSecretDigest {
         let mut digest = [0u8; 32];

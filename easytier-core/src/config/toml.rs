@@ -55,6 +55,7 @@ pub fn gen_default_flags() -> Flags {
         accept_dns: false,
         private_mode: false,
         enable_quic_proxy: false,
+        enable_bbr: false,
         disable_quic_input: false,
         disable_relay_quic: false,
         enable_relay_foreign_network_quic: false,
@@ -72,6 +73,9 @@ pub fn gen_default_flags() -> Flags {
         prefer_peer_relay: false,
         enable_udp_broadcast_relay: false,
         socket_mark: None,
+        only_use_wss_http3_for_hole_punching: false,
+        prefer_wss_http3_for_p2p: true,
+        disable_wss_http3_for_p2p: false,
     }
 }
 
@@ -148,6 +152,7 @@ define_flags_diff! {
         accept_dns,
         private_mode,
         enable_quic_proxy,
+        enable_bbr,
         disable_quic_input,
         disable_relay_quic,
         quic_listen_port,
@@ -166,6 +171,9 @@ define_flags_diff! {
         prefer_peer_relay,
         enable_udp_broadcast_relay,
         socket_mark,
+        only_use_wss_http3_for_hole_punching,
+        prefer_wss_http3_for_p2p,
+        disable_wss_http3_for_p2p,
     ],
     u64s: [foreign_relay_bps_limit, instance_recv_bps_limit],
     enums: [data_compress_algo]
@@ -178,6 +186,9 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_hostname(&self) -> String;
     fn set_hostname(&self, name: Option<String>);
+
+    fn get_sni(&self) -> String;
+    fn set_sni(&self, sni: Option<String>);
 
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
@@ -518,6 +529,7 @@ impl std::fmt::Debug for ManagedCredentialConfig {
 struct Config {
     netns: Option<String>,
     hostname: Option<String>,
+    sni: Option<String>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -790,6 +802,23 @@ impl ConfigLoader for TomlConfig {
 
     fn set_hostname(&self, name: Option<String>) {
         self.config.lock().unwrap().hostname = name;
+    }
+
+    fn get_sni(&self) -> String {
+        self.config
+            .lock()
+            .unwrap()
+            .sni
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    }
+
+    fn set_sni(&self, sni: Option<String>) {
+        self.config.lock().unwrap().sni = sni
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
     }
 
     fn get_netns(&self) -> Option<String> {
@@ -1218,6 +1247,7 @@ mod tests {
 instance_name = "node-a"
 instance_id = "018f85a8-a9d0-7d4c-b73d-4ab62c048a20"
 hostname = "host-a"
+sni = "www.cloudflare.com"
 listeners = ["tcp://0.0.0.0:11010"]
 
 [network_identity]
@@ -1236,6 +1266,7 @@ socket_mark = 0
 
         assert_eq!(restored.get_id(), config.get_id());
         assert_eq!(restored.get_hostname(), "host-a");
+        assert_eq!(restored.get_sni(), "www.cloudflare.com");
         assert_eq!(
             restored.get_network_identity(),
             config.get_network_identity()

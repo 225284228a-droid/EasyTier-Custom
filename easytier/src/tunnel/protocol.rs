@@ -400,7 +400,11 @@ mod tests {
     #[case("127.0.0.1:0")]
     #[case("[::1]:0")]
     #[tokio::test]
-    async fn runtime_quic_upgraders_consume_core_udp_sessions(#[case] bind_addr: &str) {
+    async fn runtime_quic_upgraders_consume_core_udp_sessions(
+        #[case] bind_addr: &str,
+        #[values(false, true)] client_bbr: bool,
+        #[values(false, true)] server_bbr: bool,
+    ) {
         use crate::{
             common::netns::NetNS, host_runtime::native_host_runtime,
             socket::udp::new_runtime_udp_session_listener,
@@ -433,7 +437,14 @@ mod tests {
         let remote_url: url::Url = format!("quic://{remote_addr}").parse().unwrap();
 
         let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.enable_bbr = server_bbr;
+        global_ctx.set_flags(flags);
         let server = runtime_server_protocol_upgrader(global_ctx.clone());
+        let global_ctx = get_mock_global_ctx();
+        let mut flags = global_ctx.get_flags();
+        flags.enable_bbr = client_bbr;
+        global_ctx.set_flags(flags);
         let client = runtime_client_protocol_upgrader(global_ctx);
         let server_url = remote_url.clone();
         let server_task = tokio::spawn(async move {

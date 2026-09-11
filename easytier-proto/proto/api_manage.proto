@@ -106,6 +106,12 @@ message NetworkConfig {
   optional VpnPortalConfig vpn_portal_config = 69;
   repeated ManagedCredentialConfig managed_credentials = 71;
   optional bool prefer_peer_relay = 72;
+  optional string sni = 73;
+  optional bool only_use_wss_http3_for_hole_punching = 74;
+  optional bool prefer_wss_http3_for_p2p = 75;
+  optional bool disable_wss_http3_for_p2p = 76;
+  // use BBR congestion control for local QUIC/HTTP3 sending, including QUIC proxy
+  optional bool enable_bbr = 77;
 }
 
 message ManagedCredentialConfig {

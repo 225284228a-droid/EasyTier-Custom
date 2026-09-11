@@ -270,6 +270,13 @@ struct NetworkOptions {
     hostname: Option<String>,
 
     #[arg(
+        long,
+        env = "ET_SNI",
+        help = t!("core_clap.sni").to_string()
+    )]
+    sni: Option<String>,
+
+    #[arg(
         short = 'm',
         long,
         env = "ET_INSTANCE_NAME",
@@ -493,6 +500,33 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_ONLY_USE_WSS_HTTP3_FOR_HOLE_PUNCHING",
+        help = t!("core_clap.only_use_wss_http3_for_hole_punching").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    only_use_wss_http3_for_hole_punching: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_PREFER_WSS_HTTP3_FOR_P2P",
+        help = t!("core_clap.prefer_wss_http3_for_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    prefer_wss_http3_for_p2p: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_DISABLE_WSS_HTTP3_FOR_P2P",
+        help = t!("core_clap.disable_wss_http3_for_p2p").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_wss_http3_for_p2p: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_DISABLE_SYM_HOLE_PUNCHING",
         help = t!("core_clap.disable_sym_hole_punching").to_string(),
         num_args = 0..=1,
@@ -604,6 +638,15 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     disable_quic_input: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_ENABLE_BBR",
+        help = t!("core_clap.enable_bbr").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_bbr: Option<bool>,
 
     #[arg(
         long,
@@ -999,6 +1042,9 @@ impl NetworkOptions {
         if self.hostname.is_some() {
             cfg.set_hostname(self.hostname.clone());
         }
+        if self.sni.is_some() {
+            cfg.set_sni(self.sni.clone());
+        }
 
         let old_ns = cfg.get_network_identity();
         let network_name = self
@@ -1253,6 +1299,15 @@ impl NetworkOptions {
         f.disable_udp_hole_punching = self
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);
+        f.only_use_wss_http3_for_hole_punching = self
+            .only_use_wss_http3_for_hole_punching
+            .unwrap_or(f.only_use_wss_http3_for_hole_punching);
+        f.prefer_wss_http3_for_p2p = self
+            .prefer_wss_http3_for_p2p
+            .unwrap_or(f.prefer_wss_http3_for_p2p);
+        f.disable_wss_http3_for_p2p = self
+            .disable_wss_http3_for_p2p
+            .unwrap_or(f.disable_wss_http3_for_p2p);
         f.relay_all_peer_rpc = self.relay_all_peer_rpc.unwrap_or(f.relay_all_peer_rpc);
         f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
         f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);
@@ -1276,6 +1331,7 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
+        f.enable_bbr = self.enable_bbr.unwrap_or(f.enable_bbr);
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
@@ -1853,6 +1909,28 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bbr_cli_preserves_config_unless_explicitly_overridden() {
+        for args in [vec![], vec!["--enable-bbr"], vec!["--enable-bbr", "false"]] {
+            let expected = match args.as_slice() {
+                [] => None,
+                ["--enable-bbr"] => Some(true),
+                _ => Some(false),
+            };
+            let cli = Cli::try_parse_from(std::iter::once("easytier-core").chain(args)).unwrap();
+            assert_eq!(cli.network_options.enable_bbr, expected);
+            for initial in [false, true] {
+                let config = TomlConfigLoader::default();
+                let mut flags = config.get_flags();
+                flags.enable_bbr = initial;
+                config.set_flags(flags);
+                cli.network_options.merge_into(&config).unwrap();
+                assert_eq!(config.get_flags().enable_bbr, expected.unwrap_or(initial));
+                assert!(!config.get_flags().enable_quic_proxy);
+            }
+        }
+    }
 
     #[test]
     fn config_server_accepts_single_comma_separated_and_repeated_values() {

@@ -1,5 +1,5 @@
 use crate::{
-    config::{P2pPolicyFlags, PeerId},
+    config::{P2pPolicyFlags, PeerDisguiseP2pFlags, PeerId},
     proto::common::{NatType, PeerFeatureFlag},
 };
 
@@ -15,6 +15,7 @@ pub struct UdpPunchCandidate {
     pub feature_flag: Option<PeerFeatureFlag>,
     pub has_direct_connection: bool,
     pub has_recent_traffic: bool,
+    pub peer_disguise_flags: PeerDisguiseP2pFlags,
 }
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
@@ -36,6 +37,10 @@ where
     F: Fn(PeerId) -> bool,
 {
     if my_nat_type.is_open() {
+        return Vec::new();
+    }
+
+    if policy.only_use_wss_http3_for_hole_punching {
         return Vec::new();
     }
 
@@ -95,6 +100,7 @@ mod tests {
             feature_flag: Some(PeerFeatureFlag::default()),
             has_direct_connection: false,
             has_recent_traffic: false,
+            peer_disguise_flags: PeerDisguiseP2pFlags::default(),
         }
     }
 
@@ -115,6 +121,21 @@ mod tests {
             1,
             NatType::OpenInternet,
             P2pPolicyFlags::default(),
+            vec![candidate(2, NatType::PortRestricted)],
+        );
+
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn wss_http3_restricted_mode_skips_raw_udp_punch_tasks() {
+        let tasks = collect(
+            1,
+            NatType::PortRestricted,
+            P2pPolicyFlags {
+                only_use_wss_http3_for_hole_punching: true,
+                ..Default::default()
+            },
             vec![candidate(2, NatType::PortRestricted)],
         );
 

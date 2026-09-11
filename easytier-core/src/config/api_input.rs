@@ -14,7 +14,7 @@ use crate::config::{
 };
 
 fn parse_mapped_listener_urls(mapped_listeners: &[String]) -> Result<Vec<url::Url>, anyhow::Error> {
-    MappedListenerPolicy::new(["tcp", "udp", "wg", "quic", "ws", "wss", "faketcp"])
+    MappedListenerPolicy::new(["tcp", "udp", "wg", "quic", "http3", "ws", "wss", "faketcp"])
         .parse_urls(mapped_listeners)
 }
 
@@ -137,6 +137,7 @@ impl NetworkConfigExt for NetworkConfig {
                 .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
         );
         cfg.set_hostname(self.hostname.clone());
+        cfg.set_sni(self.sni.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or_default());
         cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
 
@@ -397,6 +398,10 @@ impl NetworkConfigExt for NetworkConfig {
             flags.enable_quic_proxy = enable_quic_proxy;
         }
 
+        if let Some(enable_bbr) = self.enable_bbr {
+            flags.enable_bbr = enable_bbr;
+        }
+
         if let Some(disable_quic_input) = self.disable_quic_input {
             flags.disable_quic_input = disable_quic_input;
         }
@@ -485,6 +490,16 @@ impl NetworkConfigExt for NetworkConfig {
             flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
 
+        if let Some(value) = self.only_use_wss_http3_for_hole_punching {
+            flags.only_use_wss_http3_for_hole_punching = value;
+        }
+        if let Some(value) = self.prefer_wss_http3_for_p2p {
+            flags.prefer_wss_http3_for_p2p = value;
+        }
+        if let Some(value) = self.disable_wss_http3_for_p2p {
+            flags.disable_wss_http3_for_p2p = value;
+        }
+
         if let Some(enable_magic_dns) = self.enable_magic_dns {
             flags.accept_dns = enable_magic_dns;
         }
@@ -533,6 +548,9 @@ impl NetworkConfigExt for NetworkConfig {
         result.instance_id = Some(config.get_id().to_string());
         if config.get_hostname() != default_config.get_hostname() {
             result.hostname = Some(config.get_hostname());
+        }
+        if config.get_sni() != default_config.get_sni() {
+            result.sni = Some(config.get_sni());
         }
 
         result.dhcp = Some(config.get_dhcp());
@@ -659,6 +677,7 @@ impl NetworkConfigExt for NetworkConfig {
         result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
         result.disable_kcp_input = Some(flags.disable_kcp_input);
         result.enable_quic_proxy = Some(flags.enable_quic_proxy);
+        result.enable_bbr = Some(flags.enable_bbr);
         result.disable_quic_input = Some(flags.disable_quic_input);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
@@ -679,6 +698,10 @@ impl NetworkConfigExt for NetworkConfig {
         result.prefer_peer_relay = Some(flags.prefer_peer_relay);
         result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
+        result.only_use_wss_http3_for_hole_punching =
+            Some(flags.only_use_wss_http3_for_hole_punching);
+        result.prefer_wss_http3_for_p2p = Some(flags.prefer_wss_http3_for_p2p);
+        result.disable_wss_http3_for_p2p = Some(flags.disable_wss_http3_for_p2p);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)
@@ -733,6 +756,33 @@ mod tests {
         NetworkConfig {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bbr_defaults_off_and_round_trips_independently_of_quic_proxy() {
+        for value in [None, Some(false), Some(true)] {
+            let input = NetworkConfig {
+                enable_bbr: value,
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let expected = value.unwrap_or(false);
+            assert_eq!(config.get_flags().enable_bbr, expected);
+            assert!(!config.get_flags().enable_quic_proxy);
+            let dumped = config.dump();
+            assert_eq!(dumped.contains("enable_bbr = true"), expected);
+            let restored = TomlConfigLoader::new_from_str(&dumped).unwrap();
+            assert_eq!(restored.get_flags().enable_bbr, expected);
+            assert_eq!(
+                NetworkConfig::new_from_config(&restored).unwrap().enable_bbr,
+                Some(expected)
+            );
+            #[cfg(feature = "web-client")]
+            assert_eq!(
+                crate::config::api::network_config_from_toml(&restored).enable_bbr,
+                Some(expected)
+            );
         }
     }
 
@@ -796,6 +846,20 @@ mod tests {
         let output = NetworkConfig::new_from_config(&config).unwrap();
         assert_eq!(output.disable_relay_data, Some(false));
         assert_eq!(output.prefer_peer_relay, Some(true));
+    }
+
+    #[test]
+    fn global_sni_round_trips_through_toml_model() {
+        let input = NetworkConfig {
+            sni: Some("www.cloudflare.com".to_owned()),
+            ..standalone_config()
+        };
+
+        let config = input.gen_config().unwrap();
+        assert_eq!(config.get_sni(), "www.cloudflare.com");
+
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.sni.as_deref(), Some("www.cloudflare.com"));
     }
 
     #[test]

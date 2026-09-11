@@ -912,6 +912,10 @@ impl PeerManagerCore {
         runtime.feature_flags.disable_p2p = flags.disable_p2p;
         runtime.feature_flags.need_p2p = flags.need_p2p;
         runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
+        runtime.feature_flags.prefer_wss_http3_for_p2p = flags.prefer_wss_http3_for_p2p;
+        runtime.feature_flags.disable_wss_http3_for_p2p = flags.disable_wss_http3_for_p2p;
+        runtime.feature_flags.only_use_wss_http3_for_p2p =
+            flags.only_use_wss_http3_for_hole_punching;
         runtime_config.update_peer(Arc::new(config.snapshot.clone()));
         let public_ipv6_state = public_ipv6_runtime.clone();
         let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> = public_ipv6_runtime;
@@ -1466,6 +1470,9 @@ impl PeerManagerCore {
             lazy_p2p: flags.lazy_p2p,
             disable_p2p: flags.disable_p2p,
             need_p2p: flags.need_p2p,
+            only_use_wss_http3_for_hole_punching: flags.only_use_wss_http3_for_hole_punching,
+            prefer_wss_http3_for_p2p: flags.prefer_wss_http3_for_p2p,
+            disable_wss_http3_for_p2p: flags.disable_wss_http3_for_p2p,
         }
     }
 

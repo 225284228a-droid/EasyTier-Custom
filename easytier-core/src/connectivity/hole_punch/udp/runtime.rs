@@ -4,13 +4,16 @@ use std::{
 };
 
 use async_trait::async_trait;
+use url::Url;
 
 use super::super::{HolePunchTunnelSink, port_mapping::UdpPortMappingLease};
 
 use crate::{
     config::P2pPolicyFlags,
     connectivity::{
-        protocol::ClientProtocolUpgrader,
+        protocol::{
+            ClientProtocolUpgrader, ServerProtocolAdmissionController, ServerProtocolUpgrader,
+        },
         transport::{ConnectedTransport, ConnectedUdpSession},
     },
     foundation::task::ExternalTaskSignal,
@@ -30,6 +33,7 @@ pub struct UdpPunchSocket {
     session: UdpSession,
     requested_remote_addr: SocketAddr,
     lifetime_guard: Box<dyn Send + Sync>,
+    scheme: &'static str,
 }
 
 impl UdpPunchSocket {
@@ -41,13 +45,31 @@ impl UdpPunchSocket {
             session,
             requested_remote_addr,
             lifetime_guard: Box::new(lifetime_guard),
+            scheme: "udp",
+        }
+    }
+
+    pub fn new_with_scheme<G>(
+        session: UdpSession,
+        requested_remote_addr: SocketAddr,
+        lifetime_guard: G,
+        scheme: &'static str,
+    ) -> Self
+    where
+        G: Send + Sync + 'static,
+    {
+        Self {
+            session,
+            requested_remote_addr,
+            lifetime_guard: Box::new(lifetime_guard),
+            scheme,
         }
     }
 
     pub(crate) fn into_connected(self) -> (ConnectedUdpSession, url::Url) {
         (
             ConnectedUdpSession::new(self.session, self.lifetime_guard),
-            udp_url(self.requested_remote_addr),
+            punch_url(self.scheme, self.requested_remote_addr),
         )
     }
 }
@@ -57,12 +79,17 @@ impl std::fmt::Debug for UdpPunchSocket {
         f.debug_struct("UdpPunchSocket")
             .field("session", &self.session)
             .field("requested_remote_addr", &self.requested_remote_addr)
+            .field("scheme", &self.scheme)
             .finish_non_exhaustive()
     }
 }
 
-fn udp_url(addr: SocketAddr) -> url::Url {
-    let mut url = url::Url::parse("udp://0.0.0.0").expect("static UDP URL should be valid");
+fn punch_url(scheme: &str, addr: SocketAddr) -> url::Url {
+    let base = match scheme {
+        "http3" => "http3://0.0.0.0",
+        _ => "udp://0.0.0.0",
+    };
+    let mut url = Url::parse(base).expect("static UDP URL should be valid");
     url.set_ip_host(addr.ip())
         .expect("socket IP should be a valid URL host");
     url.set_port(Some(addr.port()))
@@ -76,6 +103,7 @@ pub struct UdpPunchListener<S> {
     pub conn_counter: Arc<dyn ListenerConnectionCounter>,
     pub acceptor: Box<dyn UdpPunchAcceptor>,
     pub(crate) port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
+    pub scheme: &'static str,
 }
 
 pub struct UdpResolvedPublicAddr {
@@ -237,6 +265,8 @@ pub trait UdpHolePunchTransportSink: Send + Sync {
 
 pub struct ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
     protocol: Arc<dyn ClientProtocolUpgrader<TcpSocket>>,
+    http3_server_protocol: Option<Arc<dyn ServerProtocolUpgrader<TcpSocket>>>,
+    http3_admission: Option<ServerProtocolAdmissionController>,
     tunnel_sink: Arc<T>,
 }
 
@@ -244,6 +274,21 @@ impl<TcpSocket: 'static, T> ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
     pub fn new(protocol: Arc<dyn ClientProtocolUpgrader<TcpSocket>>, tunnel_sink: Arc<T>) -> Self {
         Self {
             protocol,
+            http3_server_protocol: None,
+            http3_admission: None,
+            tunnel_sink,
+        }
+    }
+
+    pub fn with_http3_server(
+        protocol: Arc<dyn ClientProtocolUpgrader<TcpSocket>>,
+        http3_server_protocol: Arc<dyn ServerProtocolUpgrader<TcpSocket>>,
+        tunnel_sink: Arc<T>,
+    ) -> Self {
+        Self {
+            protocol,
+            http3_server_protocol: Some(http3_server_protocol),
+            http3_admission: Some(ServerProtocolAdmissionController::quic()),
             tunnel_sink,
         }
     }
@@ -256,6 +301,39 @@ impl<TcpSocket: 'static, T> ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
         self.protocol
             .upgrade_client(ConnectedTransport::Udp(connected), requested_url)
             .await
+    }
+
+    async fn add_http3_server_transport(
+        &self,
+        connected: ConnectedUdpSession,
+        requested_url: url::Url,
+    ) -> anyhow::Result<()>
+    where
+        T: HolePunchTunnelSink,
+    {
+        let server_protocol = self
+            .http3_server_protocol
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("HTTP3 hole punching is unsupported"))?;
+        let admission = self
+            .http3_admission
+            .as_ref()
+            .and_then(|controller| controller.try_admit())
+            .ok_or_else(|| anyhow::anyhow!("HTTP3 hole-punch admission limit reached"))?;
+        let (mut session, layer_guard) = connected.into_parts();
+        session.keep_layer_alive(layer_guard);
+        let local_url = requested_url.clone();
+        let upgrade = server_protocol
+            .upgrade_udp(session, local_url, Some(admission))
+            .await?;
+        let mut acceptor = match upgrade {
+            crate::connectivity::protocol::ServerProtocolUpgrade::Tunnel(tunnel) => {
+                return self.tunnel_sink.add_server_tunnel(tunnel).await;
+            }
+            crate::connectivity::protocol::ServerProtocolUpgrade::Acceptor(acceptor) => acceptor,
+        };
+        let tunnel = acceptor.accept().await?;
+        self.tunnel_sink.add_server_tunnel(tunnel).await
     }
 }
 
@@ -279,6 +357,11 @@ where
         connected: ConnectedUdpSession,
         requested_url: url::Url,
     ) -> anyhow::Result<()> {
+        if requested_url.scheme() == "http3" {
+            return self
+                .add_http3_server_transport(connected, requested_url)
+                .await;
+        }
         let tunnel = self.upgrade(connected, requested_url).await?;
         self.tunnel_sink.add_server_tunnel(tunnel).await
     }

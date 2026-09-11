@@ -87,6 +87,7 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         virtual_ipv4: config.virtual_ipv4.clone(),
         network_length: config.network_length,
         hostname: config.hostname.clone(),
+        sni: config.sni.clone(),
         network_name: config.network_name.clone(),
         network_secret: config.network_secret.clone(),
         networking_method: Some(networking_method as i32),
@@ -115,9 +116,13 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         disable_udp_hole_punching: config.disable_udp_hole_punching,
         mtu: config.mtu,
         enable_private_mode: config.enable_private_mode,
+        enable_bbr: config.enable_bbr,
         disable_sym_hole_punching: config.disable_sym_hole_punching,
         p2p_only: config.p2p_only,
         disable_tcp_hole_punching: config.disable_tcp_hole_punching,
+        only_use_wss_http3_for_hole_punching: config.only_use_wss_http3_for_hole_punching,
+        prefer_wss_http3_for_p2p: config.prefer_wss_http3_for_p2p,
+        disable_wss_http3_for_p2p: config.disable_wss_http3_for_p2p,
         secure_mode: config.secure_mode.clone(),
         acl: config.acl.clone(),
         port_forwards: config.port_forwards.clone(),
@@ -427,6 +432,9 @@ mod tests {
             enable_private_mode: Some(true),
             disable_relay_data: Some(true),
             prefer_peer_relay: Some(true),
+            only_use_wss_http3_for_hole_punching: Some(true),
+            prefer_wss_http3_for_p2p: Some(true),
+            disable_wss_http3_for_p2p: Some(true),
             proxy_cidrs: vec!["10.88.0.0/24".to_owned()],
             managed_credentials: vec![ManagedCredentialConfig {
                 credential_id: "managed".to_owned(),
@@ -458,6 +466,9 @@ mod tests {
         assert_eq!(hosted.enable_private_mode, Some(true));
         assert_eq!(hosted.disable_relay_data, Some(true));
         assert_eq!(hosted.prefer_peer_relay, Some(true));
+        assert_eq!(hosted.only_use_wss_http3_for_hole_punching, Some(true));
+        assert_eq!(hosted.prefer_wss_http3_for_p2p, Some(true));
+        assert_eq!(hosted.disable_wss_http3_for_p2p, Some(true));
         assert_eq!(hosted.proxy_cidrs, original.proxy_cidrs);
         assert_eq!(hosted.managed_credentials, original.managed_credentials);
         assert_eq!(hosted.port_forwards, original.port_forwards);

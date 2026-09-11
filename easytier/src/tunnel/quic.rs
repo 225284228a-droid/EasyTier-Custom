@@ -278,7 +278,7 @@ mod crypto {
     }
 }
 
-pub fn transport_config() -> Arc<TransportConfig> {
+pub fn transport_config(enable_bbr: bool) -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
 
     config
@@ -287,21 +287,25 @@ pub fn transport_config() -> Arc<TransportConfig> {
         .keep_alive_interval(Some(Duration::from_secs(5)))
         .initial_mtu(1200)
         .min_mtu(1200)
-        .enable_segmentation_offload(true)
-        .congestion_controller_factory(Arc::new(BbrConfig::default()));
+        .enable_segmentation_offload(true);
+
+    // Leave Quinn's default congestion controller in place unless opted in.
+    if enable_bbr {
+        config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    }
 
     Arc::new(config)
 }
 
-pub fn server_config() -> ServerConfig {
+pub fn server_config(enable_bbr: bool) -> ServerConfig {
     let mut config = ServerConfig::with_crypto(Arc::new(crypto::CryptoConfig));
-    config.transport_config(transport_config());
+    config.transport_config(transport_config(enable_bbr));
     config
 }
 
-pub fn client_config() -> ClientConfig {
+pub fn client_config(enable_bbr: bool) -> ClientConfig {
     let mut config = ClientConfig::new(Arc::new(crypto::CryptoConfig));
-    config.transport_config(transport_config());
+    config.transport_config(transport_config(enable_bbr));
     config
 }
 
@@ -328,6 +332,7 @@ impl Drop for ConnWrapper {
 pub(crate) async fn upgrade_connected(
     connected: ConnectedUdpSession,
     remote_url: url::Url,
+    enable_bbr: bool,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let socket = Arc::new(QuicUdpSessionSocket::new(connected)?);
     let local_addr = socket.local_addr()?;
@@ -337,7 +342,7 @@ pub(crate) async fn upgrade_connected(
     ))?;
     let mut endpoint =
         Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)?;
-    endpoint.set_default_client_config(client_config());
+    endpoint.set_default_client_config(client_config(enable_bbr));
     let connecting = endpoint
         .connect(remote_addr, "localhost")
         .map_err(anyhow::Error::new)
@@ -487,9 +492,10 @@ impl QuicAcceptedSession {
         session: UdpSession,
         local_url: url::Url,
         admission: ServerProtocolAdmission,
+        enable_bbr: bool,
     ) -> Result<Self, TunnelError> {
         let (active_session, handshake_slots) = admission.into_parts();
-        Self::new_with_admission_parts(session, local_url, active_session, handshake_slots)
+        Self::new_with_admission_parts(session, local_url, active_session, handshake_slots, enable_bbr)
     }
 
     fn new_with_admission_parts(
@@ -497,6 +503,7 @@ impl QuicAcceptedSession {
         local_url: url::Url,
         active_session: OwnedSemaphorePermit,
         handshakes: Arc<Semaphore>,
+        enable_bbr: bool,
     ) -> Result<Self, TunnelError> {
         let socket = Arc::new(QuicUdpSessionSocket::from_accepted(
             session,
@@ -507,7 +514,7 @@ impl QuicAcceptedSession {
         ))?;
         let endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
-            Some(server_config()),
+            Some(server_config(enable_bbr)),
             socket,
             runtime,
         )?;
@@ -545,7 +552,7 @@ impl ServerTunnelAcceptor for QuicAcceptedSession {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{net::SocketAddr, sync::Arc, time::Duration};
 
     use easytier_core::{
@@ -569,8 +576,74 @@ mod tests {
 
     use super::*;
 
+    pub(crate) fn assert_bbr_controller(connection: &Connection, enable_bbr: bool) {
+        let controller = connection.congestion_state().into_any();
+        if enable_bbr {
+            assert!(controller.is::<quinn::congestion::Bbr>());
+        } else {
+            assert!(controller.is::<quinn::congestion::Cubic>());
+        }
+    }
+
+    pub(crate) async fn assert_endpoint_controllers(
+        client_config: ClientConfig,
+        server_config: ServerConfig,
+        client_bbr: bool,
+        server_bbr: bool,
+    ) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let runtime = default_runtime().unwrap();
+            let server_endpoint = Endpoint::new(
+                endpoint_config(),
+                Some(server_config),
+                std::net::UdpSocket::bind("127.0.0.1:0").unwrap(),
+                runtime.clone(),
+            )
+            .unwrap();
+            let mut client_endpoint = Endpoint::new(
+                endpoint_config(),
+                None,
+                std::net::UdpSocket::bind("127.0.0.1:0").unwrap(),
+                runtime,
+            )
+            .unwrap();
+            client_endpoint.set_default_client_config(client_config);
+            let connecting = client_endpoint
+                .connect(server_endpoint.local_addr().unwrap(), "localhost")
+                .unwrap();
+            let (client, server) = tokio::join!(connecting, async {
+                server_endpoint.accept().await.unwrap().await.unwrap()
+            });
+            let client = client.unwrap();
+            assert_bbr_controller(&client, client_bbr);
+            assert_bbr_controller(&server, server_bbr);
+            client_endpoint.close(0u32.into(), b"test done");
+            server_endpoint.close(0u32.into(), b"test done");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn bbr_is_selected_independently_for_each_quic_endpoint(
+        #[values(false, true)] client_bbr: bool,
+        #[values(false, true)] server_bbr: bool,
+    ) {
+        assert_endpoint_controllers(
+            client_config(client_bbr),
+            server_config(server_bbr),
+            client_bbr,
+            server_bbr,
+        )
+        .await;
+    }
+
+    #[rstest::rstest]
     #[tokio::test(flavor = "multi_thread")]
-    async fn accepted_udp_session_supports_multiple_quic_connections() {
+    async fn accepted_udp_session_supports_multiple_quic_connections(
+        #[values(false, true)] enable_bbr: bool,
+    ) {
         tokio::time::timeout(Duration::from_secs(5), async {
             let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let mut listener = new_runtime_udp_session_listener(
@@ -599,14 +672,15 @@ mod tests {
             let mut endpoint =
                 Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)
                     .unwrap();
-            endpoint.set_default_client_config(client_config());
+            endpoint.set_default_client_config(client_config(enable_bbr));
 
             let server_task = tokio::spawn(async move {
                 let session = listener.accept().await.unwrap();
                 let admission = ServerProtocolAdmissionController::new(1, 2)
                     .try_admit()
                     .unwrap();
-                let mut accepted = QuicAcceptedSession::new(session, local_url, admission).unwrap();
+                let mut accepted =
+                    QuicAcceptedSession::new(session, local_url, admission, enable_bbr).unwrap();
                 let first = accepted.accept().await.unwrap();
                 let second = accepted.accept().await.unwrap();
                 assert!(
@@ -623,6 +697,7 @@ mod tests {
                 .unwrap()
                 .await
                 .unwrap();
+            assert_bbr_controller(&first_connection, enable_bbr);
             let (first_write, first_read) = first_connection.open_bi().await.unwrap();
             let mut first_send = FramedWriter::new(first_write);
             first_send

@@ -18,7 +18,7 @@ use tokio::task::JoinSet;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    config::{P2pPolicyFlags, PeerId},
+    config::{P2pPolicyFlags, PeerDisguiseP2pFlags, PeerId},
     connectivity::{
         hole_punch::{
             HolePunchRpcRegistry, HolePunchTunnelSink,
@@ -64,6 +64,7 @@ pub struct TcpPunchCandidate {
     pub feature_flag: Option<PeerFeatureFlag>,
     pub has_direct_connection: bool,
     pub has_recent_traffic: bool,
+    pub peer_disguise_flags: PeerDisguiseP2pFlags,
 }
 
 /// Narrow peer-graph view required by the TCP hole-punch engine.
@@ -100,6 +101,8 @@ pub trait TcpHolePunchTransportSink: Send + Sync + 'static {
     type ConnectedSocket;
     type AcceptedSocket;
 
+    fn supports_wss_hole_punching(&self) -> bool;
+
     async fn add_connected_transport(
         &self,
         socket: Self::ConnectedSocket,
@@ -116,6 +119,7 @@ pub trait TcpHolePunchTransportSink: Send + Sync + 'static {
 
 pub struct ProtocolTcpHolePunchTransportSink<ConnectedSocket, AcceptedSocket, T> {
     client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedSocket>>,
+    connected_server_protocol: Arc<dyn ServerProtocolUpgrader<ConnectedSocket>>,
     server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedSocket>>,
     tunnel_sink: Arc<T>,
 }
@@ -125,11 +129,13 @@ impl<ConnectedSocket, AcceptedSocket, T>
 {
     pub fn new(
         client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedSocket>>,
+        connected_server_protocol: Arc<dyn ServerProtocolUpgrader<ConnectedSocket>>,
         server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedSocket>>,
         tunnel_sink: Arc<T>,
     ) -> Self {
         Self {
             client_protocol,
+            connected_server_protocol,
             server_protocol,
             tunnel_sink,
         }
@@ -147,22 +153,53 @@ where
     type ConnectedSocket = ConnectedSocket;
     type AcceptedSocket = AcceptedSocket;
 
+    fn supports_wss_hole_punching(&self) -> bool {
+        self.client_protocol.supports_scheme("wss")
+            && self.connected_server_protocol.supports_scheme("wss")
+            && self.server_protocol.supports_scheme("wss")
+    }
+
     async fn add_connected_transport(
         &self,
         socket: ConnectedSocket,
         requested_url: url::Url,
         admission: TcpHolePunchAdmission,
     ) -> Result<(), TcpHolePunchTransportError> {
+        if requested_url.scheme() == "wss" && admission == TcpHolePunchAdmission::Server {
+            let local_url = local_server_url(&requested_url);
+            let upgrade = self
+                .connected_server_protocol
+                .upgrade_tcp(socket, local_url)
+                .await
+                .map_err(TcpHolePunchTransportError::Upgrade)?;
+            let ServerProtocolUpgrade::Tunnel(tunnel) = upgrade else {
+                return Err(TcpHolePunchTransportError::Upgrade(anyhow::anyhow!(
+                    "TCP hole-punch protocol returned a tunnel acceptor"
+                )));
+            };
+            return self
+                .tunnel_sink
+                .add_server_tunnel(tunnel)
+                .await
+                .map_err(TcpHolePunchTransportError::Admission);
+        }
         let tunnel = self
             .client_protocol
             .upgrade_client(ConnectedTransport::Tcp(socket), requested_url)
             .await
             .map_err(TcpHolePunchTransportError::Upgrade)?;
         match admission {
-            TcpHolePunchAdmission::Client => self.tunnel_sink.add_client_tunnel(tunnel).await,
-            TcpHolePunchAdmission::Server => self.tunnel_sink.add_server_tunnel(tunnel).await,
+            TcpHolePunchAdmission::Client => self
+                .tunnel_sink
+                .add_client_tunnel(tunnel)
+                .await
+                .map_err(TcpHolePunchTransportError::Admission),
+            TcpHolePunchAdmission::Server => self
+                .tunnel_sink
+                .add_server_tunnel(tunnel)
+                .await
+                .map_err(TcpHolePunchTransportError::Admission),
         }
-        .map_err(TcpHolePunchTransportError::Admission)
     }
 
     async fn add_accepted_transport(
@@ -204,6 +241,26 @@ fn bind_addr_for_port(port: u16, is_v6: bool) -> SocketAddr {
     }
 }
 
+fn local_server_url(requested_url: &url::Url) -> url::Url {
+    format!(
+        "{}://{}:{}",
+        requested_url.scheme(),
+        "0.0.0.0",
+        requested_url.port().unwrap_or(0)
+    )
+    .parse()
+    .expect("hole-punch local URL should be valid")
+}
+
+fn mapped_addr_url(scheme: &str, addr: SocketAddr) -> anyhow::Result<url::Url> {
+    let url = match scheme {
+        "tcp" => format!("tcp://{addr}"),
+        "wss" => format!("wss://{addr}"),
+        other => anyhow::bail!("unsupported TCP hole-punch scheme: {other}"),
+    };
+    url.parse().map_err(anyhow::Error::from)
+}
+
 pub async fn select_local_port<H>(
     host: &H,
     context: SocketContext,
@@ -243,6 +300,7 @@ pub async fn try_connect_to_remote<H, AcceptedSocket>(
     context: SocketContext,
     admission: TcpHolePunchAdmission,
     max_attempts: u32,
+    scheme: &str,
 ) -> anyhow::Result<()>
 where
     H: VirtualTcpSocketFactory,
@@ -260,7 +318,7 @@ where
     } else {
         IpVersion::V4
     });
-    let requested_url: url::Url = format!("tcp://{remote_mapped_addr}").parse().unwrap();
+    let requested_url = mapped_addr_url(scheme, remote_mapped_addr)?;
 
     let start = crate::foundation::time::Instant::now();
     let mut attempts = 0_u32;
@@ -331,6 +389,7 @@ pub async fn accept_connections<L, ConnectedSocket>(
         dyn TcpHolePunchTransportSink<ConnectedSocket = ConnectedSocket, AcceptedSocket = L::Socket>,
     >,
     dst_peer_id: PeerId,
+    scheme: &str,
 ) -> anyhow::Result<()>
 where
     L: VirtualTcpListener,
@@ -339,9 +398,11 @@ where
     loop {
         match listener.accept().await {
             Ok((socket, _)) => {
-                let local_url = format!("tcp://0.0.0.0:{}", listener.local_addr()?.port())
+                let local_url = format!("{scheme}://0.0.0.0:{}", listener.local_addr()?.port())
                     .parse()
-                    .unwrap();
+                    .map_err(|error: url::ParseError| {
+                        anyhow::anyhow!("invalid local URL: {error}")
+                    })?;
                 if let Err(error) = transport_sink
                     .add_accepted_transport(socket, local_url)
                     .await
@@ -430,11 +491,13 @@ fn is_symmetric_tcp_nat(nat_type: NatType) -> bool {
     )
 }
 
-struct TcpHolePunchServer<H>
+struct TcpHolePunchServer<H, P>
 where
     H: TcpHolePunchHost,
+    P: TcpHolePunchPeerSource,
 {
     host: Arc<H>,
+    peer_source: Arc<P>,
     stun: Arc<dyn StunInfoProvider>,
     socket_context: SocketContext,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
@@ -443,18 +506,21 @@ where
     stopping: AtomicBool,
 }
 
-impl<H> TcpHolePunchServer<H>
+impl<H, P> TcpHolePunchServer<H, P>
 where
     H: TcpHolePunchHost,
+    P: TcpHolePunchPeerSource,
 {
     fn new(
         host: Arc<H>,
+        peer_source: Arc<P>,
         stun: Arc<dyn StunInfoProvider>,
         socket_context: SocketContext,
         transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             host,
+            peer_source,
             stun,
             socket_context,
             transport_sink,
@@ -462,6 +528,10 @@ where
             reaper: Mutex::new(None),
             stopping: AtomicBool::new(true),
         })
+    }
+
+    fn supports_wss_hole_punching(&self) -> bool {
+        self.transport_sink.supports_wss_hole_punching()
     }
 
     fn start(&self) {
@@ -498,9 +568,10 @@ where
 }
 
 #[async_trait]
-impl<H> TcpHolePunchRpc for TcpHolePunchServer<H>
+impl<H, P> TcpHolePunchRpc for TcpHolePunchServer<H, P>
 where
     H: TcpHolePunchHost,
+    P: TcpHolePunchPeerSource,
 {
     type Controller = BaseController;
 
@@ -512,10 +583,31 @@ where
     ) -> rpc_types::error::Result<TcpHolePunchResponse> {
         let local_nat_type =
             NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
+        let policy = self.peer_source.p2p_policy_flags();
         tracing::debug!(?local_nat_type, "tcp hole punch rpc received");
         if local_nat_type == NatType::Unknown {
             tracing::warn!(?local_nat_type, "tcp hole punch rpc rejected (unknown)");
             return Err(anyhow::anyhow!("tcp nat type unknown not supported").into());
+        }
+        let requested_scheme = input.scheme.trim().to_owned();
+        if requested_scheme.is_empty() && policy.only_use_wss_http3_for_hole_punching {
+            return Err(anyhow::anyhow!(
+                "raw TCP hole punching is disabled by WSS/HTTP3-only policy"
+            )
+            .into());
+        }
+        if requested_scheme == "wss" && policy.disable_wss_http3_for_p2p {
+            return Err(
+                anyhow::anyhow!("WSS hole punching is disabled by the local P2P policy").into(),
+            );
+        }
+        if requested_scheme == "wss" && !self.transport_sink.supports_wss_hole_punching() {
+            return Err(anyhow::anyhow!("this node does not support WSS hole punching").into());
+        }
+        if !matches!(requested_scheme.as_str(), "" | "wss") {
+            return Err(
+                anyhow::anyhow!("unsupported TCP hole-punch scheme: {requested_scheme}").into(),
+            );
         }
 
         let remote_mapped_addr = input
@@ -553,6 +645,11 @@ where
         let host = self.host.clone();
         let socket_context = self.socket_context.clone();
         let transport_sink = self.transport_sink.clone();
+        let connect_scheme = if requested_scheme.is_empty() {
+            "tcp".to_owned()
+        } else {
+            requested_scheme.clone()
+        };
         let mut tasks = self.tasks.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) {
             return Err(rpc_types::error::Error::Shutdown);
@@ -566,12 +663,14 @@ where
                 socket_context,
                 TcpHolePunchAdmission::Client,
                 5,
+                &connect_scheme,
             )
             .await;
         });
 
         Ok(TcpHolePunchResponse {
             listener_mapped_addr: Some(local_mapped_addr.into()),
+            scheme: requested_scheme,
         })
     }
 }
@@ -586,6 +685,7 @@ where
     socket_context: SocketContext,
     peer_source: Arc<P>,
     transport_sink: Arc<TcpHolePunchTransportSinkFor<H>>,
+    supports_wss_hole_punching: bool,
     blacklist: TcpHolePunchBlacklist,
 }
 
@@ -617,6 +717,26 @@ where
 
     #[tracing::instrument(skip(self), fields(dst_peer_id), err)]
     async fn do_punch_as_initiator(&self, dst_peer_id: PeerId) -> anyhow::Result<()> {
+        let policy = self.peer_source.p2p_policy_flags();
+        let peer_policy = self
+            .peer_source
+            .candidates()
+            .await
+            .into_iter()
+            .find(|candidate| candidate.peer_id == dst_peer_id)
+            .map(|candidate| candidate.peer_disguise_flags)
+            .unwrap_or_default();
+        let use_wss =
+            policy.use_wss_http3_with_peer(&peer_policy) && self.supports_wss_hole_punching;
+        let allow_raw = policy.allow_raw_with_peer(&peer_policy);
+        let mut requested_scheme = if use_wss { "wss" } else { "tcp" };
+        if !use_wss && !allow_raw {
+            tracing::debug!(
+                dst_peer_id,
+                "tcp hole punch skipped by WSS/HTTP3 P2P policy"
+            );
+            return Ok(());
+        }
         let local_nat_type =
             NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
         tracing::debug!(?local_nat_type, "tcp hole punch initiator start");
@@ -649,10 +769,25 @@ where
                 },
                 TcpHolePunchRequest {
                     connector_mapped_addr: Some(local_mapped_addr.into()),
+                    scheme: if requested_scheme == "tcp" {
+                        String::new()
+                    } else {
+                        requested_scheme.to_owned()
+                    },
                 },
             )
             .await;
         let response = handle_rpc_result(response, dst_peer_id, &self.blacklist)?;
+        if requested_scheme == "wss" && response.scheme != "wss" {
+            if !allow_raw {
+                self.blacklist.insert(dst_peer_id);
+                anyhow::bail!(
+                    "peer {dst_peer_id} did not negotiate WSS hole punching; scheme={}",
+                    response.scheme
+                );
+            }
+            requested_scheme = "tcp";
+        }
         let remote_mapped_addr = response
             .listener_mapped_addr
             .ok_or_else(|| anyhow::anyhow!("listener_mapped_addr is required"))?;
@@ -671,6 +806,7 @@ where
             self.socket_context.clone(),
             TcpHolePunchAdmission::Server,
             1,
+            requested_scheme,
         )
         .await
         .is_ok()
@@ -709,7 +845,12 @@ where
 
         crate::foundation::time::timeout(
             Duration::from_secs(10),
-            accept_connections(listener, self.transport_sink.clone(), dst_peer_id),
+            accept_connections(
+                listener,
+                self.transport_sink.clone(),
+                dst_peer_id,
+                requested_scheme,
+            ),
         )
         .await??;
 
@@ -721,6 +862,8 @@ where
     }
 
     async fn collect_peers_need_task(&self) -> Vec<PeerId> {
+        let policy = self.peer_source.p2p_policy_flags();
+
         let local_nat_type =
             NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
         if is_symmetric_tcp_nat(local_nat_type) || local_nat_type == NatType::Unknown {
@@ -732,7 +875,6 @@ where
         }
 
         self.blacklist.cleanup();
-        let policy = self.peer_source.p2p_policy_flags();
         let local_peer_id = self.peer_source.local_peer_id();
         let mut peers_to_connect = Vec::new();
         for candidate in self.peer_source.candidates().await {
@@ -750,6 +892,13 @@ where
                 policy.need_p2p,
             ) && candidate.has_recent_traffic;
             if !static_allowed && !dynamic_allowed {
+                continue;
+            }
+
+            let use_wss_engine = policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
+                && self.supports_wss_hole_punching;
+            let allow_raw = policy.allow_raw_with_peer(&candidate.peer_disguise_flags);
+            if !use_wss_engine && !allow_raw {
                 continue;
             }
 
@@ -836,7 +985,7 @@ where
     H: TcpHolePunchHost,
     P: TcpHolePunchPeerSource + HolePunchTunnelSink + HolePunchRpcRegistry,
 {
-    server: Arc<TcpHolePunchServer<H>>,
+    server: Arc<TcpHolePunchServer<H, P>>,
     client: PeerTaskManager<TcpHolePunchPeerTaskLauncher<H, P>>,
     peer_source: Arc<P>,
 }
@@ -852,11 +1001,13 @@ where
         stun: Arc<dyn StunInfoProvider>,
         socket_context: SocketContext,
         client_protocol: Arc<dyn ClientProtocolUpgrader<ConnectedTcpSocket<H>>>,
+        connected_server_protocol: Arc<dyn ServerProtocolUpgrader<ConnectedTcpSocket<H>>>,
         server_protocol: Arc<dyn ServerProtocolUpgrader<AcceptedTcpSocket<H>>>,
     ) -> Self {
         let transport_sink: Arc<TcpHolePunchTransportSinkFor<H>> =
             Arc::new(ProtocolTcpHolePunchTransportSink::new(
                 client_protocol,
+                connected_server_protocol,
                 server_protocol,
                 peer_source.clone(),
             ));
@@ -866,10 +1017,17 @@ where
             socket_context: socket_context.clone(),
             peer_source: peer_source.clone(),
             transport_sink: transport_sink.clone(),
+            supports_wss_hole_punching: transport_sink.supports_wss_hole_punching(),
             blacklist: TcpHolePunchBlacklist::new(),
         });
         Self {
-            server: TcpHolePunchServer::new(host, stun, socket_context, transport_sink),
+            server: TcpHolePunchServer::new(
+                host,
+                peer_source.clone(),
+                stun,
+                socket_context,
+                transport_sink,
+            ),
             client: PeerTaskManager::new_with_external_signal(
                 TcpHolePunchPeerTaskLauncher(data),
                 Some(peer_source.p2p_demand_notify()),
@@ -881,6 +1039,12 @@ where
     pub fn run(&self) {
         if self.peer_source.tcp_hole_punching_disabled() {
             tracing::debug!("tcp hole punch disabled by runtime configuration");
+            return;
+        }
+        let policy = self.peer_source.p2p_policy_flags();
+        if policy.only_use_wss_http3_for_hole_punching && !self.server.supports_wss_hole_punching()
+        {
+            tracing::debug!("WSS hole punching disabled because the runtime lacks WSS");
             return;
         }
         self.server.start();
@@ -915,7 +1079,7 @@ mod tests {
     #[async_trait]
     impl ClientProtocolUpgrader<()> for MockProtocols {
         fn supports_scheme(&self, scheme: &str) -> bool {
-            scheme == "tcp"
+            matches!(scheme, "tcp" | "wss")
         }
 
         async fn upgrade_client(
@@ -937,7 +1101,7 @@ mod tests {
     #[async_trait]
     impl ServerProtocolUpgrader<()> for MockProtocols {
         fn supports_scheme(&self, scheme: &str) -> bool {
-            scheme == "tcp"
+            matches!(scheme, "tcp" | "wss")
         }
 
         async fn upgrade_tcp(
@@ -1000,6 +1164,7 @@ mod tests {
         let sink = ProtocolTcpHolePunchTransportSink::new(
             protocols.clone(),
             protocols.clone(),
+            protocols.clone(),
             tunnel_sink.clone(),
         );
         let url = url::Url::parse("tcp://198.51.100.1:11010").unwrap();
@@ -1016,6 +1181,16 @@ mod tests {
         assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 1);
         assert_eq!(tunnel_sink.clients.load(Ordering::Relaxed), 1);
         assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 2);
+
+        sink.add_connected_transport(
+            (),
+            url::Url::parse("wss://198.51.100.1:443").unwrap(),
+            TcpHolePunchAdmission::Server,
+        )
+        .await
+        .unwrap();
+        assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 2);
+        assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 3);
 
         protocols.fail_client_upgrade.store(true, Ordering::Relaxed);
         assert!(matches!(

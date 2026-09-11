@@ -487,7 +487,7 @@ impl UdpSession {
         }
     }
 
-    pub(super) fn keep_layer_alive<T>(&mut self, layer_guard: T)
+    pub(crate) fn keep_layer_alive<T>(&mut self, layer_guard: T)
     where
         T: Send + Sync + 'static,
     {

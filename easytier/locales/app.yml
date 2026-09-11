@@ -96,6 +96,9 @@ core_clap:
   hostname:
     en: "host name to identify this device"
     zh-CN: "用于标识此设备的主机名"
+  sni:
+    en: "TLS SNI camouflage hostname applied to all outgoing WSS and HTTP/3 connections"
+    zh-CN: "应用于所有出站 WSS 和 HTTP/3 连接的 TLS SNI 伪装主机名"
   instance_name:
     en: "instance name to identify this vpn node in same machine"
     zh-CN: "实例名称，用于在同一台机器上标识此VPN节点"
@@ -185,6 +188,15 @@ core_clap:
   disable_udp_hole_punching:
     en: "disable udp hole punching"
     zh-CN: "禁用UDP打洞功能"
+  only_use_wss_http3_for_hole_punching:
+    en: "use only WSS and HTTP/3 for automatic P2P and NAT hole punching; ordinary direct and manual connections are unaffected"
+    zh-CN: "自动P2P和NAT打洞仅使用 WSS 和 HTTP/3；不影响普通直连或手动连接"
+  prefer_wss_http3_for_p2p:
+    en: "prefer WSS and HTTP/3 for automatic P2P and NAT hole punching, falling back to TCP/UDP when the peer is an official kernel or does not support them"
+    zh-CN: "自动P2P和NAT打洞优先使用 WSS 和 HTTP/3；对端为官方内核或不支持时回退到 TCP/UDP"
+  disable_wss_http3_for_p2p:
+    en: "ban WSS and HTTP/3 from automatic P2P and NAT hole punching; keep ordinary direct and manual connections unaffected"
+    zh-CN: "禁止自动P2P和NAT打洞使用 WSS 和 HTTP/3；不影响普通直连或手动连接"
   disable_sym_hole_punching:
     en: "if true, disable udp nat hole punching for symmetric nat (NAT4), which is based on birthday attack and may be blocked by ISP."
     zh-CN: "如果为true，则禁用基于生日攻击的对称NAT (NAT4) UDP 打洞功能，该打洞方式可能会被运营商封锁"
@@ -221,6 +233,9 @@ core_clap:
   disable_kcp_input:
     en: "do not allow other nodes to use kcp to proxy tcp streams to this node. when a node with kcp proxy enabled accesses this node, the original tcp connection is preserved."
     zh-CN: "不允许其他节点使用 KCP 代理 TCP 流到此节点。开启 KCP 代理的节点访问此节点时，依然使用原始 TCP 连接。"
+  enable_bbr:
+    en: "enable BBR loss-tolerant congestion control for local QUIC/HTTP3 sending, including QUIC proxy; default is false and requires a network instance restart"
+    zh-CN: "为本节点 QUIC/HTTP3（包括 QUIC 代理）发送连接启用 BBR 抗丢包流控，默认关闭，需重启网络实例生效"
   enable_quic_proxy:
     en: "proxy tcp streams with QUIC, improving the latency and throughput on the network with udp packet loss."
     zh-CN: "使用 QUIC 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"

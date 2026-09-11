@@ -94,6 +94,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     network_length: 24,
     network_name: 'easytier',
     network_secret: '',
+    sni: '',
     credential_file: '',
 
     networking_method: NetworkingMethod.Manual,
@@ -118,6 +119,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_kcp_proxy: false,
     disable_kcp_input: false,
     enable_quic_proxy: false,
+    enable_bbr: false,
     disable_quic_input: false,
     disable_p2p: false,
     p2p_only: false,
@@ -132,6 +134,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     disable_encryption: false,
     disable_tcp_hole_punching: false,
     disable_udp_hole_punching: false,
+    only_use_wss_http3_for_hole_punching: false,
+    prefer_wss_http3_for_p2p: true,
+    disable_wss_http3_for_p2p: false,
     disable_upnp: false,
     enable_udp_broadcast_relay: false,
     disable_sym_hole_punching: false,
@@ -315,6 +320,10 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
+  normalized.enable_bbr ??= false
+  normalized.prefer_wss_http3_for_p2p ??= true
+  normalized.disable_wss_http3_for_p2p ??= false
+  normalized.only_use_wss_http3_for_hole_punching ??= false
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
     normalized.vpn_portal_config.clients.forEach((client) => {

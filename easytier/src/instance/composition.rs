@@ -154,7 +154,9 @@ impl CoreEventSink for GlobalCtx {
 #[cfg(feature = "wrapped-transport")]
 fn runtime_wrapped_transport_engines(
     config: &easytier_core::instance::CoreInstanceHostConfig,
+    enable_bbr: bool,
 ) -> WrappedTransportEngines {
+    let _ = enable_bbr;
     #[cfg(feature = "kcp")]
     let kcp = config
         .kcp_enabled
@@ -164,7 +166,7 @@ fn runtime_wrapped_transport_engines(
     #[cfg(feature = "quic")]
     let quic = config
         .quic_enabled
-        .then(|| Arc::new(QuicProxyService::new()) as Arc<dyn WrappedTransportEngine>);
+        .then(|| Arc::new(QuicProxyService::new(enable_bbr)) as Arc<dyn WrappedTransportEngine>);
     #[cfg(not(feature = "quic"))]
     let quic = None;
 
@@ -225,11 +227,14 @@ fn configure_runtime_core_host_adapters(
     adapters.events = global_ctx.clone();
     #[cfg(feature = "wrapped-transport")]
     {
-        adapters.wrapped_transports = runtime_wrapped_transport_engines(&host_config);
+        adapters.wrapped_transports =
+            runtime_wrapped_transport_engines(&host_config, global_ctx.get_flags().enable_bbr);
     }
     adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
     adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory));
     adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
+    adapters.server_protocol_for_connected =
+        Some(runtime_server_protocol_upgrader(global_ctx.clone()));
     #[cfg(feature = "upnp")]
     if host_config.upnp_enabled {
         adapters.udp_hole_punch_platform = Some(
@@ -573,6 +578,103 @@ mod tests {
         .await
         .expect("portable host packet sink did not receive the IP packet");
         assert_eq!(received, ip_packet);
+
+        instance_b.stop().await;
+        instance_a.stop().await;
+    }
+
+    #[cfg(feature = "websocket")]
+    #[tokio::test]
+    async fn portable_core_instances_connect_through_core_wss_listener_with_prefer_policy() {
+        let global_a = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-connect-wss".to_owned(),
+            "shared-secret".to_owned(),
+        )));
+        let global_b = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+            "portable-connect-wss".to_owned(),
+            "shared-secret".to_owned(),
+        )));
+        global_a.set_ipv4(Some("10.251.0.1/24".parse().unwrap()));
+        global_b.set_ipv4(Some("10.251.0.2/24".parse().unwrap()));
+        for global in [&global_a, &global_b] {
+            let mut flags = global.get_flags();
+            flags.prefer_wss_http3_for_p2p = true;
+            flags.disable_wss_http3_for_p2p = false;
+            flags.only_use_wss_http3_for_hole_punching = false;
+            flags.disable_tcp_hole_punching = true;
+            flags.disable_udp_hole_punching = true;
+            flags.disable_upnp = true;
+            global.set_flags(flags);
+        }
+
+        let (packet_sink_a, _packet_receiver_a) = create_host_packet_channel();
+        let (packet_sink_b, _packet_receiver_b) = create_host_packet_channel();
+        let mut config_a = test_core_instance_config(&global_a);
+        config_a.connectivity.initial_peers.clear();
+        config_a.connectivity.listeners = Some(ListenerRuntimeConfig::new(
+            vec!["wss://127.0.0.1:0".parse().unwrap()],
+            false,
+            config_a.connectivity.direct.tcp_bind.context.clone(),
+        ));
+        config_a.connectivity.runtime = Default::default();
+        config_a.connectivity.stun.udp_servers.clear();
+        config_a.connectivity.stun.tcp_servers.clear();
+        config_a.connectivity.stun.udp_v6_servers.clear();
+        config_a.connectivity.manual = Default::default();
+        config_a.connectivity.direct.testing = true;
+        let instance_a = NativeCoreInstance::new(
+            config_a,
+            runtime_core_host_adapters(
+                global_a.clone(),
+                CoreProcessRuntime::new(),
+                Arc::new(packet_sink_a),
+            ),
+        )
+        .unwrap();
+
+        let mut config_b = test_core_instance_config(&global_b);
+        config_b.connectivity.initial_peers.clear();
+        config_b.connectivity.listeners = None;
+        config_b.connectivity.runtime = Default::default();
+        config_b.connectivity.stun.udp_servers.clear();
+        config_b.connectivity.stun.tcp_servers.clear();
+        config_b.connectivity.stun.udp_v6_servers.clear();
+        config_b.connectivity.manual = Default::default();
+        config_b.connectivity.direct.testing = true;
+        let instance_b = NativeCoreInstance::new(
+            config_b,
+            runtime_core_host_adapters(
+                global_b.clone(),
+                CoreProcessRuntime::new(),
+                Arc::new(packet_sink_b),
+            ),
+        )
+        .unwrap();
+
+        let (start_a, start_b) = tokio::join!(instance_a.start(), instance_b.start());
+        start_a.unwrap();
+        start_b.unwrap();
+        let listener = instance_a
+            .running_listeners()
+            .into_iter()
+            .find(|url| url.scheme() == "wss")
+            .expect("wss listener should be running");
+        instance_b.add_connector(listener).unwrap();
+
+        let peer_a_id = instance_a.peer_id();
+        let peer_b_id = instance_b.peer_id();
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let a_peers = instance_a.connected_peers().await;
+                let b_peers = instance_b.connected_peers().await;
+                if a_peers.contains(&peer_b_id) && b_peers.contains(&peer_a_id) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("portable core instances did not connect through the core WSS listener");
 
         instance_b.stop().await;
         instance_a.stop().await;

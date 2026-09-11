@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 use url::{Host, Url};
 
 use crate::{
-    config::PeerId,
+    config::{PeerDisguiseP2pFlags, PeerId},
     connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
@@ -411,6 +411,18 @@ impl<H> DirectConnectorData<H>
 where
     H: DirectConnectorHost,
 {
+    async fn peer_disguise_flags(&self, dst_peer_id: PeerId) -> PeerDisguiseP2pFlags {
+        self.peer_manager
+            .list_route_snapshots()
+            .await
+            .into_iter()
+            .find(|route| route.peer_id == dst_peer_id)
+            .and_then(|route| route.feature_flag)
+            .as_ref()
+            .map(Into::into)
+            .unwrap_or_default()
+    }
+
     async fn try_direct_connect(self: Arc<Self>, dst_peer_id: PeerId) -> anyhow::Result<()> {
         let backoffs_ms = [1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000];
         let mut backoff_index = 0usize;
@@ -465,12 +477,26 @@ where
         dst_peer_id: PeerId,
         ip_list: GetIpListResponse,
     ) -> anyhow::Result<()> {
+        let p2p_policy = self.peer_manager.p2p_policy_flags();
+        let peer_policy = self.peer_disguise_flags(dst_peer_id).await;
+        let use_disguise_protocols = p2p_policy.use_wss_http3_with_peer(&peer_policy);
+        let only_disguised_protocols = p2p_policy.only_use_wss_http3_for_hole_punching
+            || peer_policy.only_use_wss_http3_for_p2p;
         let mut available_listeners = ip_list
             .listeners
             .clone()
             .into_iter()
             .map(Into::<Url>::into)
             .filter(|listener| listener.scheme() != "ring")
+            .filter(|listener| {
+                if only_disguised_protocols {
+                    matches!(listener.scheme(), "wss" | "http3")
+                } else if !use_disguise_protocols {
+                    !matches!(listener.scheme(), "wss" | "http3")
+                } else {
+                    true
+                }
+            })
             .filter(|listener| {
                 mapped_listener_port(listener).is_some() && listener.host().is_some()
             })
@@ -484,7 +510,11 @@ where
         }
 
         available_listeners.sort_by_key(|listener| {
-            if listener.scheme() == self.options.default_protocol {
+            let prefer_disguised =
+                use_disguise_protocols && matches!(listener.scheme(), "wss" | "http3");
+            if prefer_disguised {
+                4
+            } else if listener.scheme() == self.options.default_protocol {
                 3
             } else if listener.scheme() == "udp" {
                 2
@@ -666,7 +696,12 @@ where
 
     async fn connect_to_url_once(&self, dst_peer_id: PeerId, raw_url: &str) -> anyhow::Result<()> {
         let url = Url::parse(raw_url)?;
-        let (peer_id, conn_id) = if url.scheme() == "udp" {
+        let p2p_policy = self.peer_manager.p2p_policy_flags();
+        let peer_policy = self.peer_disguise_flags(dst_peer_id).await;
+        let use_disguise_protocols = p2p_policy.use_wss_http3_with_peer(&peer_policy);
+        let use_udp_hole_punch =
+            url.scheme() == "udp" || (use_disguise_protocols && url.scheme() == "http3");
+        let (peer_id, conn_id) = if use_udp_hole_punch {
             match url.host() {
                 Some(Host::Ipv6(_)) => self.connect_public_ipv6(dst_peer_id, &url).await?,
                 Some(Host::Ipv4(ip)) if is_public_ipv4(ip) => {
@@ -779,7 +814,13 @@ where
             .remote_send_udp_hole_punch_packet(dst_peer_id, vec![connector_addr], None, url)
             .await;
         let remote_addr = resolve_literal_url(url, IpVersion::V4)?;
-        let connected = udp::connect_with_socket(self.host.clone(), socket, remote_addr).await?;
+        let connected = udp::connect_with_socket(
+            self.host.clone(),
+            socket,
+            remote_addr,
+            url.scheme() == "http3",
+        )
+        .await?;
         let tunnel = self
             .protocol
             .upgrade_client(ConnectedTransport::Udp(connected), url.clone())
@@ -822,7 +863,13 @@ where
                 .await;
         }
         let remote_addr = resolve_literal_url(url, IpVersion::V6)?;
-        let connected = udp::connect_with_socket(self.host.clone(), socket, remote_addr).await?;
+        let connected = udp::connect_with_socket(
+            self.host.clone(),
+            socket,
+            remote_addr,
+            url.scheme() == "http3",
+        )
+        .await?;
         let tunnel = self
             .protocol
             .upgrade_client(ConnectedTransport::Udp(connected), url.clone())
@@ -880,7 +927,7 @@ where
         preferred_src_ipv6: Option<Ipv6Addr>,
         remote_url: &Url,
     ) -> anyhow::Result<()> {
-        if remote_url.scheme() != "udp" {
+        if !protocol_uses_udp(remote_url.scheme()) {
             anyhow::bail!("UDP punch request requires a UDP listener: {remote_url}");
         }
         let listener_port = mapped_listener_port(remote_url)

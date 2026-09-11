@@ -595,6 +595,7 @@ impl QuicStreamReceiver {
 }
 
 pub struct QuicProxy {
+    enable_bbr: bool,
     endpoint: Option<Endpoint>,
     input_tx: Option<Arc<Sender<QuicPacket>>>,
 
@@ -607,8 +608,9 @@ pub struct QuicProxy {
 }
 
 impl QuicProxy {
-    pub fn new() -> Self {
+    pub fn new(enable_bbr: bool) -> Self {
         Self {
+            enable_bbr,
             endpoint: None,
             input_tx: None,
             source_connector: None,
@@ -659,12 +661,12 @@ impl QuicProxy {
 
         let mut endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
-            Some(server_config()),
+            Some(server_config(self.enable_bbr)),
             Arc::new(socket),
             default_runtime().unwrap(),
         )
         .unwrap(); // TODO: maybe a different transport config
-        endpoint.set_default_client_config(client_config());
+        endpoint.set_default_client_config(client_config(self.enable_bbr));
         self.endpoint = Some(endpoint.clone());
 
         self.tasks.spawn(
@@ -736,12 +738,14 @@ impl QuicProxy {
 }
 
 pub struct QuicProxyService {
+    enable_bbr: bool,
     state: Mutex<Option<QuicProxy>>,
 }
 
 impl QuicProxyService {
-    pub fn new() -> Self {
+    pub fn new(enable_bbr: bool) -> Self {
         Self {
+            enable_bbr,
             state: Mutex::new(None),
         }
     }
@@ -765,7 +769,7 @@ impl WrappedTransportEngine for QuicProxyService {
             None
         };
 
-        let mut proxy = QuicProxy::new();
+        let mut proxy = QuicProxy::new(self.enable_bbr);
         if directions.source || directions.destination {
             proxy
                 .prepare(
@@ -883,9 +887,11 @@ mod tests {
     }
 
     fn endpoint() -> (Endpoint, Endpoint) {
+        endpoint_with_bbr(false, false)
+    }
+
+    fn endpoint_with_bbr(client_bbr: bool, server_bbr: bool) -> (Endpoint, Endpoint) {
         let endpoint_config = endpoint_config();
-        let server_config = server_config();
-        let client_config = client_config();
 
         // 1. Create an in-memory Socket pair
         let (socket_client, socket_server) = make_socket_pair();
@@ -895,22 +901,22 @@ mod tests {
         // 3. Configure Client Endpoint
         let mut client_endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config.clone(),
-            Some(server_config.clone()),
+            Some(server_config(client_bbr)),
             socket_client.clone(),
             default_runtime().unwrap(),
         )
         .unwrap();
-        client_endpoint.set_default_client_config(client_config.clone());
+        client_endpoint.set_default_client_config(client_config(client_bbr));
 
         // 2. Configure Server Endpoint
         let mut server_endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config.clone(),
-            Some(server_config.clone()),
+            Some(server_config(server_bbr)),
             socket_server.clone(),
             default_runtime().unwrap(),
         )
         .unwrap();
-        server_endpoint.set_default_client_config(client_config.clone());
+        server_endpoint.set_default_client_config(client_config(server_bbr));
 
         (client_endpoint, server_endpoint)
     }
@@ -948,9 +954,13 @@ mod tests {
         });
     }
 
+    #[rstest::rstest]
     #[tokio::test]
-    async fn test_ping() -> anyhow::Result<()> {
-        let (client_endpoint, server_endpoint) = endpoint();
+    async fn test_ping(
+        #[values(false, true)] client_bbr: bool,
+        #[values(false, true)] server_bbr: bool,
+    ) -> anyhow::Result<()> {
+        let (client_endpoint, server_endpoint) = endpoint_with_bbr(client_bbr, server_bbr);
         let server_addr = server_endpoint.local_addr()?;
 
         // 4. Server receive task
@@ -958,6 +968,7 @@ mod tests {
             println!("Server: Waiting for connection...");
             if let Some(conn) = server_endpoint.accept().await {
                 let connection = conn.await.unwrap();
+                crate::tunnel::quic::tests::assert_bbr_controller(&connection, server_bbr);
                 println!(
                     "Server: Connection accepted from {}",
                     connection.remote_address()
@@ -984,6 +995,7 @@ mod tests {
         // Note: The connect address here must be V4, because try_send is limited to SocketAddr::V4
         println!("Client: Connecting...");
         let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
+        crate::tunnel::quic::tests::assert_bbr_controller(&connection, client_bbr);
         println!("Client: Connected!");
 
         // Open a stream and send data
@@ -1000,7 +1012,7 @@ mod tests {
         // 6. Cleanup
         connection.close(0u32.into(), b"done");
         // Wait for Server to finish
-        let _ = tokio::time::timeout(Duration::from_secs(2), server_handle).await;
+        tokio::time::timeout(Duration::from_secs(2), server_handle).await??;
 
         Ok(())
     }

@@ -21,21 +21,25 @@ use crate::{
     },
 };
 
-use super::{ClientAdapter, ServerAdapter};
+use super::{ClientAdapter, ServerAdapter, apply_sni_override};
 
 #[derive(Default)]
-struct WebSocketAdapter;
+struct WebSocketAdapter {
+    global_ctx: Option<ArcGlobalCtx>,
+}
 
 fn supports_scheme(scheme: &str) -> bool {
     matches!(scheme, "ws" | "wss")
 }
 
-pub(super) fn client_adapter(_global_ctx: &ArcGlobalCtx) -> ClientAdapter {
-    Arc::new(WebSocketAdapter)
+pub(super) fn client_adapter(global_ctx: &ArcGlobalCtx) -> ClientAdapter {
+    Arc::new(WebSocketAdapter {
+        global_ctx: Some(global_ctx.clone()),
+    })
 }
 
 pub(super) fn server_adapter(_global_ctx: &ArcGlobalCtx) -> ServerAdapter {
-    Arc::new(WebSocketAdapter)
+    Arc::new(WebSocketAdapter::default())
 }
 
 #[async_trait]
@@ -55,6 +59,16 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for WebSocketAdapter {
     ) -> anyhow::Result<Box<dyn Tunnel>> {
         let ConnectedTransport::Tcp(socket) = connected else {
             anyhow::bail!("WebSocket protocol requires a TCP transport");
+        };
+        let requested_url = if requested_url.scheme() == "wss" {
+            let sni = self
+                .global_ctx
+                .as_ref()
+                .map(|global_ctx| global_ctx.config.get_sni())
+                .unwrap_or_default();
+            apply_sni_override(requested_url, &sni)
+        } else {
+            requested_url
         };
         Ok(upgrade_connected(socket, requested_url).await?)
     }

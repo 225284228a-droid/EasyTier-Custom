@@ -599,6 +599,7 @@ where
             conn_counter,
             mut acceptor,
             port_mapping_lease,
+            scheme: _,
         } = listener;
 
         let running = Arc::new(AtomicCell::new(true));
@@ -1142,6 +1143,7 @@ mod tests {
                 sockets: sockets.into(),
             }),
             port_mapping_lease: None,
+            scheme: "udp",
         }
     }
 

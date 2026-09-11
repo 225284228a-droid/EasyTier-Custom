@@ -20,6 +20,9 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     if config.get_hostname() != default_config.get_hostname() {
         result.hostname = Some(config.get_hostname());
     }
+    if config.get_sni() != default_config.get_sni() {
+        result.sni = Some(config.get_sni());
+    }
 
     let network_identity = config.get_network_identity();
     result.network_name = Some(network_identity.network_name);
@@ -136,6 +139,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
     result.disable_kcp_input = Some(flags.disable_kcp_input);
     result.enable_quic_proxy = Some(flags.enable_quic_proxy);
+    result.enable_bbr = Some(flags.enable_bbr);
     result.disable_quic_input = Some(flags.disable_quic_input);
     result.disable_p2p = Some(flags.disable_p2p);
     result.p2p_only = Some(flags.p2p_only);
@@ -156,6 +160,9 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.prefer_peer_relay = Some(flags.prefer_peer_relay);
     result.enable_udp_broadcast_relay = Some(flags.enable_udp_broadcast_relay);
     result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
+    result.only_use_wss_http3_for_hole_punching = Some(flags.only_use_wss_http3_for_hole_punching);
+    result.prefer_wss_http3_for_p2p = Some(flags.prefer_wss_http3_for_p2p);
+    result.disable_wss_http3_for_p2p = Some(flags.disable_wss_http3_for_p2p);
     result.enable_magic_dns = Some(flags.accept_dns);
     result.mtu = Some(flags.mtu as i32);
     result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)

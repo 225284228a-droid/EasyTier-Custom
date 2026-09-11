@@ -16,6 +16,7 @@ const CONFIG_FLAG_FIELDS = [
   'enable_kcp_proxy',
   'disable_kcp_input',
   'enable_quic_proxy',
+  'enable_bbr',
   'disable_quic_input',
   'disable_p2p',
   'p2p_only',
@@ -258,12 +259,16 @@ const SelectButtonStub = defineComponent({
     options: Array,
   },
   emits: ['update:modelValue'],
-  setup(props, { emit }) {
+  setup(props, { attrs, emit }) {
+    const optionValue = (option: unknown) => typeof option === 'string' ? option : (option as { value?: string }).value ?? ''
+    const optionLabel = (option: unknown) => typeof option === 'string' ? option : (option as { label?: string }).label ?? ''
     return () => h('select', {
+      ...attrs,
+      id: (attrs as { id?: string }).id,
       value: props.modelValue,
       'data-stub': 'select-button',
       onChange: (event: Event) => emit('update:modelValue', (event.target as HTMLSelectElement).value),
-    }, (props.options ?? []).map((option) => h('option', { value: option as string }, option as string)))
+    }, (props.options ?? []).map((option) => h('option', { value: optionValue(option) }, optionLabel(option))))
   },
 })
 
@@ -325,6 +330,10 @@ function makeConfig(): NetworkConfig {
     disable_ipv6: true,
     no_tun: true,
     hostname: 'host-a',
+    sni: 'www.cloudflare.com',
+    only_use_wss_http3_for_hole_punching: true,
+    prefer_wss_http3_for_p2p: false,
+    disable_wss_http3_for_p2p: false,
     proxy_cidrs: ['10.10.0.0/16', '172.16.1.0/24'],
     vpn_portal_config: {
       wireguard_listen: '0.0.0.0:22023',
@@ -417,6 +426,8 @@ describe('Config.vue network config projection', () => {
     expect(input(wrapper, '#no_tun').checked).toBe(true)
 
     expect(input(wrapper, '#hostname').value).toBe('host-a')
+    expect(input(wrapper, '#sni').value).toBe('www.cloudflare.com')
+    expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('only')
     expect(input(wrapper, '#subnet-proxy').value).toBe('10.10.0.0/16,172.16.1.0/24')
     expect(input(wrapper, '#vpn_portal_wireguard_listen').value).toBe('0.0.0.0:22023')
     expect(input(wrapper, '#vpn_portal_wireguard_private_key').value).toBe('portal-private-key')
@@ -433,7 +444,7 @@ describe('Config.vue network config projection', () => {
     expect(input(wrapper, 'input[data-add-label="add_listener_url"]').value).toBe('tcp://0.0.0.0:12010')
     expect(input(wrapper, 'input[data-add-label="add_mapped_listener"]').value).toBe('tcp://127.0.0.1:22000')
 
-    expect(wrapper.find<HTMLSelectElement>('select[data-stub="select-button"]').element.value).toBe('udp')
+    expect(wrapper.find<HTMLSelectElement>('select#port_forward_proto').element.value).toBe('udp')
     expect(input(wrapper, 'input[placeholder="port_forwards_bind_addr"]').value).toBe('0.0.0.0')
     expect(input(wrapper, 'input[placeholder="port_forwards_dst_addr"]').value).toBe('10.0.0.2')
     expect(wrapper.findComponent(AclManagerStub).props('modelValue')).toStrictEqual(curNetwork.acl)
@@ -451,6 +462,8 @@ describe('Config.vue network config projection', () => {
     await wrapper.find('#no_tun').setValue(false)
     await wrapper.find('#disable_ipv6').setValue(false)
     await setInput(wrapper, '#hostname', 'host-edited')
+    await setInput(wrapper, '#sni', 'cdn.example.com')
+    await wrapper.find('select#p2p_disguise_mode').setValue('prefer')
     await setInput(wrapper, '#subnet-proxy', '10.7.0.0/16,172.17.0.0/16')
     await setInput(wrapper, '#vpn_portal_wireguard_listen', '[::]:23000')
     await setInput(wrapper, '#vpn_portal_wireguard_private_key', 'edited-private-key')
@@ -466,7 +479,7 @@ describe('Config.vue network config projection', () => {
     await setInput(wrapper, '#socks5_port', '1089')
     await setInput(wrapper, '#exit_nodes', 'exit-edited')
     await setInput(wrapper, 'input[data-add-label="add_mapped_listener"]', 'tcp://127.0.0.1:23000')
-    await wrapper.find('select[data-stub="select-button"]').setValue('tcp')
+    await wrapper.find('select#port_forward_proto').setValue('tcp')
     await setInput(wrapper, 'input[placeholder="port_forwards_bind_addr"]', '127.0.0.1')
     await setInput(wrapper, 'input[placeholder="port_forwards_dst_addr"]', '10.9.0.2')
 
@@ -483,6 +496,10 @@ describe('Config.vue network config projection', () => {
       no_tun: false,
       disable_ipv6: false,
       hostname: 'host-edited',
+      sni: 'cdn.example.com',
+      prefer_wss_http3_for_p2p: true,
+      disable_wss_http3_for_p2p: false,
+      only_use_wss_http3_for_hole_punching: false,
       proxy_cidrs: ['10.7.0.0/16', '172.17.0.0/16'],
       vpn_portal_config: {
         wireguard_listen: '[::]:23000',
@@ -516,6 +533,7 @@ describe('Config.vue network config projection', () => {
       virtual_ipv4: '10.7.7.7',
       network_name: 'mesh-edited',
       network_secret: 'secret-edited',
+      sni: 'cdn.example.com',
       peer_urls: ['tcp://peer-x:11010', 'udp://peer-y:11010'],
       listener_urls: ['tcp://0.0.0.0:13010'],
       mtu: 1260,

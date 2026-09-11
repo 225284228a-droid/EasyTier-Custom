@@ -88,6 +88,18 @@ message FlagsInConfig {
   // Prefer direct credential peers that already relay to a destination over
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44;
+
+  // Restrict automatic P2P/hole-punch attempts to disguised protocols.
+  bool only_use_wss_http3_for_hole_punching = 45;
+
+  // Prefer WSS/HTTP3 for automatic P2P while still allowing TCP/UDP fallback.
+  bool prefer_wss_http3_for_p2p = 46;
+
+  // Do not use WSS/HTTP3 for automatic P2P at all.
+  bool disable_wss_http3_for_p2p = 47;
+
+  // Use BBR congestion control for local QUIC/HTTP3 sending, including QUIC proxy.
+  bool enable_bbr = 48;
 }
 
 message RpcDescriptor {
@@ -257,6 +269,9 @@ message PeerFeatureFlag {
   bool need_p2p = 9;
   bool disable_p2p = 10;
   bool ipv6_public_addr_provider = 11;
+  bool prefer_wss_http3_for_p2p = 12;
+  bool disable_wss_http3_for_p2p = 13;
+  bool only_use_wss_http3_for_p2p = 14;
 }
 
 enum SocketType {

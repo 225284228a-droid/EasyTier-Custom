@@ -280,6 +280,8 @@ where
     pub external_listener_factory:
         Option<Arc<dyn ExternalListenerFactory<AcceptedTransport<HostAcceptedTcpSocket<H>>>>>,
     pub server_protocol: Option<Arc<dyn ServerProtocolUpgrader<HostAcceptedTcpSocket<H>>>>,
+    pub server_protocol_for_connected:
+        Option<Arc<dyn ServerProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>>,
     /// Optional OS port-mapping adapter. STUN-only hole punching remains
     /// available when the host does not provide one.
     pub udp_hole_punch_platform: Option<Arc<dyn UdpPortMappingPlatform>>,
@@ -339,6 +341,7 @@ where
             protocol: None,
             external_listener_factory: None,
             server_protocol: None,
+            server_protocol_for_connected: None,
             udp_hole_punch_platform: None,
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host: None,
@@ -537,6 +540,7 @@ where
             protocol,
             external_listener_factory,
             server_protocol,
+            server_protocol_for_connected,
             udp_hole_punch_platform,
             #[cfg(feature = "proxy-packet")]
             icmp_proxy_host,
@@ -637,6 +641,13 @@ where
         for url in initial_peers {
             manual.add_connector(url)?;
         }
+        let connected_server_protocol = server_protocol_for_connected.unwrap_or_else(|| {
+            Arc::new(crate::connectivity::protocol::CoreServerProtocolUpgrader::<
+                <H as VirtualTcpSocketFactory>::Socket,
+            >::new(
+                crate::connectivity::protocol::CoreServerProtocolConfig::default(),
+            ))
+        });
         let udp_hole_punch_socket_context = direct_options.udp_bind.context.clone();
         let udp_hole_punch = CoreUdpHolePunchService::new(
             peer_manager.clone(),
@@ -646,6 +657,7 @@ where
             events.clone(),
             udp_hole_punch_socket_context,
             protocol.clone(),
+            connected_server_protocol.clone(),
         );
         let proxy_cidr_table = Arc::new(ProxyCidrTable::from_snapshot(proxy_cidr_snapshot(
             runtime_config.snapshot().as_ref(),
@@ -714,6 +726,7 @@ where
             stun.clone(),
             direct_options.tcp_bind.context.clone(),
             protocol.clone(),
+            connected_server_protocol,
             Arc::new(crate::connectivity::protocol::CoreServerProtocolUpgrader::<
                 HostAcceptedTcpSocket<H>,
             >::new(

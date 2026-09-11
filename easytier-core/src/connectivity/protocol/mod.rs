@@ -56,7 +56,8 @@ pub const fn protocol_port_offset(scheme: &str) -> Option<u16> {
 pub const fn protocol_default_port(scheme: &str) -> Option<u16> {
     match scheme.as_bytes() {
         b"ws" => Some(80),
-        b"wss" | b"http3" => Some(443),
+        b"wss" => Some(443),
+        b"http3" => Some(11014),
         _ => match protocol_port_offset(scheme) {
             Some(offset) => Some(11010 + offset),
             None => None,
@@ -475,7 +476,7 @@ mod tests {
             ("ws", 1, 80),
             ("wss", 2, 443),
             ("faketcp", 3, 11013),
-            ("http3", 4, 443),
+            ("http3", 4, 11014),
         ];
 
         for (scheme, offset, port) in cases {

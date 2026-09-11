@@ -58,6 +58,11 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                     feature_flag: route.feature_flag,
                     has_direct_connection: peer_map.has_peer(route.peer_id),
                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
+                    peer_disguise_flags: route
+                        .feature_flag
+                        .as_ref()
+                        .map(Into::into)
+                        .unwrap_or_default(),
                 })
             })
             .collect()
@@ -146,6 +151,11 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
                 feature_flag: route.feature_flag,
                 has_direct_connection: peer_map.has_peer(route.peer_id),
                 has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
+                peer_disguise_flags: route
+                    .feature_flag
+                    .as_ref()
+                    .map(Into::into)
+                    .unwrap_or_default(),
             })
             .collect()
     }

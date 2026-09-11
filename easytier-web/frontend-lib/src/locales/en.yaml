@@ -117,6 +117,8 @@ event_log: Event Log
 peer_info: Peer Info
 route_cost: Route Cost
 tunnel_proto: Protocol
+sni: SNI Camouflage Hostname
+sni_placeholder: "Example: www.cloudflare.com"
 hostname: Hostname
 latency: Latency
 upload_bytes: Upload
@@ -149,6 +151,9 @@ enable_quic_proxy_help: Convert TCP traffic to QUIC traffic to reduce latency an
 
 disable_quic_input: Disable QUIC Input
 disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
+
+enable_bbr: Enable BBR Loss-Tolerant Congestion Control
+enable_bbr_help: Enable BBR congestion control for this node's QUIC/HTTP3 sending connections, including QUIC proxy; disabled by default and requires a network instance restart. It does not enable QUIC proxy automatically.
 
 disable_p2p: Disable P2P
 disable_p2p_help: Disable ordinary automatic P2P. Nodes with need-p2p enabled can still establish P2P with this node.
@@ -190,6 +195,15 @@ disable_tcp_hole_punching_help: Disable tcp hole punching
 
 disable_udp_hole_punching: Disable UDP Hole Punching
 disable_udp_hole_punching_help: Disable udp hole punching
+
+only_use_wss_http3_for_hole_punching: Only Use WSS/HTTP3 for P2P
+only_use_wss_http3_for_hole_punching_help: Use only WSS and HTTP/3 for automatic P2P and NAT hole punching; ordinary direct connections and manual connections are unaffected.
+
+p2p_disguise_mode: Automatic P2P Protocol
+p2p_disguise_mode_prefer: Prefer WSS/HTTP3
+p2p_disguise_mode_disable: Disable WSS/HTTP3
+p2p_disguise_mode_only: Only WSS/HTTP3
+p2p_disguise_mode_help: Prefer WSS and HTTP/3 while allowing TCP/UDP fallback, ban both disguise protocols, or restrict automatic P2P to WSS and HTTP/3. Manual and ordinary direct connections are never affected.
 
 enable_udp_broadcast_relay: UDP Broadcast Relay
 enable_udp_broadcast_relay_help: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."

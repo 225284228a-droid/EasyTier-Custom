@@ -6,8 +6,8 @@
 //! connection and can pass SNI-whitelist QoS policies.
 //!
 //! Usage:
-//! - listen: `--listen http3://0.0.0.0:443`
-//! - peer: `http3://host:443?sni=www.example.com` (SNI defaults to the host)
+//! - listen: `--listen http3://0.0.0.0:11014`
+//! - peer: `http3://host:11014?sni=www.example.com` (SNI defaults to the host)
 
 use crate::proto::common::TunnelInfo;
 use anyhow::Context;
@@ -25,7 +25,7 @@ use easytier_core::{
 };
 use quinn::{
     AsyncUdpSocket, ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, Incoming,
-    ServerConfig, TransportConfig, congestion::BbrConfig, crypto::rustls::QuicClientConfig,
+    ServerConfig, TransportConfig, crypto::rustls::QuicClientConfig,
     crypto::rustls::QuicServerConfig, default_runtime,
 };
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -43,19 +43,8 @@ pub(crate) use super::quic::QuicUdpSessionSocket as Http3UdpSessionSocket;
 
 const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn transport_config() -> Arc<TransportConfig> {
-    let mut config = TransportConfig::default();
-
-    config
-        .max_concurrent_bidi_streams(u8::MAX.into())
-        .max_concurrent_uni_streams(0u8.into())
-        .keep_alive_interval(Some(Duration::from_secs(5)))
-        .initial_mtu(1200)
-        .min_mtu(1200)
-        .enable_segmentation_offload(true)
-        .congestion_controller_factory(Arc::new(BbrConfig::default()));
-
-    Arc::new(config)
+pub fn transport_config(enable_bbr: bool) -> Arc<TransportConfig> {
+    super::quic::transport_config(enable_bbr)
 }
 
 fn build_rustls_client_config() -> anyhow::Result<rustls::ClientConfig> {
@@ -91,19 +80,19 @@ fn build_rustls_server_config() -> anyhow::Result<rustls::ServerConfig> {
     Ok(config)
 }
 
-pub fn server_config() -> anyhow::Result<ServerConfig> {
+pub fn server_config(enable_bbr: bool) -> anyhow::Result<ServerConfig> {
     let mut config = ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(
         build_rustls_server_config()?,
     )?));
-    config.transport_config(transport_config());
+    config.transport_config(transport_config(enable_bbr));
     Ok(config)
 }
 
-pub fn client_config() -> anyhow::Result<ClientConfig> {
+pub fn client_config(enable_bbr: bool) -> anyhow::Result<ClientConfig> {
     let mut config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(
         build_rustls_client_config()?,
     )?));
-    config.transport_config(transport_config());
+    config.transport_config(transport_config(enable_bbr));
     Ok(config)
 }
 
@@ -137,6 +126,7 @@ impl Drop for ConnWrapper {
 pub(crate) async fn upgrade_connected(
     connected: ConnectedUdpSession,
     remote_url: url::Url,
+    enable_bbr: bool,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let socket = Arc::new(Http3UdpSessionSocket::new(connected)?);
     let local_addr = socket.local_addr()?;
@@ -147,7 +137,7 @@ pub(crate) async fn upgrade_connected(
     let mut endpoint =
         Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)?;
     let client_config =
-        client_config().map_err(|error| TunnelError::InternalError(error.to_string()))?;
+        client_config(enable_bbr).map_err(|error| TunnelError::InternalError(error.to_string()))?;
     endpoint.set_default_client_config(client_config);
     let sni = resolve_sni(&remote_url);
     let connecting = endpoint
@@ -301,9 +291,10 @@ impl Http3AcceptedSession {
         session: UdpSession,
         local_url: url::Url,
         admission: ServerProtocolAdmission,
+        enable_bbr: bool,
     ) -> Result<Self, TunnelError> {
         let (active_session, handshake_slots) = admission.into_parts();
-        Self::new_with_admission_parts(session, local_url, active_session, handshake_slots)
+        Self::new_with_admission_parts(session, local_url, active_session, handshake_slots, enable_bbr)
     }
 
     fn new_with_admission_parts(
@@ -311,6 +302,7 @@ impl Http3AcceptedSession {
         local_url: url::Url,
         active_session: OwnedSemaphorePermit,
         handshakes: Arc<Semaphore>,
+        enable_bbr: bool,
     ) -> Result<Self, TunnelError> {
         let socket = Arc::new(Http3UdpSessionSocket::from_accepted(
             session,
@@ -320,7 +312,7 @@ impl Http3AcceptedSession {
             "no async runtime found".to_owned(),
         ))?;
         let server_config =
-            server_config().map_err(|error| TunnelError::InternalError(error.to_string()))?;
+            server_config(enable_bbr).map_err(|error| TunnelError::InternalError(error.to_string()))?;
         let endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
             Some(server_config),
@@ -396,15 +388,35 @@ mod tests {
             vec![b"h3".to_vec()]
         );
 
-        let disguised: url::Url = "http3://192.0.2.1:443?sni=www.example.com".parse().unwrap();
+        let disguised: url::Url = "http3://192.0.2.1:11014?sni=www.example.com"
+            .parse()
+            .unwrap();
         assert_eq!(resolve_sni(&disguised), "www.example.com");
 
-        let default: url::Url = "http3://origin.example.com:443".parse().unwrap();
+        let default: url::Url = "http3://origin.example.com:11014".parse().unwrap();
         assert_eq!(resolve_sni(&default), "origin.example.com");
     }
 
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn bbr_is_selected_independently_for_each_http3_endpoint(
+        #[values(false, true)] client_bbr: bool,
+        #[values(false, true)] server_bbr: bool,
+    ) {
+        super::super::quic::tests::assert_endpoint_controllers(
+            client_config(client_bbr).unwrap(),
+            server_config(server_bbr).unwrap(),
+            client_bbr,
+            server_bbr,
+        )
+        .await;
+    }
+
+    #[rstest::rstest]
     #[tokio::test(flavor = "multi_thread")]
-    async fn accepted_udp_session_supports_multiple_http3_connections() {
+    async fn accepted_udp_session_supports_multiple_http3_connections(
+        #[values(false, true)] enable_bbr: bool,
+    ) {
         tokio::time::timeout(Duration::from_secs(10), async {
             let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let mut listener = new_runtime_udp_session_listener(
@@ -433,7 +445,7 @@ mod tests {
             let mut endpoint =
                 Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)
                     .unwrap();
-            endpoint.set_default_client_config(client_config().unwrap());
+            endpoint.set_default_client_config(client_config(enable_bbr).unwrap());
 
             let server_task = tokio::spawn(async move {
                 let session = listener.accept().await.unwrap();
@@ -441,7 +453,7 @@ mod tests {
                     .try_admit()
                     .unwrap();
                 let mut accepted =
-                    Http3AcceptedSession::new(session, local_url, admission).unwrap();
+                    Http3AcceptedSession::new(session, local_url, admission, enable_bbr).unwrap();
                 let first = accepted.accept().await.unwrap();
                 let second = accepted.accept().await.unwrap();
                 assert!(
@@ -458,6 +470,7 @@ mod tests {
                 .unwrap()
                 .await
                 .unwrap();
+            super::super::quic::tests::assert_bbr_controller(&first_connection, enable_bbr);
             let (first_write, first_read) = first_connection.open_bi().await.unwrap();
             let mut first_send = FramedWriter::new(first_write);
             first_send

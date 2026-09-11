@@ -19,17 +19,26 @@ use crate::{
     tunnel::http3::{Http3AcceptedSession, upgrade_connected},
 };
 
-use super::{ClientAdapter, ServerAdapter};
+use super::{ClientAdapter, ServerAdapter, apply_sni_override};
 
 #[derive(Default)]
-struct Http3Adapter;
-
-pub(super) fn client_adapter(_global_ctx: &ArcGlobalCtx) -> ClientAdapter {
-    Arc::new(Http3Adapter)
+struct Http3Adapter {
+    global_ctx: Option<ArcGlobalCtx>,
+    enable_bbr: bool,
 }
 
-pub(super) fn server_adapter(_global_ctx: &ArcGlobalCtx) -> ServerAdapter {
-    Arc::new(Http3Adapter)
+pub(super) fn client_adapter(global_ctx: &ArcGlobalCtx) -> ClientAdapter {
+    Arc::new(Http3Adapter {
+        global_ctx: Some(global_ctx.clone()),
+        enable_bbr: global_ctx.get_flags().enable_bbr,
+    })
+}
+
+pub(super) fn server_adapter(global_ctx: &ArcGlobalCtx) -> ServerAdapter {
+    Arc::new(Http3Adapter {
+        enable_bbr: global_ctx.get_flags().enable_bbr,
+        ..Default::default()
+    })
 }
 
 #[async_trait]
@@ -46,7 +55,13 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for Http3Adapter {
         let ConnectedTransport::Udp(session) = connected else {
             anyhow::bail!("http3 protocol requires a UDP session");
         };
-        Ok(upgrade_connected(session, requested_url).await?)
+        let sni = self
+            .global_ctx
+            .as_ref()
+            .map(|global_ctx| global_ctx.config.get_sni())
+            .unwrap_or_default();
+        let requested_url = apply_sni_override(requested_url, &sni);
+        Ok(upgrade_connected(session, requested_url, self.enable_bbr).await?)
     }
 }
 
@@ -73,7 +88,7 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for Http3Adapter {
         let admission =
             admission.ok_or_else(|| anyhow::anyhow!("http3 server admission permit is missing"))?;
         Ok(ServerProtocolUpgrade::Acceptor(Box::new(
-            Http3AcceptedSession::new(session, local_url, admission)?,
+            Http3AcceptedSession::new(session, local_url, admission, self.enable_bbr)?,
         )))
     }
 
