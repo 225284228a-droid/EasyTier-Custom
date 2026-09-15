@@ -201,10 +201,11 @@ only_use_wss_http3_for_hole_punching: 仅使用 WSS/HTTP3 进行P2P
 only_use_wss_http3_for_hole_punching_help: 自动P2P和NAT打洞仅使用 WSS 和 HTTP/3；不影响普通直连或手动连接。
 
 p2p_disguise_mode: 自动P2P协议
+p2p_disguise_mode_default: 默认（不主动使用）
 p2p_disguise_mode_prefer: 优先使用 WSS/HTTP3
 p2p_disguise_mode_disable: 禁用 WSS/HTTP3
 p2p_disguise_mode_only: 仅使用 WSS/HTTP3
-p2p_disguise_mode_help: 自动P2P优先使用 WSS 和 HTTP/3，同时允许回退到 TCP/UDP；也可彻底禁用两个伪装协议，或仅使用这两个协议进行P2P。手动连接和普通直连不受影响。
+p2p_disguise_mode_help: 自动P2P优先使用 WSS 和 HTTP/3，同时允许回退到 TCP/UDP；默认不主动使用伪装协议但响应需要伪装的对端；也可彻底禁用两个伪装协议，或仅使用这两个协议进行P2P。手动连接和普通直连不受影响。
 
 enable_udp_broadcast_relay: UDP 广播中继
 enable_udp_broadcast_relay_help: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"

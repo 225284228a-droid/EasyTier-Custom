@@ -131,4 +131,19 @@ mod tests {
             Some("")
         );
     }
+
+    #[tokio::test]
+    async fn production_composition_wires_wss_into_all_hole_punch_upgraders() {
+        // The accepted-server upgrader of the TCP hole puncher must come from
+        // the runtime server protocol (which serves wss), not the default
+        // core one (which does not); otherwise `only WSS/HTTP3` silently
+        // disables all hole punching.
+        let instance =
+            TestInstance::new_with_process_runtime(TomlConfig::default(), CoreProcessRuntime::new());
+
+        assert_eq!(
+            instance.get_core_instance().tcp_hole_punch_supports_wss(),
+            cfg!(feature = "websocket"),
+        );
+    }
 }

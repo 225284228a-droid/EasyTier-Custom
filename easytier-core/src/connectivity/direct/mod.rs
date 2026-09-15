@@ -479,9 +479,20 @@ where
     ) -> anyhow::Result<()> {
         let p2p_policy = self.peer_manager.p2p_policy_flags();
         let peer_policy = self.peer_disguise_flags(dst_peer_id).await;
+        // Derive the listener filter from the same policy predicates the
+        // tunnel upgrade path uses, so a disable flag vetoes disguised
+        // listeners here exactly as it does during protocol negotiation
+        // (`use_wss_http3_with_peer` / `allow_raw_with_peer`).
         let use_disguise_protocols = p2p_policy.use_wss_http3_with_peer(&peer_policy);
-        let only_disguised_protocols = p2p_policy.only_use_wss_http3_for_hole_punching
-            || peer_policy.only_use_wss_http3_for_p2p;
+        let allow_raw_protocols = p2p_policy.allow_raw_with_peer(&peer_policy);
+        let only_disguised_protocols = use_disguise_protocols && !allow_raw_protocols;
+        if !use_disguise_protocols && !allow_raw_protocols {
+            tracing::debug!(
+                dst_peer_id,
+                "direct connect skipped: WSS/HTTP3 policies leave no permitted protocol"
+            );
+            return Ok(());
+        }
         let mut available_listeners = ip_list
             .listeners
             .clone()

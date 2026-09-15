@@ -425,6 +425,22 @@ impl<H> CoreInstance<H>
 where
     H: CoreInstanceHost,
 {
+    /// Whether TCP hole punching built by this instance can serve WSS across
+    /// all three upgrader roles. Test-only seam for asserting the production
+    /// wiring (the accepted-server upgrader must reuse the runtime server
+    /// protocol, not the default core one).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn tcp_hole_punch_supports_wss(&self) -> bool {
+        #[cfg(feature = "tcp-hole-punch")]
+        {
+            self.tcp_hole_punch.supports_wss_hole_punching()
+        }
+        #[cfg(not(feature = "tcp-hole-punch"))]
+        {
+            false
+        }
+    }
+
     fn prepare_stun(
         adapters: &CoreHostAdapters<H>,
         config: &CoreConnectivityConfig,
@@ -569,6 +585,19 @@ where
         } = config;
         #[cfg(not(feature = "proxy-smoltcp-stack"))]
         let _ = startup_plan;
+        // TCP hole punching upgrades accepted punched sockets with the same
+        // server upgrader the listeners use, so WSS capability detection in
+        // `supports_wss_hole_punching` reflects the production protocol set.
+        #[cfg(feature = "tcp-hole-punch")]
+        let tcp_hole_punch_server_protocol: Arc<
+            dyn ServerProtocolUpgrader<HostAcceptedTcpSocket<H>>,
+        > = server_protocol.clone().unwrap_or_else(|| {
+            Arc::new(crate::connectivity::protocol::CoreServerProtocolUpgrader::<
+                HostAcceptedTcpSocket<H>,
+            >::new(
+                crate::connectivity::protocol::CoreServerProtocolConfig::default(),
+            ))
+        });
         let accepted_transport_handler: Arc<
             dyn AcceptedSocketHandler<AcceptedTransport<HostAcceptedTcpSocket<H>>>,
         > = match server_protocol {
@@ -727,11 +756,7 @@ where
             direct_options.tcp_bind.context.clone(),
             protocol.clone(),
             connected_server_protocol,
-            Arc::new(crate::connectivity::protocol::CoreServerProtocolUpgrader::<
-                HostAcceptedTcpSocket<H>,
-            >::new(
-                crate::connectivity::protocol::CoreServerProtocolConfig::default(),
-            )),
+            tcp_hole_punch_server_protocol,
         );
         let direct = DirectConnectorManager::new_with_running_listeners(
             peer_manager.clone(),

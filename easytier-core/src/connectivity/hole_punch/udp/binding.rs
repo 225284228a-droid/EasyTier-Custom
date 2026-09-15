@@ -121,6 +121,7 @@ where
     server: Arc<CoreUdpHolePunchEndpoint<H, P>>,
     client: CoreUdpHolePunchConnector<H, P>,
     peer_source: Arc<P>,
+    http3_mode: Arc<AtomicBool>,
 }
 
 impl<H, P> CoreUdpHolePunchService<H, P>
@@ -156,7 +157,16 @@ where
         } else {
             ProtocolUdpHolePunchTransportSink::new(protocol, peer_source.clone())
         });
-        let http3_mode = Arc::new(AtomicBool::new(false));
+        // HTTP3 punching engages only under the strict-only policy, where raw
+        // UDP is forbidden anyway. In prefer mode raw UDP stays the punch
+        // transport until per-punch scheme negotiation exists: a QUIC upgrade
+        // against a raw-UDP peer can never complete, so enabling it globally
+        // would break punching with every peer that lacks HTTP3 support.
+        let http3_enabled = supports_http3
+            && peer_source
+                .p2p_policy_flags()
+                .only_use_wss_http3_for_hole_punching;
+        let http3_mode = Arc::new(AtomicBool::new(http3_enabled));
         let runtime = Arc::new(CoreUdpHolePunchRuntime::new(
             host,
             peer_source.clone(),
@@ -186,12 +196,21 @@ where
             ),
             client,
             peer_source,
+            http3_mode,
         }
     }
 
     pub(crate) async fn start(&self) -> anyhow::Result<()> {
         let policy = self.peer_source.p2p_policy_flags();
-        if policy.disable_udp_hole_punching || policy.only_use_wss_http3_for_hole_punching {
+        if policy.disable_udp_hole_punching {
+            return Ok(());
+        }
+        // Under the only-WSS/HTTP3 policy UDP punching is still possible,
+        // but every punch must upgrade to HTTP3; without that capability
+        // there is no compliant UDP transport left.
+        if policy.only_use_wss_http3_for_hole_punching
+            && !self.http3_mode.load(Ordering::Acquire)
+        {
             return Ok(());
         }
 

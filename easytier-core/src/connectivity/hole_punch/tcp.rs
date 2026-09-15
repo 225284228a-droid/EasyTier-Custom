@@ -761,7 +761,7 @@ where
         );
 
         let rpc_stub = self.peer_source.rpc_stub(dst_peer_id);
-        let response = rpc_stub
+        let mut response = rpc_stub
             .exchange_mapped_addr(
                 BaseController {
                     timeout_ms: 6000,
@@ -777,6 +777,34 @@ where
                 },
             )
             .await;
+        // A remote that cannot serve WSS rejects the exchange outright (e.g.
+        // a feature-trimmed build that still broadcasts a preference). Retry
+        // once with raw TCP when policy allows it, and stop hammering the
+        // peer when no fallback is permitted.
+        if requested_scheme == "wss"
+            && matches!(&response, Err(rpc_types::error::Error::ExecutionError(_)))
+        {
+            if !allow_raw {
+                self.blacklist.insert(dst_peer_id);
+                anyhow::bail!("peer {dst_peer_id} rejected WSS hole punching");
+            }
+            tracing::warn!(dst_peer_id, "peer rejected WSS hole punching, retrying raw TCP");
+            requested_scheme = "tcp";
+            response = self
+                .peer_source
+                .rpc_stub(dst_peer_id)
+                .exchange_mapped_addr(
+                    BaseController {
+                        timeout_ms: 6000,
+                        ..Default::default()
+                    },
+                    TcpHolePunchRequest {
+                        connector_mapped_addr: Some(local_mapped_addr.into()),
+                        scheme: String::new(),
+                    },
+                )
+                .await;
+        }
         let response = handle_rpc_result(response, dst_peer_id, &self.blacklist)?;
         if requested_scheme == "wss" && response.scheme != "wss" {
             if !allow_raw {
@@ -1059,6 +1087,14 @@ where
         self.peer_source
             .unregister_rpc_service(TcpHolePunchRpcServer::new_arc(self.server.clone()));
         self.server.stop().await;
+    }
+
+    /// Whether the full punch path (client, connected-server and
+    /// accepted-server upgraders) can serve WSS. Test-only seam for
+    /// verifying the production wiring of all three protocol upgraders.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn supports_wss_hole_punching(&self) -> bool {
+        self.server.supports_wss_hole_punching()
     }
 }
 

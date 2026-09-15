@@ -82,7 +82,7 @@ interface BoolFlag {
   help: string
 }
 
-type DisguisedP2pMode = 'prefer' | 'disable' | 'only'
+type DisguisedP2pMode = 'default' | 'prefer' | 'disable' | 'only'
 
 const bool_flags: BoolFlag[] = [
   { field: 'latency_first', help: 'latency_first_help' },
@@ -118,7 +118,11 @@ const disguisedP2pMode = computed<DisguisedP2pMode>({
   get() {
     if (curNetwork.value.only_use_wss_http3_for_hole_punching) return 'only'
     if (curNetwork.value.disable_wss_http3_for_p2p) return 'disable'
-    return 'prefer'
+    if (curNetwork.value.prefer_wss_http3_for_p2p) return 'prefer'
+    // All three flags false is a distinct state: never initiate disguised
+    // P2P, but still serve peers that require it. Rendering it as "prefer"
+    // would silently flip the flag to true on the next save.
+    return 'default'
   },
   set(value: DisguisedP2pMode) {
     curNetwork.value.prefer_wss_http3_for_p2p = value === 'prefer'
@@ -128,6 +132,7 @@ const disguisedP2pMode = computed<DisguisedP2pMode>({
 })
 
 const disguisedP2pModeOptions = computed(() => [
+  { label: t('p2p_disguise_mode_default'), value: 'default' },
   { label: t('p2p_disguise_mode_prefer'), value: 'prefer' },
   { label: t('p2p_disguise_mode_disable'), value: 'disable' },
   { label: t('p2p_disguise_mode_only'), value: 'only' },

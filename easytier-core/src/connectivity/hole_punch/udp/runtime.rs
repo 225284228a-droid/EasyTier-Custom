@@ -19,7 +19,9 @@ use crate::{
     foundation::task::ExternalTaskSignal,
     socket::{
         ListenerConnectionCounter, SocketContext,
-        udp::{UdpBindOptions, UdpSession, VirtualUdpSocket, VirtualUdpSocketFactory},
+        udp::{
+            UdpBindOptions, UdpSession, UdpSessionSocket, VirtualUdpSocket, VirtualUdpSocketFactory,
+        },
     },
     tunnel::Tunnel,
 };
@@ -322,7 +324,13 @@ impl<TcpSocket: 'static, T> ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
             .ok_or_else(|| anyhow::anyhow!("HTTP3 hole-punch admission limit reached"))?;
         let (mut session, layer_guard) = connected.into_parts();
         session.keep_layer_alive(layer_guard);
-        let local_url = requested_url.clone();
+        // The punch URL carried by `requested_url` is derived from the remote
+        // peer's address; the server-side tunnel must describe its own local
+        // address, so rebuild the URL from the session's local socket.
+        let local_addr = session
+            .local_addr()
+            .map_err(|error| anyhow::anyhow!("HTTP3 hole-punch session has no local addr: {error}"))?;
+        let local_url = punch_url(requested_url.scheme(), local_addr);
         let upgrade = server_protocol
             .upgrade_udp(session, local_url, Some(admission))
             .await?;

@@ -57,6 +57,7 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
         udp_broadcast_enabled: cfg!(all(target_os = "windows", feature = "tun")),
         upnp_enabled: cfg!(feature = "upnp"),
         tcp_hole_punching_enabled: cfg!(feature = "tcp-hole-punch"),
+        wss_http3_supported: cfg!(feature = "websocket"),
         ignore_unsupported_config: false,
         easytier_version: EASYTIER_VERSION.to_owned(),
         endpoint_protocols: IpScheme::VARIANTS.iter().map(ToString::to_string).collect(),
@@ -77,6 +78,7 @@ pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
     config.udp_broadcast_enabled = false;
     config.upnp_enabled = false;
     config.tcp_hole_punching_enabled = false;
+    config.wss_http3_supported = false;
     config.ignore_unsupported_config = true;
     config.endpoint_protocols = vec!["tcp".to_owned(), "udp".to_owned()];
     config

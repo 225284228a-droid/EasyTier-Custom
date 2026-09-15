@@ -557,6 +557,34 @@ describe('Config.vue network config projection', () => {
     })
   })
 
+  it('keeps the all-clear WSS/HTTP3 state distinct from prefer', async () => {
+    // All three disguise flags false means "never initiate disguised P2P";
+    // the UI must render it as its own state instead of collapsing it into
+    // prefer (which would flip the flag to true on the next save).
+    const config = makeConfig()
+    config.only_use_wss_http3_for_hole_punching = false
+    config.prefer_wss_http3_for_p2p = false
+    config.disable_wss_http3_for_p2p = false
+
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+
+    expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('default')
+
+    // Re-selecting the default state must keep every flag false.
+    await wrapper.find('select#p2p_disguise_mode').setValue('default')
+    await nextTick()
+    expect(curNetwork.prefer_wss_http3_for_p2p).toBe(false)
+    expect(curNetwork.disable_wss_http3_for_p2p).toBe(false)
+    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBe(false)
+
+    await wrapper.find('select#p2p_disguise_mode').setValue('prefer')
+    await nextTick()
+    expect(curNetwork.prefer_wss_http3_for_p2p).toBe(true)
+    expect(curNetwork.disable_wss_http3_for_p2p).toBe(false)
+    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBe(false)
+  })
+
   it('round-trips every visible boolean config control into backend JSON', async () => {
     const config = makeConfig()
     const originalFlagValues = new Map(

@@ -76,6 +76,16 @@ const DEFAULT_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
 /// dropped on receive.
 const DISGUISE_QUERY_KEYS: [&str; 6] = ["sni", "host", "path", "ua", "accept_language", "padding"];
 
+/// Hard bounds for the `padding=<interval_ms>,<size>` query parameter. The
+/// URL is attacker-controllable (it can originate from a peer-broadcast
+/// listener), so both values must be clamped before use: an unbounded size
+/// would drive periodic oversized allocations and base64 encodings, and a
+/// near-zero interval would flood the link with padding frames.
+const MIN_PADDING_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_PADDING_INTERVAL: Duration = Duration::from_secs(60);
+const MAX_PADDING_SIZE: usize = 4096;
+const DEFAULT_PADDING_SIZE: usize = 128;
+
 /// Obfuscation parameters for ws/wss tunnels, parsed from URL query params:
 /// - `sni`: TLS SNI (and usually the Host header) presented to middleboxes
 /// - `host`: Host header value, defaults to the SNI or the URL host
@@ -99,7 +109,7 @@ pub struct WssDisguise {
 impl WssDisguise {
     pub fn from_url(url: &url::Url) -> Self {
         let mut disguise = WssDisguise {
-            padding_size: 128,
+            padding_size: DEFAULT_PADDING_SIZE,
             ..Default::default()
         };
         for (key, value) in url.query_pairs() {
@@ -128,13 +138,17 @@ impl WssDisguise {
                     disguise.enabled = true;
                     let mut parts = value.split(',');
                     let interval_ms = parts.next().unwrap_or_default().parse::<u64>().ok();
-                    if let Some(interval_ms) = interval_ms.filter(|ms| *ms > 0) {
-                        disguise.padding_interval = Some(Duration::from_millis(interval_ms));
+                    if let Some(interval) = interval_ms
+                        .filter(|ms| *ms > 0)
+                        .map(|ms| Duration::from_millis(ms))
+                        .map(|interval| interval.clamp(MIN_PADDING_INTERVAL, MAX_PADDING_INTERVAL))
+                    {
+                        disguise.padding_interval = Some(interval);
                     }
                     if let Some(size) = parts.next().and_then(|size| size.parse::<usize>().ok())
                         && size > 0
                     {
-                        disguise.padding_size = size;
+                        disguise.padding_size = size.min(MAX_PADDING_SIZE);
                     }
                 }
                 _ => {}
@@ -343,6 +357,7 @@ where
 
 async fn map_from_ws_message(
     message: Result<Message, tokio_websockets::Error>,
+    padding_expected: bool,
 ) -> Option<Result<ZCPacket, TunnelError>> {
     let message = match message {
         Ok(message) => message,
@@ -356,7 +371,16 @@ async fn map_from_ws_message(
         return None;
     }
     if message.is_text() {
-        tracing::trace!("dropping websocket text padding frame");
+        if padding_expected {
+            tracing::trace!("dropping websocket text padding frame");
+        } else {
+            // Still dropped to keep the data path safe, but surfaced loudly:
+            // an unexpected text frame usually means a protocol or version
+            // mismatch on this connection, which must not vanish silently.
+            tracing::warn!(
+                "dropping unexpected websocket text frame (padding not enabled for this connection)"
+            );
+        }
         return None;
     }
     if !message.is_binary() {
@@ -424,6 +448,9 @@ where
 
     let (write, read) = stream.split();
     let remote_url: crate::proto::common::Url = remote_url.into();
+    // A padding client dials the URL this listener advertised, so the listener
+    // URL itself declares whether text padding frames may arrive.
+    let padding_expected = WssDisguise::from_url(&local_url).padding_enabled();
     let info = TunnelInfo {
         tunnel_type: local_url.scheme().to_owned(),
         local_addr: Some(local_url.into()),
@@ -431,7 +458,7 @@ where
         resolved_remote_addr: Some(remote_url),
     };
     Ok(Box::new(TunnelWrapper::new(
-        read.filter_map(map_from_ws_message),
+        read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
         WebSocketPacketSink::new(write),
         Some(info),
     )))
@@ -601,13 +628,14 @@ where
 
     let (client, _) = client.connect_on(stream).await.map_err(websocket_error)?;
     let (write, read) = client.split();
+    let padding_expected = disguise.padding_enabled();
     let write = if let Some(interval) = disguise.padding_interval {
         WebSocketPacketSink::with_padding(write, interval, disguise.padding_size)
     } else {
         WebSocketPacketSink::new(write)
     };
     Ok(Box::new(TunnelWrapper::new(
-        read.filter_map(map_from_ws_message),
+        read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
         write,
         Some(info),
     )))
@@ -732,7 +760,7 @@ pub mod tests {
         // web-secure / foreign-network packets use from_peer_id = 0). Such a
         // binary frame must not be mistaken for padding.
         let packet_bytes = vec![0x00u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let result = map_from_ws_message(Ok(Message::binary(packet_bytes.clone())))
+        let result = map_from_ws_message(Ok(Message::binary(packet_bytes.clone())), true)
             .await
             .expect("real packet must not be dropped");
         let packet = result.expect("real packet must decode");
@@ -743,8 +771,17 @@ pub mod tests {
     async fn map_from_ws_message_drops_text_padding_frame() {
         // Padding is carried as a WebSocket text frame; it must be silently
         // dropped without touching the (encrypted or not) payload.
-        let result = map_from_ws_message(Ok(Message::text("cGFkZGluZw==".to_owned()))).await;
+        let result = map_from_ws_message(Ok(Message::text("cGFkZGluZw==".to_owned())), true).await;
         assert!(result.is_none(), "text padding frame must be dropped");
+    }
+
+    #[tokio::test]
+    async fn map_from_ws_message_reports_unexpected_text_frame() {
+        // Text frames on a connection that did not enable padding are dropped
+        // as well (the data path stays text-free), but they indicate a
+        // protocol mismatch and must not be silent.
+        let result = map_from_ws_message(Ok(Message::text("cGFkZGluZw==".to_owned())), false).await;
+        assert!(result.is_none(), "unexpected text frame is still dropped");
     }
 
     #[tokio::test]
@@ -844,6 +881,35 @@ pub mod tests {
         let parsed: url::Url = request_uri.parse().unwrap();
         assert_eq!(parsed.path(), "/");
         assert_eq!(parsed.host_str(), Some("host.example.com"));
+    }
+
+    #[test]
+    fn wss_disguise_padding_params_are_clamped_to_safe_bounds() {
+        // Padding URLs can come from peer-broadcast listener info, so a
+        // malicious peer could advertise padding=1,4000000000 to make this
+        // node allocate huge buffers every millisecond. Both values must be
+        // clamped to sane bounds.
+        let url: url::Url = "wss://h/?padding=1,4000000000".parse().unwrap();
+        let disguise = WssDisguise::from_url(&url);
+        assert_eq!(disguise.padding_interval, Some(MIN_PADDING_INTERVAL));
+        assert_eq!(disguise.padding_size, MAX_PADDING_SIZE);
+
+        // An absurdly large interval is harmless but still clamped.
+        let url: url::Url = "wss://h/?padding=86400000".parse().unwrap();
+        let disguise = WssDisguise::from_url(&url);
+        assert_eq!(disguise.padding_interval, Some(MAX_PADDING_INTERVAL));
+        assert_eq!(disguise.padding_size, DEFAULT_PADDING_SIZE);
+
+        // Values inside the bounds pass through unchanged.
+        let url: url::Url = "wss://h/?padding=250,512".parse().unwrap();
+        let disguise = WssDisguise::from_url(&url);
+        assert_eq!(disguise.padding_interval, Some(Duration::from_millis(250)));
+        assert_eq!(disguise.padding_size, 512);
+
+        // Zero interval still disables padding entirely.
+        let url: url::Url = "wss://h/?padding=0,512".parse().unwrap();
+        let disguise = WssDisguise::from_url(&url);
+        assert!(!disguise.padding_enabled());
     }
 
     #[tokio::test]

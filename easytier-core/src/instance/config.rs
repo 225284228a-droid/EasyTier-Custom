@@ -57,6 +57,10 @@ pub struct CoreInstanceHostConfig {
     pub udp_broadcast_enabled: bool,
     pub upnp_enabled: bool,
     pub tcp_hole_punching_enabled: bool,
+    /// Whether the runtime's protocol stack can actually serve ws/wss and
+    /// HTTP/3 upgrades. Used to avoid broadcasting a WSS/HTTP3 preference
+    /// that peers would act on and then have their punch attempts rejected.
+    pub wss_http3_supported: bool,
     pub ignore_unsupported_config: bool,
     pub easytier_version: String,
     pub endpoint_protocols: Vec<String>,
@@ -82,6 +86,7 @@ impl Default for CoreInstanceHostConfig {
             udp_broadcast_enabled: true,
             upnp_enabled: true,
             tcp_hole_punching_enabled: true,
+            wss_http3_supported: false,
             ignore_unsupported_config: false,
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             endpoint_protocols: ManualEndpointDiscoveryConfig::default().srv_protocols,
@@ -99,6 +104,12 @@ impl CoreInstanceHostConfig {
     }
 
     fn runtime_flags(&self, mut flags: Flags) -> Flags {
+        // Never advertise a WSS/HTTP3 preference the runtime cannot serve:
+        // peers would repeatedly attempt WSS hole punching only to be
+        // rejected, turning every punch cycle into a futile retry loop.
+        if !self.wss_http3_supported {
+            flags.prefer_wss_http3_for_p2p = false;
+        }
         if !self.ignore_unsupported_config {
             return flags;
         }
@@ -572,6 +583,49 @@ disable_p2p = true
             1
         );
         assert!(normalized.peer.snapshot.flags.disable_p2p);
+    }
+
+    #[test]
+    fn wss_preference_is_not_broadcast_without_runtime_support() {
+        let config = TomlConfig::default();
+        config.set_flags(Flags {
+            prefer_wss_http3_for_p2p: true,
+            ..config.get_flags()
+        });
+
+        let capable = CoreInstanceConfig::from_toml_with_host(
+            &config,
+            &CoreInstanceHostConfig {
+                wss_http3_supported: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            capable
+                .peer
+                .snapshot
+                .runtime
+                .feature_flags
+                .prefer_wss_http3_for_p2p
+        );
+
+        let trimmed = CoreInstanceConfig::from_toml_with_host(
+            &config,
+            &CoreInstanceHostConfig {
+                wss_http3_supported: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !trimmed
+                .peer
+                .snapshot
+                .runtime
+                .feature_flags
+                .prefer_wss_http3_for_p2p
+        );
     }
 
     #[test]
