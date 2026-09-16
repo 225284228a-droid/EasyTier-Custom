@@ -171,8 +171,8 @@ core_clap:
         如果该参数为空，则禁用转发。默认允许所有网络。
         例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）"
   disable_p2p:
-    en: "disable ordinary automatic p2p; still establish p2p with peers marked as need-p2p, and other peers should not proactively connect to this node"
-    zh-CN: "禁用普通自动P2P；仍会与标记为 need-p2p 的节点建立P2P连接，其他节点不应主动与当前节点建立P2P"
+    en: "disable ordinary automatic p2p; this node neither initiates nor accepts hole-punching except with peers marked as need-p2p; existing connections are not torn down"
+    zh-CN: "禁用普通自动P2P；本机不再主动发起打洞，也拒绝普通对端向本机发起的打洞（标记为 need-p2p 的节点除外）；已建立的连接不会断开"
   p2p_only:
     en: "only communicate with peers that already establish p2p connection"
     zh-CN: "仅与已经建立P2P连接的对等节点通信"
@@ -234,8 +234,8 @@ core_clap:
     en: "do not allow other nodes to use kcp to proxy tcp streams to this node. when a node with kcp proxy enabled accesses this node, the original tcp connection is preserved."
     zh-CN: "不允许其他节点使用 KCP 代理 TCP 流到此节点。开启 KCP 代理的节点访问此节点时，依然使用原始 TCP 连接。"
   enable_bbr:
-    en: "enable BBR loss-tolerant congestion control for local QUIC/HTTP3 sending, including QUIC proxy; default is false and requires a network instance restart"
-    zh-CN: "为本节点 QUIC/HTTP3（包括 QUIC 代理）发送连接启用 BBR 抗丢包流控，默认关闭，需重启网络实例生效"
+    en: "enable BBR loss-tolerant congestion control for local QUIC/HTTP3 sending, including QUIC proxy; BBR estimates the available bandwidth automatically from ACK delivery-rate samples, so no max-bandwidth setting exists or is needed; default is false and requires a network instance restart"
+    zh-CN: "为本节点 QUIC/HTTP3（包括 QUIC 代理）发送连接启用 BBR 抗丢包流控；BBR 通过 ACK 投递速率采样自动估计可用带宽，无需也无法配置最大带宽；默认关闭，需重启网络实例生效"
   enable_quic_proxy:
     en: "proxy tcp streams with QUIC, improving the latency and throughput on the network with udp packet loss."
     zh-CN: "使用 QUIC 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"

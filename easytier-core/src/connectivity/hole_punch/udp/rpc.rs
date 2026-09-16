@@ -11,7 +11,7 @@ use crate::{
         SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym,
         SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse, UdpHolePunchInbound,
         UdpHolePunchRuntime, UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
-        UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpSymPunchLock,
+        UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpPunchInboundGate, UdpSymPunchLock,
     },
     connectivity::stun::StunInfoProvider,
     proto::{
@@ -22,7 +22,7 @@ use crate::{
             SendPunchPacketConeRequest, SendPunchPacketEasySymRequest,
             SendPunchPacketHardSymRequest, SendPunchPacketHardSymResponse, UdpHolePunchRpc,
         },
-        rpc_types::{self, controller::BaseController},
+        rpc_types::{self, controller::BaseController, controller::Controller as _},
     },
 };
 
@@ -319,6 +319,7 @@ where
     T: UdpHolePunchTransportSink + 'static,
 {
     inner: CoreUdpHolePunchServer<R, T>,
+    inbound_gate: Arc<dyn UdpPunchInboundGate>,
 }
 
 impl<R, T> UdpHolePunchRpcEndpoint<R, T>
@@ -331,9 +332,13 @@ where
         transport_sink: Arc<T>,
         sym_punch_lock: UdpSymPunchLock,
         runtime: Arc<R>,
+        inbound_gate: Arc<dyn UdpPunchInboundGate>,
     ) -> Arc<Self> {
         let inner = CoreUdpHolePunchServer::new(runtime, stun, transport_sink, sym_punch_lock);
-        Arc::new(Self { inner })
+        Arc::new(Self {
+            inner,
+            inbound_gate,
+        })
     }
 
     pub(super) async fn start(&self) {
@@ -478,9 +483,19 @@ where
 
     async fn select_punch_listener(
         &self,
-        _controller: Self::Controller,
+        controller: Self::Controller,
         input: SelectPunchListenerRequest,
     ) -> rpc_types::error::Result<SelectPunchListenerResponse> {
+        if !self
+            .inbound_gate
+            .allow_inbound_punch(controller.get_caller_peer_id())
+            .await
+        {
+            return Err(anyhow::anyhow!(
+                "UDP hole punching is disabled by the local P2P policy"
+            )
+            .into());
+        }
         let response = UdpHolePunchInbound::select_punch_listener(
             self,
             select_listener_request_from_rpc(input),
@@ -493,9 +508,19 @@ where
 
     async fn send_punch_packet_cone(
         &self,
-        _controller: Self::Controller,
+        controller: Self::Controller,
         input: SendPunchPacketConeRequest,
     ) -> rpc_types::error::Result<Void> {
+        if !self
+            .inbound_gate
+            .allow_inbound_punch(controller.get_caller_peer_id())
+            .await
+        {
+            return Err(anyhow::anyhow!(
+                "UDP hole punching is disabled by the local P2P policy"
+            )
+            .into());
+        }
         UdpHolePunchInbound::send_punch_packet_cone(self, cone_request_from_rpc(input)?)
             .await
             .map_err(signal_error_to_rpc_error)?;
@@ -505,9 +530,19 @@ where
 
     async fn send_punch_packet_hard_sym(
         &self,
-        _controller: Self::Controller,
+        controller: Self::Controller,
         input: SendPunchPacketHardSymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketHardSymResponse> {
+        if !self
+            .inbound_gate
+            .allow_inbound_punch(controller.get_caller_peer_id())
+            .await
+        {
+            return Err(anyhow::anyhow!(
+                "UDP hole punching is disabled by the local P2P policy"
+            )
+            .into());
+        }
         let response = UdpHolePunchInbound::send_punch_packet_hard_sym(
             self,
             hard_symmetric_request_from_rpc(input)?,
@@ -520,9 +555,19 @@ where
 
     async fn send_punch_packet_easy_sym(
         &self,
-        _controller: Self::Controller,
+        controller: Self::Controller,
         input: SendPunchPacketEasySymRequest,
     ) -> rpc_types::error::Result<Void> {
+        if !self
+            .inbound_gate
+            .allow_inbound_punch(controller.get_caller_peer_id())
+            .await
+        {
+            return Err(anyhow::anyhow!(
+                "UDP hole punching is disabled by the local P2P policy"
+            )
+            .into());
+        }
         UdpHolePunchInbound::send_punch_packet_easy_sym(
             self,
             easy_symmetric_request_from_rpc(input)?,
@@ -535,9 +580,19 @@ where
 
     async fn send_punch_packet_both_easy_sym(
         &self,
-        _controller: Self::Controller,
+        controller: Self::Controller,
         input: SendPunchPacketBothEasySymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketBothEasySymResponse> {
+        if !self
+            .inbound_gate
+            .allow_inbound_punch(controller.get_caller_peer_id())
+            .await
+        {
+            return Err(anyhow::anyhow!(
+                "UDP hole punching is disabled by the local P2P policy"
+            )
+            .into());
+        }
         let response = UdpHolePunchInbound::send_punch_packet_both_easy_sym(
             self,
             both_easy_symmetric_request_from_rpc(input)?,

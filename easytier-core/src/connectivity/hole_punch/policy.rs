@@ -63,6 +63,15 @@ pub fn should_background_p2p_with_peer(
     ) && (!lazy_p2p || feature_flag.map(|flag| flag.need_p2p).unwrap_or(false))
 }
 
+/// Whether an inbound hole-punch request from a peer advertising
+/// `caller_need_p2p` is accepted when the local node disabled P2P. The
+/// `need_p2p` flag stays the only exception; peers without the flag are
+/// rejected, mirroring the initiator-side `unwrap_or(!local_disable_p2p)`
+/// strictness from the disabled node's point of view.
+pub fn should_accept_inbound_punch(local_disable_p2p: bool, caller_need_p2p: bool) -> bool {
+    !local_disable_p2p || caller_need_p2p
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +217,17 @@ mod tests {
             true,
             false
         ));
+    }
+
+    #[test]
+    fn inbound_punch_respects_local_disable_with_need_p2p_exception() {
+        // When P2P is enabled locally every inbound punch is accepted.
+        assert!(should_accept_inbound_punch(false, false));
+        assert!(should_accept_inbound_punch(false, true));
+
+        // A disabled node rejects normal peers and unknown callers, but
+        // still serves peers that explicitly declare need_p2p.
+        assert!(!should_accept_inbound_punch(true, false));
+        assert!(should_accept_inbound_punch(true, true));
     }
 }

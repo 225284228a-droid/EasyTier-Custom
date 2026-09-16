@@ -32,6 +32,13 @@ pub trait Controller: Send + Sync + Clone + 'static {
     fn get_raw_output(&self) -> Option<Bytes> {
         None
     }
+
+    /// Peer id of the RPC caller, set by the transport that knows the peer
+    /// graph (peer RPC); standalone transports leave it unset.
+    fn set_caller_peer_id(&mut self, _caller_peer_id: Option<u64>) {}
+    fn get_caller_peer_id(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -46,6 +53,7 @@ pub struct BaseController {
     pub trace_id: i32,
     pub raw_data: Arc<Mutex<BaseControllerRawData>>,
     pub tunnel_info: Option<TunnelInfo>,
+    pub caller_peer_id: Option<u64>,
 }
 
 impl Controller for BaseController {
@@ -88,6 +96,14 @@ impl Controller for BaseController {
     fn set_tunnel_info(&mut self, tunnel_info: Option<TunnelInfo>) {
         self.tunnel_info = tunnel_info;
     }
+
+    fn set_caller_peer_id(&mut self, caller_peer_id: Option<u64>) {
+        self.caller_peer_id = caller_peer_id;
+    }
+
+    fn get_caller_peer_id(&self) -> Option<u64> {
+        self.caller_peer_id
+    }
 }
 
 impl Default for BaseController {
@@ -100,6 +116,7 @@ impl Default for BaseController {
                 raw_output: None,
             })),
             tunnel_info: None,
+            caller_peer_id: None,
         }
     }
 }

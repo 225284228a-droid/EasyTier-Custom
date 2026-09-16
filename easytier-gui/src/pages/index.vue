@@ -463,8 +463,8 @@ const configServerConnectionStatus = computed(() => {
       :style="{ width: '50vw' }">
       <div class="flex flex-col gap-3">
         <label for="config-server-address">{{ t('config-server.address') }}</label>
-        <InputText id="config-server-address" v-model="(editingMode as WebClientConfig).config_server_url"
-          :placeholder="t('config-server.address_placeholder')" />
+        <Textarea id="config-server-address" v-model="(editingMode as WebClientConfig).config_server_url"
+          :placeholder="t('config-server.address_placeholder')" rows="3" auto-resize />
         <small class="p-text-secondary whitespace-pre-wrap">{{ t('config-server.description') }}</small>
       </div>
       <template #footer>

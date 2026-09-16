@@ -193,6 +193,7 @@ where
                 transport_sink,
                 sym_punch_lock,
                 runtime,
+                peer_source.clone(),
             ),
             client,
             peer_source,

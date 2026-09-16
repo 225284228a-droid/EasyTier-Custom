@@ -212,6 +212,7 @@ impl Server {
         descriptor: common::RpcDescriptor,
         reg: Arc<ServiceRegistry>,
         tunnel_info: Option<TunnelInfo>,
+        caller_peer_id: Option<u64>,
     ) -> Result<Bytes> {
         let body = if let Some(compression_info) = packet.compression_info {
             decompress_packet(
@@ -223,7 +224,7 @@ impl Server {
             packet.body
         };
         let rpc_request = RpcRequest::decode(Bytes::from(body))?;
-        dispatch_request(reg.as_ref(), descriptor, rpc_request, tunnel_info).await
+        dispatch_request(reg.as_ref(), descriptor, rpc_request, tunnel_info, caller_peer_id).await
     }
 
     async fn handle_rpc(
@@ -258,7 +259,14 @@ impl Server {
         let now = std::time::Instant::now();
 
         let compression_info = packet.compression_info;
-        let resp_bytes = Self::handle_rpc_request(packet, desc.clone(), reg, tunnel_info).await;
+        let resp_bytes = Self::handle_rpc_request(
+            packet,
+            desc.clone(),
+            reg,
+            tunnel_info,
+            Some(u64::from(from_peer)),
+        )
+        .await;
 
         match &resp_bytes {
             Ok(r) => {

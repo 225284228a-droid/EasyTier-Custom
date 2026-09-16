@@ -29,6 +29,18 @@ pub fn native_instance_manager() -> NativeInstanceManager {
     native_instance_manager_with_optional_runtime(None)
 }
 
+/// Like [`native_instance_manager`], but persists managed network configs as
+/// TOML files under `config_dir`. Setting a config dir flips the instance
+/// manager into the decentralized management mode: disabled instances keep
+/// their on-disk config and are advertised as locally managed to the config
+/// server.
+#[cfg(feature = "management-rpc")]
+pub fn native_instance_manager_with_config_dir(
+    config_dir: Option<std::path::PathBuf>,
+) -> NativeInstanceManager {
+    native_instance_manager_with_optional_runtime(None).with_config_path(config_dir)
+}
+
 #[cfg(feature = "management")]
 pub fn native_cli_instance_manager() -> NativeInstanceManager {
     let process_runtime = CoreProcessRuntime::new();

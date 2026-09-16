@@ -28,7 +28,7 @@ use easytier::{
         },
         log,
     },
-    instance::factory::{NativeInstanceManager, native_instance_manager},
+    instance::factory::{NativeInstanceManager, native_instance_manager_with_config_dir},
     proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -56,6 +56,15 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 static INSTANCE_MANAGER: once_cell::sync::Lazy<RwLock<Option<Arc<NativeInstanceManager>>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
+/// Directory under the app data dir where the embedded core persists managed
+/// network configs (`{instance_id}.toml`) and the enabled/disabled state file.
+/// Setting it opts the GUI into the decentralized management mode.
+static INSTANCE_CONFIG_DIR: once_cell::sync::Lazy<RwLock<Option<std::path::PathBuf>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(None));
+
+static INSTANCE_STATE_STORE: once_cell::sync::Lazy<RwLock<Option<Arc<InstanceStateStore>>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(None));
+
 static RPC_RING_UUID: once_cell::sync::Lazy<uuid::Uuid> =
     once_cell::sync::Lazy::new(uuid::Uuid::new_v4);
 
@@ -78,8 +87,19 @@ struct RpcServer {
 static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
-static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
-    once_cell::sync::Lazy::new(|| RwLock::new(None));
+/// One web client per configured config server URL. Multiple addresses are
+/// accepted as a comma-separated string, mirroring the core CLI's
+/// `--config-server a,b,c` behavior.
+static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Vec<WebClient>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(Vec::new()));
+
+/// Splits a comma-separated config server list into trimmed, non-empty URLs.
+fn parse_config_server_urls(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+        .collect()
+}
 
 macro_rules! get_client_manager {
     () => {{
@@ -480,7 +500,7 @@ async fn resolve_rpc_bind_url(url: &url::Url) -> Result<std::net::SocketAddr, St
 
 #[tauri::command]
 async fn init_rpc_connection(
-    _app: AppHandle,
+    app: AppHandle,
     is_normal_mode: bool,
     url: Option<String>,
 ) -> Result<(), String> {
@@ -498,10 +518,40 @@ async fn init_rpc_connection(
     let mut client_url = url.clone();
     let mut local_process_runtime = None;
     if is_normal_mode {
+        // Persist managed network configs under the app data dir so the
+        // embedded core participates in the decentralized management mode:
+        // disabled networks keep their config files, and the config server
+        // stops re-pushing its own desired state over local changes.
+        let config_dir = {
+            let mut dir_guard = INSTANCE_CONFIG_DIR.write().await;
+            if dir_guard.is_none() {
+                let dir = app
+                    .path()
+                    .app_data_dir()
+                    .with_context(|| "Failed to resolve app data directory")
+                    .map_err(|e| format!("{:#}", e))?
+                    .join("network-configs");
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| {
+                        format!("Failed to create instance config dir {}", dir.display())
+                    })
+                    .map_err(|e| format!("{:#}", e))?;
+                *dir_guard = Some(dir);
+            }
+            dir_guard.clone().unwrap()
+        };
+        let instance_state_store = {
+            let mut store_guard = INSTANCE_STATE_STORE.write().await;
+            if store_guard.is_none() {
+                *store_guard = Some(Arc::new(InstanceStateStore::new(Some(&config_dir))));
+            }
+            store_guard.clone().unwrap()
+        };
+
         let instance_manager = if let Some(im) = instance_manager_guard.take() {
             im
         } else {
-            Arc::new(native_instance_manager())
+            Arc::new(native_instance_manager_with_config_dir(Some(config_dir)))
         };
 
         let portal = url.and_then(|s| {
@@ -542,7 +592,7 @@ async fn init_rpc_connection(
             let rpc_server = ApiRpcServer::from_tunnel(
                 tunnel,
                 instance_manager.clone(),
-                Arc::new(InstanceStateStore::in_memory()),
+                instance_state_store,
             )
             .with_rx_timeout(None)
             .serve()
@@ -560,6 +610,8 @@ async fn init_rpc_connection(
         client_url = connect_url.map(|u| u.to_string());
     } else {
         *rpc_server_guard = None;
+        *INSTANCE_STATE_STORE.write().await = None;
+        *INSTANCE_CONFIG_DIR.write().await = None;
     }
 
     let client_manager = tokio::time::timeout(
@@ -573,7 +625,7 @@ async fn init_rpc_connection(
     *client_manager_guard = Some(client_manager);
 
     if !is_normal_mode {
-        drop(WEB_CLIENT.write().await.take());
+        WEB_CLIENT.write().await.clear();
         if let Some(instance_manager) = instance_manager_guard.take() {
             instance_manager
                 .retain_network_instances(&[])
@@ -593,16 +645,49 @@ async fn is_client_running() -> Result<bool, String> {
 
 #[tauri::command]
 async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), String> {
-    let mut web_client_guard = WEB_CLIENT.write().await;
+    let mut web_clients = WEB_CLIENT.write().await;
     let Some(url) = url else {
-        *web_client_guard = None;
+        web_clients.clear();
         return Ok(());
     };
+    let config_server_urls = parse_config_server_urls(&url);
+    if config_server_urls.is_empty() {
+        web_clients.clear();
+        return Ok(());
+    }
     let instance_manager = INSTANCE_MANAGER
         .try_read()
         .map_err(|_| "Failed to acquire read lock for instance manager")?
         .clone()
         .ok_or_else(|| "Instance manager is not available".to_string())?;
+
+    // Reuse the shared persistent state store so the config server, the
+    // local rpc portal and the web client see one enabled/disabled state.
+    let state_store = {
+        let mut store_guard = INSTANCE_STATE_STORE.write().await;
+        if store_guard.is_none() {
+            let config_dir = {
+                let mut dir_guard = INSTANCE_CONFIG_DIR.write().await;
+                if dir_guard.is_none() {
+                    let dir = app
+                        .path()
+                        .app_data_dir()
+                        .with_context(|| "Failed to resolve app data directory")
+                        .map_err(|e| format!("{:#}", e))?
+                        .join("network-configs");
+                    std::fs::create_dir_all(&dir)
+                        .with_context(|| {
+                            format!("Failed to create instance config dir {}", dir.display())
+                        })
+                        .map_err(|e| format!("{:#}", e))?;
+                    *dir_guard = Some(dir);
+                }
+                dir_guard.clone().unwrap()
+            };
+            *store_guard = Some(Arc::new(InstanceStateStore::new(Some(&config_dir))));
+        }
+        store_guard.clone().unwrap()
+    };
 
     let hooks = Arc::new(manager::GuiHooks { app: app.clone() });
     let machine_id_state_dir = app
@@ -611,33 +696,34 @@ async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), Stri
         .with_context(|| "Failed to resolve machine id state directory")
         .map_err(|e| format!("{:#}", e))?;
 
-    let web_client = web_client::run_web_client(
-        url.as_str(),
-        easytier::common::MachineIdOptions {
-            explicit_machine_id: None,
-            state_dir: Some(machine_id_state_dir),
-        },
-        None,
-        false,
-        instance_manager,
-        Some(hooks),
-        Arc::new(InstanceStateStore::in_memory()),
-    )
-    .await
-    .with_context(|| "Failed to initialize web client")
-    .map_err(|e| format!("{:#}", e))?;
-    *web_client_guard = Some(web_client);
+    web_clients.clear();
+    for config_server_url in config_server_urls {
+        let web_client = web_client::run_web_client(
+            config_server_url.as_str(),
+            easytier::common::MachineIdOptions {
+                explicit_machine_id: None,
+                state_dir: Some(machine_id_state_dir.clone()),
+            },
+            None,
+            false,
+            instance_manager.clone(),
+            Some(hooks.clone()),
+            state_store.clone(),
+        )
+        .await
+        .with_context(|| {
+            format!("Failed to initialize web client for {config_server_url}")
+        })
+        .map_err(|e| format!("{:#}", e))?;
+        web_clients.push(web_client);
+    }
     Ok(())
 }
 
 #[tauri::command]
 async fn is_web_client_connected() -> Result<bool, String> {
-    let web_client_guard = WEB_CLIENT.read().await;
-    if let Some(web_client) = web_client_guard.as_ref() {
-        Ok(web_client.is_connected())
-    } else {
-        Ok(false)
-    }
+    let web_clients = WEB_CLIENT.read().await;
+    Ok(!web_clients.is_empty() && web_clients.iter().all(|client| client.is_connected()))
 }
 
 // 获取日志目录的辅助函数
@@ -718,11 +804,15 @@ mod manager {
     use dashmap::{DashMap, DashSet};
     use easytier::common::config::{NetworkConfig, NetworkConfigExt};
     use easytier::proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
-    use easytier::proto::api::manage::RunNetworkInstanceRequest;
+    use easytier::proto::api::manage::{
+        RunNetworkInstanceRequest, SetNetworkInstanceEnabledRequest,
+    };
     use easytier::proto::rpc::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
     use easytier::web_client::WebClientHooks;
-    use easytier_core::management::remote_client::PersistentConfig;
+    use easytier_core::management::remote_client::{
+        PersistentConfig, RemoteClientError,
+    };
 
     pub(super) struct GuiHooks {
         pub(super) app: AppHandle,
@@ -1247,6 +1337,7 @@ mod manager {
             Ok(())
         }
     }
+    #[async_trait]
     impl RemoteClientManager<AppHandle, GUIConfig, anyhow::Error> for GUIClientManager {
         fn get_rpc_client(
             &self,
@@ -1265,6 +1356,67 @@ mod manager {
 
         fn get_storage(&self) -> &impl Storage<AppHandle, GUIConfig, anyhow::Error> {
             &self.storage
+        }
+
+        /// Local disable must NOT delete the instance: with the decentralized
+        /// management mode the on-disk config has to survive so the web
+        /// console can re-enable the network later, and the core-side state
+        /// store has to record the disable so the console stops considering
+        /// the network as expected-running. Disabling therefore flips the
+        /// core-side enabled state; enabling runs the stored config inline,
+        /// which also (re)persists its file under the instance config dir.
+        async fn handle_update_network_state(
+            &self,
+            identify: AppHandle,
+            inst_id: uuid::Uuid,
+            disabled: bool,
+        ) -> Result<(), RemoteClientError<anyhow::Error>> {
+            let (cfg, source) = self
+                .handle_get_network_config_with_source(identify.clone(), inst_id)
+                .await?;
+            self.get_storage()
+                .insert_or_update_user_network_config(
+                    identify.clone(),
+                    inst_id,
+                    cfg.clone(),
+                    source,
+                )
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+
+            let client = self
+                .get_rpc_client(identify.clone())
+                .ok_or(RemoteClientError::ClientNotFound)?;
+            if disabled {
+                client
+                    .set_network_instance_enabled(
+                        BaseController::default(),
+                        SetNetworkInstanceEnabledRequest {
+                            inst_id: Some(inst_id.into()),
+                            enabled: false,
+                        },
+                    )
+                    .await?;
+            } else {
+                client
+                    .run_network_instance(
+                        BaseController::default(),
+                        RunNetworkInstanceRequest {
+                            inst_id: Some(inst_id.into()),
+                            config: Some(cfg),
+                            overwrite: true,
+                            source: config_source_to_rpc(source),
+                        },
+                    )
+                    .await?;
+            }
+
+            self.get_storage()
+                .update_network_config_state(identify, inst_id, disabled)
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+
+            Ok(())
         }
     }
 

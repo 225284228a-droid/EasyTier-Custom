@@ -1,6 +1,8 @@
 import { type } from '@tauri-apps/plugin-os';
 
 export interface WebClientConfig {
+    // Comma-separated list of config server URLs, mirroring the core CLI's
+    // `--config-server a,b,c` behavior. One web client is started per URL.
     config_server_url?: string
 }
 

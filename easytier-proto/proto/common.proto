@@ -99,6 +99,9 @@ message FlagsInConfig {
   bool disable_wss_http3_for_p2p = 47;
 
   // Use BBR congestion control for local QUIC/HTTP3 sending, including QUIC proxy.
+  // BBR is loss-tolerant (packet loss does not collapse the send rate like
+  // CUBIC) and estimates the available bandwidth automatically from ACK
+  // delivery-rate samples; there is no (and need be no) max-bandwidth knob.
   bool enable_bbr = 48;
 }
 

@@ -389,6 +389,41 @@ pub trait UdpHolePunchPeerSource: Send + Sync {
     async fn is_easytier_managed_ipv6(&self, ip: &Ipv6Addr) -> bool;
 }
 
+/// Gate for inbound UDP punch RPCs: a node that disabled P2P accepts them
+/// only from peers advertising the `need_p2p` exception.
+#[async_trait]
+pub trait UdpPunchInboundGate: Send + Sync {
+    async fn allow_inbound_punch(&self, caller_peer_id: Option<u64>) -> bool;
+}
+
+#[async_trait]
+impl<P> UdpPunchInboundGate for P
+where
+    P: UdpHolePunchPeerSource + Send + Sync + 'static,
+{
+    async fn allow_inbound_punch(&self, caller_peer_id: Option<u64>) -> bool {
+        if !self.p2p_policy_flags().disable_p2p {
+            return true;
+        }
+        let Some(caller_peer_id) = caller_peer_id.and_then(|peer_id| {
+            crate::config::PeerId::try_from(peer_id).ok()
+        }) else {
+            return false;
+        };
+        let caller_need_p2p = self
+            .candidates()
+            .await
+            .into_iter()
+            .find(|candidate| candidate.peer_id == caller_peer_id)
+            .and_then(|candidate| candidate.feature_flag)
+            .is_some_and(|flag| flag.need_p2p);
+        crate::connectivity::hole_punch::policy::should_accept_inbound_punch(
+            true,
+            caller_need_p2p,
+        )
+    }
+}
+
 #[async_trait]
 pub trait UdpHolePunchRuntime: Send + Sync + 'static {
     type Socket: VirtualUdpSocket + 'static;
@@ -455,7 +490,83 @@ mod tests {
     };
 
     use super::*;
-    use crate::socket::udp::UdpSessionKind;
+    use crate::{
+        connectivity::hole_punch::udp::UdpPunchCandidate,
+        socket::udp::UdpSessionKind,
+    };
+
+    struct GatePeerSource {
+        disable_p2p: bool,
+        candidates: Vec<UdpPunchCandidate>,
+    }
+
+    #[async_trait::async_trait]
+    impl UdpHolePunchPeerSource for GatePeerSource {
+        fn local_peer_id(&self) -> crate::config::PeerId {
+            1
+        }
+
+        fn p2p_policy_flags(&self) -> P2pPolicyFlags {
+            P2pPolicyFlags {
+                disable_p2p: self.disable_p2p,
+                ..Default::default()
+            }
+        }
+
+        async fn candidates(&self) -> Vec<UdpPunchCandidate> {
+            self.candidates.clone()
+        }
+
+        fn p2p_demand_notify(&self) -> Arc<ExternalTaskSignal> {
+            Arc::new(ExternalTaskSignal::new())
+        }
+
+        fn is_local_virtual_ip(&self, _ip: &IpAddr) -> bool {
+            false
+        }
+
+        async fn is_easytier_managed_ipv6(&self, _ip: &Ipv6Addr) -> bool {
+            false
+        }
+    }
+
+    fn gate_candidate(peer_id: crate::config::PeerId, need_p2p: bool) -> UdpPunchCandidate {
+        UdpPunchCandidate {
+            peer_id,
+            udp_nat_type: crate::proto::common::NatType::Unknown,
+            feature_flag: Some(crate::proto::common::PeerFeatureFlag {
+                need_p2p,
+                ..Default::default()
+            }),
+            has_direct_connection: false,
+            has_recent_traffic: false,
+            peer_disguise_flags: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_gate_accepts_everything_without_local_disable() {
+        let source = GatePeerSource {
+            disable_p2p: false,
+            candidates: vec![],
+        };
+        assert!(source.allow_inbound_punch(Some(7)).await);
+        assert!(source.allow_inbound_punch(None).await);
+    }
+
+    #[tokio::test]
+    async fn inbound_gate_rejects_disabled_node_except_need_p2p_callers() {
+        let source = GatePeerSource {
+            disable_p2p: true,
+            candidates: vec![gate_candidate(7, false), gate_candidate(8, true)],
+        };
+        // Ordinary peers and unknown callers are rejected.
+        assert!(!source.allow_inbound_punch(Some(7)).await);
+        assert!(!source.allow_inbound_punch(Some(9)).await);
+        assert!(!source.allow_inbound_punch(None).await);
+        // The need_p2p exception still passes.
+        assert!(source.allow_inbound_punch(Some(8)).await);
+    }
 
     struct MockSocket {
         local_addr: SocketAddr,

@@ -22,7 +22,10 @@ use crate::{
     connectivity::{
         hole_punch::{
             HolePunchRpcRegistry, HolePunchTunnelSink,
-            policy::{BackOff, should_background_p2p_with_peer, should_try_p2p_with_peer},
+            policy::{
+                BackOff, should_accept_inbound_punch, should_background_p2p_with_peer,
+                should_try_p2p_with_peer,
+            },
         },
         protocol::{ClientProtocolUpgrader, ServerProtocolUpgrade, ServerProtocolUpgrader},
         stun::StunInfoProvider,
@@ -36,7 +39,7 @@ use crate::{
         peer_rpc::{
             TcpHolePunchRequest, TcpHolePunchResponse, TcpHolePunchRpc, TcpHolePunchRpcServer,
         },
-        rpc_types::{self, controller::BaseController},
+        rpc_types::{self, controller::BaseController, controller::Controller as _},
     },
     socket::{
         IpVersion, SocketContext,
@@ -534,6 +537,28 @@ where
         self.transport_sink.supports_wss_hole_punching()
     }
 
+    /// Whether an inbound punch from `caller` is accepted under the local
+    /// P2P policy. Only the `need_p2p` exception passes a disabled node;
+    /// unknown callers are rejected because their intent cannot be verified.
+    async fn accept_inbound_punch(&self, caller_peer_id: Option<u64>) -> bool {
+        if !self.peer_source.p2p_policy_flags().disable_p2p {
+            return true;
+        }
+        let Some(caller_peer_id) = caller_peer_id.and_then(|peer_id| PeerId::try_from(peer_id).ok())
+        else {
+            return false;
+        };
+        let caller_need_p2p = self
+            .peer_source
+            .candidates()
+            .await
+            .into_iter()
+            .find(|candidate| candidate.peer_id == caller_peer_id)
+            .and_then(|candidate| candidate.feature_flag)
+            .is_some_and(|flag| flag.need_p2p);
+        should_accept_inbound_punch(true, caller_need_p2p)
+    }
+
     fn start(&self) {
         let mut reaper = self.reaper.lock().unwrap();
         if reaper.as_ref().is_some_and(|task| !task.is_finished()) {
@@ -578,7 +603,7 @@ where
     #[tracing::instrument(skip(self), fields(a_mapped_addr = ?input.connector_mapped_addr), err)]
     async fn exchange_mapped_addr(
         &self,
-        _controller: Self::Controller,
+        controller: Self::Controller,
         input: TcpHolePunchRequest,
     ) -> rpc_types::error::Result<TcpHolePunchResponse> {
         let local_nat_type =
@@ -588,6 +613,19 @@ where
         if local_nat_type == NatType::Unknown {
             tracing::warn!(?local_nat_type, "tcp hole punch rpc rejected (unknown)");
             return Err(anyhow::anyhow!("tcp nat type unknown not supported").into());
+        }
+        if !self
+            .accept_inbound_punch(controller.get_caller_peer_id())
+            .await
+        {
+            tracing::warn!(
+                caller = ?controller.get_caller_peer_id(),
+                "tcp hole punch rpc rejected (P2P disabled by local policy)"
+            );
+            return Err(anyhow::anyhow!(
+                "TCP hole punching is disabled by the local P2P policy"
+            )
+            .into());
         }
         let requested_scheme = input.scheme.trim().to_owned();
         if requested_scheme.is_empty() && policy.only_use_wss_http3_for_hole_punching {
