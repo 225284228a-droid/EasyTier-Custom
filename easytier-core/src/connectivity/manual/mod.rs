@@ -629,11 +629,17 @@ fn apply_resolved_endpoint_info(
     requested_url: Url,
     tunnel_prefixes: Vec<String>,
 ) -> Box<dyn Tunnel> {
-    if tunnel_prefixes.is_empty() {
-        return tunnel;
-    }
+    // The tunnel identity must be the requested URL, not what the protocol
+    // upgrader put into the inner info: transports may rewrite it (e.g. SNI
+    // disguise query params), and the connector's liveness check compares
+    // against the requested URL, so any divergence would trigger endless
+    // reconnects that stack connections.
     let inner_info = tunnel.info().unwrap_or_default();
-    let tunnel_type = format!("{}-{}", tunnel_prefixes.join("-"), inner_info.tunnel_type);
+    let tunnel_type = if tunnel_prefixes.is_empty() {
+        inner_info.tunnel_type
+    } else {
+        format!("{}-{}", tunnel_prefixes.join("-"), inner_info.tunnel_type)
+    };
     Box::new(ResolvedManualTunnel {
         inner: tunnel,
         info: TunnelInfo {
@@ -1350,6 +1356,34 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("connect timeout after"));
+    }
+
+    #[test]
+    fn manual_conn_identity_always_reports_the_requested_url() {
+        // Simulate a protocol upgrader that rewrote the tunnel identity, e.g.
+        // appending an SNI disguise query param: the connector must still
+        // register liveness under the URL it was configured with, otherwise
+        // every tick looks dead and reconnects stack connections.
+        let (socket, _remote_socket) = crate::tunnel::ring::create_ring_socket_pair(16);
+        let polluted: url::Url = "wss://192.0.2.1:443/?sni=disguise.example".parse().unwrap();
+        let resolved: url::Url = "wss://198.51.100.7:41443".parse().unwrap();
+        let inner = crate::tunnel::ring::RingTunnel::new(
+            socket,
+            Some(TunnelInfo {
+                tunnel_type: "wss".to_owned(),
+                local_addr: None,
+                remote_addr: Some(polluted.into()),
+                resolved_remote_addr: Some(resolved.clone().into()),
+            }),
+        );
+        let requested: Url = "wss://192.0.2.1:443".parse().unwrap();
+
+        let wrapped = apply_resolved_endpoint_info(Box::new(inner), requested.clone(), Vec::new());
+        let info = wrapped.info().unwrap();
+
+        assert_eq!(url::Url::from(info.remote_addr.unwrap()), requested);
+        assert_eq!(url::Url::from(info.resolved_remote_addr.unwrap()), resolved);
+        assert_eq!(info.tunnel_type, "wss");
     }
 
     #[test]

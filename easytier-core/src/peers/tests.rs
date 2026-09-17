@@ -20,8 +20,47 @@ use crate::{
         recv_packet_envelope_from_chan,
         test_support::NoopPeerContext,
     },
-    tunnel::ring::create_ring_tunnel_pair,
+    proto::common::TunnelInfo,
+    tunnel::ring::{RingTunnel, create_ring_socket_pair, create_ring_tunnel_pair},
 };
+
+async fn handshake_client_conn_with_remote_url(
+    url: &url::Url,
+    peer_session_store: Arc<PeerSessionStore>,
+) -> (PeerConn, PeerConn) {
+    let (client_socket, server_socket) = create_ring_socket_pair(64);
+    let client_tunnel = Box::new(RingTunnel::new(
+        client_socket,
+        Some(TunnelInfo {
+            tunnel_type: "tcp".to_owned(),
+            local_addr: None,
+            remote_addr: Some(url.clone().into()),
+            resolved_remote_addr: Some(url.clone().into()),
+        }),
+    ));
+    let server_tunnel = Box::new(RingTunnel::new(server_socket, None));
+    let mut client_conn = PeerConn::new(
+        1,
+        Arc::new(NoopPeerContext::default()),
+        client_tunnel,
+        peer_session_store.clone(),
+    );
+    client_conn.set_is_hole_punched(false);
+    let mut server_conn = PeerConn::new(
+        2,
+        Arc::new(NoopPeerContext::default()),
+        server_tunnel,
+        peer_session_store,
+    );
+
+    let (client_ret, server_ret) = tokio::join!(
+        client_conn.do_handshake_as_client(),
+        server_conn.do_handshake_as_server()
+    );
+    client_ret.unwrap();
+    server_ret.unwrap();
+    (client_conn, server_conn)
+}
 
 impl PeerConn {
     #[tracing::instrument]
@@ -330,4 +369,59 @@ async fn peer_map_reselects_cached_connection_after_close() {
         client_map.get_peer_default_conn_id(2).await,
         Some(first_conn_id)
     );
+}
+
+#[tokio::test]
+async fn peer_map_replaces_superseded_client_conns_for_the_same_url() {
+    let peer_session_store = Arc::new(PeerSessionStore::new());
+    let client_ctx = Arc::new(NoopPeerContext::default());
+    let url: url::Url = "tcp://127.0.0.1:11010".parse().unwrap();
+
+    let (client_tx, _client_rx) = create_packet_recv_chan();
+    let client_map = PeerMap::new(client_tx, client_ctx.clone(), 1);
+
+    let (conn_a, _server_a) =
+        handshake_client_conn_with_remote_url(&url, peer_session_store.clone()).await;
+    let conn_a_id = conn_a.get_conn_id();
+    client_map.add_new_peer_conn(conn_a).await.unwrap();
+    assert!(client_map.is_client_url_alive(&url));
+    assert_eq!(
+        client_map
+            .get_peer_by_id(2)
+            .unwrap()
+            .list_peer_conns()
+            .await
+            .len(),
+        1
+    );
+
+    let (conn_b, _server_b) = handshake_client_conn_with_remote_url(&url, peer_session_store).await;
+    client_map.add_new_peer_conn(conn_b).await.unwrap();
+
+    timeout(Duration::from_secs(2), async {
+        while client_map
+            .get_peer_by_id(2)
+            .unwrap()
+            .list_peer_conns()
+            .await
+            .len()
+            != 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("superseded conn should be closed promptly");
+
+    let remaining = client_map
+        .get_peer_by_id(2)
+        .unwrap()
+        .list_peer_conns()
+        .await;
+    assert_eq!(remaining.len(), 1);
+    assert_ne!(
+        remaining[0].conn_id.parse::<uuid::Uuid>().unwrap(),
+        conn_a_id
+    );
+    assert!(client_map.is_client_url_alive(&url));
 }

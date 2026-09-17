@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
 };
@@ -41,7 +41,7 @@ pub struct PeerMap {
     peer_map: DashMap<PeerId, Arc<Peer>>,
     packet_send: PacketRecvChan,
     routes: RwLock<Vec<ArcRoute>>,
-    alive_client_urls: Arc<Mutex<HashMap<url::Url, HashSet<PeerConnId>>>>,
+    alive_client_urls: Arc<Mutex<HashMap<url::Url, HashMap<PeerConnId, PeerId>>>>,
 }
 
 impl PeerMap {
@@ -67,8 +67,10 @@ impl PeerMap {
     }
 
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        let _ = self.maintain_alive_client_urls(&peer_conn);
+        let alive_url = self.maintain_alive_client_urls(&peer_conn);
         let peer_id = peer_conn.get_peer_id();
+        let conn_id = peer_conn.get_conn_id();
+        let conn_is_hole_punched = peer_conn.is_hole_punched();
         let no_entry = self.peer_map.get(&peer_id).is_none();
         if no_entry {
             let new_peer = Peer::new(peer_id, self.packet_send.clone(), self.context.clone());
@@ -78,10 +80,50 @@ impl PeerMap {
             let peer = self.peer_map.get(&peer_id).unwrap().clone();
             peer.add_peer_conn(peer_conn).await?;
         }
+        // A non-hole-punched client conn replaces earlier conns to the same URL:
+        // the connector only dials again because the previous conns looked dead,
+        // and letting the old ones linger leaks one conn per reconnect until the
+        // peer resets them all.
+        if let (Some(alive_url), false) = (alive_url, conn_is_hole_punched) {
+            self.close_superseded_client_conns(&alive_url, conn_id)
+                .await;
+        }
         Ok(())
     }
 
-    fn maintain_alive_client_urls(&self, peer_conn: &PeerConn) -> Option<()> {
+    async fn close_superseded_client_conns(&self, url: &url::Url, keep_conn_id: PeerConnId) {
+        let superseded: Vec<(PeerConnId, PeerId)> = {
+            let mut guard = self.alive_client_urls.lock();
+            let Some(conns) = guard.get_mut(url) else {
+                return;
+            };
+            let stale: Vec<(PeerConnId, PeerId)> = conns
+                .iter()
+                .filter(|(conn_id, _)| **conn_id != keep_conn_id)
+                .map(|(conn_id, peer_id)| (*conn_id, *peer_id))
+                .collect();
+            for (conn_id, _) in &stale {
+                conns.remove(conn_id);
+            }
+            stale
+        };
+        for (conn_id, peer_id) in superseded {
+            tracing::warn!(?url, ?peer_id, ?conn_id, "closing superseded client conn");
+            if let Some(peer) = self.get_peer_by_id(peer_id) {
+                if let Err(error) = peer.close_peer_conn(&conn_id).await {
+                    tracing::debug!(
+                        ?url,
+                        ?peer_id,
+                        ?conn_id,
+                        ?error,
+                        "superseded conn already gone"
+                    );
+                }
+            }
+        }
+    }
+
+    fn maintain_alive_client_urls(&self, peer_conn: &PeerConn) -> Option<url::Url> {
         let conn_info = peer_conn.get_conn_info();
         if !conn_info.is_client {
             return None;
@@ -90,13 +132,15 @@ impl PeerMap {
         let close_notifier = peer_conn.get_close_notifier();
         let alive_conns_weak = Arc::downgrade(&self.alive_client_urls);
         let conn_id = close_notifier.get_conn_id();
+        let peer_id = peer_conn.get_peer_id();
         let alive_client_url: url::Url = conn_info.tunnel?.remote_addr?.into();
         self.alive_client_urls
             .lock()
             .entry(alive_client_url.clone())
             .or_default()
-            .insert(conn_id);
+            .insert(conn_id, peer_id);
 
+        let alive_client_url_for_task = alive_client_url.clone();
         tokio::spawn(async move {
             if let Some(mut waiter) = close_notifier.get_waiter().await {
                 let _ = waiter.recv().await;
@@ -105,10 +149,10 @@ impl PeerMap {
                 return;
             };
             let mut guard = alive_conns.lock();
-            if let Some(conn_ids) = guard.get_mut(&alive_client_url) {
-                conn_ids.retain(|id| id != &conn_id);
+            if let Some(conn_ids) = guard.get_mut(&alive_client_url_for_task) {
+                conn_ids.remove(&conn_id);
                 if conn_ids.is_empty() {
-                    guard.remove(&alive_client_url);
+                    guard.remove(&alive_client_url_for_task);
                 }
             }
             let alive_conn_count = guard.len();
@@ -120,7 +164,7 @@ impl PeerMap {
             );
         });
 
-        Some(())
+        Some(alive_client_url)
     }
 
     pub fn is_client_url_alive(&self, url: &url::Url) -> bool {
