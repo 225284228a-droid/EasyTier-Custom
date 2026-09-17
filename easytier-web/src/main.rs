@@ -6,13 +6,13 @@ extern crate rust_i18n;
 use std::sync::Arc;
 use std::{net::IpAddr, time::Duration};
 
+use anyhow::Context as _;
 use clap::Parser;
 use easytier::tunnel::websocket::WsTunnelListener;
 use easytier::{
     common::{
         config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
         constants::EASYTIER_VERSION,
-        error::Error,
         log,
         network::{local_ipv4, local_ipv6},
     },
@@ -88,6 +88,15 @@ struct Cli {
         help = t!("cli.config_server_protocol").to_string(),
     )]
     config_server_protocol: String,
+
+    #[arg(
+        long,
+        env = "ET_CONFIG_SERVER_LISTENERS",
+        value_delimiter = ',',
+        num_args = 1..,
+        help = t!("cli.config_server_listeners").to_string(),
+    )]
+    config_server_listeners: Option<Vec<String>>,
 
     #[arg(
         long,
@@ -230,55 +239,130 @@ impl LoggingConfigLoader for &Cli {
     }
 }
 
+pub const CONFIG_SERVER_DEFAULT_PORT: u16 = 22020;
+
+/// Protocols accepted by `--config-server-listeners`.
+const SUPPORTED_CONFIG_SERVER_PROTOCOLS: &[&str] = &["tcp", "udp", "ws", "wss"];
+
+fn parse_config_server_listener_urls(entries: &[String]) -> anyhow::Result<Vec<url::Url>> {
+    let mut urls = Vec::new();
+    for entry in entries {
+        for raw in entry.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let url = url::Url::parse(raw)
+                .with_context(|| format!("invalid config server listener url {raw:?}"))?;
+            if url.host_str().map(str::trim).unwrap_or("").is_empty() {
+                anyhow::bail!("config server listener url {raw:?} must include a host");
+            }
+            if !SUPPORTED_CONFIG_SERVER_PROTOCOLS.contains(&url.scheme()) {
+                anyhow::bail!(
+                    "unsupported config server listener protocol {:?} in {raw:?}, supported protocols: {}",
+                    url.scheme(),
+                    SUPPORTED_CONFIG_SERVER_PROTOCOLS.join(", ")
+                );
+            }
+            urls.push(url);
+        }
+    }
+    Ok(urls)
+}
+
+fn is_wildcard_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_unspecified(),
+        Some(url::Host::Ipv6(ip)) => ip.is_unspecified(),
+        // tcp/udp are non-special schemes for the url crate, so wildcard ip
+        // literals arrive as Domain instead of Ipv4/Ipv6 hosts.
+        Some(url::Host::Domain(domain)) => matches!(domain, "0.0.0.0" | "::" | "[::]"),
+        None => false,
+    }
+}
+
+fn normalize_listener_url(url: &url::Url) -> url::Url {
+    let mut normalized = url.clone();
+    if normalized.port().is_none() {
+        normalized
+            .set_port(Some(CONFIG_SERVER_DEFAULT_PORT))
+            .expect("listener url host is validated before normalization");
+    }
+    normalized
+}
+
 pub fn get_listener_by_url(
     scheme: IpScheme,
     l: &url::Url,
 ) -> Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>> {
     Some(match scheme {
         IpScheme::Tcp => {
-            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            let addr = l
+                .socket_addrs(|| Some(CONFIG_SERVER_DEFAULT_PORT))
+                .ok()?
+                .into_iter()
+                .next()?;
             Box::new(runtime_rpc_listener(addr))
         }
         IpScheme::Udp => {
-            let addr = l.socket_addrs(|| Some(11010)).ok()?.into_iter().next()?;
+            let addr = l
+                .socket_addrs(|| Some(CONFIG_SERVER_DEFAULT_PORT))
+                .ok()?
+                .into_iter()
+                .next()?;
             Box::new(runtime_udp_tunnel_listener(l.clone(), addr))
         }
-        IpScheme::Ws => Box::new(WsTunnelListener::new(l.clone())),
+        IpScheme::Ws | IpScheme::Wss => Box::new(WsTunnelListener::new(l.clone())),
         _ => return None,
     })
 }
 
-async fn get_dual_stack_listener(
-    protocol: &str,
-    port: u16,
-) -> Result<
-    (
-        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
-        Option<Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>>,
-    ),
-    Error,
-> {
-    let scheme = protocol
-        .parse()
-        .map_err(|_| Error::InvalidUrl(protocol.to_string()))?;
-    let v6_listener =
-        if local_ipv6().await.is_ok() && matches!(scheme, IpScheme::Tcp | IpScheme::Udp) {
-            get_listener_by_url(
-                scheme,
-                &format!("{protocol}://[::]:{port}").parse().unwrap(),
-            )
-        } else {
-            None
+/// Build one listener entry per bind target. Wildcard tcp/udp urls are expanded
+/// to dual-stack ([::] + 0.0.0.0) targets gated on local address availability.
+async fn create_config_server_listeners(
+    urls: &[url::Url],
+) -> Vec<(url::Url, Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>)> {
+    let mut listeners = Vec::new();
+    for url in urls {
+        let Ok(scheme) = url.scheme().parse::<IpScheme>() else {
+            eprintln!(
+                "Warning: skipping config server listener with unsupported protocol {:?}",
+                url.scheme()
+            );
+            continue;
         };
-    let v4_listener = if local_ipv4().await.is_ok() {
-        get_listener_by_url(
-            scheme,
-            &format!("{protocol}://0.0.0.0:{port}").parse().unwrap(),
-        )
-    } else {
-        None
-    };
-    Ok((v6_listener, v4_listener))
+        let url = normalize_listener_url(url);
+        match scheme {
+            IpScheme::Tcp | IpScheme::Udp => {
+                let port = url.port().unwrap_or(CONFIG_SERVER_DEFAULT_PORT);
+                let mut bind_targets: Vec<url::Url> = Vec::new();
+                if is_wildcard_host(&url) {
+                    if local_ipv6().await.is_ok() {
+                        bind_targets
+                            .push(format!("{scheme}://[::]:{port}").parse().expect("valid url"));
+                    }
+                    if local_ipv4().await.is_ok() {
+                        bind_targets
+                            .push(format!("{scheme}://0.0.0.0:{port}").parse().expect("valid url"));
+                    }
+                } else {
+                    bind_targets.push(url.clone());
+                }
+                for target in bind_targets {
+                    match get_listener_by_url(scheme, &target) {
+                        Some(listener) => listeners.push((target, listener)),
+                        None => eprintln!("Warning: failed to create {scheme} listener for {target}"),
+                    }
+                }
+            }
+            IpScheme::Ws | IpScheme::Wss => {
+                listeners.push((url.clone(), Box::new(WsTunnelListener::new(url.clone()))));
+            }
+            _ => {
+                eprintln!(
+                    "Warning: skipping config server listener with unsupported protocol {:?}",
+                    url.scheme()
+                );
+            }
+        }
+    }
+    listeners
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -326,6 +410,39 @@ async fn main() {
         cli.webhook.web_instance_id,
         cli.webhook.web_instance_api_base_url,
     ));
+    let listener_urls = match cli
+        .config_server_listeners
+        .as_ref()
+        .filter(|entries| !entries.is_empty())
+    {
+        Some(entries) => match parse_config_server_listener_urls(entries) {
+            Ok(urls) if !urls.is_empty() => urls,
+            Ok(_) => {
+                eprintln!(
+                    "Error: --config-server-listeners is set but contains no valid listener url"
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                std::process::exit(1);
+            }
+        },
+        None => {
+            let protocol = cli.config_server_protocol.trim();
+            if !SUPPORTED_CONFIG_SERVER_PROTOCOLS.contains(&protocol) {
+                eprintln!(
+                    "Error: unsupported config server protocol {protocol:?}, supported protocols: {}",
+                    SUPPORTED_CONFIG_SERVER_PROTOCOLS.join(", ")
+                );
+                std::process::exit(1);
+            }
+            vec![format!("{protocol}://0.0.0.0:{}", cli.config_server_port)
+                .parse()
+                .expect("legacy config server listener url should be valid")]
+        }
+    };
+
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
@@ -333,18 +450,20 @@ async fn main() {
         feature_flags.clone(),
         webhook_config.clone(),
     );
-    let (v6_listener, v4_listener) =
-        get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
-            .await
-            .unwrap();
-    if v4_listener.is_none() && v6_listener.is_none() {
-        panic!("Listen to both IPv4 and IPv6 failed");
+    let mut bound_urls = Vec::new();
+    for (url, listener) in create_config_server_listeners(&listener_urls).await {
+        match mgr.add_listener(listener).await {
+            Ok(local_url) => {
+                tracing::info!(?local_url, "config server listener started");
+                bound_urls.push(local_url);
+            }
+            Err(error) => {
+                tracing::warn!(%url, %error, "failed to start config server listener");
+            }
+        }
     }
-    if let Some(listener) = v6_listener {
-        mgr.add_listener(listener).await.unwrap();
-    }
-    if let Some(listener) = v4_listener {
-        mgr.add_listener(listener).await.unwrap();
+    if bound_urls.is_empty() {
+        panic!("Failed to listen on any config server listener: {listener_urls:?}");
     }
 
     let mgr = Arc::new(mgr);
@@ -412,4 +531,66 @@ async fn main() {
     };
 
     tokio::signal::ctrl_c().await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_entries(entries: &[&str]) -> anyhow::Result<Vec<url::Url>> {
+        parse_config_server_listener_urls(
+            &entries
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>(),
+        )
+    }
+
+    #[test]
+    fn parses_repeated_comma_separated_and_mixed_protocol_urls() {
+        let urls = parse_entries(&[
+            "udp://0.0.0.0:22020,tcp://0.0.0.0:22021",
+            "  ws://[::]:22022  ",
+            "",
+        ])
+        .unwrap();
+        assert_eq!(urls.len(), 3);
+        assert_eq!(urls[0].scheme(), "udp");
+        assert_eq!(urls[0].port(), Some(22020));
+        assert_eq!(urls[1].scheme(), "tcp");
+        assert_eq!(urls[1].port(), Some(22021));
+        assert_eq!(urls[2].scheme(), "ws");
+        assert_eq!(urls[2].port(), Some(22022));
+    }
+
+    #[test]
+    fn rejects_unsupported_protocol_and_missing_host() {
+        assert!(parse_entries(&["quic://0.0.0.0:22020"]).is_err());
+        assert!(parse_entries(&["udp://:22020"]).is_err());
+        assert!(parse_entries(&["not a url"]).is_err());
+        assert!(parse_entries(&["udp://0.0.0.0:22020", "tcp://bad url"]).is_err());
+    }
+
+    #[test]
+    fn detects_wildcard_hosts_for_dual_stack_expansion() {
+        let v4_wildcard = "udp://0.0.0.0:22020".parse::<url::Url>().unwrap();
+        let v6_wildcard = "tcp://[::]:22020".parse::<url::Url>().unwrap();
+        let specific_v4 = "tcp://192.168.1.10:22020".parse::<url::Url>().unwrap();
+        let specific_v6 = "tcp://[::1]:22020".parse::<url::Url>().unwrap();
+        assert!(is_wildcard_host(&v4_wildcard));
+        assert!(is_wildcard_host(&v6_wildcard));
+        assert!(!is_wildcard_host(&specific_v4));
+        assert!(!is_wildcard_host(&specific_v6));
+    }
+
+    #[test]
+    fn fills_default_port_when_missing() {
+        let no_port = "udp://0.0.0.0".parse::<url::Url>().unwrap();
+        assert_eq!(
+            normalize_listener_url(&no_port).port(),
+            Some(CONFIG_SERVER_DEFAULT_PORT)
+        );
+        let with_port = "wss://0.0.0.0:22023".parse::<url::Url>().unwrap();
+        assert_eq!(normalize_listener_url(&with_port).port(), Some(22023));
+    }
 }
