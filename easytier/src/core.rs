@@ -528,6 +528,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_CLOSE_REDUNDANT_CONNS_WHEN_DISGUISED",
+        help = t!("core_clap.close_redundant_conns_when_disguised").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    close_redundant_conns_when_disguised: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_DISABLE_SYM_HOLE_PUNCHING",
         help = t!("core_clap.disable_sym_hole_punching").to_string(),
         num_args = 0..=1,
@@ -1309,6 +1318,9 @@ impl NetworkOptions {
         f.disable_wss_http3_for_p2p = self
             .disable_wss_http3_for_p2p
             .unwrap_or(f.disable_wss_http3_for_p2p);
+        f.close_redundant_conns_when_disguised = self
+            .close_redundant_conns_when_disguised
+            .unwrap_or(f.close_redundant_conns_when_disguised);
         f.relay_all_peer_rpc = self.relay_all_peer_rpc.unwrap_or(f.relay_all_peer_rpc);
         f.need_p2p = self.need_p2p.unwrap_or(f.need_p2p);
         f.multi_thread = self.multi_thread.unwrap_or(f.multi_thread);

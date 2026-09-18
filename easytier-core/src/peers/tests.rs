@@ -8,7 +8,7 @@ use crate::foundation::time::{Duration, timeout};
 use crate::{
     packet::{PacketType, ZCPacket},
     peers::{
-        PeerConnectionOrigin, PeerPacketIngress,
+        PeerConnSource, PeerConnectionOrigin, PeerPacketIngress,
         conn::{
             peer_conn::{PeerConn, PeerConnId},
             peer_map::PeerMap,
@@ -240,6 +240,7 @@ async fn peer_channel_uses_admission_origin_instead_of_packet_header() {
         None,
         peer_session_store,
         PeerConnectionOrigin::Attached,
+        PeerConnSource::Automatic,
     );
     let (client_ret, server_ret) = tokio::join!(
         client_conn.do_handshake_as_client(),

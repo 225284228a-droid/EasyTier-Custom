@@ -163,6 +163,8 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.only_use_wss_http3_for_hole_punching = Some(flags.only_use_wss_http3_for_hole_punching);
     result.prefer_wss_http3_for_p2p = Some(flags.prefer_wss_http3_for_p2p);
     result.disable_wss_http3_for_p2p = Some(flags.disable_wss_http3_for_p2p);
+    result.p2p_prefer_protocol = Some(flags.default_protocol.clone());
+    result.close_redundant_conns_when_disguised = Some(flags.close_redundant_conns_when_disguised);
     result.enable_magic_dns = Some(flags.accept_dns);
     result.mtu = Some(flags.mtu as i32);
     result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)

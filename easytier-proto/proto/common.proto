@@ -103,6 +103,12 @@ message FlagsInConfig {
   // CUBIC) and estimates the available bandwidth automatically from ACK
   // delivery-rate samples; there is no (and need be no) max-bandwidth knob.
   bool enable_bbr = 48;
+
+  // Once a disguised (WSS/HTTP3) connection to a peer is up, close the
+  // automatically established non-disguised connections to the same peer.
+  // Manually configured peers and inbound connections are kept, so this only
+  // removes redundant transports that P2P discovered on its own.
+  bool close_redundant_conns_when_disguised = 49;
 }
 
 message RpcDescriptor {

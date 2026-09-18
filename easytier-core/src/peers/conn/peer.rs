@@ -11,12 +11,12 @@ use tracing::Instrument;
 
 use super::peer_conn::{PeerConn, PeerConnId};
 use crate::peers::{
-    PacketRecvChan,
+    PacketRecvChan, PeerConnSource,
     context::{ArcPeerContext, PeerEvent},
     util::shrink_dashmap,
 };
 use crate::{
-    config::PeerId,
+    config::{PeerId, preferred_disguised_scheme},
     packet::ZCPacket,
     peers::error::Error,
     proto::{core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
@@ -35,9 +35,14 @@ fn preferred_conn_sort_key(
     is_hole_punched: bool,
     prefer: bool,
     disguised: bool,
-) -> (bool, bool, u64) {
+    disguised_rank: u8,
+) -> (bool, bool, u8, u64) {
     let (unverified, latency) = conn_latency_sort_key(latency_us, is_hole_punched);
-    (unverified, prefer && !disguised, latency)
+    // `disguised_rank` orders the two disguised transports: 0 for the one that
+    // matches the configured P2P transport preference (udp -> http3,
+    // tcp -> wss), 1 for the other. It never reorders non-disguised paths,
+    // which the `prefer && !disguised` term already handles.
+    (unverified, prefer && !disguised, disguised_rank, latency)
 }
 
 fn is_disguised_tunnel_type(tunnel_type: &str) -> bool {
@@ -45,6 +50,29 @@ fn is_disguised_tunnel_type(tunnel_type: &str) -> bool {
         .rsplit('-')
         .next()
         .is_some_and(|transport| matches!(transport, "wss" | "http3"))
+}
+
+/// The disguised transport of a connection, if it uses one. Tunnel types may
+/// carry a resolution prefix (`http-txt-wss`), so only the last segment counts.
+fn conn_disguised_scheme(conn: &PeerConn) -> Option<&'static str> {
+    let tunnel_type = conn.get_conn_info().tunnel.as_ref()?.tunnel_type.clone();
+    match tunnel_type.rsplit('-').next() {
+        Some("wss") => Some("wss"),
+        Some("http3") => Some("http3"),
+        _ => None,
+    }
+}
+
+fn conn_is_disguised(conn: &PeerConn) -> bool {
+    conn_disguised_scheme(conn).is_some()
+}
+
+/// Whether a connection must be dropped once a disguised connection to the
+/// same peer is up. Only the transports P2P discovered on its own are
+/// redundant: peers the user configured and inbound connections are kept,
+/// because dropping them would only make the other side reconnect.
+fn is_redundant_once_disguised(disguised: bool, source: PeerConnSource) -> bool {
+    !disguised && source == PeerConnSource::Automatic
 }
 
 pub struct Peer {
@@ -224,7 +252,47 @@ impl Peer {
 
         self.context
             .issue_event(PeerEvent::PeerConnAdded(conn_info));
+
+        if self.context.flags().close_redundant_conns_when_disguised {
+            self.close_redundant_conns_with_disguised_peer().await;
+        }
         Ok(())
+    }
+
+    /// Closes the non-disguised connections that P2P established automatically
+    /// while a disguised connection to this peer is up. User-configured peers
+    /// and inbound connections stay connected, because dropping them would only
+    /// make the other side reconnect.
+    async fn close_redundant_conns_with_disguised_peer(&self) {
+        if !self
+            .conns
+            .iter()
+            .any(|entry| !entry.value().is_closed() && conn_is_disguised(entry.value()))
+        {
+            return;
+        }
+
+        let redundant = self
+            .conns
+            .iter()
+            .filter(|entry| {
+                let conn = entry.value();
+                !conn.is_closed()
+                    && is_redundant_once_disguised(conn_is_disguised(conn), conn.conn_source())
+            })
+            .map(|entry| entry.value().get_conn_id())
+            .collect::<Vec<_>>();
+
+        for conn_id in redundant {
+            tracing::info!(
+                ?conn_id,
+                peer_id = %self.peer_node_id,
+                "a disguised connection is up, closing the redundant automatically established connection"
+            );
+            if let Err(error) = self.close_event_sender.send(conn_id).await {
+                tracing::warn!(?conn_id, %error, "failed to close redundant connection");
+            }
+        }
     }
 
     fn select_conn(&self) -> Option<ArcPeerConn> {
@@ -236,26 +304,28 @@ impl Peer {
         // A zero latency on a hole-punched connection means the ping loop has not
         // confirmed liveness yet. Prefer any other connection, so a freshly admitted
         // hole-punched path cannot steal traffic before its first successful ping.
+        let flags = self.context.flags();
+        let prefer = !flags.disable_wss_http3_for_p2p
+            && (flags.prefer_wss_http3_for_p2p || flags.only_use_wss_http3_for_hole_punching);
+        let preferred_disguised = preferred_disguised_scheme(&flags.default_protocol);
         let selected = self
             .conns
             .iter()
             .filter(|conn| !conn.value().is_closed())
             .min_by_key(|conn| {
                 let conn = conn.value();
-                let flags = self.context.flags();
-                let prefer = !flags.disable_wss_http3_for_p2p
-                    && (flags.prefer_wss_http3_for_p2p
-                        || flags.only_use_wss_http3_for_hole_punching);
-                let disguised = conn
-                    .get_conn_info()
-                    .tunnel
-                    .as_ref()
-                    .is_some_and(|tunnel| is_disguised_tunnel_type(&tunnel.tunnel_type));
+                let disguised = conn_is_disguised(conn);
+                let disguised_rank = if prefer && disguised && preferred_disguised.is_some() {
+                    u8::from(conn_disguised_scheme(conn) != preferred_disguised)
+                } else {
+                    0
+                };
                 preferred_conn_sort_key(
                     conn.get_stats().latency_us,
                     conn.is_hole_punched(),
                     prefer,
                     disguised,
+                    disguised_rank,
                 )
             })
             .map(|conn| conn.value().clone());
@@ -316,15 +386,9 @@ impl Peer {
     }
 
     pub fn has_disguised_conn(&self) -> bool {
-        self.conns.iter().any(|entry| {
-            let conn = entry.value();
-            !conn.is_closed()
-                && conn
-                    .get_conn_info()
-                    .tunnel
-                    .as_ref()
-                    .is_some_and(|tunnel| is_disguised_tunnel_type(&tunnel.tunnel_type))
-        })
+        self.conns
+            .iter()
+            .any(|entry| !entry.value().is_closed() && conn_is_disguised(entry.value()))
     }
 
     pub fn has_directly_connected_conn(&self) -> bool {
@@ -385,9 +449,20 @@ mod tests {
     #[test]
     fn disguise_preference_wins_after_liveness_is_verified() {
         use super::preferred_conn_sort_key as key;
-        assert!(key(50_000, true, true, true) < key(1_000, false, true, false));
-        assert!(key(1_000, false, true, false) < key(0, true, true, true));
-        assert!(key(1_000, false, false, false) < key(50_000, true, false, true));
+        // (latency, hole_punched, prefer, disguised, disguised_rank)
+        assert!(key(50_000, true, true, true, 0) < key(1_000, false, true, false, 0));
+        assert!(key(1_000, false, true, false, 0) < key(0, true, true, true, 0));
+        assert!(key(1_000, false, false, false, 0) < key(50_000, true, false, true, 0));
+    }
+
+    #[test]
+    fn p2p_transport_preference_orders_the_disguised_transports() {
+        use super::preferred_conn_sort_key as key;
+        // The disguised transport matching the configured preference (rank 0)
+        // wins over the other one (rank 1), regardless of the extra latency.
+        assert!(key(50_000, false, true, true, 0) < key(1_000, false, true, true, 1));
+        // Both disguised transports still win over raw paths.
+        assert!(key(1_000, false, true, true, 1) < key(500, false, true, false, 0));
     }
 
     #[test]
@@ -397,6 +472,21 @@ mod tests {
         assert!(is_disguised_tunnel_type("http3"));
         assert!(!is_disguised_tunnel_type("tcp"));
         assert!(!is_disguised_tunnel_type("quic-http3-wrap"));
+    }
+
+    #[test]
+    fn only_automatic_plain_conns_are_redundant_once_disguised() {
+        use super::{PeerConnSource, is_redundant_once_disguised as redundant};
+
+        // P2P-discovered plain transports are dropped while a disguised
+        // connection is up.
+        assert!(redundant(false, PeerConnSource::Automatic));
+        // The disguised connection itself and user-configured / inbound
+        // connections are always kept.
+        assert!(!redundant(true, PeerConnSource::Automatic));
+        assert!(!redundant(false, PeerConnSource::Manual));
+        assert!(!redundant(false, PeerConnSource::Inbound));
+        assert!(!redundant(true, PeerConnSource::Manual));
     }
 
     #[test]

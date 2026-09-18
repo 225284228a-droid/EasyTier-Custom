@@ -49,8 +49,8 @@ use crate::{
 };
 
 use super::{
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver, PeerConnectionOrigin,
-    PeerPacketFilter, PeerPacketIngress,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver, PeerConnSource,
+    PeerConnectionOrigin, PeerPacketFilter, PeerPacketIngress,
     acl::AclFilter,
     conn::{
         peer_conn::{PeerConn, PeerConnId},
@@ -1601,12 +1601,33 @@ impl PeerManagerCore {
             .await
     }
 
+    /// Establishes an outbound connection and records how it was initiated.
+    /// The source lets the peer drop redundant automatic transports once a
+    /// disguised connection is up, without touching user-configured peers.
+    pub async fn add_client_tunnel_with_source(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        peer_id_hint: Option<PeerId>,
+        conn_source: PeerConnSource,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        self.peer_connection_admission
+            .add_client_tunnel_with_source(tunnel, is_directly_connected, peer_id_hint, conn_source)
+            .await
+    }
+
     pub(crate) async fn add_attached_ring_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,
     ) -> Result<(PeerId, PeerConnId), Error> {
         self.peer_connection_admission
-            .add_client_tunnel_with_origin(tunnel, true, None, PeerConnectionOrigin::Attached)
+            .add_client_tunnel_with_origin(
+                tunnel,
+                true,
+                None,
+                PeerConnectionOrigin::Attached,
+                PeerConnSource::Automatic,
+            )
             .await
     }
 
@@ -1620,12 +1641,32 @@ impl PeerManagerCore {
             .await
     }
 
+    /// Accepts an inbound connection and records that the remote peer dialed
+    /// us. Inbound connections are never treated as redundant automatic P2P
+    /// transports because dropping them only makes the remote side reconnect.
+    pub async fn add_tunnel_as_server_with_source(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        conn_source: PeerConnSource,
+    ) -> Result<(), Error> {
+        self.peer_connection_admission
+            .add_tunnel_as_server_with_source(tunnel, is_directly_connected, conn_source)
+            .await
+            .map(|_| ())
+    }
+
     pub(crate) async fn add_attached_ring_tunnel_as_server(
         &self,
         tunnel: Box<dyn Tunnel>,
     ) -> Result<(PeerId, PeerConnId), Error> {
         self.peer_connection_admission
-            .add_tunnel_as_server_with_origin(tunnel, true, PeerConnectionOrigin::Attached)
+            .add_tunnel_as_server_with_origin(
+                tunnel,
+                true,
+                PeerConnectionOrigin::Attached,
+                PeerConnSource::Automatic,
+            )
             .await
     }
 
@@ -1991,11 +2032,28 @@ impl PeerConnectionAdmission {
         is_directly_connected: bool,
         peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
+        self.add_client_tunnel_with_source(
+            tunnel,
+            is_directly_connected,
+            peer_id_hint,
+            PeerConnSource::Automatic,
+        )
+        .await
+    }
+
+    pub async fn add_client_tunnel_with_source(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        peer_id_hint: Option<PeerId>,
+        conn_source: PeerConnSource,
+    ) -> Result<(PeerId, PeerConnId), Error> {
         self.add_client_tunnel_with_origin(
             tunnel,
             is_directly_connected,
             peer_id_hint,
             PeerConnectionOrigin::Network,
+            conn_source,
         )
         .await
     }
@@ -2006,6 +2064,7 @@ impl PeerConnectionAdmission {
         is_directly_connected: bool,
         peer_id_hint: Option<PeerId>,
         origin: PeerConnectionOrigin,
+        conn_source: PeerConnSource,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let mut peer = PeerConn::new_with_peer_id_hint_and_origin(
             self.my_peer_id,
@@ -2014,6 +2073,7 @@ impl PeerConnectionAdmission {
             peer_id_hint,
             self.peer_session_store.clone(),
             origin,
+            conn_source,
         );
         peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
@@ -2063,9 +2123,25 @@ impl PeerConnectionAdmission {
             tunnel,
             is_directly_connected,
             PeerConnectionOrigin::Network,
+            PeerConnSource::Inbound,
         )
         .await
         .map(|_| ())
+    }
+
+    pub async fn add_tunnel_as_server_with_source(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        conn_source: PeerConnSource,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        self.add_tunnel_as_server_with_origin(
+            tunnel,
+            is_directly_connected,
+            PeerConnectionOrigin::Network,
+            conn_source,
+        )
+        .await
     }
 
     async fn add_tunnel_as_server_with_origin(
@@ -2073,6 +2149,7 @@ impl PeerConnectionAdmission {
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
         origin: PeerConnectionOrigin,
+        conn_source: PeerConnSource,
     ) -> Result<(PeerId, PeerConnId), Error> {
         tracing::info!("add tunnel as server start");
         let resolved_remote_addr = tunnel.info().and_then(|info| info.resolved_remote_addr);
@@ -2085,6 +2162,7 @@ impl PeerConnectionAdmission {
             None,
             self.peer_session_store.clone(),
             origin,
+            conn_source,
         );
         let mut reserved_peer_id_network_name = None;
         let handshake_ret = conn

@@ -112,6 +112,16 @@ message NetworkConfig {
   optional bool disable_wss_http3_for_p2p = 76;
   // use BBR congestion control for local QUIC/HTTP3 sending, including QUIC proxy
   optional bool enable_bbr = 77;
+
+  // Preferred underlay transport for automatic P2P connect attempts: "tcp" or
+  // "udp". When WSS/HTTP3 is in use it also picks the disguised transport -
+  // "udp" prefers HTTP3, "tcp" prefers WSS. Empty means "tcp".
+  optional string p2p_prefer_protocol = 78;
+
+  // Once a disguised (WSS/HTTP3) connection to a peer is up, close the
+  // automatically established non-disguised connections to the same peer.
+  // Manually configured peers and inbound connections are kept.
+  optional bool close_redundant_conns_when_disguised = 79;
 }
 
 message ManagedCredentialConfig {

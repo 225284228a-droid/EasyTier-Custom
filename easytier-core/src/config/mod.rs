@@ -358,6 +358,31 @@ impl P2pPolicyFlags {
     }
 }
 
+/// Disguised transport that carries the configured P2P transport preference:
+/// UDP traffic is disguised as HTTP3 and TCP traffic as WSS. Other transports
+/// keep both disguised options at equal priority.
+pub(crate) fn preferred_disguised_scheme(default_protocol: &str) -> Option<&'static str> {
+    match default_protocol.trim().to_ascii_lowercase().as_str() {
+        "udp" => Some("http3"),
+        "tcp" => Some("wss"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod preferred_disguised_scheme_tests {
+    use super::preferred_disguised_scheme;
+
+    #[test]
+    fn p2p_transport_preference_selects_the_disguised_transport() {
+        assert_eq!(preferred_disguised_scheme("udp"), Some("http3"));
+        assert_eq!(preferred_disguised_scheme("UDP"), Some("http3"));
+        assert_eq!(preferred_disguised_scheme(" tcp "), Some("wss"));
+        assert_eq!(preferred_disguised_scheme("wg"), None);
+        assert_eq!(preferred_disguised_scheme(""), None);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TrafficConfig {
     pub mtu: Option<u16>,

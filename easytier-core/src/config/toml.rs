@@ -76,6 +76,7 @@ pub fn gen_default_flags() -> Flags {
         only_use_wss_http3_for_hole_punching: false,
         prefer_wss_http3_for_p2p: true,
         disable_wss_http3_for_p2p: false,
+        close_redundant_conns_when_disguised: false,
     }
 }
 
@@ -174,6 +175,7 @@ define_flags_diff! {
         only_use_wss_http3_for_hole_punching,
         prefer_wss_http3_for_p2p,
         disable_wss_http3_for_p2p,
+        close_redundant_conns_when_disguised,
     ],
     u64s: [foreign_relay_bps_limit, instance_recv_bps_limit],
     enums: [data_compress_algo]

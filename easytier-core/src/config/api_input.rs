@@ -499,6 +499,17 @@ impl NetworkConfigExt for NetworkConfig {
         if let Some(value) = self.disable_wss_http3_for_p2p {
             flags.disable_wss_http3_for_p2p = value;
         }
+        if let Some(prefer) = self
+            .p2p_prefer_protocol
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            flags.default_protocol = prefer.to_string();
+        }
+        if let Some(value) = self.close_redundant_conns_when_disguised {
+            flags.close_redundant_conns_when_disguised = value;
+        }
 
         if let Some(enable_magic_dns) = self.enable_magic_dns {
             flags.accept_dns = enable_magic_dns;
@@ -702,6 +713,9 @@ impl NetworkConfigExt for NetworkConfig {
             Some(flags.only_use_wss_http3_for_hole_punching);
         result.prefer_wss_http3_for_p2p = Some(flags.prefer_wss_http3_for_p2p);
         result.disable_wss_http3_for_p2p = Some(flags.disable_wss_http3_for_p2p);
+        result.p2p_prefer_protocol = Some(flags.default_protocol.clone());
+        result.close_redundant_conns_when_disguised =
+            Some(flags.close_redundant_conns_when_disguised);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.data_compress_algo = (flags.data_compress_algo != default_flags.data_compress_algo)

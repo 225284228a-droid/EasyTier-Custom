@@ -207,6 +207,14 @@ p2p_disguise_mode_disable: 禁用 WSS/HTTP3
 p2p_disguise_mode_only: 仅使用 WSS/HTTP3
 p2p_disguise_mode_help: 自动P2P优先使用 WSS 和 HTTP/3，同时允许回退到 TCP/UDP；默认不主动使用伪装协议但响应需要伪装的对端；也可彻底禁用两个伪装协议，或仅使用这两个协议进行P2P。手动连接和普通直连不受影响。
 
+p2p_prefer_protocol: P2P 优先协议
+p2p_prefer_protocol_tcp: 优先 TCP (WSS)
+p2p_prefer_protocol_udp: 优先 UDP (HTTP3)
+p2p_prefer_protocol_help: 自动P2P优先尝试的传输协议；同时决定两个伪装协议的优先级：优先 UDP 对应 HTTP3，优先 TCP 对应 WSS。手动连接和普通直连不受影响。
+
+close_redundant_conns_when_disguised: 伪装连接后断开多余连接
+close_redundant_conns_when_disguised_help: 与某对等节点建立 WSS/HTTP3 伪装连接后，自动断开 P2P 自行发现并建立的其它协议连接；手动配置的对等节点和对方的入站连接会保留。默认关闭。
+
 enable_udp_broadcast_relay: UDP 广播中继
 enable_udp_broadcast_relay_help: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"
 

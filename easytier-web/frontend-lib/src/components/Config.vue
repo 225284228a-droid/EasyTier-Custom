@@ -93,6 +93,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
   { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
   { field: 'enable_bbr', help: 'enable_bbr_help' },
+  { field: 'close_redundant_conns_when_disguised', help: 'close_redundant_conns_when_disguised_help' },
   { field: 'disable_quic_input', help: 'disable_quic_input_help' },
   { field: 'disable_p2p', help: 'disable_p2p_help' },
   { field: 'p2p_only', help: 'p2p_only_help' },
@@ -136,6 +137,25 @@ const disguisedP2pModeOptions = computed(() => [
   { label: t('p2p_disguise_mode_prefer'), value: 'prefer' },
   { label: t('p2p_disguise_mode_disable'), value: 'disable' },
   { label: t('p2p_disguise_mode_only'), value: 'only' },
+])
+
+type P2pPreferProtocol = 'tcp' | 'udp'
+
+// The kernel's `default_protocol`: the transport automatic P2P tries first.
+// It also orders the two disguised transports - "udp" prefers HTTP3 and
+// "tcp" prefers WSS.
+const p2pPreferProtocol = computed<P2pPreferProtocol>({
+  get() {
+    return curNetwork.value.p2p_prefer_protocol === 'udp' ? 'udp' : 'tcp'
+  },
+  set(value: P2pPreferProtocol) {
+    curNetwork.value.p2p_prefer_protocol = value
+  },
+})
+
+const p2pPreferProtocolOptions = computed(() => [
+  { label: t('p2p_prefer_protocol_tcp'), value: 'tcp' },
+  { label: t('p2p_prefer_protocol_udp'), value: 'udp' },
 ])
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
@@ -362,6 +382,15 @@ function removeVpnPortalClient(index: number) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center">
+                    <label for="p2p_prefer_protocol">{{ t('p2p_prefer_protocol') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_prefer_protocol_help')"></span>
+                  </div>
+                  <SelectButton id="p2p_prefer_protocol" v-model="p2pPreferProtocol"
+                    :options="p2pPreferProtocolOptions" option-label="label" option-value="value" fluid />
+                </div>
+
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex items-center">
                     <label for="p2p_disguise_mode">{{ t('p2p_disguise_mode') }}</label>

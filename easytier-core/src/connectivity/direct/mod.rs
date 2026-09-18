@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 use url::{Host, Url};
 
 use crate::{
-    config::{PeerDisguiseP2pFlags, PeerId},
+    config::{PeerDisguiseP2pFlags, PeerId, preferred_disguised_scheme},
     connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
@@ -29,7 +29,7 @@ use crate::{
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
     host::dns::DnsResolver,
     peers::{
-        conn::peer_conn::PeerConnId, foreign_network::ForeignNetworkRpcRegistrar,
+        PeerConnSource, conn::peer_conn::PeerConnId, foreign_network::ForeignNetworkRpcRegistrar,
         peer_manager::PeerManagerCore, peer_rpc::PeerRpcManager,
     },
     process_runtime::ProtectedTcpPortRegistry,
@@ -116,6 +116,30 @@ impl DirectTransport {
 
     fn supports_interface_bind(self) -> bool {
         !matches!(self, Self::Tcp(TcpSocketPurpose::FakeTcp))
+    }
+}
+
+/// Priority of one candidate listener for an automatic P2P connect attempt.
+/// Disguised transports win while they are in use; among them the one matching
+/// the configured P2P transport preference (udp -> http3, tcp -> wss) wins.
+/// Raw transports fall back to the configured default protocol, then UDP.
+fn direct_listener_sort_key(
+    scheme: &str,
+    default_protocol: &str,
+    use_disguise_protocols: bool,
+) -> u8 {
+    if use_disguise_protocols && matches!(scheme, "wss" | "http3") {
+        return match preferred_disguised_scheme(default_protocol) {
+            Some(preferred) if scheme == preferred => 5,
+            _ => 4,
+        };
+    }
+    if scheme == default_protocol {
+        3
+    } else if scheme == "udp" {
+        2
+    } else {
+        1
     }
 }
 
@@ -564,17 +588,11 @@ where
         }
 
         available_listeners.sort_by_key(|listener| {
-            let prefer_disguised =
-                use_disguise_protocols && matches!(listener.scheme(), "wss" | "http3");
-            if prefer_disguised {
-                4
-            } else if listener.scheme() == self.options.default_protocol {
-                3
-            } else if listener.scheme() == "udp" {
-                2
-            } else {
-                1
-            }
+            direct_listener_sort_key(
+                listener.scheme(),
+                &self.options.default_protocol,
+                use_disguise_protocols,
+            )
         });
 
         while !available_listeners.is_empty() {
@@ -1025,7 +1043,12 @@ where
         dst_peer_id: PeerId,
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
         self.peer_manager
-            .add_client_tunnel_with_peer_id_hint(tunnel, true, Some(dst_peer_id))
+            .add_client_tunnel_with_source(
+                tunnel,
+                true,
+                Some(dst_peer_id),
+                PeerConnSource::Automatic,
+            )
             .await
             .map_err(Into::into)
     }
@@ -1371,6 +1394,42 @@ mod tests {
                 stun,
             }
         }
+    }
+
+    #[test]
+    fn p2p_transport_preference_orders_disguised_listeners() {
+        // "udp" prefers HTTP3 over WSS, and both disguised transports win over
+        // the raw ones.
+        assert!(
+            direct_listener_sort_key("http3", "udp", true)
+                > direct_listener_sort_key("wss", "udp", true)
+        );
+        assert!(
+            direct_listener_sort_key("wss", "udp", true)
+                > direct_listener_sort_key("udp", "udp", true)
+        );
+        // "tcp" prefers WSS over HTTP3.
+        assert!(
+            direct_listener_sort_key("wss", "tcp", true)
+                > direct_listener_sort_key("http3", "tcp", true)
+        );
+        // Raw transports keep following the configured preference.
+        assert!(
+            direct_listener_sort_key("udp", "udp", false)
+                > direct_listener_sort_key("tcp", "udp", false)
+        );
+        assert!(
+            direct_listener_sort_key("tcp", "tcp", false)
+                > direct_listener_sort_key("udp", "tcp", false)
+        );
+    }
+
+    #[test]
+    fn unknown_p2p_transport_preference_keeps_disguised_listeners_equal() {
+        assert_eq!(
+            direct_listener_sort_key("wss", "wg", true),
+            direct_listener_sort_key("http3", "wg", true)
+        );
     }
 
     #[test]

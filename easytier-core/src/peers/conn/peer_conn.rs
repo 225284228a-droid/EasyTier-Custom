@@ -34,7 +34,7 @@ use super::{
     peer_session::{PeerSession, PeerSessionAction},
 };
 use crate::peers::{
-    PacketRecvChan, PeerConnectionOrigin, PeerPacketIngress,
+    PacketRecvChan, PeerConnSource, PeerConnectionOrigin, PeerPacketIngress,
     context::{ArcPeerContext, NetworkIdentity, NetworkSecretDigest},
     send_peer_packet_to_chan,
     traffic_metrics::data_packet_payload_len,
@@ -273,6 +273,7 @@ impl PeerConnCloseNotify {
 pub struct PeerConn {
     conn_id: PeerConnId,
     origin: PeerConnectionOrigin,
+    conn_source: PeerConnSource,
 
     my_peer_id: PeerId,
     peer_id_hint: Option<PeerId>,
@@ -334,6 +335,7 @@ impl PeerConn {
             None,
             peer_session_store,
             PeerConnectionOrigin::Network,
+            PeerConnSource::Automatic,
         )
     }
 
@@ -344,6 +346,7 @@ impl PeerConn {
         peer_id_hint: Option<PeerId>,
         peer_session_store: Arc<PeerSessionStore>,
         origin: PeerConnectionOrigin,
+        conn_source: PeerConnSource,
     ) -> Self {
         let flags = context.flags();
         let tunnel_info = tunnel.info();
@@ -374,6 +377,7 @@ impl PeerConn {
         PeerConn {
             conn_id,
             origin,
+            conn_source,
 
             my_peer_id,
             peer_id_hint,
@@ -449,6 +453,12 @@ impl PeerConn {
 
     pub fn is_hole_punched(&self) -> bool {
         self.is_hole_punched
+    }
+
+    /// Whether this connection was configured by the user, dialed by a remote
+    /// peer, or discovered automatically by P2P.
+    pub fn conn_source(&self) -> PeerConnSource {
+        self.conn_source
     }
 
     pub fn is_closed(&self) -> bool {

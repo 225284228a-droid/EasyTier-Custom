@@ -115,8 +115,8 @@ core_clap:
     en: "VPN portal client group membership in NAME=GROUP form; may be repeated"
     zh-CN: "NAME=GROUP 格式的 VPN 门户客户端组成员关系；可重复指定"
   default_protocol:
-    en: "default protocol to use when connecting to peers"
-    zh-CN: "连接到对等节点时使用的默认协议"
+    en: "default protocol to use when connecting to peers; it also orders the two disguise protocols - prefer udp to use HTTP/3, prefer tcp to use WSS"
+    zh-CN: "连接到对等节点时使用的默认协议；同时决定两个伪装协议的优先级：优先 udp 对应 HTTP/3，优先 tcp 对应 WSS"
   disable_encryption:
     en: "disable encryption for peers communication, default is false, must be same with peers"
     zh-CN: "禁用对等节点通信的加密，默认为false，必须与对等节点相同"
@@ -197,6 +197,9 @@ core_clap:
   disable_wss_http3_for_p2p:
     en: "ban WSS and HTTP/3 from automatic P2P and NAT hole punching; keep ordinary direct and manual connections unaffected"
     zh-CN: "禁止自动P2P和NAT打洞使用 WSS 和 HTTP/3；不影响普通直连或手动连接"
+  close_redundant_conns_when_disguised:
+    en: "once a disguised (WSS/HTTP3) connection to a peer is up, close the other connections P2P discovered automatically; peers you configured manually and inbound connections are kept"
+    zh-CN: "与某对等节点建立 WSS/HTTP3 伪装连接后，断开 P2P 自动发现的其它连接；手动配置的对等节点和入站连接会保留"
   disable_sym_hole_punching:
     en: "if true, disable udp nat hole punching for symmetric nat (NAT4), which is based on birthday attack and may be blocked by ISP."
     zh-CN: "如果为true，则禁用基于生日攻击的对称NAT (NAT4) UDP 打洞功能，该打洞方式可能会被运营商封锁"
