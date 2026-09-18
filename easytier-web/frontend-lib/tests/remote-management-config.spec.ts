@@ -45,9 +45,12 @@ const BOOLEAN_CONFIG_FIELDS = [
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
-    t: (key: string) => key,
+    t: (key: string, params?: Record<string, unknown>) =>
+      params ? `${key} ${JSON.stringify(params)}` : key,
   }),
 }))
+
+const toastSpy = vi.hoisted(() => ({ add: vi.fn() }))
 
 vi.mock('primevue', async () => {
   const { defineComponent, h } = await import('vue')
@@ -117,7 +120,7 @@ vi.mock('primevue', async () => {
     Select: SelectStub,
     Tag: PassThrough,
     useConfirm: () => ({ require: vi.fn() }),
-    useToast: () => ({ add: vi.fn() }),
+    useToast: () => ({ add: toastSpy.add }),
   }
 })
 
@@ -206,6 +209,59 @@ describe('RemoteManagement config save', () => {
 
       expect(api.save_config).toHaveBeenCalledOnce()
       expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('reports a failed network creation instead of doing nothing', async () => {
+    const config = {
+      ...DEFAULT_NETWORK_CONFIG(),
+      instance_id: INSTANCE_ID,
+    }
+    const api = {
+      delete_network: vi.fn(),
+      generate_config: vi.fn(),
+      get_network_config: vi.fn(),
+      get_network_info: vi.fn(),
+      get_vpn_portal_info: vi.fn(),
+      get_network_metas: vi.fn(async () => ({ metas: {} })),
+      list_network_instance_ids: vi.fn(async () => ({ disabled_inst_ids: [], running_inst_ids: [] })),
+      parse_config: vi.fn(),
+      run_network: vi.fn(),
+      save_config: vi.fn(async () => {
+        throw { response: { data: { message: 'config file config.d/x.toml is read-only' } } }
+      }),
+      update_network_instance_state: vi.fn(),
+      validate_config: vi.fn(),
+    }
+
+    const wrapper = mount(RemoteManagement, {
+      props: {
+        api,
+        newConfigGenerator: () => config,
+      },
+      global: {
+        stubs: {
+          Config: true,
+          ConfigEditDialog: true,
+          Status: true,
+        },
+      },
+    })
+
+    try {
+      await settleRemoteManagement()
+      toastSpy.add.mockClear()
+
+      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
+      await flushPromises()
+
+      expect(toastSpy.add).toHaveBeenCalledTimes(1)
+      const toast = toastSpy.add.mock.calls[0][0] as { severity: string; detail: string }
+      expect(toast.severity).toBe('error')
+      expect(toast.detail).toContain('config file config.d/x.toml is read-only')
+      expect(wrapper.emitted('update:instanceId')).toBeUndefined()
     } finally {
       wrapper.unmount()
     }

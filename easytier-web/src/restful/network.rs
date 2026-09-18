@@ -373,8 +373,9 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<Json<NetworkConfig>, HttpHandleError> {
+        let user_id = Self::get_user_id(&auth_session)?;
         Ok(client_mgr
-            .handle_get_network_config((auth_session.user.unwrap().id(), machine_id), inst_id)
+            .handle_get_network_config((user_id, machine_id), inst_id)
             .await
             .map_err(convert_error)?
             .into())

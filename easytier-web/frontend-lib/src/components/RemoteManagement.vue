@@ -24,6 +24,22 @@ const emits = defineEmits(['update']);
 
 const toast = useToast();
 
+/** Best-effort extraction of a readable message from a REST/RPC error. */
+const formatError = (e: any): string => {
+    const data = e?.response?.data ?? e;
+    if (typeof data === 'string') {
+        return data;
+    }
+    if (data && typeof data === 'object' && typeof data.message === 'string') {
+        return data.message;
+    }
+    try {
+        return JSON.stringify(data);
+    } catch {
+        return String(data);
+    }
+};
+
 const configFile = ref();
 
 const curNetworkInfo = ref<NetworkTypes.NetworkInstance | null>(null);
@@ -176,7 +192,13 @@ const stopNetwork = async () => {
         return;
     }
 
-    await props.api.update_network_instance_state(selectedInstanceId.value.uuid, true);
+    try {
+        await props.api.update_network_instance_state(selectedInstanceId.value.uuid, true);
+    } catch (e: any) {
+        console.error(e);
+        toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.disable_network_failed", { error: formatError(e) }), life: 5000 });
+        return;
+    }
     await loadNetworkInstanceIds();
 }
 
@@ -198,8 +220,10 @@ const confirmDeleteNetwork = (event: any) => {
         accept: async () => {
             try {
                 await props.api.delete_network(instanceId.value!);
-            } catch (e) {
+            } catch (e: any) {
                 console.error(e);
+                toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.delete_network_failed", { error: formatError(e) }), life: 5000 });
+                return;
             }
             emits('update');
         },
@@ -248,7 +272,13 @@ const saveNetworkConfig = async () => {
     if (!currentNetworkConfig.value) {
         return;
     }
-    await props.api.save_config(currentNetworkConfig.value);
+    try {
+        await props.api.save_config(currentNetworkConfig.value);
+    } catch (e: any) {
+        console.error(e);
+        toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.save_config_failed", { error: formatError(e) }), life: 5000 });
+        return;
+    }
 
     delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
     await loadNetworkMetas([currentNetworkConfig.value.instance_id]);
@@ -257,10 +287,23 @@ const saveNetworkConfig = async () => {
 }
 const newNetwork = async () => {
     const newNetworkConfig = props.newConfigGenerator?.() ?? NetworkTypes.DEFAULT_NETWORK_CONFIG();
-    await props.api.save_config(newNetworkConfig);
+    // Surface failures instead of leaving the click without any feedback: the
+    // console may reject the new config (e.g. read-only config dir or a name
+    // collision with a running instance).
+    try {
+        await props.api.save_config(newNetworkConfig);
+    } catch (e: any) {
+        console.error(e);
+        toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.create_network_failed", { error: formatError(e) }), life: 5000 });
+        return;
+    }
     selectedInstanceId.value = newNetworkConfig.instance_id;
     currentNetworkConfig.value = newNetworkConfig;
-    await loadNetworkInstanceIds();
+    delete networkMetaCache.value[newNetworkConfig.instance_id];
+    await Promise.all([
+        loadNetworkMetas([newNetworkConfig.instance_id]),
+        loadNetworkInstanceIds(),
+    ]);
 }
 
 const cancelEditNetwork = () => {

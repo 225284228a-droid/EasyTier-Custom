@@ -107,6 +107,14 @@ pub struct InstanceMutationResult {
     pub removed_instance_ids: Vec<uuid::Uuid>,
 }
 
+/// Whether a config-file error means the file is already gone. Removal paths
+/// use this to treat an externally deleted file as removed instead of failing.
+fn is_not_found_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// Transport-independent process-level Instance management.
 pub struct ProcessManagement<F>
 where
@@ -456,8 +464,12 @@ where
             if remote_managed && self.storage.inspect(&path).await.is_read_only() {
                 continue;
             }
-            if let Err(error) = self.storage.remove(&path).await {
-                tracing::warn!(%error, path = %path.display(), "failed to remove config file");
+            match self.storage.remove(&path).await {
+                Ok(()) => {}
+                Err(error) if is_not_found_error(&error) => {}
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "failed to remove config file");
+                }
             }
         }
         Ok(InstanceMutationResult {
@@ -480,18 +492,11 @@ where
             config.set_id(instance_id);
         }
         let _mutation = self.mutation_lock.lock().await;
-        // Reject instance-name collisions against other running instances so a
-        // later `set_network_instance_enabled(true)` (which does not check
-        // names) cannot produce two concurrently running instances with the
-        // same name. `run_owned_network_instance` performs the same check.
-        let instance_name = config.get_inst_name();
-        if let Some(existing) =
-            super::resolve_optional_instance_by_name(self.instances.as_ref(), &instance_name)?
-        {
-            if existing.instance_id() != instance_id {
-                anyhow::bail!("instance name {instance_name} already exists");
-            }
-        }
+        // Instance names must be unique among *running* instances only, which
+        // `set_network_instance_enabled` enforces when a saved config starts.
+        // Rejecting the save itself would block adding a second network that
+        // happens to reuse a name (the GUI and web console derive the instance
+        // name from the network name, so defaults collide easily).
         if self.instances.instance(instance_id).is_some() {
             // Running instance: persist the config and apply it immediately by
             // restarting the instance with the new config. The locked variant
@@ -554,6 +559,20 @@ where
                     .map_err(|error| {
                         anyhow::anyhow!("failed to parse config file {}: {error}", path.display())
                     })?;
+            // Saving a config is unrestricted, but starting it is not: two
+            // running instances must never share a name, and name lookups
+            // (CLI, management API) assume the same.
+            let instance_name = config.get_inst_name();
+            if let Some(existing) = super::resolve_optional_instance_by_name(
+                self.instances.as_ref(),
+                &instance_name,
+            )? && existing.instance_id() != instance_id
+            {
+                anyhow::bail!(
+                    "instance name {instance_name} is already used by a running instance; \
+                     change the network name or stop that instance first"
+                );
+            }
             let control = self.storage.inspect(&path).await;
             self.instances.run_network_instance(config, control)?;
         } else {
@@ -582,9 +601,16 @@ where
             let path = config_dir.join(format!("{instance_id}.toml"));
             let control = self.storage.inspect(&path).await;
             if !control.is_read_only() && control.is_deletable() {
-                if let Err(error) = self.storage.remove(&path).await {
-                    tracing::warn!(%error, path = %path.display(), "failed to remove config file");
-                    continue;
+                match self.storage.remove(&path).await {
+                    Ok(()) => {}
+                    // The file may already be gone (deleted by hand while the
+                    // instance was stopped); its state entry is still stale and
+                    // must be cleaned up.
+                    Err(error) if is_not_found_error(&error) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, path = %path.display(), "failed to remove config file");
+                        continue;
+                    }
                 }
             }
             self.state_store.remove(instance_id)?;

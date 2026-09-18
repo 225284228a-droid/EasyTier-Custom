@@ -385,6 +385,10 @@ web:
     edit_as_file: Edit as File
     save_config: Save Config
     config_saved: Config Saved
+    create_network_failed: "Failed to create network: {error}"
+    save_config_failed: "Failed to save config: {error}"
+    disable_network_failed: "Failed to disable network: {error}"
+    delete_network_failed: "Failed to delete network: {error}"
     import_config: Import Config
     create_new: Create New Network
     network_status: Network Status

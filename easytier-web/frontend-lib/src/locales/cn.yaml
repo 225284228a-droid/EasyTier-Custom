@@ -385,6 +385,10 @@ web:
     edit_as_file: 编辑为文件
     save_config: 保存配置
     config_saved: 配置已保存
+    create_network_failed: "创建网络失败: {error}"
+    save_config_failed: "保存配置失败: {error}"
+    disable_network_failed: "禁用网络失败: {error}"
+    delete_network_failed: "删除网络失败: {error}"
     import_config: 导入配置
     create_new: 创建新网络
     network_status: 网络状态
