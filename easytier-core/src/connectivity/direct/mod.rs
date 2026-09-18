@@ -346,6 +346,24 @@ struct DirectConnectorLauncher<H>(Arc<DirectConnectorData<H>>)
 where
     H: DirectConnectorHost;
 
+fn should_collect_direct_peer(
+    peer_id: PeerId,
+    my_peer_id: PeerId,
+    blacklisted: bool,
+    static_allowed: bool,
+    dynamic_p2p_allowed: bool,
+    has_recent_traffic: bool,
+    has_direct_connection: bool,
+    connection_satisfies_policy: bool,
+) -> bool {
+    peer_id != my_peer_id
+        && !blacklisted
+        && !connection_satisfies_policy
+        && (static_allowed
+            || (dynamic_p2p_allowed
+                && (has_recent_traffic || (has_direct_connection && !connection_satisfies_policy))))
+}
+
 impl<H> Clone for DirectConnectorLauncher<H>
 where
     H: DirectConnectorHost,
@@ -375,6 +393,11 @@ where
             .await
             .into_iter()
             .filter(|route| {
+                let peer_flags: PeerDisguiseP2pFlags = route
+                    .feature_flag
+                    .as_ref()
+                    .map(Into::into)
+                    .unwrap_or_default();
                 let static_allowed = should_background_p2p_with_peer(
                     route.feature_flag.as_ref(),
                     data.options.allow_public_server,
@@ -382,16 +405,21 @@ where
                     policy.disable_p2p,
                     policy.need_p2p,
                 );
-                let dynamic_allowed = should_try_p2p_with_peer(
-                    route.feature_flag.as_ref(),
-                    data.options.allow_public_server,
-                    policy.disable_p2p,
-                    policy.need_p2p,
-                ) && data.peer_manager.has_recent_traffic(route.peer_id, now);
-                route.peer_id != my_peer_id
-                    && (static_allowed || dynamic_allowed)
-                    && !data.peer_manager.has_directly_connected_conn(route.peer_id)
-                    && !data.peer_blacklist.contains(&route.peer_id)
+                should_collect_direct_peer(
+                    route.peer_id,
+                    my_peer_id,
+                    data.peer_blacklist.contains(&route.peer_id),
+                    static_allowed,
+                    should_try_p2p_with_peer(
+                        route.feature_flag.as_ref(),
+                        data.options.allow_public_server,
+                        policy.disable_p2p,
+                        policy.need_p2p,
+                    ),
+                    data.peer_manager.has_recent_traffic(route.peer_id, now),
+                    data.peer_manager.has_directly_connected_conn(route.peer_id),
+                    data.connection_satisfies_policy(route.peer_id, &peer_flags),
+                )
             })
             .map(|route| route.peer_id)
             .collect()
@@ -411,6 +439,18 @@ impl<H> DirectConnectorData<H>
 where
     H: DirectConnectorHost,
 {
+    fn connection_satisfies_policy(&self, peer_id: PeerId, peer: &PeerDisguiseP2pFlags) -> bool {
+        if self
+            .peer_manager
+            .p2p_policy_flags()
+            .use_wss_http3_with_peer(peer)
+            && (self.protocol.supports_scheme("wss") || self.protocol.supports_scheme("http3"))
+        {
+            self.peer_manager.has_disguised_conn(peer_id)
+        } else {
+            self.peer_manager.has_directly_connected_conn(peer_id)
+        }
+    }
     async fn peer_disguise_flags(&self, dst_peer_id: PeerId) -> PeerDisguiseP2pFlags {
         self.peer_manager
             .list_route_snapshots()
@@ -466,7 +506,10 @@ where
                 .try_direct_connect_with_ip_list(dst_peer_id, ip_list)
                 .await;
             tracing::info!(?result, dst_peer_id, "direct-connect attempt returned");
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if self.connection_satisfies_policy(
+                dst_peer_id,
+                &self.peer_disguise_flags(dst_peer_id).await,
+            ) {
                 return Ok(());
             }
         }
@@ -550,7 +593,7 @@ where
                     .await;
             }
             let _ = tasks.join_all().await;
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if self.connection_satisfies_policy(dst_peer_id, &peer_policy) {
                 return Ok(());
             }
         }
@@ -681,11 +724,20 @@ where
 
         let backoffs_ms = [1000i64, 2000, 4000];
         for attempt in 0..=backoffs_ms.len() {
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            let preferred_target =
+                Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "wss" | "http3"));
+            let connected = || {
+                if preferred_target {
+                    self.peer_manager.has_disguised_conn(dst_peer_id)
+                } else {
+                    self.peer_manager.has_directly_connected_conn(dst_peer_id)
+                }
+            };
+            if connected() {
                 return Ok(());
             }
             let result = self.connect_to_url_once(dst_peer_id, &url).await;
-            if result.is_ok() || self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if result.is_ok() || connected() {
                 return Ok(());
             }
             if attempt == backoffs_ms.len() {
@@ -1356,5 +1408,27 @@ mod tests {
         let set = ExpiringSet::default();
         set.insert(7u32, Duration::ZERO);
         assert!(!set.contains(&7));
+    }
+
+    #[test]
+    fn disguise_preference_retries_with_an_existing_raw_direct_connection() {
+        assert!(should_collect_direct_peer(
+            2, 1, false, false, true, false, true, false
+        ));
+        assert!(!should_collect_direct_peer(
+            2, 1, false, false, true, false, true, true
+        ));
+        assert!(!should_collect_direct_peer(
+            2, 1, false, false, true, false, false, false
+        ));
+        assert!(should_collect_direct_peer(
+            2, 1, false, false, true, true, false, false
+        ));
+        assert!(!should_collect_direct_peer(
+            1, 1, false, true, true, true, true, false
+        ));
+        assert!(!should_collect_direct_peer(
+            2, 1, true, true, true, true, true, false
+        ));
     }
 }

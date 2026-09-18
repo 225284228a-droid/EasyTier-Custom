@@ -66,6 +66,7 @@ pub struct TcpPunchCandidate {
     pub tcp_nat_type: NatType,
     pub feature_flag: Option<PeerFeatureFlag>,
     pub has_direct_connection: bool,
+    pub has_disguised_connection: bool,
     pub has_recent_traffic: bool,
     pub peer_disguise_flags: PeerDisguiseP2pFlags,
 }
@@ -544,7 +545,8 @@ where
         if !self.peer_source.p2p_policy_flags().disable_p2p {
             return true;
         }
-        let Some(caller_peer_id) = caller_peer_id.and_then(|peer_id| PeerId::try_from(peer_id).ok())
+        let Some(caller_peer_id) =
+            caller_peer_id.and_then(|peer_id| PeerId::try_from(peer_id).ok())
         else {
             return false;
         };
@@ -622,10 +624,9 @@ where
                 caller = ?controller.get_caller_peer_id(),
                 "tcp hole punch rpc rejected (P2P disabled by local policy)"
             );
-            return Err(anyhow::anyhow!(
-                "TCP hole punching is disabled by the local P2P policy"
-            )
-            .into());
+            return Err(
+                anyhow::anyhow!("TCP hole punching is disabled by the local P2P policy").into(),
+            );
         }
         let requested_scheme = input.scheme.trim().to_owned();
         if requested_scheme.is_empty() && policy.only_use_wss_http3_for_hole_punching {
@@ -826,7 +827,10 @@ where
                 self.blacklist.insert(dst_peer_id);
                 anyhow::bail!("peer {dst_peer_id} rejected WSS hole punching");
             }
-            tracing::warn!(dst_peer_id, "peer rejected WSS hole punching, retrying raw TCP");
+            tracing::warn!(
+                dst_peer_id,
+                "peer rejected WSS hole punching, retrying raw TCP"
+            );
             requested_scheme = "tcp";
             response = self
                 .peer_source
@@ -944,6 +948,8 @@ where
         let local_peer_id = self.peer_source.local_peer_id();
         let mut peers_to_connect = Vec::new();
         for candidate in self.peer_source.candidates().await {
+            let use_wss_engine = policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
+                && self.supports_wss_hole_punching;
             let static_allowed = should_background_p2p_with_peer(
                 candidate.feature_flag.as_ref(),
                 false,
@@ -956,13 +962,14 @@ where
                 false,
                 policy.disable_p2p,
                 policy.need_p2p,
-            ) && candidate.has_recent_traffic;
+            ) && (candidate.has_recent_traffic
+                || (candidate.has_direct_connection
+                    && use_wss_engine
+                    && !candidate.has_disguised_connection));
             if !static_allowed && !dynamic_allowed {
                 continue;
             }
 
-            let use_wss_engine = policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
-                && self.supports_wss_hole_punching;
             let allow_raw = policy.allow_raw_with_peer(&candidate.peer_disguise_flags);
             if !use_wss_engine && !allow_raw {
                 continue;
@@ -977,7 +984,9 @@ where
                 tracing::debug!(peer_id, "tcp hole punch task collect skip blacklisted");
                 continue;
             }
-            if candidate.has_direct_connection {
+            if candidate.has_direct_connection
+                && (!use_wss_engine || candidate.has_disguised_connection)
+            {
                 tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
                 continue;
             }

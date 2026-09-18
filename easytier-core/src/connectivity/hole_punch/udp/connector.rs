@@ -108,6 +108,7 @@ where
     stun: Arc<dyn StunInfoProvider>,
     sym_punch_lock: UdpSymPunchLock,
     blacklist: UdpHolePunchBlacklist,
+    preferred_attempt_started: DashMap<PeerId, Instant>,
     try_cone_before_sym: Arc<AtomicBool>,
     pub sym_to_cone_client: UdpSymToConePunchClient<R, S>,
     pub both_easy_sym_client: UdpBothEasySymPunchClient<R, S>,
@@ -129,6 +130,7 @@ where
             stun: parts.stun.clone(),
             sym_punch_lock: parts.sym_punch_lock.clone(),
             blacklist: UdpHolePunchBlacklist::new(),
+            preferred_attempt_started: DashMap::new(),
             try_cone_before_sym: Arc::new(AtomicBool::new(
                 parts.try_cone_before_sym.load(Ordering::Relaxed),
             )),
@@ -414,6 +416,24 @@ where
         let my_peer_id = data.peer_source.local_peer_id();
         let policy = data.peer_source.p2p_policy_flags();
         let candidates = data.peer_source.candidates().await;
+        data.preferred_attempt_started.retain(|peer_id, _| {
+            candidates.iter().any(|candidate| {
+                candidate.peer_id == *peer_id
+                    && policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
+            })
+        });
+        // Give the independent direct WSS/HTTP3 and WSS punch engines a
+        // head start, while retaining bounded raw fallback on failure.
+        let candidates = candidates.into_iter().filter(|candidate| {
+            !policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
+                || data
+                    .preferred_attempt_started
+                    .entry(candidate.peer_id)
+                    .or_insert_with(Instant::now)
+                    .elapsed()
+                    .as_secs()
+                    >= 30
+        });
         let peers_to_connect =
             collect_udp_punch_tasks(my_peer_id, my_nat_type, policy, candidates, |peer_id| {
                 data.blacklist.contains(peer_id)

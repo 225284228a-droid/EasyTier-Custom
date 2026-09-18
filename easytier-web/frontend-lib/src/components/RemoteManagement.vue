@@ -112,9 +112,12 @@ const selectedInstanceId = computed({
     get() {
         return instanceList.value.find((instance) => instance.uuid === instanceId.value);
     },
-    set(value: any) {
-        console.log("set instanceId", value);
-        instanceId.value = value ? value.uuid : undefined;
+    set(value: { uuid: string } | string | undefined) {
+        // The web console binds this model directly to a route parameter,
+        // while the desktop GUI binds it to a string ref. Keep the model
+        // contract string-based so both consumers receive a valid instance
+        // id instead of a Select option object.
+        instanceId.value = typeof value === 'string' ? value : value?.uuid;
     }
 });
 watch(selectedInstanceId, async (newVal, oldVal) => {
@@ -228,7 +231,7 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         delete networkMetaCache.value[cfg.instance_id];
         await loadNetworkMetas([cfg.instance_id]);
 
-        selectedInstanceId.value = { uuid: cfg.instance_id };
+        selectedInstanceId.value = cfg.instance_id;
         await loadNetworkInstanceIds();
         await loadCurrentNetworkInfo();
     } catch (e: any) {
@@ -255,7 +258,7 @@ const saveNetworkConfig = async () => {
 const newNetwork = async () => {
     const newNetworkConfig = props.newConfigGenerator?.() ?? NetworkTypes.DEFAULT_NETWORK_CONFIG();
     await props.api.save_config(newNetworkConfig);
-    selectedInstanceId.value = { uuid: newNetworkConfig.instance_id };
+    selectedInstanceId.value = newNetworkConfig.instance_id;
     currentNetworkConfig.value = newNetworkConfig;
     await loadNetworkInstanceIds();
 }

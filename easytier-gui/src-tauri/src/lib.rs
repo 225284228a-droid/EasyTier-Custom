@@ -444,11 +444,29 @@ fn init_service(opts: Option<service::ServiceOptions>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_service_status(_enable: bool) -> Result<(), String> {
+fn set_service_status(enable: bool) -> Result<(), String> {
     #[cfg(not(target_os = "android"))]
     {
-        service::set_status(_enable).map_err(|e| format!("{:#}", e))?;
+        service::set_status(enable).map_err(|e| format!("{:#}", e))?;
     }
+    Ok(())
+}
+
+/// Release the embedded core before a service claims its ports and TUN devices.
+#[tauri::command]
+async fn stop_local_backend() -> Result<(), String> {
+    let mut client = CLIENT_MANAGER.write().await;
+    WEB_CLIENT.write().await.clear();
+    *client = None;
+    *RPC_SERVER.lock().await = None;
+    if let Some(manager) = INSTANCE_MANAGER.write().await.take() {
+        manager
+            .retain_network_instances(&[])
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    *INSTANCE_STATE_STORE.write().await = None;
+    *INSTANCE_CONFIG_DIR.write().await = None;
     Ok(())
 }
 
@@ -589,15 +607,12 @@ async fn init_rpc_connection(
                 }
             };
 
-            let rpc_server = ApiRpcServer::from_tunnel(
-                tunnel,
-                instance_manager.clone(),
-                instance_state_store,
-            )
-            .with_rx_timeout(None)
-            .serve()
-            .await
-            .map_err(|e| e.to_string())?;
+            let rpc_server =
+                ApiRpcServer::from_tunnel(tunnel, instance_manager.clone(), instance_state_store)
+                    .with_rx_timeout(None)
+                    .serve()
+                    .await
+                    .map_err(|e| e.to_string())?;
             *rpc_server_guard = Some(RpcServer {
                 kind: desired_kind,
                 _server: rpc_server,
@@ -711,9 +726,7 @@ async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), Stri
             state_store.clone(),
         )
         .await
-        .with_context(|| {
-            format!("Failed to initialize web client for {config_server_url}")
-        })
+        .with_context(|| format!("Failed to initialize web client for {config_server_url}"))
         .map_err(|e| format!("{:#}", e))?;
         web_clients.push(web_client);
     }
@@ -805,14 +818,14 @@ mod manager {
     use easytier::common::config::{NetworkConfig, NetworkConfigExt};
     use easytier::proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
     use easytier::proto::api::manage::{
-        RunNetworkInstanceRequest, SetNetworkInstanceEnabledRequest,
+        GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest,
+        RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
+        SaveNetworkInstanceConfigRequest, SetNetworkInstanceEnabledRequest,
     };
     use easytier::proto::rpc::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
     use easytier::web_client::WebClientHooks;
-    use easytier_core::management::remote_client::{
-        PersistentConfig, RemoteClientError,
-    };
+    use easytier_core::management::remote_client::{PersistentConfig, RemoteClientError};
 
     pub(super) struct GuiHooks {
         pub(super) app: AppHandle,
@@ -1289,19 +1302,62 @@ mod manager {
             configs: Vec<StoredGuiConfig>,
             enabled_networks: Vec<String>,
         ) -> anyhow::Result<()> {
-            self.storage.network_configs.clear();
-            for stored in configs {
-                let instance_id = stored.config.instance_id();
-                self.storage.network_configs.insert(
-                    instance_id.parse()?,
-                    GUIConfig::new(instance_id.to_string(), stored.config, stored.source),
-                );
-            }
-
-            self.storage.enabled_networks.clear();
             let client = self
                 .get_rpc_client(app.clone())
                 .ok_or_else(|| anyhow::anyhow!("RPC client not found"))?;
+            let existing = client
+                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+                .await?;
+            // Only migrate missing legacy configs. The core owns subsequent edits,
+            // including disabled configs edited from the web console.
+            for stored in configs {
+                let id: Uuid = stored.config.instance_id().parse()?;
+                let rpc_id = id.into();
+                if existing.inst_ids.contains(&rpc_id)
+                    || existing.disabled_inst_ids.contains(&rpc_id)
+                {
+                    continue;
+                }
+                client
+                    .save_network_instance_config(
+                        BaseController::default(),
+                        SaveNetworkInstanceConfigRequest {
+                            inst_id: Some(rpc_id),
+                            config: Some(stored.config),
+                            source: config_source_to_rpc(stored.source.to_runtime_source()),
+                        },
+                    )
+                    .await?;
+            }
+            let snapshot = client
+                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+                .await?;
+            self.storage.network_configs.clear();
+            self.storage.enabled_networks.clear();
+            for id in snapshot.inst_ids.iter().chain(&snapshot.disabled_inst_ids) {
+                let response = client
+                    .get_network_instance_config(
+                        BaseController::default(),
+                        GetNetworkInstanceConfigRequest { inst_id: Some(*id) },
+                    )
+                    .await?;
+                if let Some(config) = response.config {
+                    let uuid: Uuid = (*id).into();
+                    let source = easytier_core::management::config_source_from_rpc(response.source)
+                        .unwrap_or(ConfigSource::User);
+                    self.storage.network_configs.insert(
+                        uuid,
+                        GUIConfig::new(
+                            uuid.to_string(),
+                            config,
+                            PersistedConfigSource::from_runtime_source(source),
+                        ),
+                    );
+                    if snapshot.inst_ids.contains(id) {
+                        self.storage.enabled_networks.insert(uuid);
+                    }
+                }
+            }
             for id in enabled_networks {
                 if let Ok(uuid) = id.parse()
                     && !self.storage.enabled_networks.contains(&uuid)
@@ -1334,11 +1390,82 @@ mod manager {
                         .map_err(|e| anyhow::anyhow!(e))?;
                 }
             }
+            self.storage.save_configs(&app)?;
+            self.storage.save_enabled_networks(&app)?;
             Ok(())
         }
     }
     #[async_trait]
     impl RemoteClientManager<AppHandle, GUIConfig, anyhow::Error> for GUIClientManager {
+        async fn handle_list_network_instance_ids(
+            &self,
+            app: AppHandle,
+        ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<anyhow::Error>> {
+            let client = self
+                .get_rpc_client(app)
+                .ok_or(RemoteClientError::ClientNotFound)?;
+            let response = client
+                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+                .await?;
+            Ok(ListNetworkInstanceIdsJsonResp {
+                running_inst_ids: response.inst_ids,
+                disabled_inst_ids: response.disabled_inst_ids,
+            })
+        }
+
+        async fn handle_save_network_config_with_source(
+            &self,
+            app: AppHandle,
+            id: Uuid,
+            config: NetworkConfig,
+            source: ConfigSource,
+        ) -> Result<(), RemoteClientError<anyhow::Error>> {
+            let client = self
+                .get_rpc_client(app.clone())
+                .ok_or(RemoteClientError::ClientNotFound)?;
+            client
+                .save_network_instance_config(
+                    BaseController::default(),
+                    SaveNetworkInstanceConfigRequest {
+                        inst_id: Some(id.into()),
+                        config: Some(config.clone()),
+                        source: config_source_to_rpc(source),
+                    },
+                )
+                .await?;
+            self.storage
+                .save_config(
+                    &app,
+                    id,
+                    config,
+                    PersistedConfigSource::from_runtime_source(source),
+                )
+                .map_err(RemoteClientError::PersistentError)?;
+            Ok(())
+        }
+
+        async fn handle_remove_network_instances(
+            &self,
+            app: AppHandle,
+            ids: Vec<Uuid>,
+        ) -> Result<(), RemoteClientError<anyhow::Error>> {
+            let client = self
+                .get_rpc_client(app.clone())
+                .ok_or(RemoteClientError::ClientNotFound)?;
+            client
+                .remove_network_instance_config(
+                    BaseController::default(),
+                    RemoveNetworkInstanceConfigRequest {
+                        inst_ids: ids.iter().copied().map(Into::into).collect(),
+                    },
+                )
+                .await?;
+            self.storage
+                .delete_network_configs(app, &ids)
+                .await
+                .map_err(RemoteClientError::PersistentError)
+        }
+
         fn get_rpc_client(
             &self,
             _: AppHandle,
@@ -1678,6 +1805,7 @@ pub fn run_gui() -> std::process::ExitCode {
             load_configs,
             get_network_metas,
             init_service,
+            stop_local_backend,
             set_service_status,
             get_service_status,
             init_rpc_connection,

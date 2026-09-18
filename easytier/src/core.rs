@@ -116,6 +116,7 @@ struct Cli {
     #[arg(
         long,
         env = "ET_CONFIG_DIR",
+        default_value = "config.d",
         help = t!("core_clap.config_dir").to_string()
     )]
     config_dir: Option<PathBuf>,
@@ -1558,6 +1559,13 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init(&cli.logging_options, true)?;
 
+    if let Some(config_dir) = cli.config_dir.as_ref() {
+        std::fs::create_dir_all(config_dir).with_context(|| {
+            format!("failed to create config directory {}", config_dir.display())
+        })?;
+        log::info!(config_dir = %config_dir.display(), "Using managed config directory");
+    }
+
     let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
 
     // Shared instance enabled/disabled state store. Constructed once and
@@ -1909,6 +1917,17 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_dir_is_enabled_by_default_and_can_be_overridden() {
+        let cli = Cli::try_parse_from(["easytier-core"]).unwrap();
+        let expected = std::env::var_os("ET_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("config.d"));
+        assert_eq!(cli.config_dir, Some(expected));
+        let cli = Cli::try_parse_from(["easytier-core", "--config-dir", "custom-configs"]).unwrap();
+        assert_eq!(cli.config_dir, Some(PathBuf::from("custom-configs")));
+    }
 
     #[test]
     fn bbr_cli_preserves_config_unless_explicitly_overridden() {

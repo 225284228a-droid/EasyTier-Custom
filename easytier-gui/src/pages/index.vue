@@ -119,13 +119,17 @@ async function onStopService() {
 async function initWithMode(mode: Mode) {
   const running_inst_ids = (await remoteClient.value.list_network_instance_ids().catch(() => undefined))?.running_inst_ids ?? []
 
+  if (currentMode.value.mode === 'normal' && mode.mode !== 'normal') {
+    await invoke('stop_local_backend')
+  }
+
   if (currentMode.value.mode === 'service' && mode.mode !== 'service') {
     let serviceStatus = await getServiceStatus()
     if (serviceStatus === "Running") {
       manualDisconnect.value = true
       await setServiceStatus(false)
       serviceStatus = await getServiceStatus()
-      for (let i = 0; i < 10; i++) { // macOS takes a while to stop the service
+      for (let i = 0; i < 100; i++) {
         if (serviceStatus === "Stopped") {
           break;
         }
@@ -133,9 +137,7 @@ async function initWithMode(mode: Mode) {
         serviceStatus = await getServiceStatus()
       }
     }
-    if (serviceStatus === "Stopped") {
-      await initService(undefined)
-    }
+    if (serviceStatus === "Running") throw new Error('Timed out waiting for the service to stop')
   }
 
   let url: string | undefined = undefined
@@ -156,6 +158,7 @@ async function initWithMode(mode: Mode) {
       let serviceStatus = await getServiceStatus()
       const coreVersion = await getEasytierVersion()
       if (serviceStatus === "NotInstalled" || modeConfigChanged(mode) || mode.installed_core_version !== coreVersion) {
+        if (serviceStatus === 'Running') await setServiceStatus(false)
         mode.config_server_url = mode.config_server_url || undefined
         await initService({
           config_dir: mode.config_dir,
@@ -170,8 +173,9 @@ async function initWithMode(mode: Mode) {
       if (serviceStatus === "Stopped") {
         await setServiceStatus(true)
       }
-      url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
-      retrys = 5
+      url = (mode.rpc_portal.includes('://') ? mode.rpc_portal : "tcp://" + mode.rpc_portal)
+        .replace("0.0.0.0", "127.0.0.1").replace('[::]', '[::1]')
+      retrys = 30
       break;
     }
     case 'normal':
@@ -197,10 +201,12 @@ async function initWithMode(mode: Mode) {
       await new Promise(resolve => setTimeout(resolve, 1000))
     }
   }
-  await sendConfigs(running_inst_ids.map(Utils.UuidToStr))
+  const migrationKey = mode.mode === 'remote' ? undefined
+    : `core-config-migrated:${mode.mode === 'service' ? mode.config_dir : 'normal'}`
+  await sendConfigs(mode.mode === 'remote' ? [] : running_inst_ids.map(Utils.UuidToStr), migrationKey)
   if (mode.mode === 'normal') {
     mode.config_server_url = mode.config_server_url || undefined
-    initWebClient(mode.config_server_url)
+    await initWebClient(mode.config_server_url)
   }
   currentMode.value = mode
   saveMode(mode)
@@ -267,7 +273,7 @@ onMounted(async () => {
   clientRunning.value = await isClientRunning().catch(() => false)
   const timer = setInterval(async () => {
     try {
-      clientRunning.value = await isClientRunning()
+      if (!isModeSaving.value) clientRunning.value = await isClientRunning()
     } catch (e) {
       clientRunning.value = false
       console.error("Error checking client running status", e)

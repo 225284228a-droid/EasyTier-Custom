@@ -1569,6 +1569,17 @@ impl PeerManagerCore {
         }
     }
 
+    pub fn has_disguised_conn(&self, peer_id: PeerId) -> bool {
+        self.peers
+            .get_peer_by_id(peer_id)
+            .or_else(|| {
+                self.foreign_network_client
+                    .get_peer_map()
+                    .get_peer_by_id(peer_id)
+            })
+            .is_some_and(|peer| peer.has_disguised_conn())
+    }
+
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,

@@ -141,6 +141,7 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
             .await
             .into_iter()
             .map(|route| TcpPunchCandidate {
+                has_disguised_connection: self.has_disguised_conn(route.peer_id),
                 peer_id: route.peer_id,
                 tcp_nat_type: route
                     .stun_info

@@ -162,6 +162,55 @@ async function settleRemoteManagement() {
 }
 
 describe('RemoteManagement config save', () => {
+  it('emits a string instance id when creating a network', async () => {
+    const config = {
+      ...DEFAULT_NETWORK_CONFIG(),
+      instance_id: INSTANCE_ID,
+    }
+    const api = {
+      delete_network: vi.fn(),
+      generate_config: vi.fn(),
+      get_network_config: vi.fn(),
+      get_network_info: vi.fn(),
+      get_vpn_portal_info: vi.fn(),
+      get_network_metas: vi.fn(async () => ({ metas: {} })),
+      list_network_instance_ids: vi.fn()
+        .mockResolvedValueOnce({ disabled_inst_ids: [], running_inst_ids: [] })
+        .mockResolvedValue({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [] }),
+      parse_config: vi.fn(),
+      run_network: vi.fn(),
+      save_config: vi.fn(async () => undefined),
+      update_network_instance_state: vi.fn(),
+      validate_config: vi.fn(),
+    }
+
+    const wrapper = mount(RemoteManagement, {
+      props: {
+        api,
+        newConfigGenerator: () => config,
+      },
+      global: {
+        stubs: {
+          Config: true,
+          ConfigEditDialog: true,
+          Status: true,
+        },
+      },
+    })
+
+    try {
+      await settleRemoteManagement()
+
+      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
+      await flushPromises()
+
+      expect(api.save_config).toHaveBeenCalledOnce()
+      expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('saves the current network config without dropping boolean fields', async () => {
     const config = makeFlagConfig()
     const expectedFlags = snapshotBooleanConfigFields(config)

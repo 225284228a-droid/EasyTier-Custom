@@ -120,15 +120,17 @@ export async function getConfig(instanceId: string) {
   return NetworkTypes.normalizeNetworkConfig(config)
 }
 
-export async function sendConfigs(enabledNetworks: string[]) {
-  const networkList = parseStoredConfigs(localStorage.getItem('networkList'))
-  return await invoke('load_configs', {
+export async function sendConfigs(enabledNetworks: string[], migrationKey?: string) {
+  const networkList = migrationKey && !localStorage.getItem(migrationKey)
+    ? parseStoredConfigs(localStorage.getItem('networkList')) : []
+  await invoke('load_configs', {
     configs: networkList.map(({ config, source }) => ({
       config: NetworkTypes.toBackendNetworkConfig(config),
       source,
     })),
     enabledNetworks
   })
+  if (migrationKey) localStorage.setItem(migrationKey, '1')
 }
 
 export async function getNetworkMetas(instanceIds: string[]) {

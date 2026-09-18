@@ -30,6 +30,23 @@ fn conn_latency_sort_key(latency_us: u64, is_hole_punched: bool) -> (bool, u64) 
     (is_hole_punched && latency_us == 0, latency_us)
 }
 
+fn preferred_conn_sort_key(
+    latency_us: u64,
+    is_hole_punched: bool,
+    prefer: bool,
+    disguised: bool,
+) -> (bool, bool, u64) {
+    let (unverified, latency) = conn_latency_sort_key(latency_us, is_hole_punched);
+    (unverified, prefer && !disguised, latency)
+}
+
+fn is_disguised_tunnel_type(tunnel_type: &str) -> bool {
+    tunnel_type
+        .rsplit('-')
+        .next()
+        .is_some_and(|transport| matches!(transport, "wss" | "http3"))
+}
+
 pub struct Peer {
     pub peer_node_id: PeerId,
     conns: ConnMap,
@@ -222,10 +239,23 @@ impl Peer {
         let selected = self
             .conns
             .iter()
+            .filter(|conn| !conn.value().is_closed())
             .min_by_key(|conn| {
-                conn_latency_sort_key(
-                    conn.value().get_stats().latency_us,
-                    conn.value().is_hole_punched(),
+                let conn = conn.value();
+                let flags = self.context.flags();
+                let prefer = !flags.disable_wss_http3_for_p2p
+                    && (flags.prefer_wss_http3_for_p2p
+                        || flags.only_use_wss_http3_for_hole_punching);
+                let disguised = conn
+                    .get_conn_info()
+                    .tunnel
+                    .as_ref()
+                    .is_some_and(|tunnel| is_disguised_tunnel_type(&tunnel.tunnel_type));
+                preferred_conn_sort_key(
+                    conn.get_stats().latency_us,
+                    conn.is_hole_punched(),
+                    prefer,
+                    disguised,
                 )
             })
             .map(|conn| conn.value().clone());
@@ -285,6 +315,18 @@ impl Peer {
         self.conns.iter().any(|entry| !entry.value().is_closed())
     }
 
+    pub fn has_disguised_conn(&self) -> bool {
+        self.conns.iter().any(|entry| {
+            let conn = entry.value();
+            !conn.is_closed()
+                && conn
+                    .get_conn_info()
+                    .tunnel
+                    .as_ref()
+                    .is_some_and(|tunnel| is_disguised_tunnel_type(&tunnel.tunnel_type))
+        })
+    }
+
     pub fn has_directly_connected_conn(&self) -> bool {
         self.conns
             .iter()
@@ -338,7 +380,24 @@ impl Drop for Peer {
 
 #[cfg(test)]
 mod tests {
-    use super::conn_latency_sort_key;
+    use super::{conn_latency_sort_key, is_disguised_tunnel_type};
+
+    #[test]
+    fn disguise_preference_wins_after_liveness_is_verified() {
+        use super::preferred_conn_sort_key as key;
+        assert!(key(50_000, true, true, true) < key(1_000, false, true, false));
+        assert!(key(1_000, false, true, false) < key(0, true, true, true));
+        assert!(key(1_000, false, false, false) < key(50_000, true, false, true));
+    }
+
+    #[test]
+    fn disguised_tunnel_type_detection_allows_resolution_prefixes() {
+        assert!(is_disguised_tunnel_type("wss"));
+        assert!(is_disguised_tunnel_type("http-txt-wss"));
+        assert!(is_disguised_tunnel_type("http3"));
+        assert!(!is_disguised_tunnel_type("tcp"));
+        assert!(!is_disguised_tunnel_type("quic-http3-wrap"));
+    }
 
     #[test]
     fn measured_relay_precedes_unverified_hole_punch_path() {
