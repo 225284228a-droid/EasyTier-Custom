@@ -471,31 +471,40 @@ impl StunNatTypeDetectResult {
                 NatType::PortRestricted
             }
         } else if !self.stun_resps.is_empty() {
-            if self.public_ips().len() != 1
-                || self.usable_stun_resp_count() <= 1
-                || self.max_port() - self.min_port() > 15
-            {
-                NatType::Symmetric
-            } else if let Some(extra_bind_mapped) = self
-                .extra_bind_test
-                .as_ref()
-                .and_then(|extra| extra.mapped_socket_addr)
-            {
-                let extra_port = extra_bind_mapped.port();
-                let max_port_diff = extra_port.saturating_sub(self.max_port());
-                let min_port_diff = self.min_port().saturating_sub(extra_port);
-                if max_port_diff != 0 && max_port_diff < 100 {
-                    NatType::SymmetricEasyInc
-                } else if min_port_diff != 0 && min_port_diff < 100 {
-                    NatType::SymmetricEasyDec
-                } else {
-                    NatType::Symmetric
-                }
-            } else {
-                NatType::Symmetric
-            }
+            self.classify_symmetric_nat()
         } else {
             NatType::Unknown
+        }
+    }
+
+    /// Classifies a symmetric NAT into easy/hard variants using the port
+    /// distance between the regular probes and the extra bind test.
+    ///
+    /// Shared by the UDP and TCP transports; an extra bind test that is
+    /// missing or inconclusive degrades to plain `NatType::Symmetric`.
+    fn classify_symmetric_nat(&self) -> NatType {
+        if self.public_ips().len() != 1
+            || self.usable_stun_resp_count() <= 1
+            || self.max_port() - self.min_port() > 15
+        {
+            return NatType::Symmetric;
+        }
+        let Some(extra_bind_mapped) = self
+            .extra_bind_test
+            .as_ref()
+            .and_then(|extra| extra.mapped_socket_addr)
+        else {
+            return NatType::Symmetric;
+        };
+        let extra_port = extra_bind_mapped.port();
+        let max_port_diff = extra_port.saturating_sub(self.max_port());
+        let min_port_diff = self.min_port().saturating_sub(extra_port);
+        if max_port_diff != 0 && max_port_diff < 100 {
+            NatType::SymmetricEasyInc
+        } else if min_port_diff != 0 && min_port_diff < 100 {
+            NatType::SymmetricEasyDec
+        } else {
+            NatType::Symmetric
         }
     }
 
@@ -513,7 +522,7 @@ impl StunNatTypeDetectResult {
                 NatType::FullCone
             }
         } else {
-            NatType::Symmetric
+            self.classify_symmetric_nat()
         }
     }
 
@@ -897,6 +906,23 @@ where
         }
     }
 
+    /// Re-probes `stun_server` from `source_port` so the caller can compare
+    /// the freshly allocated mapping port with earlier probes and classify
+    /// easy-symmetric NATs. Mirrors `UdpNatTypeDetector::get_extra_bind_result`.
+    pub(super) async fn get_extra_bind_result(
+        &self,
+        source_port: u16,
+        stun_server: SocketAddr,
+    ) -> anyhow::Result<BindRequestResponse> {
+        tcp_bind_request(
+            self.runtime.clone(),
+            self.socket_context.clone(),
+            stun_server,
+            source_port,
+        )
+        .await
+    }
+
     #[tracing::instrument(skip(self))]
     pub async fn detect_nat_type(
         &self,
@@ -989,6 +1015,114 @@ mod tests {
             explicit_socket_addr("2001:db8::1"),
             Some("[2001:db8::1]:3478".parse().unwrap())
         );
+    }
+
+    fn bind_response(
+        stun_server_port: u16,
+        mapped_port: u16,
+        local_port: u16,
+    ) -> BindRequestResponse {
+        BindRequestResponse {
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), local_port),
+            stun_server_addr: SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)),
+                stun_server_port,
+            ),
+            recv_from_addr: SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)),
+                stun_server_port,
+            ),
+            mapped_socket_addr: Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
+                mapped_port,
+            )),
+            changed_socket_addr: None,
+            change_ip: false,
+            change_port: false,
+            real_ip_changed: false,
+            real_port_changed: false,
+            latency_us: 0,
+        }
+    }
+
+    fn detect_result(
+        transport: StunTransport,
+        responses: Vec<BindRequestResponse>,
+    ) -> StunNatTypeDetectResult {
+        StunNatTypeDetectResult::new(
+            transport,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 52000),
+            responses,
+        )
+    }
+
+    #[test]
+    fn tcp_nat_type_classifies_easy_symmetric_from_extra_bind_test() {
+        // Two servers, one public IP, close ports: easy-sym candidate.
+        let mut result = detect_result(
+            StunTransport::Tcp,
+            vec![
+                bind_response(3478, 40000, 52000),
+                bind_response(3479, 40002, 52000),
+            ],
+        );
+
+        result.extra_bind_test = Some(bind_response(3478, 40005, 52000));
+        assert_eq!(result.nat_type_tcp(), NatType::SymmetricEasyInc);
+
+        result.extra_bind_test = Some(bind_response(3478, 39998, 52000));
+        assert_eq!(result.nat_type_tcp(), NatType::SymmetricEasyDec);
+
+        // Beyond the threshold or without an extra test: hard symmetric.
+        result.extra_bind_test = Some(bind_response(3478, 40200, 52000));
+        assert_eq!(result.nat_type_tcp(), NatType::Symmetric);
+        result.extra_bind_test = None;
+        assert_eq!(result.nat_type_tcp(), NatType::Symmetric);
+    }
+
+    #[test]
+    fn tcp_easy_symmetry_needs_single_public_ip_and_close_ports() {
+        let mut result = detect_result(
+            StunTransport::Tcp,
+            vec![
+                bind_response(3478, 40000, 52000),
+                bind_response(3479, 40100, 52000),
+            ],
+        );
+        result.extra_bind_test = Some(bind_response(3478, 40005, 52000));
+        assert_eq!(result.nat_type_tcp(), NatType::Symmetric);
+    }
+
+    #[test]
+    fn tcp_cone_classification_ignores_extra_bind_test() {
+        let mut result = detect_result(
+            StunTransport::Tcp,
+            vec![
+                bind_response(3478, 52100, 52000),
+                bind_response(3479, 52100, 52000),
+            ],
+        );
+        result.extra_bind_test = Some(bind_response(3478, 52200, 52000));
+        assert_eq!(result.nat_type_tcp(), NatType::FullCone);
+
+        // A single responding server keeps the result unknown.
+        let result = detect_result(StunTransport::Tcp, vec![bind_response(3478, 40000, 52000)]);
+        assert_eq!(result.nat_type_tcp(), NatType::Unknown);
+    }
+
+    #[test]
+    fn udp_easy_symmetric_classification_is_preserved() {
+        let mut result = detect_result(
+            StunTransport::Udp,
+            vec![
+                bind_response(3478, 40000, 52000),
+                bind_response(3479, 40002, 52000),
+            ],
+        );
+        result.extra_bind_test = Some(bind_response(3478, 40003, 52000));
+        assert_eq!(result.nat_type_udp(), NatType::SymmetricEasyInc);
+        result.extra_bind_test = None;
+        assert_eq!(result.nat_type_udp(), NatType::Symmetric);
     }
 
     #[tokio::test]

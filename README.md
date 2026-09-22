@@ -1,4 +1,19 @@
-# EasyTier
+# EasyTier Custom
+
+**An independently maintained, modified version based on [EasyTier (ET)](https://github.com/EasyTier/EasyTier). This is not an official EasyTier release.**
+
+This repository develops its own transport, NAT traversal, and local configuration management behavior. It retains upstream Git history, attribution, and the **GNU LGPL v3.0** [license](LICENSE). Existing third-party license notices remain applicable.
+
+- [中文介绍与完整改动说明 / Detailed modifications](docs/CUSTOM_CHANGES.md)
+- Main differences: persistent local TOML management; multiple configuration servers; WSS/HTTP3 transports and P2P policies; SNI and optional BBR; redundant connection cleanup; experimental TCP symmetric-NAT port prediction.
+- Upstream baseline: [`caa51f78181c103bdf454a530b437eddd7838b35`](https://github.com/EasyTier/EasyTier/commit/caa51f78181c103bdf454a530b437eddd7838b35) (2026-08-29). This is not a claim of parity with current upstream main.
+- [This project's issues](https://github.com/225284228a-droid/EasyTier-Custom/issues) · [This project's releases](https://github.com/225284228a-droid/EasyTier-Custom/releases)
+
+The original EasyTier introduction below is retained for reference. Its badges, download/install commands, official console, and sponsorship links refer to **upstream EasyTier**, not builds or services of this modified version. Build this repository's source to use these modifications.
+
+---
+
+## Upstream EasyTier introduction
 
 [![Github release](https://img.shields.io/github/v/tag/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/releases)
 [![GitHub](https://img.shields.io/github/license/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/blob/main/LICENSE)

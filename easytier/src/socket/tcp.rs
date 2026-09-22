@@ -325,15 +325,58 @@ pub(crate) async fn connect_tcp(
 
     if !must_bind_before_connect(&bind_options) {
         let socket = create_tcp_socket(remote_addr, &bind_options)?;
+        limit_hole_punch_syn_retransmits(&socket, purpose)?;
         let stream = socket.connect(remote_addr).await?;
         prepare_connected_tcp_socket(&stream, purpose)?;
         return Ok(RuntimeTcpSocket::new(stream));
     }
 
     let socket = bind_tcp_socket(remote_addr, bind_options)?;
+    limit_hole_punch_syn_retransmits(&socket, purpose)?;
     let stream = socket.connect(remote_addr).await?;
     prepare_connected_tcp_socket(&stream, purpose)?;
     Ok(RuntimeTcpSocket::new(stream))
+}
+
+/// Failed hole-punch dials must not pin the punch window: a blackholed SYN
+/// retransmits for minutes at the OS default, while the hole-punch engine
+/// runs its own bounded retry loops. Restricts TCP_SYNCNT to hole punching
+/// so all other connect purposes keep default behavior.
+fn limit_hole_punch_syn_retransmits(
+    socket: &TcpSocket,
+    purpose: TcpSocketPurpose,
+) -> io::Result<()> {
+    if purpose != TcpSocketPurpose::HolePunch {
+        return Ok(());
+    }
+    set_single_syn_retransmit(socket)
+}
+
+// socket2 has no TCP_SYNCNT wrapper; fall back to a raw setsockopt on the
+// kernels that provide it. Windows' shorter default retransmits are fine.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn set_single_syn_retransmit(socket: &TcpSocket) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+
+    let syn_count: libc::c_int = 1;
+    let result = unsafe {
+        libc::setsockopt(
+            socket2::SockRef::from(socket).as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_SYNCNT,
+            &syn_count as *const libc::c_int as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn set_single_syn_retransmit(_socket: &TcpSocket) -> io::Result<()> {
+    Ok(())
 }
 
 fn prepare_connected_tcp_socket(stream: &TcpStream, purpose: TcpSocketPurpose) -> io::Result<()> {

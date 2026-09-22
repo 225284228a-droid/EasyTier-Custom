@@ -310,15 +310,35 @@ where
                     servers,
                     1,
                 );
-                let result = detector.detect_nat_type(0).await;
+                let mut result = detector.detect_nat_type(0).await;
                 tracing::debug!(?result, "finish tcp nat type detect");
+
+                if let Ok(old_result) = result.as_mut()
+                    && old_result.nat_type() == NatType::Symmetric
+                {
+                    // Extra bind test upgrades plain Symmetric to the
+                    // easy variants; failures keep Symmetric.
+                    let source_port = old_result.local_addr().port();
+                    tracing::debug!(?old_result, "start tcp extra bind test");
+                    for server in old_result.collect_available_stun_server() {
+                        let extra = detector.get_extra_bind_result(source_port, server).await;
+                        tracing::debug!(?extra, "finish tcp nat type detect with extra bind");
+                        if let Ok(response) = extra {
+                            old_result.extra_bind_test = Some(response);
+                            break;
+                        }
+                    }
+                }
 
                 let mut sleep_sec = 10;
                 if let Ok(result) = result {
                     *nat_test_time.write().unwrap() = unix_timestamp();
                     let nat_type = result.nat_type();
+                    let completed_extra_test = result.extra_bind_test.is_some();
                     *tcp_nat_test_result.write().unwrap() = Some(result);
-                    if nat_type != NatType::Unknown {
+                    if nat_type != NatType::Unknown
+                        && (nat_type != NatType::Symmetric || completed_extra_test)
+                    {
                         sleep_sec = 600;
                     }
                 }
@@ -394,10 +414,26 @@ where
                 .as_ref()
                 .map(|result| result.nat_type() as i32)
                 .unwrap_or(NatType::Unknown as i32),
-            tcp_nat_type: tcp_result
-                .as_ref()
-                .map(|result| result.nat_type() as i32)
-                .unwrap_or(NatType::Unknown as i32),
+            tcp_nat_type: {
+                let tcp_nat_type = tcp_result
+                    .as_ref()
+                    .map(|result| result.nat_type())
+                    .unwrap_or(NatType::Unknown);
+                let udp_nat_type = udp_result
+                    .as_ref()
+                    .map(|result| result.nat_type())
+                    .unwrap_or(NatType::Unknown);
+                let final_type = tcp_nat_type_with_udp_fallback(tcp_nat_type, udp_nat_type);
+                if final_type != tcp_nat_type {
+                    tracing::debug!(
+                        ?tcp_nat_type,
+                        ?udp_nat_type,
+                        ?final_type,
+                        "tcp nat type detection inconclusive, approximated from udp result"
+                    );
+                }
+                final_type as i32
+            },
             last_update_time: *self.nat_test_result_time.read().unwrap(),
             public_ip: public_ip.into_iter().collect(),
             min_port: udp_result
@@ -534,6 +570,23 @@ fn sampled_servers(servers: &[String]) -> Vec<String> {
         .chain(servers.iter().skip(2).choose(&mut rand::thread_rng()))
         .cloned()
         .collect()
+}
+
+/// Fills an inconclusive TCP detection with the UDP result.
+///
+/// Most NAT boxes allocate TCP and UDP mappings from the same address family
+/// behaviour, so the UDP classification is a reasonable approximation when the
+/// dedicated TCP probes failed. `SymUdpFirewall` is UDP-specific and maps to
+/// plain `Symmetric` for the TCP view.
+fn tcp_nat_type_with_udp_fallback(tcp_nat_type: NatType, udp_nat_type: NatType) -> NatType {
+    if tcp_nat_type != NatType::Unknown {
+        return tcp_nat_type;
+    }
+    match udp_nat_type {
+        NatType::Unknown => NatType::Unknown,
+        NatType::SymUdpFirewall => NatType::Symmetric,
+        approximated => approximated,
+    }
 }
 
 fn unix_timestamp() -> i64 {
@@ -712,6 +765,46 @@ mod tests {
         assert_eq!(&sampled[..2], &["a", "b"]);
         assert_eq!(sampled.len(), 3);
         assert!(matches!(sampled[2].as_str(), "c" | "d"));
+    }
+
+    #[test]
+    fn tcp_nat_type_falls_back_to_udp_detection_only_when_unknown() {
+        // UDP and TCP mappings usually share the NAT family behaviour, so an
+        // inconclusive TCP detection borrows the UDP classification...
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::Unknown, NatType::FullCone),
+            NatType::FullCone
+        );
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::Unknown, NatType::PortRestricted),
+            NatType::PortRestricted
+        );
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::Unknown, NatType::Symmetric),
+            NatType::Symmetric
+        );
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::Unknown, NatType::SymmetricEasyDec),
+            NatType::SymmetricEasyDec
+        );
+        // ... except the UDP-only firewall flavour, which maps to symmetric.
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::Unknown, NatType::SymUdpFirewall),
+            NatType::Symmetric
+        );
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::Unknown, NatType::Unknown),
+            NatType::Unknown
+        );
+        // A real TCP detection always wins over the approximation.
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::Symmetric, NatType::FullCone),
+            NatType::Symmetric
+        );
+        assert_eq!(
+            tcp_nat_type_with_udp_fallback(NatType::FullCone, NatType::Unknown),
+            NatType::FullCone
+        );
     }
 
     #[test]

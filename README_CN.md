@@ -1,4 +1,19 @@
-# EasyTier
+# EasyTier Custom
+
+**本项目基于 [EasyTier（ET）](https://github.com/EasyTier/EasyTier) 二次开发，是独立维护的魔改版本，并非 EasyTier 官方发行版。**
+
+本仓库独立演进传输协议、NAT 打洞和本地配置管理功能，保留 EasyTier 上游 Git 历史、作者归属，以及与上游相同的 **GNU LGPL v3.0** [开源许可证](LICENSE)。第三方代码原有的许可证声明继续保留。
+
+- **[完整改动说明、配置选项与兼容性](docs/CUSTOM_CHANGES.md)**
+- 主要改动：本地 TOML 持久化管理、多配置服务器、WSS/HTTP3 传输与 P2P 策略、SNI、可选 BBR、冗余连接清理，以及实验性 TCP 对称 NAT 端口预测打洞。
+- 上游基线：[`caa51f78181c103bdf454a530b437eddd7838b35`](https://github.com/EasyTier/EasyTier/commit/caa51f78181c103bdf454a530b437eddd7838b35)（2026-08-29），不代表已同步官方最新主线。
+- [本项目问题反馈](https://github.com/225284228a-droid/EasyTier-Custom/issues) · [本项目发布页](https://github.com/225284228a-droid/EasyTier-Custom/releases)
+
+下面保留的是原版 EasyTier 的介绍。其中徽章、下载与安装命令、官方控制台和赞助链接指向 **EasyTier 上游**，不代表本魔改版本的构建或服务。使用本版改动需要构建本仓库源码。
+
+---
+
+## 原版 EasyTier 介绍
 
 [![Github release](https://img.shields.io/github/v/tag/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/releases)
 [![GitHub](https://img.shields.io/github/license/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/blob/main/LICENSE)

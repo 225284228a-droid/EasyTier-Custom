@@ -2343,6 +2343,7 @@ dependencies = [
  "igd-next",
  "indoc",
  "kcp-sys",
+ "libc",
  "log",
  "machine-uid",
  "maplit",

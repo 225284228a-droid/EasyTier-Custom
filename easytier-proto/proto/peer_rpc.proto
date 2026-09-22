@@ -273,15 +273,39 @@ service UdpHolePunchRpc {
       returns (SendPunchPacketBothEasySymResponse);
 }
 
+// Direction in which an easy-symmetric NAT allocates public port numbers.
+enum PortSequenceDirection {
+  UNKNOWN = 0;
+  INCREMENTAL = 1;
+  DECREMENTAL = 2;
+}
+
+// Port prediction window advertised by an easy-symmetric TCP hole-punch
+// responder so the cone initiator can spray the predicted public ports.
+message TcpHolePunchPredictedPorts {
+  // STUN observed base mapping of the responder; predicted ports continue
+  // from this address in `direction`.
+  common.SocketAddr base_mapped_addr = 1;
+  // Number of ports to spray starting at base_mapped_addr (k = 0..max-1).
+  uint32 max_port_num = 2;
+  PortSequenceDirection direction = 3;
+}
+
 message TcpHolePunchRequest {
   common.SocketAddr connector_mapped_addr = 1;
   // Empty means the original TCP hole punch. wss upgrades the punched socket.
   string scheme = 2;
+  // Set by nodes that understand `TcpHolePunchPredictedPorts`. When false
+  // (e.g. upstream peers) the response must not carry prediction info.
+  bool supports_port_prediction = 3;
 }
 
 message TcpHolePunchResponse {
   common.SocketAddr listener_mapped_addr = 1;
   string scheme = 2;
+  // Only present when the request advertised `supports_port_prediction` and
+  // the responder is an easy-symmetric NAT.
+  TcpHolePunchPredictedPorts predicted_ports = 3;
 }
 
 service TcpHolePunchRpc {
