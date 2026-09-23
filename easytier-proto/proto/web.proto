@@ -22,15 +22,24 @@ message HeartbeatRequest {
   repeated common.UUID running_network_instances = 7;
   DeviceOsInfo device_os = 8;
   bool support_config_source = 9;
-  bool support_local_configs = 10;
+  repeated common.UUID failed_network_instances = 10;
+  bool support_heartbeat_policy = 11;
+  // Custom extension; legacy clients used field 10 (varint).
+  bool support_local_configs = 50001;
 }
 
-message HeartbeatResponse {}
+message HeartbeatResponse {
+  optional uint32 heartbeat_interval_ms = 1;
+  optional uint32 heartbeat_timeout_ms = 2;
+}
 
 message GetFeatureRequest {}
 
 message GetFeatureResponse {
   bool support_encryption = 1;
+  // This server honors local TOML ownership and understands the migrated
+  // HeartbeatRequest.support_local_configs extension (50001).
+  bool support_local_configs = 50001;
 }
 
 service WebServerService {

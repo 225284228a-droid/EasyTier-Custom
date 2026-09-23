@@ -33,7 +33,7 @@ use crate::{
 use super::config_state::InstanceStateStore;
 use super::{
     ConfigFileControl, ConfigFilePermission, InstanceManager, config_source_from_rpc,
-    config_source_to_rpc,
+    config_source_to_rpc, network_instance_running_info,
 };
 
 #[async_trait::async_trait]
@@ -563,10 +563,9 @@ where
             // running instances must never share a name, and name lookups
             // (CLI, management API) assume the same.
             let instance_name = config.get_inst_name();
-            if let Some(existing) = super::resolve_optional_instance_by_name(
-                self.instances.as_ref(),
-                &instance_name,
-            )? && existing.instance_id() != instance_id
+            if let Some(existing) =
+                super::resolve_optional_instance_by_name(self.instances.as_ref(), &instance_name)?
+                && existing.instance_id() != instance_id
             {
                 anyhow::bail!(
                     "instance name {instance_name} is already used by a running instance; \
@@ -850,17 +849,29 @@ where
         let included = request
             .inst_ids
             .into_iter()
-            .map(|id| uuid::Uuid::from(id).to_string())
+            .map(uuid::Uuid::from)
             .collect::<HashSet<_>>();
-        let map = self
-            .management
-            .instances
-            .collect_network_infos()
-            .await?
-            .into_iter()
-            .map(|(id, info)| (id.to_string(), info))
-            .filter(|(id, _)| included.is_empty() || included.contains(id))
-            .collect();
+        let map = if included.is_empty() {
+            self.management
+                .instances
+                .collect_network_infos()
+                .await?
+                .into_iter()
+                .map(|(id, info)| (id.to_string(), info))
+                .collect()
+        } else {
+            let mut map = std::collections::BTreeMap::new();
+            for instance_id in included {
+                let Some(instance) = self.management.instances.instance(instance_id) else {
+                    continue;
+                };
+                map.insert(
+                    instance_id.to_string(),
+                    network_instance_running_info(instance.as_ref()).await?,
+                );
+            }
+            map
+        };
         Ok(CollectNetworkInfoResponse {
             info: Some(NetworkInstanceRunningInfoMap { map }),
         })

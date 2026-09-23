@@ -3,8 +3,8 @@
 #[macro_use]
 extern crate rust_i18n;
 
+use std::net::IpAddr;
 use std::sync::Arc;
-use std::{net::IpAddr, time::Duration};
 
 use anyhow::Context as _;
 use clap::Parser;
@@ -125,10 +125,18 @@ struct Cli {
     #[arg(
         long,
         env = "ET_HEARTBEAT_MIN_RESPONSE_MS",
-        default_value = "0",
+        default_value = "3500",
         help = t!("cli.heartbeat_min_response_ms").to_string(),
     )]
     heartbeat_min_response_ms: u64,
+
+    #[arg(
+        long,
+        env = "ET_HEARTBEAT_TIMEOUT_MS",
+        default_value = "15000",
+        help = t!("cli.heartbeat_timeout_ms").to_string(),
+    )]
+    heartbeat_timeout_ms: u64,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -317,7 +325,10 @@ pub fn get_listener_by_url(
 /// to dual-stack ([::] + 0.0.0.0) targets gated on local address availability.
 async fn create_config_server_listeners(
     urls: &[url::Url],
-) -> Vec<(url::Url, Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>)> {
+) -> Vec<(
+    url::Url,
+    Box<dyn SocketListener<Accepted = Box<dyn Tunnel>>>,
+)> {
     let mut listeners = Vec::new();
     for url in urls {
         let Ok(scheme) = url.scheme().parse::<IpScheme>() else {
@@ -334,12 +345,18 @@ async fn create_config_server_listeners(
                 let mut bind_targets: Vec<url::Url> = Vec::new();
                 if is_wildcard_host(&url) {
                     if local_ipv6().await.is_ok() {
-                        bind_targets
-                            .push(format!("{scheme}://[::]:{port}").parse().expect("valid url"));
+                        bind_targets.push(
+                            format!("{scheme}://[::]:{port}")
+                                .parse()
+                                .expect("valid url"),
+                        );
                     }
                     if local_ipv4().await.is_ok() {
-                        bind_targets
-                            .push(format!("{scheme}://0.0.0.0:{port}").parse().expect("valid url"));
+                        bind_targets.push(
+                            format!("{scheme}://0.0.0.0:{port}")
+                                .parse()
+                                .expect("valid url"),
+                        );
                     }
                 } else {
                     bind_targets.push(url.clone());
@@ -347,7 +364,9 @@ async fn create_config_server_listeners(
                 for target in bind_targets {
                     match get_listener_by_url(scheme, &target) {
                         Some(listener) => listeners.push((target, listener)),
-                        None => eprintln!("Warning: failed to create {scheme} listener for {target}"),
+                        None => {
+                            eprintln!("Warning: failed to create {scheme} listener for {target}")
+                        }
                     }
                 }
             }
@@ -372,7 +391,21 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    log::init(&cli, false).unwrap();
+    log::init_with_default_console_targets(&cli, false, &["CORE", "easytier_web"]).unwrap();
+    tracing::info!(
+        version = EASYTIER_VERSION,
+        web_instance_id = ?cli.webhook.web_instance_id,
+        api_address = %cli.api_server_addr,
+        api_port = cli.api_server_port,
+        config_protocol = %cli.config_server_protocol,
+        config_port = cli.config_server_port,
+        heartbeat_min_response_ms = cli.heartbeat_min_response_ms,
+        heartbeat_timeout_ms = cli.heartbeat_timeout_ms,
+        webhook_enabled = cli.webhook.webhook_url.as_deref().is_some_and(|url| !url.trim().is_empty()),
+        rust_log_override = std::env::var_os("RUST_LOG").is_some(),
+        console_log_override = cli.console_log_level.is_some(),
+        "easytier-web starting"
+    );
 
     // Validate OIDC configuration: check split-deploy specific requirements
     // Basic OIDC parameter validation is handled in OidcConfig::from_params
@@ -437,16 +470,26 @@ async fn main() {
                 );
                 std::process::exit(1);
             }
-            vec![format!("{protocol}://0.0.0.0:{}", cli.config_server_port)
-                .parse()
-                .expect("legacy config server listener url should be valid")]
+            vec![
+                format!("{protocol}://0.0.0.0:{}", cli.config_server_port)
+                    .parse()
+                    .expect("legacy config server listener url should be valid"),
+            ]
         }
     };
 
+    let heartbeat_policy = client_manager::HeartbeatPolicy::from_millis(
+        cli.heartbeat_min_response_ms,
+        cli.heartbeat_timeout_ms,
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("Invalid heartbeat configuration: {error}");
+        std::process::exit(2);
+    });
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
-        Duration::from_millis(cli.heartbeat_min_response_ms),
+        heartbeat_policy,
         feature_flags.clone(),
         webhook_config.clone(),
     );

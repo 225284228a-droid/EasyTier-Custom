@@ -491,10 +491,9 @@ where
             .allow_inbound_punch(controller.get_caller_peer_id())
             .await
         {
-            return Err(anyhow::anyhow!(
-                "UDP hole punching is disabled by the local P2P policy"
-            )
-            .into());
+            return Err(
+                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
+            );
         }
         let response = UdpHolePunchInbound::select_punch_listener(
             self,
@@ -516,10 +515,9 @@ where
             .allow_inbound_punch(controller.get_caller_peer_id())
             .await
         {
-            return Err(anyhow::anyhow!(
-                "UDP hole punching is disabled by the local P2P policy"
-            )
-            .into());
+            return Err(
+                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
+            );
         }
         UdpHolePunchInbound::send_punch_packet_cone(self, cone_request_from_rpc(input)?)
             .await
@@ -538,10 +536,9 @@ where
             .allow_inbound_punch(controller.get_caller_peer_id())
             .await
         {
-            return Err(anyhow::anyhow!(
-                "UDP hole punching is disabled by the local P2P policy"
-            )
-            .into());
+            return Err(
+                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
+            );
         }
         let response = UdpHolePunchInbound::send_punch_packet_hard_sym(
             self,
@@ -563,10 +560,9 @@ where
             .allow_inbound_punch(controller.get_caller_peer_id())
             .await
         {
-            return Err(anyhow::anyhow!(
-                "UDP hole punching is disabled by the local P2P policy"
-            )
-            .into());
+            return Err(
+                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
+            );
         }
         UdpHolePunchInbound::send_punch_packet_easy_sym(
             self,
@@ -588,10 +584,9 @@ where
             .allow_inbound_punch(controller.get_caller_peer_id())
             .await
         {
-            return Err(anyhow::anyhow!(
-                "UDP hole punching is disabled by the local P2P policy"
-            )
-            .into());
+            return Err(
+                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
+            );
         }
         let response = UdpHolePunchInbound::send_punch_packet_both_easy_sym(
             self,

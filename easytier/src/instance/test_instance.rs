@@ -138,8 +138,10 @@ mod tests {
         // the runtime server protocol (which serves wss), not the default
         // core one (which does not); otherwise `only WSS/HTTP3` silently
         // disables all hole punching.
-        let instance =
-            TestInstance::new_with_process_runtime(TomlConfig::default(), CoreProcessRuntime::new());
+        let instance = TestInstance::new_with_process_runtime(
+            TomlConfig::default(),
+            CoreProcessRuntime::new(),
+        );
 
         assert_eq!(
             instance.get_core_instance().tcp_hole_punch_supports_wss(),

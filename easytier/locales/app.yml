@@ -5,9 +5,11 @@ core_clap:
     en: |+
       config server address, must be a full URL:
       --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
+        Local TOML mode requires a Custom config server. For older Custom servers, append ?management_protocol=legacy-custom; do not use this option with official servers.
     zh-CN: |+
       配置服务器地址，必须使用完整 URL：
       --config-server udp://127.0.0.1:22020/admin，udp 可以根据配置服务器替换为 tcp、ws、wss（配置服务器 ws 被代理为 wss 时）
+        本地 TOML 模式需要 Custom 配置服务器；连接旧版 Custom 服务器时追加 ?management_protocol=legacy-custom，官方服务器不要使用此选项。
   machine_id:
     en: |+
       the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. by default it is loaded from persisted local state; on first start it may be migrated from system information or generated, then remains fixed.

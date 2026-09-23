@@ -151,6 +151,7 @@ function allFieldFixture() {
     no_tun: true,
     enable_exit_node: true,
     relay_all_peer_rpc: true,
+    prefer_peer_relay: true,
     multi_thread: false,
     enable_relay_network_whitelist: true,
     relay_network_whitelist: ['10.0.0.0/8', 'fd00::/8'],
@@ -237,6 +238,15 @@ function allFieldFixture() {
       },
     },
     credential_file: '/tmp/easytier-credential.toml',
+    managed_credentials: [{
+      credential_id: 'fixture-id',
+      credential_secret: 'fixture-secret',
+      groups: ['ops'],
+      allow_relay: true,
+      allowed_proxy_cidrs: ['10.44.0.0/24'],
+      expiry_unix: '1893456000',
+      reusable: true,
+    }],
     lazy_p2p: true,
     need_p2p: true,
     instance_recv_bps_limit: '9007199254740993',
@@ -295,6 +305,10 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.acl.acl_v1.chains[0].rules[0].action, 'Allow')
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
+  assert.equal(backend.prefer_peer_relay, true)
+  assert.equal(backend.managed_credentials[0].credential_id, 'fixture-id')
+  assert.equal(backend.managed_credentials[0].expiry_unix, '1893456000')
+  assert.deepEqual(backend.managed_credentials[0].allowed_proxy_cidrs, ['10.44.0.0/24'])
 }
 
 function assertLegacyVpnPortalFieldsReachBackendValidation() {

@@ -327,9 +327,9 @@ impl<TcpSocket: 'static, T> ProtocolUdpHolePunchTransportSink<TcpSocket, T> {
         // The punch URL carried by `requested_url` is derived from the remote
         // peer's address; the server-side tunnel must describe its own local
         // address, so rebuild the URL from the session's local socket.
-        let local_addr = session
-            .local_addr()
-            .map_err(|error| anyhow::anyhow!("HTTP3 hole-punch session has no local addr: {error}"))?;
+        let local_addr = session.local_addr().map_err(|error| {
+            anyhow::anyhow!("HTTP3 hole-punch session has no local addr: {error}")
+        })?;
         let local_url = punch_url(requested_url.scheme(), local_addr);
         let upgrade = server_protocol
             .upgrade_udp(session, local_url, Some(admission))
@@ -405,9 +405,9 @@ where
         if !self.p2p_policy_flags().disable_p2p {
             return true;
         }
-        let Some(caller_peer_id) = caller_peer_id.and_then(|peer_id| {
-            crate::config::PeerId::try_from(peer_id).ok()
-        }) else {
+        let Some(caller_peer_id) =
+            caller_peer_id.and_then(|peer_id| crate::config::PeerId::try_from(peer_id).ok())
+        else {
             return false;
         };
         let caller_need_p2p = self
@@ -417,10 +417,7 @@ where
             .find(|candidate| candidate.peer_id == caller_peer_id)
             .and_then(|candidate| candidate.feature_flag)
             .is_some_and(|flag| flag.need_p2p);
-        crate::connectivity::hole_punch::policy::should_accept_inbound_punch(
-            true,
-            caller_need_p2p,
-        )
+        crate::connectivity::hole_punch::policy::should_accept_inbound_punch(true, caller_need_p2p)
     }
 }
 
@@ -490,10 +487,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        connectivity::hole_punch::udp::UdpPunchCandidate,
-        socket::udp::UdpSessionKind,
-    };
+    use crate::{connectivity::hole_punch::udp::UdpPunchCandidate, socket::udp::UdpSessionKind};
 
     struct GatePeerSource {
         disable_p2p: bool,

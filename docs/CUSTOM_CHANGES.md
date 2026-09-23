@@ -6,7 +6,7 @@
 
 - 上游仓库：https://github.com/EasyTier/EasyTier
 - 本项目仓库：https://github.com/225284228a-droid/EasyTier-Custom
-- 最近已合入的上游基线：`caa51f78181c103bdf454a530b437eddd7838b35`（2026-08-29）。
+- 最近已合入的上游基线：`0a783c8e04561d1fee4e3e922e9576402d5bfea3`（2026-09-23）。
 - 开源协议与该上游版本一致：GNU Lesser General Public License v3.0（LGPL-3.0），见根目录 [LICENSE](../LICENSE)。保留上游历史、作者归属及第三方组件各自的许可证；本项目修改按同一项目许可证发布。
 - 本文对比上述固定基线，不把“尚未合入上游后续提交”当作本项目主动删除的功能。
 
@@ -88,7 +88,7 @@ cd EasyTier-Custom
 cargo build --release --locked -p easytier
 ```
 
-本次源码发布在 Windows 上执行：
+此前源码发布在 Windows 上执行：
 
 ```sh
 cargo test -p easytier-core --lib connectivity:: --locked
@@ -101,8 +101,8 @@ cargo test -p easytier-core --lib connectivity:: --locked
 Git 历史保留了上游提交与本项目提交。克隆后可查看完整差异与变更记录：
 
 ```sh
-git diff caa51f78181c103bdf454a530b437eddd7838b35 HEAD
-git log --oneline caa51f78181c103bdf454a530b437eddd7838b35..HEAD
+git diff 0a783c8e04561d1fee4e3e922e9576402d5bfea3 HEAD
+git log --oneline 0a783c8e04561d1fee4e3e922e9576402d5bfea3..HEAD
 ```
 
 原版 README 的安装脚本、官方 Web 服务、发布下载、徽章和赞助链接仍指向上游。使用本项目功能请构建本仓库，问题请提交到本项目 Issues。

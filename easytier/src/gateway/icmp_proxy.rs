@@ -1,7 +1,11 @@
 use std::{
     mem::MaybeUninit,
     net::{IpAddr, Ipv4Addr, SocketAddrV4},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 use easytier_core::{
@@ -34,6 +38,26 @@ impl RuntimeIcmpProxyHost {
 #[derive(Debug)]
 struct RuntimeIcmpSocket {
     socket: Arc<Socket>,
+    closed: Arc<AtomicBool>,
+}
+
+impl RuntimeIcmpSocket {
+    fn new(socket: Socket) -> std::io::Result<Self> {
+        // shutdown() does not reliably interrupt recv_from() on an unconnected
+        // raw socket (notably on Windows). Bound each blocking read so close
+        // also releases Tokio's blocking worker when no ICMP traffic arrives.
+        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        Ok(Self {
+            socket: Arc::new(socket),
+            closed: Arc::new(AtomicBool::new(false)),
+        })
+    }
+}
+
+impl Drop for RuntimeIcmpSocket {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 #[async_trait::async_trait]
@@ -46,19 +70,40 @@ impl IcmpProxySocket for RuntimeIcmpSocket {
 
     async fn recv(&self) -> Result<(IpAddr, Vec<u8>), ProxyRuntimeError> {
         let socket = self.socket.clone();
+        let closed = self.closed.clone();
         tokio::task::spawn_blocking(move || {
             let mut buffer = vec![0_u8; 8192];
-            let uninitialized: &mut [MaybeUninit<u8>] =
-                unsafe { std::mem::transmute(&mut buffer[..]) };
-            let (length, peer_ip) = socket_recv(&socket, uninitialized)?;
-            buffer.truncate(length);
-            Ok((peer_ip, buffer))
+            loop {
+                if closed.load(Ordering::Acquire) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionAborted,
+                        "ICMP socket closed",
+                    )
+                    .into());
+                }
+                let uninitialized: &mut [MaybeUninit<u8>] =
+                    unsafe { std::mem::transmute(&mut buffer[..]) };
+                match socket_recv(&socket, uninitialized) {
+                    Ok((length, peer_ip)) if !closed.load(Ordering::Acquire) => {
+                        buffer.truncate(length);
+                        return Ok((peer_ip, buffer));
+                    }
+                    Ok(_) => continue,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
         })
         .await
         .map_err(|error| ProxyRuntimeError::Other(error.into()))?
     }
 
     fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         let _ = self.socket.shutdown(std::net::Shutdown::Both);
     }
 }
@@ -72,9 +117,7 @@ impl IcmpProxyHost for RuntimeIcmpProxyHost {
         let socket = Self::create_raw_socket(&context).inspect_err(|error| {
             tracing::warn!(?error, "create ICMP socket failed");
         })?;
-        Ok(Arc::new(RuntimeIcmpSocket {
-            socket: Arc::new(socket),
-        }))
+        Ok(Arc::new(RuntimeIcmpSocket::new(socket)?))
     }
 }
 
@@ -88,4 +131,42 @@ fn socket_recv(
         .map(|address| address.ip())
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     Ok((size, peer_ip))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UDP exercises the same unconnected blocking recv_from/close behavior
+    // without requiring raw-socket privileges or modifying host routes.
+    fn socket() -> Arc<RuntimeIcmpSocket> {
+        Arc::new(
+            RuntimeIcmpSocket::new(std::net::UdpSocket::bind("127.0.0.1:0").unwrap().into())
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn close_releases_pending_receive_without_traffic() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let socket = socket();
+        let result = runtime.block_on(async {
+            let receiving = socket.clone();
+            let task = tokio::spawn(async move { receiving.recv().await });
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            socket.close();
+            tokio::time::timeout(Duration::from_secs(2), task).await
+        });
+        // Keep the regression test bounded even if a blocking worker leaks.
+        runtime.shutdown_timeout(Duration::from_secs(2));
+        assert!(
+            result
+                .expect("receive must finish after close")
+                .unwrap()
+                .is_err()
+        );
+    }
 }

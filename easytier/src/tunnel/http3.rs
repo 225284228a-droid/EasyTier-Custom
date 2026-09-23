@@ -294,7 +294,13 @@ impl Http3AcceptedSession {
         enable_bbr: bool,
     ) -> Result<Self, TunnelError> {
         let (active_session, handshake_slots) = admission.into_parts();
-        Self::new_with_admission_parts(session, local_url, active_session, handshake_slots, enable_bbr)
+        Self::new_with_admission_parts(
+            session,
+            local_url,
+            active_session,
+            handshake_slots,
+            enable_bbr,
+        )
     }
 
     fn new_with_admission_parts(
@@ -311,8 +317,8 @@ impl Http3AcceptedSession {
         let runtime = default_runtime().ok_or(TunnelError::InternalError(
             "no async runtime found".to_owned(),
         ))?;
-        let server_config =
-            server_config(enable_bbr).map_err(|error| TunnelError::InternalError(error.to_string()))?;
+        let server_config = server_config(enable_bbr)
+            .map_err(|error| TunnelError::InternalError(error.to_string()))?;
         let endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
             Some(server_config),

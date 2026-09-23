@@ -270,6 +270,10 @@ impl WebClientBackend for WasiWebClientBackend {
             .await?;
         Ok(response.inst_ids.into_iter().map(Into::into).collect())
     }
+
+    fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
+        Vec::new()
+    }
 }
 
 pub(super) struct WasiWebClientRuntime {
@@ -347,6 +351,7 @@ impl WasiWebClientRuntime {
                     },
                     easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
                     secure_mode: config.secure_mode,
+                    support_local_configs: false,
                 },
                 backend,
             )

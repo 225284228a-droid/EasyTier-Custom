@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicBool, Ordering},
@@ -7,8 +8,8 @@ use async_trait::async_trait;
 use easytier_proto::{
     rpc_types::controller::BaseController,
     web::{
-        DeviceOsInfo, GetFeatureRequest, GetFeatureResponse, HeartbeatRequest,
-        WebServerServiceClientFactory,
+        DeviceOsInfo, GetFeatureRequest, GetFeatureResponse, HeartbeatRequest, HeartbeatResponse,
+        LegacyWebServerServiceClientFactory, WebServerServiceClientFactory,
     },
 };
 use tokio::{sync::Mutex, task::JoinSet};
@@ -35,6 +36,64 @@ const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 // Keep retry ownership in this loop when transport or protocol handshakes stall.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const FEATURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const DEFAULT_HEARTBEAT_INTERVAL_MS: u32 = 3_500;
+const DEFAULT_HEARTBEAT_TIMEOUT_MS: u32 = 15_000;
+const MIN_HEARTBEAT_INTERVAL_MS: u32 = 1_000;
+const MAX_HEARTBEAT_INTERVAL_MS: u32 = 60_000;
+const MIN_HEARTBEAT_TIMEOUT_MS: u32 = 5_000;
+const MAX_HEARTBEAT_TIMEOUT_MS: u32 = 120_000;
+const MIN_HEARTBEAT_TIMEOUT_MARGIN_MS: u32 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeartbeatPolicy {
+    interval: std::time::Duration,
+    timeout_ms: i32,
+}
+
+impl Default for HeartbeatPolicy {
+    fn default() -> Self {
+        Self {
+            interval: std::time::Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS.into()),
+            timeout_ms: DEFAULT_HEARTBEAT_TIMEOUT_MS as i32,
+        }
+    }
+}
+
+impl HeartbeatPolicy {
+    fn from_response(response: &HeartbeatResponse) -> (Self, bool) {
+        let requested_interval = response
+            .heartbeat_interval_ms
+            .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_MS);
+        let requested_timeout = response
+            .heartbeat_timeout_ms
+            .unwrap_or(DEFAULT_HEARTBEAT_TIMEOUT_MS);
+        let interval_ms =
+            requested_interval.clamp(MIN_HEARTBEAT_INTERVAL_MS, MAX_HEARTBEAT_INTERVAL_MS);
+        let timeout_ms = requested_timeout
+            .clamp(MIN_HEARTBEAT_TIMEOUT_MS, MAX_HEARTBEAT_TIMEOUT_MS)
+            .max(interval_ms.saturating_add(MIN_HEARTBEAT_TIMEOUT_MARGIN_MS));
+        (
+            Self {
+                interval: std::time::Duration::from_millis(interval_ms.into()),
+                timeout_ms: timeout_ms as i32,
+            },
+            interval_ms != requested_interval || timeout_ms != requested_timeout,
+        )
+    }
+
+    fn controller(self) -> BaseController {
+        BaseController {
+            timeout_ms: self.timeout_ms,
+            ..Default::default()
+        }
+    }
+
+    fn remaining_interval(self, elapsed: std::time::Duration) -> Option<std::time::Duration> {
+        self.interval
+            .checked_sub(elapsed)
+            .filter(|delay| !delay.is_zero())
+    }
+}
 
 async fn connect_config_server(
     connector: &dyn TunnelDialer,
@@ -59,6 +118,7 @@ impl ConfigServerEndpoint {
         if !supports_scheme(&endpoint) {
             anyhow::bail!("unsupported config server scheme: {}", endpoint.scheme());
         }
+        legacy_custom_endpoint(&endpoint)?;
 
         let token = endpoint
             .path_segments()
@@ -101,11 +161,50 @@ pub struct WebClientConfig {
     pub support_local_configs: bool,
 }
 
+fn legacy_custom_endpoint(endpoint: &Url) -> anyhow::Result<bool> {
+    let modes: Vec<_> = endpoint
+        .query_pairs()
+        .filter(|(key, _)| key == "management_protocol")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    match modes.as_slice() {
+        [] => Ok(false),
+        [mode] if mode == "legacy-custom" => Ok(true),
+        _ => anyhow::bail!(
+            "management_protocol must appear once with value legacy-custom, or be omitted"
+        ),
+    }
+}
+
+fn heartbeat_uses_legacy_custom(
+    local_configs: bool,
+    feature: &GetFeatureResponse,
+    endpoint: &Url,
+) -> anyhow::Result<bool> {
+    let legacy = legacy_custom_endpoint(endpoint)? && !feature.support_local_configs;
+    if local_configs && !feature.support_local_configs && !legacy {
+        anyhow::bail!(
+            "config server does not advertise local TOML ownership support; upgrade the Custom server, or select management_protocol=legacy-custom for a pre-migration Custom server"
+        );
+    }
+    Ok(legacy)
+}
+
 #[async_trait]
 pub(crate) trait WebClientBackend: Send + Sync + 'static {
     fn register(&self, registry: &ServiceRegistry);
 
     async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>>;
+
+    fn failed_instance_ids(&self) -> Vec<uuid::Uuid>;
+
+    fn instance_state_generation(&self) -> usize {
+        0
+    }
+
+    async fn wait_for_instance_state_change(&self, _generation: usize) -> usize {
+        std::future::pending().await
+    }
 }
 
 struct NativeWebClientBackend<F>
@@ -150,11 +249,26 @@ where
     async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>> {
         Ok(self.instances.instance_ids())
     }
+
+    fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
+        self.instances.failed_instance_ids()
+    }
+
+    fn instance_state_generation(&self) -> usize {
+        self.instances.instance_state_generation()
+    }
+
+    async fn wait_for_instance_state_change(&self, generation: usize) -> usize {
+        self.instances
+            .wait_for_instance_state_change(generation)
+            .await
+    }
 }
 
 struct WebClientController {
     config: WebClientConfig,
     backend: Arc<dyn WebClientBackend>,
+    runtime_id: uuid::Uuid,
 }
 
 /// Portable config-server client. Hosts only supply identity and adapters.
@@ -212,7 +326,11 @@ impl<F> WebClient<F> {
         backend: Arc<dyn WebClientBackend>,
         manager_guard: Option<DaemonGuard>,
     ) -> Self {
-        let controller = Arc::new(WebClientController { config, backend });
+        let controller = Arc::new(WebClientController {
+            config,
+            backend,
+            runtime_id: uuid::Uuid::new_v4(),
+        });
         let connected = Arc::new(AtomicBool::new(false));
         let tasks = AbortOnDropHandle::new(tokio::spawn(web_client_routine(
             controller.clone(),
@@ -249,20 +367,33 @@ async fn web_client_routine(
             }
         };
 
-        connected.store(true, Ordering::Release);
         tracing::info!(?connection, "connected to config server");
         let mut session = WebClientSession::new(connection, controller.clone());
-        let support_encryption = match time::timeout(FEATURE_TIMEOUT, session.get_feature()).await {
-            Ok(Ok(feature)) => feature.support_encryption,
+        let feature = match time::timeout(FEATURE_TIMEOUT, session.get_feature()).await {
+            Ok(Ok(feature)) => feature,
             Ok(Err(error)) => {
                 tracing::warn!(%error, "GetFeature RPC failed; using legacy tunnel");
-                false
+                GetFeatureResponse::default()
             }
             Err(_) => {
                 tracing::warn!("GetFeature RPC timed out; using legacy tunnel");
-                false
+                GetFeatureResponse::default()
             }
         };
+        let legacy_custom = match heartbeat_uses_legacy_custom(
+            controller.config.support_local_configs,
+            &feature,
+            &connector.remote_url(),
+        ) {
+            Ok(legacy) => legacy,
+            Err(error) => {
+                tracing::error!(%error, "config-server management protocol is incompatible");
+                drop(session);
+                time::sleep(RETRY_INTERVAL).await;
+                continue;
+            }
+        };
+        let support_encryption = feature.support_encryption;
 
         if support_encryption && web_security::web_secure_tunnel_supported() {
             drop(session);
@@ -286,7 +417,8 @@ async fn web_client_routine(
                 }
             };
             let mut session = WebClientSession::new(connection, controller.clone());
-            session.start_heartbeat().await;
+            connected.store(true, Ordering::Release);
+            session.start_heartbeat(legacy_custom).await;
             session.wait().await;
             connected.store(false, Ordering::Release);
             continue;
@@ -310,7 +442,8 @@ async fn web_client_routine(
             continue;
         }
 
-        session.start_heartbeat().await;
+        connected.store(true, Ordering::Release);
+        session.start_heartbeat(legacy_custom).await;
         session.wait().await;
         connected.store(false, Ordering::Release);
     }
@@ -323,11 +456,64 @@ struct WebClientSession {
     tasks: Mutex<JoinSet<()>>,
 }
 
+fn running_instances_for_heartbeat(
+    instance_ids: Vec<uuid::Uuid>,
+    failed_instance_ids: &[uuid::Uuid],
+) -> Vec<uuid::Uuid> {
+    let failed_instance_ids: HashSet<_> = failed_instance_ids.iter().copied().collect();
+    instance_ids
+        .into_iter()
+        .filter(|instance_id| !failed_instance_ids.contains(instance_id))
+        .collect()
+}
+
+fn build_heartbeat_request(
+    config: &WebClientConfig,
+    runtime_id: uuid::Uuid,
+    running_network_instances: Vec<uuid::Uuid>,
+    failed_network_instances: Vec<uuid::Uuid>,
+) -> HeartbeatRequest {
+    HeartbeatRequest {
+        machine_id: Some(config.machine_id.into()),
+        inst_id: Some(runtime_id.into()),
+        user_token: config.token.clone(),
+        easytier_version: config.easytier_version.clone(),
+        hostname: config.hostname.clone(),
+        report_time: chrono::Local::now().to_rfc3339(),
+        device_os: Some(config.device_os.clone()),
+        support_config_source: true,
+        support_local_configs: config.support_local_configs,
+        running_network_instances: running_network_instances
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        failed_network_instances: failed_network_instances
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        support_heartbeat_policy: true,
+    }
+}
+
+async fn wait_for_next_heartbeat(
+    backend: &dyn WebClientBackend,
+    observed_generation: usize,
+    policy: HeartbeatPolicy,
+    elapsed: std::time::Duration,
+) {
+    let Some(delay) = policy.remaining_interval(elapsed) else {
+        return;
+    };
+    tokio::select! {
+        _ = time::sleep(delay) => {}
+        _ = backend.wait_for_instance_state_change(observed_generation) => {}
+    }
+}
+
 impl WebClientSession {
     fn new(tunnel: Box<dyn Tunnel>, controller: Arc<WebClientController>) -> Self {
         let rpc = BidirectRpcManager::new();
         rpc.run_with_tunnel(tunnel);
-        controller.backend.register(rpc.rpc_server().registry());
         Self {
             rpc,
             controller,
@@ -336,61 +522,93 @@ impl WebClientSession {
         }
     }
 
-    pub async fn start_heartbeat(&self) {
+    pub async fn start_heartbeat(&self, legacy_custom: bool) {
         if self.heartbeat_started.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Expose mutation RPCs only after the server's ownership capability is
+        // checked, on the final (possibly encrypted) management connection.
+        self.controller
+            .backend
+            .register(self.rpc.rpc_server().registry());
         let mut tasks = self.tasks.lock().await;
-        Self::heartbeat_routine(&self.rpc, Arc::downgrade(&self.controller), &mut tasks);
+        Self::heartbeat_routine(
+            &self.rpc,
+            Arc::downgrade(&self.controller),
+            &mut tasks,
+            legacy_custom,
+        );
     }
 
     fn heartbeat_routine(
         rpc: &BidirectRpcManager,
         controller: Weak<WebClientController>,
         tasks: &mut JoinSet<()>,
+        legacy_custom: bool,
     ) {
         let controller = controller.upgrade().expect("web client controller");
-        let machine_id = controller.config.machine_id;
-        let session_id = uuid::Uuid::new_v4();
-        let token = controller.config.token.clone();
-        let hostname = controller.config.hostname.clone();
-        let device_os = controller.config.device_os.clone();
-        let easytier_version = controller.config.easytier_version.clone();
         let controller = Arc::downgrade(&controller);
-        let client = rpc
-            .rpc_client()
-            .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new());
-        let mut tick = time::interval(std::time::Duration::from_secs(1));
+        let client = if legacy_custom {
+            rpc.rpc_client()
+                .scoped_client::<LegacyWebServerServiceClientFactory<BaseController>>(
+                    1,
+                    1,
+                    String::new(),
+                )
+        } else {
+            rpc.rpc_client()
+                .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new())
+        };
 
         tasks.spawn(async move {
+            let mut heartbeat_policy = HeartbeatPolicy::default();
             loop {
-                tick.tick().await;
+                let heartbeat_started_at = std::time::Instant::now();
                 let Some(controller) = controller.upgrade() else {
                     break;
                 };
+                let observed_generation = controller.backend.instance_state_generation();
+                let failed_network_instances = controller.backend.failed_instance_ids();
                 let running_network_instances = match controller.backend.instance_ids().await {
-                    Ok(instance_ids) => instance_ids.into_iter().map(Into::into).collect(),
+                    Ok(instance_ids) => {
+                        running_instances_for_heartbeat(instance_ids, &failed_network_instances)
+                    }
                     Err(error) => {
                         tracing::error!(%error, "failed to list config-server instances");
                         break;
                     }
                 };
-                let request = HeartbeatRequest {
-                    machine_id: Some(machine_id.into()),
-                    inst_id: Some(session_id.into()),
-                    user_token: token.clone(),
-                    easytier_version: easytier_version.clone(),
-                    hostname: hostname.clone(),
-                    report_time: chrono::Local::now().to_rfc3339(),
-                    device_os: Some(device_os.clone()),
-                    support_config_source: true,
-                    support_local_configs: controller.config.support_local_configs,
+                let request = build_heartbeat_request(
+                    &controller.config,
+                    controller.runtime_id,
                     running_network_instances,
-                };
+                    failed_network_instances,
+                );
 
-                match client.heartbeat(BaseController::default(), request).await {
+                let response = client
+                    .heartbeat(heartbeat_policy.controller(), request)
+                    .await;
+                match response {
                     Ok(response) => {
                         tracing::debug!(?response, "config-server heartbeat response");
+                        let (next_policy, adjusted) = HeartbeatPolicy::from_response(&response);
+                        if adjusted {
+                            tracing::warn!(
+                                requested_interval_ms = ?response.heartbeat_interval_ms,
+                                requested_timeout_ms = ?response.heartbeat_timeout_ms,
+                                applied_interval_ms = next_policy.interval.as_millis(),
+                                applied_timeout_ms = next_policy.timeout_ms,
+                                "config-server heartbeat policy was outside safe bounds"
+                            );
+                        }
+                        heartbeat_policy = next_policy;
+                        wait_for_next_heartbeat(
+                            controller.backend.as_ref(),
+                            observed_generation,
+                            heartbeat_policy,
+                            heartbeat_started_at.elapsed(),
+                        )
+                        .await;
                     }
                     Err(error) => {
                         tracing::error!(?error, "config-server heartbeat failed");
@@ -442,6 +660,25 @@ mod tests {
         attempts: AtomicUsize,
     }
 
+    struct ImmediateStateChangeBackend;
+
+    #[async_trait]
+    impl WebClientBackend for ImmediateStateChangeBackend {
+        fn register(&self, _registry: &ServiceRegistry) {}
+
+        async fn instance_ids(&self) -> anyhow::Result<Vec<uuid::Uuid>> {
+            Ok(Vec::new())
+        }
+
+        fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
+            Vec::new()
+        }
+
+        async fn wait_for_instance_state_change(&self, generation: usize) -> usize {
+            generation.wrapping_add(1)
+        }
+    }
+
     #[async_trait]
     impl TunnelDialer for StalledThenReadyDialer {
         async fn connect(&self) -> anyhow::Result<Box<dyn Tunnel>> {
@@ -456,6 +693,20 @@ mod tests {
         fn remote_url(&self) -> Url {
             "ring://config-server".parse().unwrap()
         }
+    }
+
+    #[test]
+    fn heartbeat_hides_failed_instances_from_the_running_list() {
+        let running = uuid::Uuid::new_v4();
+        let failed = uuid::Uuid::new_v4();
+        let stopped_clean = uuid::Uuid::new_v4();
+        let instance_ids = vec![running, failed, stopped_clean];
+        let failed_instance_ids = vec![failed];
+
+        let reported = running_instances_for_heartbeat(instance_ids.clone(), &failed_instance_ids);
+
+        assert_eq!(reported, vec![running, stopped_clean]);
+        assert!(running_instances_for_heartbeat(instance_ids, &[]).len() == 3);
     }
 
     #[tokio::test]
@@ -473,6 +724,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(connector.attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn instance_state_change_interrupts_a_long_heartbeat_interval() {
+        let policy = HeartbeatPolicy {
+            interval: std::time::Duration::from_secs(60),
+            timeout_ms: 65_000,
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            wait_for_next_heartbeat(
+                &ImmediateStateChangeBackend,
+                0,
+                policy,
+                std::time::Duration::ZERO,
+            ),
+        )
+        .await
+        .expect("instance state change must wake heartbeat before its interval");
     }
 
     #[test]
@@ -513,5 +784,108 @@ mod tests {
     #[test]
     fn endpoint_rejects_an_empty_token() {
         assert!(ConfigServerEndpoint::parse("udp://example.com", |_| true).is_err());
+    }
+
+    #[test]
+    fn heartbeat_request_carries_registered_and_failed_instance_ids() {
+        let runtime_id = uuid::Uuid::new_v4();
+        let registered = uuid::Uuid::new_v4();
+        let failed = uuid::Uuid::new_v4();
+        let request = build_heartbeat_request(
+            &WebClientConfig {
+                token: "token".to_owned(),
+                machine_id: uuid::Uuid::new_v4(),
+                hostname: "host".to_owned(),
+                device_os: DeviceOsInfo::default(),
+                easytier_version: "test-version".to_owned(),
+                secure_mode: false,
+                support_local_configs: true,
+            },
+            runtime_id,
+            vec![registered],
+            vec![failed],
+        );
+
+        assert_eq!(request.inst_id.map(uuid::Uuid::from), Some(runtime_id));
+        assert!(request.support_local_configs);
+        assert_eq!(
+            request
+                .running_network_instances
+                .into_iter()
+                .map(uuid::Uuid::from)
+                .collect::<Vec<_>>(),
+            vec![registered]
+        );
+        assert_eq!(
+            request
+                .failed_network_instances
+                .into_iter()
+                .map(uuid::Uuid::from)
+                .collect::<Vec<_>>(),
+            vec![failed]
+        );
+        assert!(request.support_heartbeat_policy);
+    }
+
+    #[test]
+    fn local_ownership_requires_capability_or_explicit_legacy_endpoint() {
+        let plain: Url = "tcp://server/team".parse().unwrap();
+        let legacy: Url = "tcp://server/team?management_protocol=legacy-custom"
+            .parse()
+            .unwrap();
+        let official_or_old = GetFeatureResponse::default();
+        assert!(heartbeat_uses_legacy_custom(true, &official_or_old, &plain).is_err());
+        assert!(!heartbeat_uses_legacy_custom(false, &official_or_old, &plain).unwrap());
+        assert!(heartbeat_uses_legacy_custom(true, &official_or_old, &legacy).unwrap());
+        let modern = GetFeatureResponse {
+            support_local_configs: true,
+            ..Default::default()
+        };
+        assert!(!heartbeat_uses_legacy_custom(true, &modern, &plain).unwrap());
+        assert!(!heartbeat_uses_legacy_custom(true, &modern, &legacy).unwrap());
+    }
+
+    #[test]
+    fn heartbeat_policy_uses_safe_defaults_for_legacy_servers() {
+        let (policy, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse::default());
+
+        assert!(!adjusted);
+        assert_eq!(
+            policy.interval,
+            std::time::Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS.into())
+        );
+        assert_eq!(policy.timeout_ms, DEFAULT_HEARTBEAT_TIMEOUT_MS as i32);
+    }
+
+    #[test]
+    fn heartbeat_policy_clamps_server_values_and_preserves_timeout_margin() {
+        let (minimum, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse {
+            heartbeat_interval_ms: Some(1),
+            heartbeat_timeout_ms: Some(1),
+        });
+        assert!(adjusted);
+        assert_eq!(
+            minimum.interval,
+            std::time::Duration::from_millis(MIN_HEARTBEAT_INTERVAL_MS.into())
+        );
+        assert_eq!(minimum.timeout_ms, 6_000);
+
+        let (maximum, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse {
+            heartbeat_interval_ms: Some(u32::MAX),
+            heartbeat_timeout_ms: Some(u32::MAX),
+        });
+        assert!(adjusted);
+        assert_eq!(
+            maximum.interval,
+            std::time::Duration::from_millis(MAX_HEARTBEAT_INTERVAL_MS.into())
+        );
+        assert_eq!(maximum.timeout_ms, MAX_HEARTBEAT_TIMEOUT_MS as i32);
+
+        let (margin, adjusted) = HeartbeatPolicy::from_response(&HeartbeatResponse {
+            heartbeat_interval_ms: Some(60_000),
+            heartbeat_timeout_ms: Some(5_000),
+        });
+        assert!(adjusted);
+        assert_eq!(margin.timeout_ms, 65_000);
     }
 }

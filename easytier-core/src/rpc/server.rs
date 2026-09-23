@@ -224,7 +224,14 @@ impl Server {
             packet.body
         };
         let rpc_request = RpcRequest::decode(Bytes::from(body))?;
-        dispatch_request(reg.as_ref(), descriptor, rpc_request, tunnel_info, caller_peer_id).await
+        dispatch_request(
+            reg.as_ref(),
+            descriptor,
+            rpc_request,
+            tunnel_info,
+            caller_peer_id,
+        )
+        .await
     }
 
     async fn handle_rpc(

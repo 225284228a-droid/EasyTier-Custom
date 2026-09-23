@@ -209,9 +209,7 @@ where
         // Under the only-WSS/HTTP3 policy UDP punching is still possible,
         // but every punch must upgrade to HTTP3; without that capability
         // there is no compliant UDP transport left.
-        if policy.only_use_wss_http3_for_hole_punching
-            && !self.http3_mode.load(Ordering::Acquire)
-        {
+        if policy.only_use_wss_http3_for_hole_punching && !self.http3_mode.load(Ordering::Acquire) {
             return Ok(());
         }
 

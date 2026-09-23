@@ -416,11 +416,7 @@ where
     );
 
     let is_v6 = remote_mapped_addr.is_ipv6();
-    let context = context.with_ip_version(if is_v6 {
-        IpVersion::V6
-    } else {
-        IpVersion::V4
-    });
+    let context = context.with_ip_version(if is_v6 { IpVersion::V6 } else { IpVersion::V4 });
     let requested_url = mapped_addr_url(scheme, remote_mapped_addr)?;
 
     let mut tasks = JoinSet::new();
@@ -521,11 +517,7 @@ where
     );
 
     let is_v6 = target_addrs.first().is_some_and(|addr| addr.is_ipv6());
-    let context = context.with_ip_version(if is_v6 {
-        IpVersion::V6
-    } else {
-        IpVersion::V4
-    });
+    let context = context.with_ip_version(if is_v6 { IpVersion::V6 } else { IpVersion::V4 });
     // All spray sockets share the connector port: the symmetric responder's
     // NAT only lets return traffic through for mappings created from it.
     let bind_addr = bind_addr_for_port(local_port, is_v6);
@@ -533,8 +525,7 @@ where
     let mut tasks = JoinSet::new();
     for target_addr in target_addrs {
         let bind = hole_punch_bind_options(context.clone(), bind_addr);
-        let options =
-            TcpConnectOptions::hole_punch(target_addr, Some(bind_addr)).with_bind(bind);
+        let options = TcpConnectOptions::hole_punch(target_addr, Some(bind_addr)).with_bind(bind);
         let host = host.clone();
         let transport_sink = transport_sink.clone();
         let requested_url = mapped_addr_url(scheme, target_addr)?;
@@ -583,7 +574,9 @@ where
     }
 
     tracing::warn!("tcp hole punch initiator spray connect loop timeout");
-    Err(anyhow::anyhow!("tcp hole punch initiator spray connect loop timeout"))
+    Err(anyhow::anyhow!(
+        "tcp hole punch initiator spray connect loop timeout"
+    ))
 }
 
 pub async fn accept_connections<L, ConnectedSocket>(
@@ -659,10 +652,7 @@ fn fallback_listener_options(
     socket_context: SocketContext,
     bind_addr: std::net::SocketAddr,
 ) -> TcpListenOptions {
-    let bind = hole_punch_bind_options(
-        socket_context.with_ip_version(IpVersion::V4),
-        bind_addr,
-    );
+    let bind = hole_punch_bind_options(socket_context.with_ip_version(IpVersion::V4), bind_addr);
     TcpListenOptions::hole_punch(bind_addr).with_bind(bind)
 }
 
@@ -1846,7 +1836,9 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum MockHostEvent {
-        BindListener { port: u16 },
+        BindListener {
+            port: u16,
+        },
         Connect {
             remote_port: u16,
             local_port: u16,
@@ -1961,7 +1953,10 @@ mod tests {
             match self.connect_mode {
                 MockConnectMode::FailFast => anyhow::bail!("mock connect refused"),
                 MockConnectMode::Succeed => Ok(MockPunchSocket(
-                    options.bind.local_addr.unwrap_or_else(|| options.remote_addr),
+                    options
+                        .bind
+                        .local_addr
+                        .unwrap_or_else(|| options.remote_addr),
                     options.remote_addr,
                 )),
                 MockConnectMode::Pending => std::future::pending().await,
@@ -2058,18 +2053,19 @@ mod tests {
         }
     }
 
-    fn mock_transport_sink(
-    ) -> (Arc<TcpHolePunchTransportSinkFor<MockHolePunchHost>>, Arc<MockTunnelSink>) {
+    fn mock_transport_sink() -> (
+        Arc<TcpHolePunchTransportSinkFor<MockHolePunchHost>>,
+        Arc<MockTunnelSink>,
+    ) {
         let protocols = Arc::new(MockProtocols::default());
         let tunnel_sink = Arc::new(MockTunnelSink::default());
-        let transport_sink: Arc<TcpHolePunchTransportSinkFor<MockHolePunchHost>> = Arc::new(
-            ProtocolTcpHolePunchTransportSink::new(
+        let transport_sink: Arc<TcpHolePunchTransportSinkFor<MockHolePunchHost>> =
+            Arc::new(ProtocolTcpHolePunchTransportSink::new(
                 protocols.clone(),
                 protocols.clone(),
                 protocols.clone(),
                 tunnel_sink.clone(),
-            ),
-        );
+            ));
         (transport_sink, tunnel_sink)
     }
 
@@ -2085,14 +2081,13 @@ mod tests {
     ) {
         let protocols = Arc::new(MockProtocols::default());
         let tunnel_sink = Arc::new(MockTunnelSink::default());
-        let transport_sink: Arc<TcpHolePunchTransportSinkFor<MockHolePunchHost>> = Arc::new(
-            ProtocolTcpHolePunchTransportSink::new(
+        let transport_sink: Arc<TcpHolePunchTransportSinkFor<MockHolePunchHost>> =
+            Arc::new(ProtocolTcpHolePunchTransportSink::new(
                 protocols.clone(),
                 protocols.clone(),
                 protocols.clone(),
                 tunnel_sink.clone(),
-            ),
-        );
+            ));
         let rpc = Arc::new(MockTcpHolePunchRpc {
             response: rpc_response,
             requests: Arc::new(Mutex::new(Vec::new())),
@@ -2146,14 +2141,23 @@ mod tests {
     #[test]
     fn responder_multi_socket_mode_matrix() {
         assert!(responder_uses_multi_socket(NatType::Unknown, false));
-        assert!(responder_uses_multi_socket(NatType::SymmetricEasyInc, false));
-        assert!(responder_uses_multi_socket(NatType::SymmetricEasyDec, false));
+        assert!(responder_uses_multi_socket(
+            NatType::SymmetricEasyInc,
+            false
+        ));
+        assert!(responder_uses_multi_socket(
+            NatType::SymmetricEasyDec,
+            false
+        ));
         // Hard symmetric keeps the legacy dialer and sym punching can be
         // switched off entirely without touching the unknown fallback.
         assert!(!responder_uses_multi_socket(NatType::Symmetric, false));
         assert!(!responder_uses_multi_socket(NatType::FullCone, false));
         assert!(!responder_uses_multi_socket(NatType::Unknown, true));
-        assert!(!responder_uses_multi_socket(NatType::SymmetricEasyInc, true));
+        assert!(!responder_uses_multi_socket(
+            NatType::SymmetricEasyInc,
+            true
+        ));
     }
 
     #[test]
@@ -2203,7 +2207,11 @@ mod tests {
         assert!(spray_target_addrs(base, PortSequenceDirection::Unknown, 10).is_empty());
         // Zero or oversized windows are clamped.
         assert_eq!(
-            ports_of(&spray_target_addrs(base, PortSequenceDirection::Incremental, 0)),
+            ports_of(&spray_target_addrs(
+                base,
+                PortSequenceDirection::Incremental,
+                0
+            )),
             vec![40000]
         );
         assert_eq!(
@@ -2213,12 +2221,20 @@ mod tests {
         // The port space is clamped at the u16 boundaries; k = 0 is the base.
         let top: SocketAddr = "198.51.100.9:65535".parse().unwrap();
         assert_eq!(
-            ports_of(&spray_target_addrs(top, PortSequenceDirection::Incremental, 5)),
+            ports_of(&spray_target_addrs(
+                top,
+                PortSequenceDirection::Incremental,
+                5
+            )),
             vec![65535]
         );
         let bottom: SocketAddr = "198.51.100.9:1".parse().unwrap();
         assert_eq!(
-            ports_of(&spray_target_addrs(bottom, PortSequenceDirection::Decremental, 5)),
+            ports_of(&spray_target_addrs(
+                bottom,
+                PortSequenceDirection::Decremental,
+                5
+            )),
             vec![1]
         );
     }
@@ -2452,7 +2468,9 @@ mod tests {
             transport_sink,
         );
         server.start();
-        let result = TcpHolePunchRpc::exchange_mapped_addr(&*server, BaseController::default(), request).await;
+        let result =
+            TcpHolePunchRpc::exchange_mapped_addr(&*server, BaseController::default(), request)
+                .await;
         (host, server, result)
     }
 
@@ -2460,9 +2478,7 @@ mod tests {
         // Fields introduced after the original wire format stay at their
         // defaults, exactly like an unpatched peer would send them.
         TcpHolePunchRequest {
-            connector_mapped_addr: Some(
-                "203.0.113.99:55779".parse::<SocketAddr>().unwrap().into(),
-            ),
+            connector_mapped_addr: Some("203.0.113.99:55779".parse::<SocketAddr>().unwrap().into()),
             scheme: String::new(),
             supports_port_prediction: false,
         }
@@ -2479,7 +2495,10 @@ mod tests {
 
         let response = result.expect("easy-sym responder accepts the exchange");
         // Upstream peers must not receive prediction info.
-        assert_eq!(response.listener_mapped_addr, Some("198.51.100.30:41000".parse::<SocketAddr>().unwrap().into()));
+        assert_eq!(
+            response.listener_mapped_addr,
+            Some("198.51.100.30:41000".parse::<SocketAddr>().unwrap().into())
+        );
         assert!(response.predicted_ports.is_none());
 
         let connects = host
@@ -2596,9 +2615,7 @@ mod tests {
             );
 
             // The legacy dialer retries the single announced port only.
-            let connects = host
-                .wait_for_connects(MOCK_LOCAL_PORT, 5)
-                .await;
+            let connects = host.wait_for_connects(MOCK_LOCAL_PORT, 5).await;
             assert_eq!(connects, 5, "legacy dialer: five attempts on one port");
             assert_eq!(host.count_connects_with_local_port(0), 0);
             server.stop().await;

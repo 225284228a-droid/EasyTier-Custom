@@ -45,6 +45,9 @@ function applyLegacyAclDefaults(config: NetworkConfig): NetworkConfig {
 function dropUnsupportedJsonValues(value: unknown): unknown {
   if (value === undefined) return undefined
   if (typeof value === 'number' && !Number.isFinite(value)) return undefined
+  // Generated int64 fields, including credential expiry times, use bigint.
+  // Protobuf JSON requires decimal strings, including for nested messages.
+  if (typeof value === 'bigint') return value.toString()
 
   if (Array.isArray(value)) {
     return value.map(dropUnsupportedJsonValues).filter((v) => v !== undefined)

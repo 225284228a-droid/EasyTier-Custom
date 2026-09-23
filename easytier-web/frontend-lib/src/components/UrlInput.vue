@@ -29,7 +29,7 @@ const parseUrl = (val: string | null | undefined): ParsedUrl => {
         const p = parseInt(portStr)
         return isNaN(p) ? (props.protos[proto] ?? 11010) : p
     }
-    const parseByPattern = (input: string) => {
+    const parseByPattern = (input: string): ParsedUrl | null => {
         const trimmed = input.trim()
         if (!trimmed) {
             return null
@@ -37,7 +37,8 @@ const parseUrl = (val: string | null | undefined): ParsedUrl => {
         const match = trimmed.match(/^(\w+):\/\/(.*)$/)
         const proto = match ? match[1] : 'tcp'
         const rest = match ? match[2] : trimmed
-        const authority = rest.split(/[/?#]/)[0]
+        const pathStart = rest.search(/[/?#]/)
+        const authority = pathStart >= 0 ? rest.slice(0, pathStart) : rest
         if (!authority) {
             return null
         }
@@ -94,7 +95,7 @@ const buildUrlValue = (value: ParsedUrl, forceDefaultHost = false) => {
     const authority = props.protos[proto] === 0 || value.port === null
         ? `${proto}://${host}`
         : `${proto}://${host}:${value.port}`
-    const path = value.path || ''
+    const path = normalizePath(value.path)
     const querySuffix = value.query ? `?${value.query}` : ''
     const fragmentSuffix = value.fragment ? `#${value.fragment}` : ''
     return `${authority}${path}${querySuffix}${fragmentSuffix}`
@@ -125,6 +126,18 @@ const onDialogConfirm = () => {
 const isNoPortProto = computed(() => {
     return props.protos[internalValue.value.proto] === 0
 })
+
+const supportsPath = computed(() => {
+    const proto = internalValue.value.proto
+    return proto === 'ws' || proto === 'wss' || proto === 'http' || proto === 'https' || proto === 'http3'
+})
+
+const normalizePath = (path: string) => {
+    const trimmed = path.trim()
+    if (!trimmed)
+        return ''
+    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+}
 
 // Sync from external
 watch(() => url.value, (newVal) => {
@@ -189,6 +202,9 @@ const onProtoChange = (newProto: string) => {
                 <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="max-w-24"
                     :placeholder="String(protos[internalValue.proto] ?? 11010)" fluid />
             </template>
+            <template v-if="supportsPath">
+                <InputText v-model="internalValue.path" placeholder="/mypath" class="grow" />
+            </template>
             <!-- Rendered in both responsive branches; keep action slot content free of side effects and duplicate IDs. -->
             <slot name="actions"></slot>
         </InputGroup>
@@ -219,6 +235,10 @@ const onProtoChange = (newProto: string) => {
                     <label>{{ t('port') }}</label>
                     <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="w-full"
                         :placeholder="String(protos[internalValue.proto] ?? 11010)" />
+                </div>
+                <div v-if="supportsPath" class="flex flex-col gap-2">
+                    <label>{{ t('path') }}</label>
+                    <InputText v-model="internalValue.path" placeholder="/mypath" class="w-full" />
                 </div>
             </div>
             <template #footer>

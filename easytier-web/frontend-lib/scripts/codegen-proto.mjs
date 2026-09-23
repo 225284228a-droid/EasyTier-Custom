@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { delimiter, dirname, resolve } from 'node:path'
+import { delimiter, dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -77,7 +77,7 @@ function getProtocCommand() {
   if (systemProtoc) {
     return {
       command: systemProtoc,
-      argsPrefix: ['--proto_path', protobufTsPluginRoot],
+      argsPrefix: ['--proto_path', relative(root, protobufTsPluginRoot)],
     }
   }
 
@@ -95,10 +95,10 @@ try {
   const result = spawnSync(protocCommand.command, [
     ...protocCommand.argsPrefix,
     '-I',
-    protoRoot,
-    `--ts_out=${tmpDir}`,
+    relative(root, protoRoot),
+    `--ts_out=${relative(root, tmpDir)}`,
     '--ts_opt=use_proto_field_name,server_none,client_none,ts_nocheck',
-    ...protoFiles.map((file) => resolve(protoRoot, file)),
+    ...protoFiles.map((file) => relative(root, resolve(protoRoot, file))),
   ], {
     cwd: root,
     env: withNodeBinPath(),
