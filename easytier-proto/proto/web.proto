@@ -24,7 +24,7 @@ message HeartbeatRequest {
   bool support_config_source = 9;
   repeated common.UUID failed_network_instances = 10;
   bool support_heartbeat_policy = 11;
-  // Custom extension; legacy clients used field 10 (varint).
+  // Custom-only capability outside the upstream field range.
   bool support_local_configs = 50001;
 }
 
@@ -37,9 +37,6 @@ message GetFeatureRequest {}
 
 message GetFeatureResponse {
   bool support_encryption = 1;
-  // This server honors local TOML ownership and understands the migrated
-  // HeartbeatRequest.support_local_configs extension (50001).
-  bool support_local_configs = 50001;
 }
 
 service WebServerService {

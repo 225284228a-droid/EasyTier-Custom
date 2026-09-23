@@ -95,7 +95,7 @@ type HeartbeatRequest struct {
 	SupportConfigSource     bool                   `protobuf:"varint,9,opt,name=support_config_source,json=supportConfigSource,proto3" json:"support_config_source,omitempty"`
 	FailedNetworkInstances  []*common.UUID         `protobuf:"bytes,10,rep,name=failed_network_instances,json=failedNetworkInstances,proto3" json:"failed_network_instances,omitempty"`
 	SupportHeartbeatPolicy  bool                   `protobuf:"varint,11,opt,name=support_heartbeat_policy,json=supportHeartbeatPolicy,proto3" json:"support_heartbeat_policy,omitempty"`
-	// Custom extension; legacy clients used field 10 (varint).
+	// Custom-only capability outside the upstream field range.
 	SupportLocalConfigs bool `protobuf:"varint,50001,opt,name=support_local_configs,json=supportLocalConfigs,proto3" json:"support_local_configs,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
@@ -306,11 +306,8 @@ func (*GetFeatureRequest) Descriptor() ([]byte, []int) {
 type GetFeatureResponse struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	SupportEncryption bool                   `protobuf:"varint,1,opt,name=support_encryption,json=supportEncryption,proto3" json:"support_encryption,omitempty"`
-	// This server honors local TOML ownership and understands the migrated
-	// HeartbeatRequest.support_local_configs extension (50001).
-	SupportLocalConfigs bool `protobuf:"varint,50001,opt,name=support_local_configs,json=supportLocalConfigs,proto3" json:"support_local_configs,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetFeatureResponse) Reset() {
@@ -350,13 +347,6 @@ func (x *GetFeatureResponse) GetSupportEncryption() bool {
 	return false
 }
 
-func (x *GetFeatureResponse) GetSupportLocalConfigs() bool {
-	if x != nil {
-		return x.SupportLocalConfigs
-	}
-	return false
-}
-
 var File_web_proto protoreflect.FileDescriptor
 
 const file_web_proto_rawDesc = "" +
@@ -388,10 +378,9 @@ const file_web_proto_rawDesc = "" +
 	"\x14heartbeat_timeout_ms\x18\x02 \x01(\rH\x01R\x12heartbeatTimeoutMs\x88\x01\x01B\x18\n" +
 	"\x16_heartbeat_interval_msB\x17\n" +
 	"\x15_heartbeat_timeout_ms\"\x13\n" +
-	"\x11GetFeatureRequest\"y\n" +
+	"\x11GetFeatureRequest\"C\n" +
 	"\x12GetFeatureResponse\x12-\n" +
-	"\x12support_encryption\x18\x01 \x01(\bR\x11supportEncryption\x124\n" +
-	"\x15support_local_configs\x18ц\x03 \x01(\bR\x13supportLocalConfigs2\x8d\x01\n" +
+	"\x12support_encryption\x18\x01 \x01(\bR\x11supportEncryption2\x8d\x01\n" +
 	"\x10WebServerService\x12:\n" +
 	"\tHeartbeat\x12\x15.web.HeartbeatRequest\x1a\x16.web.HeartbeatResponse\x12=\n" +
 	"\n" +

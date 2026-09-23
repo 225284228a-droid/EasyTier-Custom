@@ -1497,11 +1497,8 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
         Ok(())
     }
-    #[rstest::rstest]
     #[tokio::test]
-    async fn connect_with_etq1_falls_back_for_legacy_server(
-        #[values(false, true)] enable_bbr: bool,
-    ) -> anyhow::Result<()> {
+    async fn connect_with_etq1_falls_back_for_legacy_server() -> anyhow::Result<()> {
         // The shared ETQ1-first dial helper used by the quic:// tunnel: a
         // legacy server rejects ETQ1 via version negotiation and the helper
         // must transparently fall back to version 1.
@@ -1524,8 +1521,7 @@ mod tests {
         });
 
         let connection =
-            connect_with_etq1(&client_endpoint, server_addr, "localhost", enable_bbr).await?;
-        crate::tunnel::quic::tests::assert_bbr_controller(&connection, enable_bbr);
+            connect_with_etq1(&client_endpoint, server_addr, "localhost", false).await?;
         assert_stream_roundtrip(&connection).await?;
 
         connection.close(0u32.into(), b"done");

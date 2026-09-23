@@ -613,19 +613,11 @@ impl Service {
                  method_proto,
                  method,
                  Input,
-                 Input_proto_str,
                  ..
              }| {
-                // Only the Custom heartbeat has a historical field-number
-                // collision. Keep the compatibility codec at this RPC boundary.
-                let decode = if Input_proto_str == ".web.HeartbeatRequest" {
-                    quote! { crate::web::decode_heartbeat_request(input)? }
-                } else {
-                    quote! { #namespace::__rt::decode(input)? }
-                };
                 quote! {
                     #ServiceMethodDescriptor::#method_proto => {
-                        let decoded: #Input = #decode;
+                        let decoded: #Input = #namespace::__rt::decode(input)?;
                         let ret = service.#method(ctrl, decoded).await?;
                         #namespace::__rt::encode(ret)
                     }

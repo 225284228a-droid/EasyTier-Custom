@@ -9,7 +9,7 @@ use easytier_proto::{
     rpc_types::controller::BaseController,
     web::{
         DeviceOsInfo, GetFeatureRequest, GetFeatureResponse, HeartbeatRequest, HeartbeatResponse,
-        LegacyWebServerServiceClientFactory, WebServerServiceClientFactory,
+        WebServerServiceClientFactory,
     },
 };
 use tokio::{sync::Mutex, task::JoinSet};
@@ -118,7 +118,6 @@ impl ConfigServerEndpoint {
         if !supports_scheme(&endpoint) {
             anyhow::bail!("unsupported config server scheme: {}", endpoint.scheme());
         }
-        legacy_custom_endpoint(&endpoint)?;
 
         let token = endpoint
             .path_segments()
@@ -159,35 +158,6 @@ pub struct WebClientConfig {
     /// config dir). Advertised to the web console so it switches to the
     /// decentralized management path.
     pub support_local_configs: bool,
-}
-
-fn legacy_custom_endpoint(endpoint: &Url) -> anyhow::Result<bool> {
-    let modes: Vec<_> = endpoint
-        .query_pairs()
-        .filter(|(key, _)| key == "management_protocol")
-        .map(|(_, value)| value.into_owned())
-        .collect();
-    match modes.as_slice() {
-        [] => Ok(false),
-        [mode] if mode == "legacy-custom" => Ok(true),
-        _ => anyhow::bail!(
-            "management_protocol must appear once with value legacy-custom, or be omitted"
-        ),
-    }
-}
-
-fn heartbeat_uses_legacy_custom(
-    local_configs: bool,
-    feature: &GetFeatureResponse,
-    endpoint: &Url,
-) -> anyhow::Result<bool> {
-    let legacy = legacy_custom_endpoint(endpoint)? && !feature.support_local_configs;
-    if local_configs && !feature.support_local_configs && !legacy {
-        anyhow::bail!(
-            "config server does not advertise local TOML ownership support; upgrade the Custom server, or select management_protocol=legacy-custom for a pre-migration Custom server"
-        );
-    }
-    Ok(legacy)
 }
 
 #[async_trait]
@@ -380,19 +350,6 @@ async fn web_client_routine(
                 GetFeatureResponse::default()
             }
         };
-        let legacy_custom = match heartbeat_uses_legacy_custom(
-            controller.config.support_local_configs,
-            &feature,
-            &connector.remote_url(),
-        ) {
-            Ok(legacy) => legacy,
-            Err(error) => {
-                tracing::error!(%error, "config-server management protocol is incompatible");
-                drop(session);
-                time::sleep(RETRY_INTERVAL).await;
-                continue;
-            }
-        };
         let support_encryption = feature.support_encryption;
 
         if support_encryption && web_security::web_secure_tunnel_supported() {
@@ -418,7 +375,7 @@ async fn web_client_routine(
             };
             let mut session = WebClientSession::new(connection, controller.clone());
             connected.store(true, Ordering::Release);
-            session.start_heartbeat(legacy_custom).await;
+            session.start_heartbeat().await;
             session.wait().await;
             connected.store(false, Ordering::Release);
             continue;
@@ -443,7 +400,7 @@ async fn web_client_routine(
         }
 
         connected.store(true, Ordering::Release);
-        session.start_heartbeat(legacy_custom).await;
+        session.start_heartbeat().await;
         session.wait().await;
         connected.store(false, Ordering::Release);
     }
@@ -522,43 +479,28 @@ impl WebClientSession {
         }
     }
 
-    pub async fn start_heartbeat(&self, legacy_custom: bool) {
+    pub async fn start_heartbeat(&self) {
         if self.heartbeat_started.swap(true, Ordering::AcqRel) {
             return;
         }
-        // Expose mutation RPCs only after the server's ownership capability is
-        // checked, on the final (possibly encrypted) management connection.
+        // Register reverse RPCs on the final (possibly encrypted) connection.
         self.controller
             .backend
             .register(self.rpc.rpc_server().registry());
         let mut tasks = self.tasks.lock().await;
-        Self::heartbeat_routine(
-            &self.rpc,
-            Arc::downgrade(&self.controller),
-            &mut tasks,
-            legacy_custom,
-        );
+        Self::heartbeat_routine(&self.rpc, Arc::downgrade(&self.controller), &mut tasks);
     }
 
     fn heartbeat_routine(
         rpc: &BidirectRpcManager,
         controller: Weak<WebClientController>,
         tasks: &mut JoinSet<()>,
-        legacy_custom: bool,
     ) {
         let controller = controller.upgrade().expect("web client controller");
         let controller = Arc::downgrade(&controller);
-        let client = if legacy_custom {
-            rpc.rpc_client()
-                .scoped_client::<LegacyWebServerServiceClientFactory<BaseController>>(
-                    1,
-                    1,
-                    String::new(),
-                )
-        } else {
-            rpc.rpc_client()
-                .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new())
-        };
+        let client = rpc
+            .rpc_client()
+            .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, String::new());
 
         tasks.spawn(async move {
             let mut heartbeat_policy = HeartbeatPolicy::default();
@@ -825,24 +767,6 @@ mod tests {
             vec![failed]
         );
         assert!(request.support_heartbeat_policy);
-    }
-
-    #[test]
-    fn local_ownership_requires_capability_or_explicit_legacy_endpoint() {
-        let plain: Url = "tcp://server/team".parse().unwrap();
-        let legacy: Url = "tcp://server/team?management_protocol=legacy-custom"
-            .parse()
-            .unwrap();
-        let official_or_old = GetFeatureResponse::default();
-        assert!(heartbeat_uses_legacy_custom(true, &official_or_old, &plain).is_err());
-        assert!(!heartbeat_uses_legacy_custom(false, &official_or_old, &plain).unwrap());
-        assert!(heartbeat_uses_legacy_custom(true, &official_or_old, &legacy).unwrap());
-        let modern = GetFeatureResponse {
-            support_local_configs: true,
-            ..Default::default()
-        };
-        assert!(!heartbeat_uses_legacy_custom(true, &modern, &plain).unwrap());
-        assert!(!heartbeat_uses_legacy_custom(true, &modern, &legacy).unwrap());
     }
 
     #[test]
