@@ -225,9 +225,9 @@ p2p_disguise_mode_only: Only WSS/HTTP3
 p2p_disguise_mode_help: Prefer WSS and HTTP/3 while allowing TCP/UDP fallback, keep them off unless a peer requires them, ban both disguise protocols, or restrict automatic P2P to WSS and HTTP/3. Manual and ordinary direct connections are never affected.
 
 p2p_prefer_protocol: P2P Preferred Protocol
-p2p_prefer_protocol_tcp: Prefer TCP (WSS)
-p2p_prefer_protocol_udp: Prefer UDP (HTTP3)
-p2p_prefer_protocol_help: Transport automatic P2P tries first. It also orders the two disguise protocols - preferring UDP uses HTTP3, preferring TCP uses WSS. Manual and ordinary direct connections are never affected.
+p2p_prefer_protocol_tcp: Prefer TCP (WSS if available)
+p2p_prefer_protocol_udp: Prefer UDP (HTTP3 if available)
+p2p_prefer_protocol_help: Preferred automatic P2P transport. Among configured direct listeners, UDP ranks HTTP3 ahead of WSS and TCP ranks WSS ahead of HTTP3. This setting does not create listeners or convert ordinary UDP punching to HTTP3. Add an HTTP3 listener for HTTP3 direct connections; both peers must enable WSS/HTTP3-only mode for HTTP3 UDP punching.
 
 close_redundant_conns_when_disguised: Drop Redundant Connections
 close_redundant_conns_when_disguised_help: Once a disguised (WSS/HTTP3) connection to a peer is up, close the other connections P2P discovered automatically. Peers you configured manually and inbound connections are kept. Off by default.

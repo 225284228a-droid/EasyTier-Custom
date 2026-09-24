@@ -391,6 +391,12 @@ impl Peer {
             .any(|entry| !entry.value().is_closed() && conn_is_disguised(entry.value()))
     }
 
+    pub(crate) fn has_http3_conn(&self) -> bool {
+        self.conns.iter().any(|entry| {
+            !entry.value().is_closed() && conn_disguised_scheme(entry.value()) == Some("http3")
+        })
+    }
+
     pub fn has_directly_connected_conn(&self) -> bool {
         self.conns
             .iter()

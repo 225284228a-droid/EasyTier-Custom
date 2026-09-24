@@ -199,16 +199,18 @@ where
         match ret {
             Ok(Some(socket)) => {
                 let (connected, requested_url) = socket.into_connected();
+                let scheme = requested_url.scheme().to_owned();
                 if let Err(err) = self
                     .transport_sink
                     .add_client_transport(connected, requested_url)
                     .await
                 {
-                    tracing::warn!(?err, "upgrade or add UDP hole-punch transport failed");
+                    tracing::warn!(?err, %scheme, "upgrade or add UDP hole-punch transport failed");
                     op(true);
                     false
                 } else {
                     tracing::info!(
+                        %scheme,
                         "hole punching transport admitted; awaiting liveness measurement"
                     );
                     true
@@ -422,10 +424,12 @@ where
                     && policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
             })
         });
-        // Give the independent direct WSS/HTTP3 and WSS punch engines a
-        // head start, while retaining bounded raw fallback on failure.
+        // Prefer mode gives direct WSS/HTTP3 and WSS punching a head start
+        // before trying raw UDP. Strict mode's UDP path is already HTTP3,
+        // so delaying it would let WSS win before HTTP3 is even attempted.
         let candidates = candidates.into_iter().filter(|candidate| {
-            !policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
+            policy.only_use_wss_http3_for_hole_punching
+                || !policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
                 || data
                     .preferred_attempt_started
                     .entry(candidate.peer_id)
@@ -443,6 +447,7 @@ where
                 peer_id = task.dst_peer_id,
                 peer_nat_type = ?task.dst_nat_type,
                 ?my_nat_type,
+                scheme = if policy.only_use_wss_http3_for_hole_punching { "http3" } else { "udp" },
                 "found peer to do hole punching"
             );
         }

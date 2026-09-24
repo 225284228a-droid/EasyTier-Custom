@@ -27,6 +27,7 @@ use crate::{
             AclRuleConfig, HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig,
             PeerRuntimeSnapshot,
         },
+        preferred_disguised_scheme,
         runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
         toml::ManagedCredentialConfig,
     },
@@ -1471,6 +1472,8 @@ impl PeerManagerCore {
             disable_p2p: flags.disable_p2p,
             need_p2p: flags.need_p2p,
             only_use_wss_http3_for_hole_punching: flags.only_use_wss_http3_for_hole_punching,
+            prefer_http3_for_p2p: preferred_disguised_scheme(&flags.default_protocol)
+                == Some("http3"),
             prefer_wss_http3_for_p2p: flags.prefer_wss_http3_for_p2p,
             disable_wss_http3_for_p2p: flags.disable_wss_http3_for_p2p,
         }

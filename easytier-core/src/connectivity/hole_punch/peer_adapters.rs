@@ -57,6 +57,9 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                     udp_nat_type,
                     feature_flag: route.feature_flag,
                     has_direct_connection: peer_map.has_peer(route.peer_id),
+                    has_http3_connection: peer_map
+                        .get_peer_by_id(route.peer_id)
+                        .is_some_and(|peer| peer.has_http3_conn()),
                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
                     peer_disguise_flags: route
                         .feature_flag

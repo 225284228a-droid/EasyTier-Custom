@@ -115,8 +115,8 @@ core_clap:
     en: "VPN portal client group membership in NAME=GROUP form; may be repeated"
     zh-CN: "NAME=GROUP 格式的 VPN 门户客户端组成员关系；可重复指定"
   default_protocol:
-    en: "default protocol to use when connecting to peers; it also orders the two disguise protocols - prefer udp to use HTTP/3, prefer tcp to use WSS"
-    zh-CN: "连接到对等节点时使用的默认协议；同时决定两个伪装协议的优先级：优先 udp 对应 HTTP/3，优先 tcp 对应 WSS"
+    en: "preferred P2P transport; among configured direct listeners, udp ranks HTTP/3 ahead of WSS and tcp ranks WSS ahead of HTTP/3; does not create listeners or change raw UDP punching"
+    zh-CN: "P2P 传输偏好；在已配置的直连监听器中，udp 将 HTTP/3 排在 WSS 前，tcp 则相反；不会创建监听器或改变普通 UDP 打洞"
   disable_encryption:
     en: "disable encryption for peers communication, default is false, must be same with peers"
     zh-CN: "禁用对等节点通信的加密，默认为false，必须与对等节点相同"

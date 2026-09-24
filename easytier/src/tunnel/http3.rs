@@ -370,8 +370,8 @@ mod tests {
         packet::ZCPacket,
         socket::SocketListener,
         socket::udp::{
-            UdpBindOptions, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
-            VirtualUdpSocket,
+            UdpBindOptions, UdpSessionAcceptKind, UdpSessionLayer, UdpSessionListenRequest,
+            UdpSessionProtocol, VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     };
     use futures::{SinkExt, StreamExt};
@@ -416,6 +416,68 @@ mod tests {
             server_bbr,
         )
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http3_upgrades_hole_punch_style_udp_mux_session() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let host = native_host_runtime();
+            let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let server_socket = host
+                .bind_udp(UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false))
+                .await
+                .unwrap();
+            let server_addr = server_socket.local_addr().unwrap();
+            let server_layer = Arc::new(UdpSessionLayer::new(server_socket));
+            let server_task = tokio::spawn(async move {
+                let session = server_layer.accept().await.unwrap();
+                let admission = ServerProtocolAdmissionController::quic()
+                    .try_admit()
+                    .unwrap();
+                let local_url = format!("http3://{server_addr}").parse().unwrap();
+                let mut accepted =
+                    Http3AcceptedSession::new(session, local_url, admission, false).unwrap();
+                accepted.accept().await.unwrap()
+            });
+
+            let connected = tokio::time::timeout(
+                Duration::from_secs(3),
+                connect_udp(
+                    host,
+                    server_addr,
+                    Vec::new(),
+                    UdpBindOptions::hole_punch_candidate(),
+                    UdpSessionMode::EasyTierMux,
+                ),
+            )
+            .await
+            .expect("UDP mux connect timed out")
+            .unwrap();
+            let remote_url = format!("http3://{server_addr}").parse().unwrap();
+            let client = tokio::time::timeout(
+                Duration::from_secs(6),
+                upgrade_connected(connected, remote_url, false),
+            )
+            .await
+            .expect("HTTP3 client upgrade timed out")
+            .unwrap();
+            assert_eq!(client.info().unwrap().tunnel_type, "http3");
+            let (_client_reader, mut client_writer) = client.split();
+            client_writer
+                .send(ZCPacket::new_with_payload(b"http3 over punched udp mux"))
+                .await
+                .unwrap();
+            let server = tokio::time::timeout(Duration::from_secs(3), server_task)
+                .await
+                .expect("HTTP3 server accept timed out")
+                .unwrap();
+            assert_eq!(server.info().unwrap().tunnel_type, "http3");
+            let (mut server_reader, _server_writer) = server.split();
+            let packet = server_reader.next().await.unwrap().unwrap();
+            assert_eq!(packet.payload(), b"http3 over punched udp mux");
+        })
+        .await
+        .unwrap();
     }
 
     #[rstest::rstest]

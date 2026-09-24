@@ -41,9 +41,10 @@
 
 ### 4. P2P 协议策略与连接管理
 
-- 增加优先、禁用、仅使用 WSS/HTTP3 的 P2P/打洞策略，通过对端能力协商决定可用路径。
-- TCP 打洞成功的连接可升级为 WSS；UDP 打洞路径可承载 HTTP3。
-- `default_protocol = "udp"` 时优先 HTTP3，`"tcp"` 时优先 WSS；GUI/Web 提供协议偏好选择。
+- 增加优先、禁用、仅使用 WSS/HTTP3 的 P2P/打洞策略；直连和 TCP 打洞会参考对端能力，HTTP3 UDP 打洞目前要求双方启用严格模式。
+- TCP 打洞成功的连接可升级为 WSS；两端均启用 `only_use_wss_http3_for_hole_punching` 且支持 HTTP3 时，UDP 打洞连接可升级为 HTTP3。
+- `default_protocol = "udp"` 将已公布的 HTTP3 直连监听器排在 WSS 前，`"tcp"` 则相反；GUI/Web 提供该协议偏好选择。此选项不创建 HTTP3/WSS 监听器，也不把普通 UDP 打洞升级为 HTTP3。Web 默认监听列表不包含 HTTP3/WSS，按需手动添加。
+- 严格模式下选择 `udp` 时，已有 WSS 连接仍会继续尝试 HTTP3 打洞；已有 HTTP3 连接后停止重复打洞。选择 `tcp` 时，已有 WSS 连接可满足连接要求。
 - 可选 `close_redundant_conns_when_disguised`：伪装连接建立后关闭自动 P2P 建立的普通连接，保留手动配置连接和入站连接。
 - 修复 SNI 改写 URL 后连接身份不一致导致的重连堆积，并替换相同 URL 的重复客户端连接。
 - `disable_p2p` 调整为半严格行为：拒绝普通节点发起的 TCP/UDP 打洞 RPC，保留声明 `need_p2p` 的节点例外，不主动断开已有连接。

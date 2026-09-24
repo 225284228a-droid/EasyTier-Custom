@@ -312,6 +312,7 @@ pub struct P2pPolicyFlags {
     pub disable_p2p: bool,
     pub need_p2p: bool,
     pub only_use_wss_http3_for_hole_punching: bool,
+    pub prefer_http3_for_p2p: bool,
     pub prefer_wss_http3_for_p2p: bool,
     pub disable_wss_http3_for_p2p: bool,
 }
@@ -357,9 +358,9 @@ impl P2pPolicyFlags {
     }
 }
 
-/// Disguised transport that carries the configured P2P transport preference:
-/// UDP traffic is disguised as HTTP3 and TCP traffic as WSS. Other transports
-/// keep both disguised options at equal priority.
+/// Disguised transport matching the configured P2P transport preference.
+/// This ranks existing HTTP3/WSS paths; it does not upgrade raw UDP/TCP paths.
+/// Other transports keep both disguised options at equal priority.
 pub(crate) fn preferred_disguised_scheme(default_protocol: &str) -> Option<&'static str> {
     match default_protocol.trim().to_ascii_lowercase().as_str() {
         "udp" => Some("http3"),

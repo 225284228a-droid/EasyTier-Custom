@@ -533,6 +533,7 @@ mod tests {
                 ..Default::default()
             }),
             has_direct_connection: false,
+            has_http3_connection: false,
             has_recent_traffic: false,
             peer_disguise_flags: Default::default(),
         }

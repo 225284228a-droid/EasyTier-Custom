@@ -158,7 +158,8 @@ where
             ProtocolUdpHolePunchTransportSink::new(protocol, peer_source.clone())
         });
         // HTTP3 punching engages only under the strict-only policy, where raw
-        // UDP is forbidden anyway. In prefer mode raw UDP stays the punch
+        // UDP is forbidden anyway. The task collector requires a peer that
+        // advertises the same mode. In prefer mode raw UDP stays the punch
         // transport until per-punch scheme negotiation exists: a QUIC upgrade
         // against a raw-UDP peer can never complete, so enabling it globally
         // would break punching with every peer that lacks HTTP3 support.
@@ -210,6 +211,7 @@ where
         // but every punch must upgrade to HTTP3; without that capability
         // there is no compliant UDP transport left.
         if policy.only_use_wss_http3_for_hole_punching && !self.http3_mode.load(Ordering::Acquire) {
+            tracing::warn!("HTTP3 hole punching unavailable: this runtime lacks HTTP3 support");
             return Ok(());
         }
 
