@@ -85,6 +85,10 @@ impl WebClient {
     pub fn is_connected(&self) -> bool {
         self.inner.is_connected()
     }
+
+    pub async fn shutdown(self) {
+        self.inner.shutdown().await;
+    }
 }
 
 #[cfg(feature = "management")]

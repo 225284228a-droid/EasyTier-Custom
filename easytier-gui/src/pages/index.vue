@@ -22,7 +22,7 @@ import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
 import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, resolveSharedConfigDir, syncConfigsFromCore } from '~/composables/backend'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
@@ -30,8 +30,12 @@ const aboutVisible = ref(false)
 const modeDialogVisible = ref(false)
 const currentMode = ref<Mode>({ mode: 'normal' })
 const editingMode = ref<Mode>({ mode: 'normal' })
-const isModeSaving = ref(false)
-const manualDisconnect = ref(false)
+const isModeSaving = ref(true)
+const runtimeEpoch = ref(0)
+let reconnectPromise: Promise<void> | undefined
+let autoReconnectEnabled = true
+let normalWebClientInitialized = false
+const SERVICE_SCHEMA_VERSION = 1
 
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
@@ -53,17 +57,27 @@ async function openAutostartDialog() {
 
 async function onModeSave() {
   if (isModeSaving.value) {
-    return;
+    return false
   }
   isModeSaving.value = true
+  autoReconnectEnabled = true
+  if (reconnectPromise) await reconnectPromise
+  const previousMode = JSON.parse(JSON.stringify(currentMode.value)) as Mode
   try {
-    await initWithMode(editingMode.value);
+    await initWithMode(JSON.parse(JSON.stringify(editingMode.value)) as Mode);
     modeDialogVisible.value = false
+    return true
   }
   catch (e: any) {
     toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
     console.error("Error switching mode", e, currentMode.value, editingMode.value)
-    await initWithMode(currentMode.value);
+    try {
+      await initWithMode(previousMode);
+    } catch (restoreError) {
+      console.error('Failed to restore the previous mode', restoreError)
+      clientRunning.value = false
+    }
+    return false
   }
   finally {
     isModeSaving.value = false
@@ -85,9 +99,19 @@ async function onUninstallService() {
       severity: 'danger'
     },
     accept: async () => {
+      if (isModeSaving.value) return
       isModeSaving.value = true
+      autoReconnectEnabled = true
+      if (reconnectPromise) await reconnectPromise
       try {
-        await initWithMode({ ...currentMode.value, mode: 'normal' });
+        const nextMode: Mode = currentMode.value.mode === 'normal'
+          ? { ...currentMode.value }
+          : {
+              mode: 'normal',
+              config_dir: currentMode.value.config_dir,
+              config_server_url: currentMode.value.mode === 'service' ? currentMode.value.config_server_url : undefined,
+            }
+        await initWithMode(nextMode)
         await initService(undefined)
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
         modeDialogVisible.value = false
@@ -108,6 +132,7 @@ function stripModeMetadata(mode: Mode) {
 
   const serviceConfig = { ...mode }
   delete serviceConfig.installed_core_version
+  delete serviceConfig.installed_service_schema
   return serviceConfig
 }
 
@@ -116,14 +141,20 @@ function modeConfigChanged(next: Mode) {
 }
 
 async function onStopService() {
+  if (isModeSaving.value) return
   isModeSaving.value = true
-  manualDisconnect.value = true
+  autoReconnectEnabled = false
+  if (reconnectPromise) await reconnectPromise
   try {
-    await setServiceStatus(false)
+    await waitForServiceStop()
+    await invoke('stop_local_backend')
+    normalWebClientInitialized = false
+    clientRunning.value = false
     toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.stop_service_success'), life: 3000 })
     modeDialogVisible.value = false
   }
   catch (e: any) {
+    autoReconnectEnabled = true
     toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
     console.error("Error stopping service", e)
   }
@@ -132,101 +163,129 @@ async function onStopService() {
   }
 }
 
-async function initWithMode(mode: Mode) {
-  const running_inst_ids = (await remoteClient.value.list_network_instance_ids().catch(() => undefined))?.running_inst_ids ?? []
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
-  if (currentMode.value.mode === 'normal' && mode.mode !== 'normal') {
-    await invoke('stop_local_backend')
-  }
-
-  if (currentMode.value.mode === 'service' && mode.mode !== 'service') {
-    let serviceStatus = await getServiceStatus()
-    if (serviceStatus === "Running") {
-      manualDisconnect.value = true
-      await setServiceStatus(false)
-      serviceStatus = await getServiceStatus()
-      for (let i = 0; i < 100; i++) {
-        if (serviceStatus === "Stopped") {
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 100))
-        serviceStatus = await getServiceStatus()
+async function waitForServiceStop() {
+  let stopRequested = false
+  let stopError: unknown
+  for (let i = 0; i < 300; i++) {
+    const status = await getServiceStatus()
+    if (status === 'Stopped' || status === 'NotInstalled') return
+    if (!stopRequested) {
+      try {
+        await setServiceStatus(false)
+        stopRequested = true
+      } catch (error) {
+        stopError = error
       }
     }
-    if (serviceStatus === "Running") throw new Error('Timed out waiting for the service to stop')
+    await delay(100)
   }
+  throw new Error(`Timed out waiting for the service to stop: ${String(stopError || '')}`)
+}
 
-  let url: string | undefined = undefined
-  let retrys = 1
-  switch (mode.mode) {
-    case 'remote':
-      if (!mode.remote_rpc_address) {
-        toast.add({ severity: 'error', summary: t('error'), detail: t('mode.remote_rpc_address_empty'), life: 10000 })
-        return initWithMode({ ...mode, mode: 'normal' });
-      }
-      url = mode.remote_rpc_address
-      break;
-    case 'service': {
-      if (!mode.config_dir || !mode.file_log_dir || !mode.file_log_level || !mode.rpc_portal) {
-        toast.add({ severity: 'error', summary: t('error'), detail: t('mode.service_config_empty'), life: 10000 })
-        return initWithMode({ ...mode, mode: 'normal' });
-      }
-      let serviceStatus = await getServiceStatus()
-      const coreVersion = await getEasytierVersion()
-      if (serviceStatus === "NotInstalled" || modeConfigChanged(mode) || mode.installed_core_version !== coreVersion) {
-        if (serviceStatus === 'Running') await setServiceStatus(false)
-        mode.config_server_url = mode.config_server_url || undefined
-        await initService({
-          config_dir: mode.config_dir,
-          file_log_dir: mode.file_log_dir,
-          file_log_level: mode.file_log_level,
-          rpc_portal: mode.rpc_portal,
-          config_server: mode.config_server_url,
-        })
-        mode.installed_core_version = coreVersion
-        serviceStatus = await getServiceStatus()
-      }
-      if (serviceStatus === "Stopped") {
-        await setServiceStatus(true)
-      }
-      url = (mode.rpc_portal.includes('://') ? mode.rpc_portal : "tcp://" + mode.rpc_portal)
-        .replace("0.0.0.0", "127.0.0.1").replace('[::]', '[::1]')
-      retrys = 30
-      break;
-    }
-    case 'normal':
-      url = mode.rpc_portal;
-      break;
+async function prepareConfigDir(mode: Mode) {
+  if (mode.mode !== 'remote' && type() !== 'android') {
+    mode.config_dir = await resolveSharedConfigDir(mode.config_dir)
   }
-  for (let i = 0; i < retrys; i++) {
+}
+
+function rpcUrl(mode: Mode): string | undefined {
+  if (mode.mode === 'normal') return mode.rpc_portal
+  if (mode.mode === 'remote') return mode.remote_rpc_address
+  return (mode.rpc_portal.includes('://') ? mode.rpc_portal : `tcp://${mode.rpc_portal}`)
+    .replace('0.0.0.0', '127.0.0.1').replace('[::]', '[::1]')
+}
+
+async function connectWithRetry(mode: Mode, attempts: number): Promise<boolean> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      await connectRpcClient(mode.mode === 'normal', url)
-      break;
-    } catch (e) {
-      if (i === retrys - 1) {
-        const errMsg = e instanceof Error ? e.message : String(e)
-        toast.add({
-          severity: 'error',
-          summary: t('error'),
-          detail: t('mode.rpc_connection_failed', { error: errMsg }),
-          life: 1000,
-        })
-        throw e;
-      }
-      console.error("Error connecting rpc client, retrying...", e)
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      await connectRpcClient(mode)
+      return true
+    } catch (error) {
+      lastError = error
+      if (attempt + 1 < attempts) await delay(1000)
     }
   }
-  const migrationKey = mode.mode === 'remote' ? undefined
-    : `core-config-migrated:${mode.mode === 'service' ? mode.config_dir : 'normal'}`
-  await sendConfigs(mode.mode === 'remote' ? [] : running_inst_ids.map(Utils.UuidToStr), migrationKey)
-  if (mode.mode === 'normal') {
-    mode.config_server_url = mode.config_server_url || undefined
-    await initWebClient(mode.config_server_url)
+  if (mode.mode === 'service') {
+    console.warn('Service RPC is not ready yet; background reconnect will continue', lastError)
+    return false
+  }
+  throw lastError
+}
+
+async function refreshFromCore() {
+  if (type() === 'android') {
+    await sendConfigs([], 'core-config-migrated:normal')
+  } else {
+    await syncConfigsFromCore().catch(error => console.warn('Failed to refresh GUI config cache', error))
+  }
+  try {
+    const ids = await remoteClient.value.list_network_instance_ids()
+    const available = [...(ids.running_inst_ids ?? []), ...(ids.disabled_inst_ids ?? [])]
+      .map(Utils.UuidToStr)
+    const preferred = instanceId.value || loadLastNetworkInstanceId()
+    instanceId.value = preferred && available.includes(preferred) ? preferred : undefined
+  } catch (error) {
+    console.warn('Failed to refresh network selection', error)
+    instanceId.value = undefined
+  }
+  runtimeEpoch.value++
+}
+
+async function initWithMode(mode: Mode) {
+  await prepareConfigDir(mode)
+  if (mode.mode === 'remote' && !mode.remote_rpc_address.trim()) {
+    throw new Error(t('mode.remote_rpc_address_empty'))
+  }
+  if (mode.mode === 'service' && (!mode.config_dir || !mode.file_log_dir || !mode.file_log_level || !mode.rpc_portal)) {
+    throw new Error(t('mode.service_config_empty'))
+  }
+
+  clientRunning.value = false
+  if (mode.mode !== 'service' && type() !== 'android') await waitForServiceStop()
+  if (mode.mode !== 'normal') {
+    await invoke('stop_local_backend')
+    normalWebClientInitialized = false
+  }
+
+  if (mode.mode === 'service') {
+    let serviceStatus = await getServiceStatus()
+    const coreVersion = await getEasytierVersion()
+    const needsInstall = serviceStatus === 'NotInstalled'
+      || currentMode.value.mode !== 'service'
+      || modeConfigChanged(mode)
+      || mode.installed_core_version !== coreVersion
+      || mode.installed_service_schema !== SERVICE_SCHEMA_VERSION
+    if (needsInstall) {
+      if (serviceStatus === 'Running') await waitForServiceStop()
+      await initService({
+        config_dir: mode.config_dir,
+        file_log_dir: mode.file_log_dir,
+        file_log_level: mode.file_log_level,
+        rpc_portal: mode.rpc_portal,
+        config_server: mode.config_server_url || undefined,
+      })
+      mode.installed_core_version = coreVersion
+      mode.installed_service_schema = SERVICE_SCHEMA_VERSION
+      serviceStatus = await getServiceStatus()
+    }
+    if (serviceStatus === 'Stopped') await setServiceStatus(true)
+  }
+
+  if (mode.mode === 'normal') normalWebClientInitialized = false
+  const connected = await connectWithRetry(mode, mode.mode === 'service' ? 5 : 3)
+  if (connected) {
+    await refreshFromCore()
+    if (mode.mode === 'normal') {
+      await initWebClient(mode.config_server_url || undefined)
+      normalWebClientInitialized = true
+    }
   }
   currentMode.value = mode
   saveMode(mode)
-  clientRunning.value = await isClientRunning()
+  clientRunning.value = connected && await isClientRunning()
 }
 
 onMounted(async () => {
@@ -242,7 +301,16 @@ onMounted(async () => {
 
   cleanupFns.push(await listenGlobalEvents())
   currentMode.value = loadMode()
-  await initWithMode(currentMode.value);
+  isModeSaving.value = true
+  try {
+    await initWithMode(currentMode.value)
+  } catch (error) {
+    clientRunning.value = false
+    console.error('Failed to initialize saved mode', error)
+    toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+  } finally {
+    isModeSaving.value = false
+  }
 
   if (type() === 'android') {
     setMobileVpnTileActionHandler(handleMobileVpnTileAction)
@@ -309,31 +377,33 @@ watch(instanceId, (newVal) => {
   }
 });
 
-watch(clientRunning, async (newVal, oldVal) => {
-  if (!newVal && oldVal) {
-    if (manualDisconnect.value) {
-      manualDisconnect.value = false
-      return
-    }
-    await reconnectClient()
-  } else if (newVal && !oldVal) {
-    const lastInstanceId = loadLastNetworkInstanceId();
-    if (lastInstanceId) {
-      instanceId.value = lastInstanceId;
-    }
-  }
-})
-
-onMounted(async () => {
-  clientRunning.value = await isClientRunning().catch(() => false)
-  const timer = setInterval(async () => {
+async function reconnectRpc() {
+  if (isModeSaving.value || !autoReconnectEnabled || reconnectPromise) return
+  reconnectPromise = (async () => {
     try {
-      if (!isModeSaving.value) clientRunning.value = await isClientRunning()
-    } catch (e) {
+      await connectRpcClient(currentMode.value)
+      await refreshFromCore()
+      if (currentMode.value.mode === 'normal' && !normalWebClientInitialized) {
+        await initWebClient(currentMode.value.config_server_url || undefined)
+        normalWebClientInitialized = true
+      }
+      clientRunning.value = await isClientRunning()
+    } catch (error) {
       clientRunning.value = false
-      console.error("Error checking client running status", e)
+      console.debug('RPC reconnect will be retried', error)
     }
-  }, 1000)
+  })().finally(() => { reconnectPromise = undefined })
+  await reconnectPromise
+}
+
+onMounted(() => {
+  const timer = setInterval(async () => {
+    if (isModeSaving.value || reconnectPromise || !autoReconnectEnabled) return
+    const running = await isClientRunning().catch(() => false)
+    if (running && clientRunning.value) return
+    clientRunning.value = false
+    await reconnectRpc()
+  }, 1500)
 
   onUnmounted(() => {
     clearInterval(timer)
@@ -450,9 +520,9 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
   },
 ])
 
-async function connectRpcClient(isNormalMode: boolean, url?: string) {
-  await initRpcConnection(isNormalMode, url)
-  console.log("easytier rpc connection established, isNormalMode: ", isNormalMode)
+async function connectRpcClient(mode: Mode) {
+  await initRpcConnection(mode.mode === 'normal', rpcUrl(mode), mode.mode === 'normal' ? mode.config_dir : undefined)
+  console.log('easytier rpc connection established, mode:', mode.mode)
 }
 
 async function openConfigServerDialog() {
@@ -465,7 +535,7 @@ async function onConfigServerSave() {
     return;
   }
   if (editingMode.value.mode === 'service') {
-    await new Promise<void>((resolve, reject) => {
+    const confirmed = await new Promise<boolean>((resolve) => {
       confirm.require({
         message: t('config-server.update_service_confirm'),
         icon: 'pi pi-exclamation-triangle',
@@ -478,17 +548,17 @@ async function onConfigServerSave() {
           label: t('web.common.confirm'),
         },
         accept: async () => {
-          resolve()
+          resolve(true)
         },
         reject: () => {
-          reject()
+          resolve(false)
         }
       });
     })
+    if (!confirmed) return
   }
   console.log("Saving config server url", (editingMode.value as WebClientConfig).config_server_url)
-  await onModeSave();
-  configServerDialogVisible.value = false
+  if (await onModeSave()) configServerDialogVisible.value = false
 }
 onMounted(() => {
   const timer = setInterval(async () => {
@@ -546,7 +616,7 @@ const configServerConnectionStatus = computed(() => {
 
     <Menu ref="log_menu" :model="log_menu_items_popup" :popup="true" />
 
-    <RemoteManagement v-if="clientRunning" class="flex-1 overflow-y-auto" :api="remoteClient"
+    <RemoteManagement v-if="clientRunning" :key="runtimeEpoch" class="flex-1 overflow-y-auto" :api="remoteClient"
       :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" />
     <div v-else class="empty-state flex-1 flex flex-col items-center py-12">
       <i class="pi pi-server text-5xl text-secondary mb-4 opacity-50"></i>

@@ -21,10 +21,11 @@ use easytier::proto::api::manage::{
 use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
-    common::config::{NetworkConfig, NetworkConfigExt},
+    common::config::{NetworkConfig, NetworkConfigExt, load_config_from_file},
     common::{
+        MachineIdOptions,
         config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
-        log,
+        log, resolve_machine_id,
     },
     instance::factory::{NativeInstanceManager, native_instance_manager_with_config_dir},
     proto::rpc::standalone::{runtime_rpc_dialer, runtime_rpc_listener},
@@ -90,6 +91,10 @@ static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
 /// `--config-server a,b,c` behavior.
 static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Vec<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(Vec::new()));
+
+/// Prevent a reconnect, mode switch and web-client replacement from racing.
+static BACKEND_LIFECYCLE: once_cell::sync::Lazy<Mutex<()>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(()));
 
 /// Splits a comma-separated config server list into trimmed, non-empty URLs.
 fn parse_config_server_urls(raw: &str) -> Vec<String> {
@@ -416,15 +421,13 @@ fn init_service() -> Result<(), String> {
 
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
-fn init_service(opts: Option<service::ServiceOptions>) -> Result<(), String> {
+fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> Result<(), String> {
     match opts {
-        Some(args) => {
-            let path = std::path::Path::new(&args.config_dir);
-            if !path.exists() {
-                std::fs::create_dir_all(&args.config_dir).map_err(|e| e.to_string())?;
-            } else if !path.is_dir() {
-                return Err("config_dir exists but is not a directory".to_string());
-            }
+        Some(mut args) => {
+            args.config_dir = shared_config_dir(&app, Some(&args.config_dir))?
+                .to_string_lossy()
+                .to_string();
+            args.machine_id = Some(gui_machine_id(&app)?.to_string());
             let path = std::path::Path::new(&args.file_log_dir);
             if !path.exists() {
                 std::fs::create_dir_all(&args.file_log_dir).map_err(|e| e.to_string())?;
@@ -450,22 +453,187 @@ fn set_service_status(enable: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Release the embedded core before a service claims its ports and TUN devices.
+fn shared_config_dir(
+    app: &AppHandle,
+    configured: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let path = match configured.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => {
+            let path = std::path::PathBuf::from(path);
+            if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map_err(|error| error.to_string())?
+                    .join(path)
+            }
+        }
+        None => {
+            if cfg!(target_os = "android") {
+                app.path()
+                    .app_data_dir()
+                    .map_err(|error| error.to_string())?
+                    .join("network-configs")
+            } else {
+                app.path()
+                    .app_config_dir()
+                    .map_err(|error| error.to_string())?
+                    .join("config.d")
+            }
+        }
+    };
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("Failed to create config dir {}", path.display()))
+        .map_err(|error| format!("{error:#}"))?;
+    std::fs::canonicalize(&path)
+        .with_context(|| format!("Failed to resolve config dir {}", path.display()))
+        .map_err(|error| format!("{error:#}"))
+}
+
 #[tauri::command]
-async fn stop_local_backend() -> Result<(), String> {
-    let mut client = CLIENT_MANAGER.write().await;
-    WEB_CLIENT.write().await.clear();
-    *client = None;
-    *RPC_SERVER.lock().await = None;
-    if let Some(manager) = INSTANCE_MANAGER.write().await.take() {
-        manager
-            .retain_network_instances(&[])
-            .await
-            .map_err(|e| e.to_string())?;
+fn resolve_shared_config_dir(app: AppHandle, config_dir: Option<String>) -> Result<String, String> {
+    Ok(shared_config_dir(&app, config_dir.as_deref())?
+        .to_string_lossy()
+        .to_string())
+}
+
+fn gui_machine_id(app: &AppHandle) -> Result<Uuid, String> {
+    let state_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    resolve_machine_id(&MachineIdOptions {
+        explicit_machine_id: None,
+        state_dir: Some(state_dir),
+    })
+    .map_err(|error| format!("{error:#}"))
+}
+
+async fn restore_managed_configs(
+    manager: &NativeInstanceManager,
+    state_store: &InstanceStateStore,
+    config_dir: &std::path::PathBuf,
+) -> anyhow::Result<()> {
+    let mut configs = Vec::new();
+    for entry in std::fs::read_dir(config_dir)? {
+        let path = entry?.path();
+        if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("toml")) {
+            configs.push(path);
+        }
     }
+    configs.sort();
+
+    for path in configs {
+        let (config, control) = load_config_from_file(&path, Some(config_dir), false).await?;
+        if state_store.is_enabled(&config.get_id()) {
+            manager.run_network_instance(config, control)?;
+        }
+    }
+
+    // Match the service core: a removed config cannot remain disabled forever.
+    for id in state_store.disabled_instance_ids() {
+        if !config_dir.join(format!("{id}.toml")).is_file() {
+            state_store.remove(&id)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod managed_restore_tests {
+    use super::*;
+
+    #[test]
+    fn normal_mode_accepts_a_saved_service_rpc_address() {
+        let (bind, connect) = normalize_normal_mode_rpc_portal("127.0.0.1:15999").unwrap();
+        assert_eq!(bind.scheme(), "tcp");
+        assert_eq!(bind.host_str(), Some("127.0.0.1"));
+        assert_eq!(bind.port(), Some(15999));
+        assert_eq!(connect, bind);
+    }
+
+    #[tokio::test]
+    async fn normal_mode_restores_the_service_config_dir_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let enabled = TomlConfigLoader::default();
+        enabled.set_inst_name("enabled".to_string());
+        enabled.set_listeners(Vec::new());
+        let mut enabled_flags = enabled.get_flags();
+        enabled_flags.no_tun = true;
+        enabled.set_flags(enabled_flags);
+        let enabled_id = enabled.get_id();
+        std::fs::write(
+            dir.path().join(format!("{enabled_id}.toml")),
+            enabled.dump(),
+        )
+        .unwrap();
+
+        let disabled = TomlConfigLoader::default();
+        disabled.set_inst_name("disabled".to_string());
+        disabled.set_listeners(Vec::new());
+        let mut disabled_flags = disabled.get_flags();
+        disabled_flags.no_tun = true;
+        disabled.set_flags(disabled_flags);
+        let disabled_id = disabled.get_id();
+        std::fs::write(
+            dir.path().join(format!("{disabled_id}.toml")),
+            disabled.dump(),
+        )
+        .unwrap();
+
+        let stale_id = Uuid::new_v4();
+        let state_store = InstanceStateStore::new(Some(dir.path()));
+        state_store.set_enabled(disabled_id, false).unwrap();
+        state_store.set_enabled(stale_id, false).unwrap();
+        drop(state_store);
+
+        let state_store = InstanceStateStore::new(Some(dir.path()));
+        let manager = native_instance_manager_with_config_dir(Some(dir.path().to_path_buf()));
+        restore_managed_configs(&manager, &state_store, &dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert!(manager.instance_ids().contains(&enabled_id));
+        assert!(!manager.instance_ids().contains(&disabled_id));
+        assert_eq!(state_store.disabled_instance_ids(), vec![disabled_id]);
+        manager.retain_network_instances(&[]).await.unwrap();
+    }
+}
+
+async fn stop_local_backend_inner() -> Result<(), String> {
+    let web_clients = std::mem::take(&mut *WEB_CLIENT.write().await);
+    for client in web_clients {
+        client.shutdown().await;
+    }
+    let client = CLIENT_MANAGER.write().await.take();
+    if let Some(client) = client {
+        client.rpc_manager.stop().await;
+    }
+    let server = RPC_SERVER.lock().await.take();
+    if let Some(mut server) = server {
+        server._server.shutdown().await;
+    }
+    let manager = INSTANCE_MANAGER.read().await.clone();
+    if let Some(manager) = manager {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            manager.retain_network_instances(&[]),
+        )
+        .await
+        .map_err(|_| "Timed out waiting for local network instances to stop".to_string())?
+        .map_err(|error| error.to_string())?;
+    }
+    *INSTANCE_MANAGER.write().await = None;
     *INSTANCE_STATE_STORE.write().await = None;
     *INSTANCE_CONFIG_DIR.write().await = None;
     Ok(())
+}
+
+/// Release the embedded core before a service claims its ports and TUN devices.
+#[tauri::command]
+async fn stop_local_backend() -> Result<(), String> {
+    let _lifecycle = BACKEND_LIFECYCLE.lock().await;
+    stop_local_backend_inner().await
 }
 
 #[tauri::command]
@@ -487,6 +655,11 @@ fn get_service_status() -> Result<&'static str, String> {
 }
 
 fn normalize_normal_mode_rpc_portal(portal: &str) -> Result<(url::Url, url::Url), String> {
+    let portal = if portal.contains("://") {
+        portal.to_string()
+    } else {
+        format!("tcp://{portal}")
+    };
     let portal_url: url::Url = portal
         .parse()
         .map_err(|e| format!("invalid rpc portal: {:#}", e))?;
@@ -519,43 +692,33 @@ async fn init_rpc_connection(
     app: AppHandle,
     is_normal_mode: bool,
     url: Option<String>,
+    config_dir: Option<String>,
 ) -> Result<(), String> {
-    let mut client_manager_guard =
-        tokio::time::timeout(std::time::Duration::from_secs(5), CLIENT_MANAGER.write())
-            .await
-            .map_err(|_| "Failed to acquire write lock for client manager")?;
-    let mut instance_manager_guard = INSTANCE_MANAGER
-        .try_write()
-        .map_err(|_| "Failed to acquire write lock for instance manager")?;
-    let mut rpc_server_guard = RPC_SERVER
-        .try_lock()
-        .map_err(|_| "Failed to acquire lock for rpc server")?;
+    let _lifecycle = BACKEND_LIFECYCLE.lock().await;
+    let desired_config_dir = if is_normal_mode {
+        Some(shared_config_dir(&app, config_dir.as_deref())?)
+    } else {
+        None
+    };
+    let current_config_dir = INSTANCE_CONFIG_DIR.read().await.clone();
+    if !is_normal_mode || (current_config_dir.is_some() && current_config_dir != desired_config_dir)
+    {
+        stop_local_backend_inner().await?;
+    } else {
+        let client = CLIENT_MANAGER.write().await.take();
+        if let Some(client) = client {
+            client.rpc_manager.stop().await;
+        }
+    }
+
+    let mut instance_manager_guard = INSTANCE_MANAGER.write().await;
+    let mut rpc_server_guard = RPC_SERVER.lock().await;
 
     let mut client_url = url.clone();
     let mut local_process_runtime = None;
     if is_normal_mode {
-        // Persist managed network configs under the app data dir so the
-        // embedded core participates in the decentralized management mode:
-        // disabled networks keep their config files, and the config server
-        // stops re-pushing its own desired state over local changes.
-        let config_dir = {
-            let mut dir_guard = INSTANCE_CONFIG_DIR.write().await;
-            if dir_guard.is_none() {
-                let dir = app
-                    .path()
-                    .app_data_dir()
-                    .with_context(|| "Failed to resolve app data directory")
-                    .map_err(|e| format!("{:#}", e))?
-                    .join("network-configs");
-                std::fs::create_dir_all(&dir)
-                    .with_context(|| {
-                        format!("Failed to create instance config dir {}", dir.display())
-                    })
-                    .map_err(|e| format!("{:#}", e))?;
-                *dir_guard = Some(dir);
-            }
-            dir_guard.clone().unwrap()
-        };
+        let config_dir = desired_config_dir.expect("normal mode has a config dir");
+        *INSTANCE_CONFIG_DIR.write().await = Some(config_dir.clone());
         let instance_state_store = {
             let mut store_guard = INSTANCE_STATE_STORE.write().await;
             if store_guard.is_none() {
@@ -564,10 +727,22 @@ async fn init_rpc_connection(
             store_guard.clone().unwrap()
         };
 
-        let instance_manager = if let Some(im) = instance_manager_guard.take() {
-            im
+        let instance_manager = if let Some(im) = instance_manager_guard.as_ref() {
+            im.clone()
         } else {
-            Arc::new(native_instance_manager_with_config_dir(Some(config_dir)))
+            let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+                config_dir.clone(),
+            )));
+            if let Err(error) =
+                restore_managed_configs(&manager, &instance_state_store, &config_dir).await
+            {
+                let _ = manager.retain_network_instances(&[]).await;
+                *INSTANCE_STATE_STORE.write().await = None;
+                *INSTANCE_CONFIG_DIR.write().await = None;
+                return Err(format!("Failed to restore managed configs: {error:#}"));
+            }
+            *instance_manager_guard = Some(manager.clone());
+            manager
         };
 
         let portal = url.and_then(|s| {
@@ -592,7 +767,9 @@ async fn init_rpc_connection(
             .unwrap_or(true);
 
         if need_restart {
-            *rpc_server_guard = None;
+            if let Some(mut server) = rpc_server_guard.take() {
+                server._server.shutdown().await;
+            }
 
             let tunnel: BoxedTunnelListener = match desired_kind {
                 RpcServerKind::Ring => instance_manager
@@ -619,12 +796,7 @@ async fn init_rpc_connection(
         }
 
         local_process_runtime = Some(instance_manager.process_runtime());
-        *instance_manager_guard = Some(instance_manager);
         client_url = connect_url.map(|u| u.to_string());
-    } else {
-        *rpc_server_guard = None;
-        *INSTANCE_STATE_STORE.write().await = None;
-        *INSTANCE_CONFIG_DIR.write().await = None;
     }
 
     let client_manager = tokio::time::timeout(
@@ -635,87 +807,65 @@ async fn init_rpc_connection(
     .map_err(|_| "connect remote rpc timed out".to_string())?
     .with_context(|| "Failed to connect remote rpc")
     .map_err(|e| format!("{:#}", e))?;
-    *client_manager_guard = Some(client_manager);
-
-    if !is_normal_mode {
-        WEB_CLIENT.write().await.clear();
-        if let Some(instance_manager) = instance_manager_guard.take() {
-            instance_manager
-                .retain_network_instances(&[])
-                .await
-                .map_err(|e| e.to_string())?;
-            drop(instance_manager);
-        }
-    }
+    *CLIENT_MANAGER.write().await = Some(client_manager);
 
     Ok(())
 }
 
 #[tauri::command]
 async fn is_client_running() -> Result<bool, String> {
-    Ok(get_client_manager!()?.rpc_manager.is_running())
+    Ok(CLIENT_MANAGER
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|client| client.rpc_manager.is_running()))
 }
 
 #[tauri::command]
 async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), String> {
-    let mut web_clients = WEB_CLIENT.write().await;
-    let Some(url) = url else {
-        web_clients.clear();
-        return Ok(());
+    let _lifecycle = BACKEND_LIFECYCLE.lock().await;
+    let config_server_urls = url
+        .as_deref()
+        .map(parse_config_server_urls)
+        .unwrap_or_default();
+    let (instance_manager, state_store, machine_id) = if config_server_urls.is_empty() {
+        (None, None, None)
+    } else {
+        let manager = INSTANCE_MANAGER
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "Instance manager is not available".to_string())?;
+        let state_store = INSTANCE_STATE_STORE
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "Instance state store is not available".to_string())?;
+        (
+            Some(manager),
+            Some(state_store),
+            Some(gui_machine_id(&app)?),
+        )
     };
-    let config_server_urls = parse_config_server_urls(&url);
-    if config_server_urls.is_empty() {
-        web_clients.clear();
-        return Ok(());
+
+    let old_clients = std::mem::take(&mut *WEB_CLIENT.write().await);
+    for client in old_clients {
+        client.shutdown().await;
     }
-    let instance_manager = INSTANCE_MANAGER
-        .try_read()
-        .map_err(|_| "Failed to acquire read lock for instance manager")?
-        .clone()
-        .ok_or_else(|| "Instance manager is not available".to_string())?;
-
-    // Reuse the shared persistent state store so the config server, the
-    // local rpc portal and the web client see one enabled/disabled state.
-    let state_store = {
-        let mut store_guard = INSTANCE_STATE_STORE.write().await;
-        if store_guard.is_none() {
-            let config_dir = {
-                let mut dir_guard = INSTANCE_CONFIG_DIR.write().await;
-                if dir_guard.is_none() {
-                    let dir = app
-                        .path()
-                        .app_data_dir()
-                        .with_context(|| "Failed to resolve app data directory")
-                        .map_err(|e| format!("{:#}", e))?
-                        .join("network-configs");
-                    std::fs::create_dir_all(&dir)
-                        .with_context(|| {
-                            format!("Failed to create instance config dir {}", dir.display())
-                        })
-                        .map_err(|e| format!("{:#}", e))?;
-                    *dir_guard = Some(dir);
-                }
-                dir_guard.clone().unwrap()
-            };
-            *store_guard = Some(Arc::new(InstanceStateStore::new(Some(&config_dir))));
-        }
-        store_guard.clone().unwrap()
+    let (Some(instance_manager), Some(state_store), Some(machine_id)) =
+        (instance_manager, state_store, machine_id)
+    else {
+        return Ok(());
     };
 
-    let hooks = Arc::new(manager::GuiHooks { app: app.clone() });
-    let machine_id_state_dir = app
-        .path()
-        .app_data_dir()
-        .with_context(|| "Failed to resolve machine id state directory")
-        .map_err(|e| format!("{:#}", e))?;
-
-    web_clients.clear();
+    let hooks = Arc::new(manager::GuiHooks { app });
+    let mut new_clients = Vec::new();
     for config_server_url in config_server_urls {
-        let web_client = web_client::run_web_client(
+        let result = web_client::run_web_client(
             config_server_url.as_str(),
-            easytier::common::MachineIdOptions {
-                explicit_machine_id: None,
-                state_dir: Some(machine_id_state_dir.clone()),
+            MachineIdOptions {
+                explicit_machine_id: Some(machine_id.to_string()),
+                state_dir: None,
             },
             None,
             false,
@@ -723,11 +873,20 @@ async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), Stri
             Some(hooks.clone()),
             state_store.clone(),
         )
-        .await
-        .with_context(|| format!("Failed to initialize web client for {config_server_url}"))
-        .map_err(|e| format!("{:#}", e))?;
-        web_clients.push(web_client);
+        .await;
+        match result {
+            Ok(client) => new_clients.push(client),
+            Err(error) => {
+                for client in new_clients {
+                    client.shutdown().await;
+                }
+                return Err(format!(
+                    "Failed to initialize web client for {config_server_url}: {error:#}"
+                ));
+            }
+        }
     }
+    *WEB_CLIENT.write().await = new_clients;
     Ok(())
 }
 
@@ -1615,6 +1774,8 @@ mod service {
         pub(super) file_log_level: String,
         pub(super) file_log_dir: String,
         pub(super) config_server: Option<String>,
+        #[serde(default)]
+        pub(super) machine_id: Option<String>,
     }
     impl ServiceOptions {
         fn to_args_vec(&self) -> Vec<std::ffi::OsString> {
@@ -1633,6 +1794,11 @@ mod service {
             if let Some(config_server) = &self.config_server {
                 args.push("--config-server".into());
                 args.push(config_server.clone().into());
+            }
+
+            if let Some(machine_id) = &self.machine_id {
+                args.push("--machine-id".into());
+                args.push(machine_id.clone().into());
             }
 
             args
@@ -1695,6 +1861,8 @@ mod service {
 
     #[cfg(test)]
     mod tests {
+        use super::ServiceOptions;
+
         #[test]
         fn service_environment_matches_platform() {
             #[cfg(target_os = "macos")]
@@ -1705,6 +1873,31 @@ mod service {
 
             #[cfg(not(target_os = "macos"))]
             assert_eq!(super::service_environment(), None);
+        }
+
+        #[test]
+        fn service_uses_the_gui_machine_id_and_selected_config_dir() {
+            let opts = ServiceOptions {
+                config_dir: "C:/shared/config.d".to_string(),
+                rpc_portal: "127.0.0.1:15999".to_string(),
+                file_log_level: "off".to_string(),
+                file_log_dir: "C:/shared/logs".to_string(),
+                config_server: None,
+                machine_id: Some("33333333-3333-3333-3333-333333333333".to_string()),
+            };
+            let args = opts.to_args_vec();
+            let args = args
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>();
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--config-dir", "C:/shared/config.d"])
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--machine-id", "33333333-3333-3333-3333-333333333333"])
+            );
         }
     }
 }
@@ -1802,6 +1995,7 @@ pub fn run_gui() -> std::process::ExitCode {
             load_configs,
             get_network_metas,
             init_service,
+            resolve_shared_config_dir,
             stop_local_backend,
             set_service_status,
             get_service_status,

@@ -29,10 +29,11 @@ onMounted(async () => {
 
   // the mode watch may have run before these defaults resolved (e.g. when the
   // dialog is opened with service mode preselected), leaving the fields empty.
-  if (model.value.mode === 'service') {
-    const serviceModel = model.value as ServiceMode
-    serviceModel.config_dir = serviceModel.config_dir || defaultConfigDir.value
-    serviceModel.file_log_dir = serviceModel.file_log_dir || defaultLogDir.value
+  if (model.value.mode !== 'remote') {
+    model.value.config_dir = model.value.config_dir || defaultConfigDir.value
+    if (model.value.mode === 'service') {
+      model.value.file_log_dir = model.value.file_log_dir || defaultLogDir.value
+    }
   }
 })
 
@@ -140,12 +141,14 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
   const oldModelValue = { ...model.value }
 
   if (newMode === 'normal') {
-    const portal = normalMode.value?.rpc_portal?.trim()
+    const listenEnabled = !!normalMode.value?.enable_rpc_port_listen
+    const listenPort = normalizeRpcListenPort(normalMode.value?.rpc_listen_port)
     model.value = {
       ...oldModelValue,
-      rpc_portal: portal || undefined,
-      enable_rpc_port_listen: normalMode.value?.enable_rpc_port_listen,
-      rpc_listen_port: normalMode.value?.rpc_listen_port,
+      config_dir: oldModelValue.config_dir || defaultConfigDir.value,
+      rpc_portal: listenEnabled ? `tcp://0.0.0.0:${listenPort}` : undefined,
+      enable_rpc_port_listen: listenEnabled,
+      rpc_listen_port: listenPort,
       mode: 'normal',
     }
   }

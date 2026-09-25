@@ -21,6 +21,9 @@ const EVENTS = Object.freeze({
 });
 
 function onSaveConfigs(event: Event<StoredGuiConfig[]>) {
+    // Desktop configs live in the core's shared config dir. The browser cache
+    // remains only for Android's existing local-storage migration path.
+    if (type() !== 'android') return
     console.log(`Received event '${EVENTS.SAVE_CONFIGS}': ${event.payload}`);
     localStorage.setItem(
         'networkList',

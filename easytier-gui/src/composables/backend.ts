@@ -133,6 +133,11 @@ export async function sendConfigs(enabledNetworks: string[], migrationKey?: stri
   if (migrationKey) localStorage.setItem(migrationKey, '1')
 }
 
+/** Rebuild the GUI-only cache from the active core without replaying old state. */
+export async function syncConfigsFromCore() {
+  return invoke('load_configs', { configs: [], enabledNetworks: [] })
+}
+
 export async function getNetworkMetas(instanceIds: string[]) {
   return await invoke<GetNetworkMetasResponse>('get_network_metas', { instanceIds })
 }
@@ -149,8 +154,12 @@ export async function getServiceStatus() {
   return await invoke<ServiceStatus>('get_service_status')
 }
 
-export async function initRpcConnection(isNormalMode: boolean, url?: string) {
-  return await invoke('init_rpc_connection', { isNormalMode, url })
+export async function resolveSharedConfigDir(configDir?: string) {
+  return await invoke<string>('resolve_shared_config_dir', { configDir })
+}
+
+export async function initRpcConnection(isNormalMode: boolean, url?: string, configDir?: string) {
+  return await invoke('init_rpc_connection', { isNormalMode, url, configDir })
 }
 
 export async function isClientRunning() {

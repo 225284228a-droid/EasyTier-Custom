@@ -215,6 +215,12 @@ where
         self.inflight_server
             .load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Wait until the listener task releases its bound socket.
+    pub async fn shutdown(&mut self) {
+        self.tasks.abort_all();
+        while self.tasks.join_next().await.is_some() {}
+    }
 }
 
 pub struct StandAloneClient<C: TunnelDialer> {
@@ -575,17 +581,9 @@ mod tests {
             .await
             .unwrap();
 
-        drop(server);
-        timeout(Duration::from_secs(1), async {
-            loop {
-                if drop_order.lock().unwrap().len() == 2 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        timeout(Duration::from_secs(1), server.shutdown())
+            .await
+            .unwrap();
 
         assert_eq!(*drop_order.lock().unwrap(), ["listener", "protection"]);
     }

@@ -83,6 +83,10 @@ where
         Ok(self)
     }
 
+    pub async fn shutdown(&mut self) {
+        self.rpc_server.shutdown().await;
+    }
+
     pub fn with_rx_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
         self.rpc_server.set_rx_timeout(timeout);
         self

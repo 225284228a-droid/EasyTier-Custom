@@ -4,6 +4,8 @@ export interface WebClientConfig {
     // Comma-separated list of config server URLs, mirroring the core CLI's
     // `--config-server a,b,c` behavior. One web client is started per URL.
     config_server_url?: string
+    // Shared by the embedded core and the installed service on desktop.
+    config_dir?: string
 }
 
 export interface NormalMode extends WebClientConfig {
@@ -21,11 +23,13 @@ export interface ServiceMode extends WebClientConfig {
     file_log_level: 'off' | 'warn' | 'info' | 'debug' | 'trace'
     file_log_dir: string
     installed_core_version?: string
+    installed_service_schema?: number
 }
 
 export interface RemoteMode {
     mode: 'remote'
     remote_rpc_address: string
+    config_dir?: string
 }
 
 export function saveMode(mode: Mode) {

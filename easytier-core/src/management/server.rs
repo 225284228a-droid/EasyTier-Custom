@@ -58,6 +58,10 @@ where
             .await
     }
 
+    async fn shutdown(&mut self) {
+        self.server.shutdown().await;
+    }
+
     fn set_rx_timeout(&mut self, timeout: Option<std::time::Duration>) {
         self.server.set_rx_timeout(timeout);
     }
@@ -136,6 +140,10 @@ where
 
     pub async fn serve(&mut self) -> crate::proto::rpc_types::error::Result<()> {
         self.listener.serve().await
+    }
+
+    pub async fn shutdown(&mut self) {
+        self.listener.shutdown().await;
     }
 
     pub fn with_rx_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {

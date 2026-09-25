@@ -320,6 +320,14 @@ impl<F> WebClient<F> {
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Acquire)
     }
+
+    /// Stop the reconnect loop and wait for its background task to finish.
+    /// Mode switches must complete this before another core takes ownership.
+    pub async fn shutdown(self) {
+        self._tasks.abort();
+        let _ = self._tasks.await;
+        self.connected.store(false, Ordering::Release);
+    }
 }
 
 async fn web_client_routine(
