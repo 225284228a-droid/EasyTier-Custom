@@ -2737,6 +2737,8 @@ dependencies = [
  "uuid",
  "winapi",
  "windows 0.62.2",
+ "windows-service",
+ "winreg 0.56.0",
 ]
 
 [[package]]

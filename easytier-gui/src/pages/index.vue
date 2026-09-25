@@ -22,12 +22,13 @@ import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
 import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus, resolveSharedConfigDir, syncConfigsFromCore } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, resolveSharedConfigDir, retireConflictingServices, syncConfigsFromCore } from '~/composables/backend'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
 const aboutVisible = ref(false)
 const modeDialogVisible = ref(false)
+const modeDialogEpoch = ref(0)
 const currentMode = ref<Mode>({ mode: 'normal' })
 const editingMode = ref<Mode>({ mode: 'normal' })
 const isModeSaving = ref(true)
@@ -35,7 +36,7 @@ const runtimeEpoch = ref(0)
 let reconnectPromise: Promise<void> | undefined
 let autoReconnectEnabled = true
 let normalWebClientInitialized = false
-const SERVICE_SCHEMA_VERSION = 1
+const SERVICE_SCHEMA_VERSION = 2
 
 const configServerDialogVisible = ref(false)
 const configServerConnected = ref(false)
@@ -44,6 +45,7 @@ const showAutostartHint = ref(false)
 
 async function openModeDialog() {
   editingMode.value = JSON.parse(JSON.stringify(loadMode()))
+  modeDialogEpoch.value++
   showAutostartHint.value = false
   modeDialogVisible.value = true
 }
@@ -51,6 +53,7 @@ async function openModeDialog() {
 async function openAutostartDialog() {
   editingMode.value = JSON.parse(JSON.stringify(loadMode()))
   editingMode.value.mode = 'service'
+  modeDialogEpoch.value++
   showAutostartHint.value = true
   modeDialogVisible.value = true
 }
@@ -112,7 +115,6 @@ async function onUninstallService() {
               config_server_url: currentMode.value.mode === 'service' ? currentMode.value.config_server_url : undefined,
             }
         await initWithMode(nextMode)
-        await initService(undefined)
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
         modeDialogVisible.value = false
       } catch (e: any) {
@@ -193,6 +195,7 @@ async function prepareConfigDir(mode: Mode) {
 function rpcUrl(mode: Mode): string | undefined {
   if (mode.mode === 'normal') return mode.rpc_portal
   if (mode.mode === 'remote') return mode.remote_rpc_address
+  if (/^\d+$/.test(mode.rpc_portal.trim())) return `tcp://127.0.0.1:${mode.rpc_portal.trim()}`
   return (mode.rpc_portal.includes('://') ? mode.rpc_portal : `tcp://${mode.rpc_portal}`)
     .replace('0.0.0.0', '127.0.0.1').replace('[::]', '[::1]')
 }
@@ -202,6 +205,10 @@ async function connectWithRetry(mode: Mode, attempts: number): Promise<boolean> 
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       await connectRpcClient(mode)
+      await remoteClient.value.list_network_instance_ids()
+      if (mode.mode === 'service' && await getServiceStatus() !== 'Running') {
+        throw new Error('The GUI service stopped before its RPC connection was ready')
+      }
       return true
     } catch (error) {
       lastError = error
@@ -209,6 +216,9 @@ async function connectWithRetry(mode: Mode, attempts: number): Promise<boolean> 
     }
   }
   if (mode.mode === 'service') {
+    if (await getServiceStatus() !== 'Running') {
+      throw new Error(`The GUI service failed to start: ${String(lastError)}`)
+    }
     console.warn('Service RPC is not ready yet; background reconnect will continue', lastError)
     return false
   }
@@ -244,13 +254,24 @@ async function initWithMode(mode: Mode) {
   }
 
   clientRunning.value = false
-  if (mode.mode !== 'service' && type() !== 'android') await waitForServiceStop()
+  if (mode.mode !== 'service' && type() !== 'android') {
+    await waitForServiceStop()
+    if (await getServiceStatus() !== 'NotInstalled') await initService(undefined)
+    if (mode.mode === 'normal') {
+      const retired = await retireConflictingServices(mode.config_dir!, mode.rpc_portal)
+      if (retired.length) console.warn('Removed conflicting EasyTier services:', retired)
+    }
+  }
   if (mode.mode !== 'normal') {
     await invoke('stop_local_backend')
     normalWebClientInitialized = false
   }
 
   if (mode.mode === 'service') {
+    if (type() !== 'android') {
+      const retired = await retireConflictingServices(mode.config_dir, mode.rpc_portal)
+      if (retired.length) console.warn('Removed conflicting EasyTier services:', retired)
+    }
     let serviceStatus = await getServiceStatus()
     const coreVersion = await getEasytierVersion()
     const needsInstall = serviceStatus === 'NotInstalled'
@@ -271,7 +292,7 @@ async function initWithMode(mode: Mode) {
       mode.installed_service_schema = SERVICE_SCHEMA_VERSION
       serviceStatus = await getServiceStatus()
     }
-    if (serviceStatus === 'Stopped') await setServiceStatus(true)
+    if (serviceStatus === 'Stopped') await setServiceStatus(true, mode.rpc_portal)
   }
 
   if (mode.mode === 'normal') normalWebClientInitialized = false
@@ -382,6 +403,10 @@ async function reconnectRpc() {
   reconnectPromise = (async () => {
     try {
       await connectRpcClient(currentMode.value)
+      await remoteClient.value.list_network_instance_ids()
+      if (currentMode.value.mode === 'service' && await getServiceStatus() !== 'Running') {
+        throw new Error('The GUI service stopped during RPC reconnect')
+      }
       await refreshFromCore()
       if (currentMode.value.mode === 'normal' && !normalWebClientInitialized) {
         await initWebClient(currentMode.value.config_server_url || undefined)
@@ -592,7 +617,7 @@ const configServerConnectionStatus = computed(() => {
       <Message v-if="showAutostartHint" severity="info" :closable="false" class="mb-4">
         {{ t('mode.autostart_hint') }}
       </Message>
-      <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
+      <ModeSwitcher :key="modeDialogEpoch" v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
         <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />
         <Button :label="t('web.common.save')" icon="pi pi-save" @click="onModeSave" autofocus :loading="isModeSaving" />

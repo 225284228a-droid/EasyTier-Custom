@@ -146,8 +146,12 @@ export async function initService(opts?: ServiceOptions) {
   return await invoke('init_service', { opts })
 }
 
-export async function setServiceStatus(enable: boolean) {
-  return await invoke('set_service_status', { enable })
+export async function setServiceStatus(enable: boolean, rpcPortal?: string) {
+  return await invoke('set_service_status', { enable, rpcPortal })
+}
+
+export async function retireConflictingServices(configDir: string, rpcPortal?: string) {
+  return await invoke<string[]>('retire_conflicting_services', { configDir, rpcPortal })
 }
 
 export async function getServiceStatus() {

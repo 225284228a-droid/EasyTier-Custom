@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod elevate;
+mod service_conflicts;
 
 use anyhow::Context;
 #[cfg(target_os = "android")]
@@ -427,6 +428,8 @@ fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> Result
             args.config_dir = shared_config_dir(&app, Some(&args.config_dir))?
                 .to_string_lossy()
                 .to_string();
+            args.rpc_portal = service_conflicts::normalize_rpc_portal(&args.rpc_portal)
+                .map_err(|error| format!("{error:#}"))?;
             args.machine_id = Some(gui_machine_id(&app)?.to_string());
             let path = std::path::Path::new(&args.file_log_dir);
             if !path.exists() {
@@ -445,12 +448,36 @@ fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> Result
 }
 
 #[tauri::command]
-fn set_service_status(enable: bool) -> Result<(), String> {
+fn set_service_status(enable: bool, rpc_portal: Option<String>) -> Result<(), String> {
     #[cfg(not(target_os = "android"))]
     {
+        if enable {
+            let portal = rpc_portal
+                .as_deref()
+                .ok_or("RPC portal is required to start the service")?;
+            service_conflicts::ensure_rpc_port_free(portal)
+                .map_err(|error| format!("{error:#}"))?;
+        }
         service::set_status(enable).map_err(|e| format!("{:#}", e))?;
     }
+    #[cfg(target_os = "android")]
+    let _ = rpc_portal;
     Ok(())
+}
+
+#[tauri::command]
+async fn retire_conflicting_services(
+    app: AppHandle,
+    config_dir: String,
+    rpc_portal: Option<String>,
+) -> Result<Vec<String>, String> {
+    let config_dir = shared_config_dir(&app, Some(&config_dir))?;
+    tokio::task::spawn_blocking(move || {
+        service_conflicts::retire_conflicting_services(&config_dir, rpc_portal.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{error:#}"))
 }
 
 fn shared_config_dir(
@@ -1998,6 +2025,7 @@ pub fn run_gui() -> std::process::ExitCode {
             resolve_shared_config_dir,
             stop_local_backend,
             set_service_status,
+            retire_conflicting_services,
             get_service_status,
             init_rpc_connection,
             is_client_running,
