@@ -29,9 +29,11 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             name: linux-x86_64
+            frontend-filter: './easytier-web/*'
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
+            frontend-filter: ''
     runs-on: ${{ matrix.os }}
     env:
       TARGET: ${{ matrix.target }}
@@ -44,6 +46,7 @@ jobs:
           target: ${{ matrix.target }}
           gui: 'false'
           pnpm: 'true'
+          pnpm-build-filter: ${{ matrix.frontend-filter }}
           token: ${{ github.token }}
 
       - uses: mlugg/setup-zig@v2
@@ -56,6 +59,19 @@ jobs:
         if: runner.os == 'Linux'
         with:
           tool: cargo-zigbuild@0.23.2
+
+      # Zig does not accept mini's RELR/ICF linker options. Use native Clang/LLD.
+      # Build separately so full-feature binaries do not enable mini's optional features.
+      - name: Build Linux mini
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -qqy clang lld
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=clang \
+            RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-fuse-ld=lld' \
+            cargo build --locked --profile mini --target "$TARGET" -p easytier-mini
+          mkdir -p artifacts
+          cp "target/$TARGET/mini/easytier-mini" artifacts/
 
       - name: Build core, CLI and embedded web server
         run: |
@@ -74,14 +90,6 @@ jobs:
           cp "target/$TARGET/release/easytier-core$SUFFIX" artifacts/
           cp "target/$TARGET/release/easytier-cli$SUFFIX" artifacts/
           cp "target/$TARGET/release/easytier-web$SUFFIX" "artifacts/easytier-web-embed$SUFFIX"
-
-      # Build separately so full-feature binaries do not enable mini's optional features.
-      - name: Build Linux mini
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          cargo zigbuild --locked --profile mini --target "$TARGET" -p easytier-mini
-          cp "target/$TARGET/mini/easytier-mini" artifacts/
 
       - name: Verify Linux static linking and executable startup
         if: runner.os == 'Linux'
@@ -109,7 +117,7 @@ jobs:
           cp easytier/third_party/x86_64/*.dll artifacts/
           cp easytier/third_party/x86_64/*.sys artifacts/
 
-      - name: Verify Windows static CRT
+      - name: Verify Windows runtime dependencies
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -122,8 +130,9 @@ jobs:
             if ($name -eq 'gui') { $binary = "target/$env:TARGET/release/easytier-gui.exe" }
             $dependencies = & $dumpbin.FullName /dependents $binary
             if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $name" }
-            if ($dependencies -match '(?i)(VCRUNTIME|MSVCP|MSVCR|ucrtbase|api-ms-win-crt-).*\.dll') {
-              throw "$name links a dynamic CRT"
+            # VC-LTL uses the OS-provided msvcrt.dll for Win7 compatibility.
+            if ($dependencies -match '(?i)(VCRUNTIME|MSVCP|MSVCR[0-9]|ucrtbase|api-ms-win-crt-).*\.dll') {
+              throw "$name requires an external CRT runtime"
             }
           }
 
