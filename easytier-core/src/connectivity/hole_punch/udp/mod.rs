@@ -9,7 +9,7 @@ mod server;
 mod socket_array;
 mod task;
 
-pub(crate) use binding::CoreUdpHolePunchService;
+pub(crate) use binding::{CoreUdpHolePunchService, UdpHolePunchProtocols};
 pub(crate) use client::{
     UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpSymToConePunchClient, punch_cone_to_cone,
 };

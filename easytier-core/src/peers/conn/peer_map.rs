@@ -109,16 +109,16 @@ impl PeerMap {
         };
         for (conn_id, peer_id) in superseded {
             tracing::warn!(?url, ?peer_id, ?conn_id, "closing superseded client conn");
-            if let Some(peer) = self.get_peer_by_id(peer_id) {
-                if let Err(error) = peer.close_peer_conn(&conn_id).await {
-                    tracing::debug!(
-                        ?url,
-                        ?peer_id,
-                        ?conn_id,
-                        ?error,
-                        "superseded conn already gone"
-                    );
-                }
+            if let Some(peer) = self.get_peer_by_id(peer_id)
+                && let Err(error) = peer.close_peer_conn(&conn_id).await
+            {
+                tracing::debug!(
+                    ?url,
+                    ?peer_id,
+                    ?conn_id,
+                    ?error,
+                    "superseded conn already gone"
+                );
             }
         }
     }

@@ -35,29 +35,31 @@ pub struct WebClient {
     inner: easytier_core::management::WebClient<NativeInstanceFactory>,
 }
 
+pub struct WebClientOptions {
+    pub token: String,
+    pub machine_id: uuid::Uuid,
+    pub hostname: String,
+    pub secure_mode: bool,
+}
+
 impl WebClient {
-    pub fn new<T, S, H>(
+    pub fn new<T>(
         connector: T,
-        token: S,
-        machine_id: uuid::Uuid,
-        hostname: H,
-        secure_mode: bool,
+        options: WebClientOptions,
         manager: Arc<NativeInstanceManager>,
         hooks: Option<Arc<dyn WebClientHooks>>,
         state_store: Arc<InstanceStateStore>,
     ) -> Self
     where
         T: TunnelDialer + 'static,
-        S: ToString,
-        H: ToString,
     {
         let config = WebClientConfig {
-            token: token.to_string(),
-            machine_id,
-            hostname: hostname.to_string(),
+            token: options.token,
+            machine_id: options.machine_id,
+            hostname: options.hostname,
             device_os: web_client_device_os_info(),
             easytier_version: EASYTIER_VERSION.to_owned(),
-            secure_mode,
+            secure_mode: options.secure_mode,
             support_local_configs: manager.config_dir().is_some(),
         };
         #[cfg(feature = "management")]
@@ -161,10 +163,12 @@ pub async fn run_web_client(
             url: endpoint.connect_url().clone(),
             connector,
         },
-        endpoint.token(),
-        machine_id,
-        hostname,
-        secure_mode,
+        WebClientOptions {
+            token: endpoint.token().to_owned(),
+            machine_id,
+            hostname,
+            secure_mode,
+        },
         manager,
         hooks,
         state_store,

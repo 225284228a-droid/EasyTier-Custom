@@ -45,22 +45,19 @@ fn preferred_conn_sort_key(
     (unverified, prefer && !disguised, disguised_rank, latency)
 }
 
-fn is_disguised_tunnel_type(tunnel_type: &str) -> bool {
-    tunnel_type
-        .rsplit('-')
-        .next()
-        .is_some_and(|transport| matches!(transport, "wss" | "http3"))
+fn disguised_tunnel_scheme(tunnel_type: &str) -> Option<&'static str> {
+    match tunnel_type.rsplit('-').next() {
+        Some("wss") => Some("wss"),
+        Some("http3") => Some("http3"),
+        _ => None,
+    }
 }
 
 /// The disguised transport of a connection, if it uses one. Tunnel types may
 /// carry a resolution prefix (`http-txt-wss`), so only the last segment counts.
 fn conn_disguised_scheme(conn: &PeerConn) -> Option<&'static str> {
     let tunnel_type = conn.get_conn_info().tunnel.as_ref()?.tunnel_type.clone();
-    match tunnel_type.rsplit('-').next() {
-        Some("wss") => Some("wss"),
-        Some("http3") => Some("http3"),
-        _ => None,
-    }
+    disguised_tunnel_scheme(&tunnel_type)
 }
 
 fn conn_is_disguised(conn: &PeerConn) -> bool {
@@ -450,7 +447,7 @@ impl Drop for Peer {
 
 #[cfg(test)]
 mod tests {
-    use super::{conn_latency_sort_key, is_disguised_tunnel_type};
+    use super::{conn_latency_sort_key, disguised_tunnel_scheme};
 
     #[test]
     fn disguise_preference_wins_after_liveness_is_verified() {
@@ -473,11 +470,11 @@ mod tests {
 
     #[test]
     fn disguised_tunnel_type_detection_allows_resolution_prefixes() {
-        assert!(is_disguised_tunnel_type("wss"));
-        assert!(is_disguised_tunnel_type("http-txt-wss"));
-        assert!(is_disguised_tunnel_type("http3"));
-        assert!(!is_disguised_tunnel_type("tcp"));
-        assert!(!is_disguised_tunnel_type("quic-http3-wrap"));
+        assert_eq!(disguised_tunnel_scheme("wss"), Some("wss"));
+        assert_eq!(disguised_tunnel_scheme("http-txt-wss"), Some("wss"));
+        assert_eq!(disguised_tunnel_scheme("http3"), Some("http3"));
+        assert_eq!(disguised_tunnel_scheme("tcp"), None);
+        assert_eq!(disguised_tunnel_scheme("quic-http3-wrap"), None);
     }
 
     #[test]

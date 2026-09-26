@@ -1954,9 +1954,8 @@ virtual_ip = "10.82.0.2/24"
             config::toml::TomlConfig,
             instance::manager::InstanceFactory,
             management::{
-                ConfigFileControl, ConfigFilePermission, ConfigFileStorage, InstanceManager,
-                InstanceMutationHooks, InstanceStateStore, ProcessManagement, ProcessManagementRpc,
-                UnsupportedConfigFileStorage,
+                ConfigFileControl, InstanceManager, InstanceMutationHooks, InstanceStateStore,
+                ProcessManagement, UnsupportedConfigFileStorage,
             },
         };
 

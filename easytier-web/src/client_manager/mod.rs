@@ -560,7 +560,7 @@ impl
     ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<sea_orm::DbErr>> {
         if !self.supports_local_configs(&identify).await {
             let client = self
-                .get_rpc_client(identify.clone())
+                .get_rpc_client(identify)
                 .ok_or(RemoteClientError::ClientNotFound)?;
             let ret = client
                 .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
@@ -608,7 +608,7 @@ impl
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
         if !self.supports_local_configs(&identify).await {
             let client = self
-                .get_rpc_client(identify.clone())
+                .get_rpc_client(identify)
                 .ok_or(RemoteClientError::ClientNotFound)?;
             let resp = client
                 .run_network_instance(
@@ -664,7 +664,7 @@ impl
             return Ok(());
         }
         let client = self
-            .get_rpc_client(identify.clone())
+            .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
         if !self.supports_local_configs(&identify).await {
             self.get_storage()
@@ -709,22 +709,17 @@ impl
         disabled: bool,
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
         let client = self
-            .get_rpc_client(identify.clone())
+            .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
 
         if !self.supports_local_configs(&identify).await {
             let (cfg, source) = self
-                .handle_get_network_config_with_source(identify.clone(), inst_id)
+                .handle_get_network_config_with_source(identify, inst_id)
                 .await?;
 
             if disabled {
                 self.get_storage()
-                    .insert_or_update_user_network_config(
-                        identify.clone(),
-                        inst_id,
-                        cfg.clone(),
-                        source,
-                    )
+                    .insert_or_update_user_network_config(identify, inst_id, cfg.clone(), source)
                     .await
                     .map_err(RemoteClientError::PersistentError)?;
 
@@ -795,7 +790,7 @@ impl
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
         if !self.supports_local_configs(&identify).await {
             self.get_storage()
-                .insert_or_update_user_network_config(identify.clone(), inst_id, config, source)
+                .insert_or_update_user_network_config(identify, inst_id, config, source)
                 .await
                 .map_err(RemoteClientError::PersistentError)?;
             self.get_storage()
@@ -830,7 +825,7 @@ impl
         RemoteClientError<sea_orm::DbErr>,
     > {
         if !self.supports_local_configs(&identify).await {
-            if let Some(client) = self.get_rpc_client(identify.clone())
+            if let Some(client) = self.get_rpc_client(identify)
                 && let Ok(resp) = client
                     .get_network_instance_config(
                         BaseController::default(),
@@ -845,7 +840,7 @@ impl
                     source
                 } else {
                     self.get_storage()
-                        .get_network_config(identify.clone(), &inst_id.to_string())
+                        .get_network_config(identify, &inst_id.to_string())
                         .await
                         .map_err(RemoteClientError::PersistentError)?
                         .map(|cfg| cfg.get_runtime_network_config_source())
@@ -992,7 +987,7 @@ mod tests {
             common::CompressionAlgoPb,
             rpc::standalone::{runtime_udp_tunnel_dialer, runtime_udp_tunnel_listener},
         },
-        web_client::{WebClient, run_web_client},
+        web_client::{WebClient, WebClientOptions, run_web_client},
     };
     use easytier_core::management::InstanceStateStore;
     use easytier_core::management::remote_client::{
@@ -1664,10 +1659,12 @@ mod tests {
         let connector = runtime_udp_tunnel_dialer(listener_url);
         let _c = WebClient::new(
             connector,
-            "test",
-            uuid::Uuid::new_v4(),
-            "test",
-            false,
+            WebClientOptions {
+                token: "test".to_owned(),
+                machine_id: uuid::Uuid::new_v4(),
+                hostname: "test".to_owned(),
+                secure_mode: false,
+            },
             Arc::new(native_instance_manager()),
             None,
             Arc::new(InstanceStateStore::in_memory()),

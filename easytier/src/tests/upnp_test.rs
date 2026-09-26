@@ -914,6 +914,8 @@ fn create_test_instance_with_process_runtime(
     let config = create_test_instance_config(inst_name, netns, ipv4, ipv6);
     let mut flags = config.get_flags();
     flags.disable_tcp_hole_punching = true;
+    // This test exercises raw UDP mapping, not the WSS/HTTP3 preference grace period.
+    flags.prefer_wss_http3_for_p2p = false;
     configure_flags(&mut flags);
     config.set_flags(flags);
 

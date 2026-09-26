@@ -47,7 +47,7 @@ use crate::{
             DirectConnectorHost, DirectConnectorManager, DirectConnectorOptions,
             ForeignDirectConnectorRpcRegistrar,
         },
-        hole_punch::udp::CoreUdpHolePunchService,
+        hole_punch::udp::{CoreUdpHolePunchService, UdpHolePunchProtocols},
         manual::{
             ManualConnectorManager, ManualConnectorOptions,
             discovery::{CoreManualEndpointResolver, ManualEndpointDiscoveryConfig},
@@ -763,8 +763,10 @@ where
                     udp_hole_punch_platform,
                     events.clone(),
                     direct_options.udp_bind.context.clone(),
-                    protocol.clone(),
-                    connected_server_protocol.clone(),
+                    UdpHolePunchProtocols {
+                        client: protocol.clone(),
+                        server: connected_server_protocol.clone(),
+                    },
                 )
             });
         let proxy_cidr_table = Arc::new(ProxyCidrTable::from_snapshot(proxy_cidr_snapshot(

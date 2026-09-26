@@ -140,7 +140,7 @@ impl WssDisguise {
                     let interval_ms = parts.next().unwrap_or_default().parse::<u64>().ok();
                     if let Some(interval) = interval_ms
                         .filter(|ms| *ms > 0)
-                        .map(|ms| Duration::from_millis(ms))
+                        .map(Duration::from_millis)
                         .map(|interval| interval.clamp(MIN_PADDING_INTERVAL, MAX_PADDING_INTERVAL))
                     {
                         disguise.padding_interval = Some(interval);

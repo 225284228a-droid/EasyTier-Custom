@@ -108,6 +108,11 @@ type CoreUdpHolePunchConnector<H, P> = UdpHolePunchConnector<
 type CoreUdpHolePunchEndpoint<H, P> =
     UdpHolePunchRpcEndpoint<CoreUdpHolePunchRuntime<H, P>, CoreUdpHolePunchTransportSink<H, P>>;
 
+pub(crate) struct UdpHolePunchProtocols<TcpSocket> {
+    pub client: Arc<dyn ClientProtocolUpgrader<TcpSocket>>,
+    pub server: Arc<dyn ServerProtocolUpgrader<TcpSocket>>,
+}
+
 pub(crate) struct CoreUdpHolePunchService<H, P>
 where
     H: DirectConnectorHost,
@@ -140,9 +145,12 @@ where
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         events: Arc<dyn crate::events::CoreEventSink>,
         socket_context: SocketContext,
-        protocol: Arc<dyn ClientProtocolUpgrader<HostTcpSocket<H>>>,
-        server_protocol: Arc<dyn ServerProtocolUpgrader<HostTcpSocket<H>>>,
+        protocols: UdpHolePunchProtocols<HostTcpSocket<H>>,
     ) -> Self {
+        let UdpHolePunchProtocols {
+            client: protocol,
+            server: server_protocol,
+        } = protocols;
         let stun_mapper = stun.clone();
         let stun_info: Arc<dyn StunInfoProvider> = stun;
         let supports_http3 =

@@ -326,8 +326,7 @@ where
     H: DirectConnectorHost;
 
 fn should_collect_direct_peer(
-    peer_id: PeerId,
-    my_peer_id: PeerId,
+    is_local_peer: bool,
     blacklisted: bool,
     static_allowed: bool,
     dynamic_p2p_allowed: bool,
@@ -335,7 +334,7 @@ fn should_collect_direct_peer(
     has_direct_connection: bool,
     connection_satisfies_policy: bool,
 ) -> bool {
-    peer_id != my_peer_id
+    !is_local_peer
         && !blacklisted
         && !connection_satisfies_policy
         && (static_allowed
@@ -385,8 +384,7 @@ where
                     policy.need_p2p,
                 );
                 should_collect_direct_peer(
-                    route.peer_id,
-                    my_peer_id,
+                    route.peer_id == my_peer_id,
                     data.peer_blacklist.contains(&route.peer_id),
                     static_allowed,
                     should_try_p2p_with_peer(
@@ -1427,22 +1425,22 @@ mod tests {
     #[test]
     fn disguise_preference_retries_with_an_existing_raw_direct_connection() {
         assert!(should_collect_direct_peer(
-            2, 1, false, false, true, false, true, false
+            false, false, false, true, false, true, false
         ));
         assert!(!should_collect_direct_peer(
-            2, 1, false, false, true, false, true, true
+            false, false, false, true, false, true, true
         ));
         assert!(!should_collect_direct_peer(
-            2, 1, false, false, true, false, false, false
+            false, false, false, true, false, false, false
         ));
         assert!(should_collect_direct_peer(
-            2, 1, false, false, true, true, false, false
+            false, false, false, true, true, false, false
         ));
         assert!(!should_collect_direct_peer(
-            1, 1, false, true, true, true, true, false
+            true, false, true, true, true, true, false
         ));
         assert!(!should_collect_direct_peer(
-            2, 1, true, true, true, true, true, false
+            false, true, true, true, true, true, false
         ));
     }
 }

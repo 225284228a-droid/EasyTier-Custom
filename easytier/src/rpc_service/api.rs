@@ -3,12 +3,8 @@ use std::{net::SocketAddr, sync::Arc};
 use anyhow::Context;
 use cidr::IpCidr;
 #[cfg(feature = "management")]
-use easytier_core::management::ManagementServer;
-use easytier_core::{
-    management::{InstanceStateStore, ReadOnlyManagementServer},
-    socket::SocketListener,
-    tunnel::Tunnel,
-};
+use easytier_core::management::{InstanceStateStore, ManagementServer};
+use easytier_core::{management::ReadOnlyManagementServer, socket::SocketListener, tunnel::Tunnel};
 
 #[cfg(feature = "management")]
 use crate::{

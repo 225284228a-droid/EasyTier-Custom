@@ -35,11 +35,10 @@ pub use full::remote_client;
 #[cfg(feature = "web-client")]
 pub use full::{
     ConfigFileStorage, ConfigPatchPersistence, ConfigServerEndpoint, InstanceMutationHooks,
-    InstanceMutationResult, ProcessManagement, ProcessManagementRpc, UnsupportedConfigFileStorage,
-    WebClient, WebClientConfig, apply_config_patch, config_source_from_rpc, config_source_to_rpc,
-    network_instance_running_info,
+    InstanceMutationResult, InstanceStateStore, ProcessManagement, ProcessManagementRpc,
+    STATE_FILE_NAME, UnsupportedConfigFileStorage, WebClient, WebClientConfig, apply_config_patch,
+    config_source_from_rpc, config_source_to_rpc, network_instance_running_info,
 };
-pub use full::{InstanceStateStore, STATE_FILE_NAME};
 #[cfg(feature = "management")]
 pub use full::{
     LoggerControl, LoggerManagementRpc, UnsupportedLoggerControl, call_instance_json_rpc,

@@ -1750,10 +1750,10 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     if let Some(config_dir) = cli.config_dir.as_ref() {
         for id in instance_state_store.disabled_instance_ids() {
             let path = config_dir.join(format!("{id}.toml"));
-            if !path.is_file() {
-                if let Err(error) = instance_state_store.remove(&id) {
-                    log::warn!(%error, %id, "failed to GC stale instance state entry");
-                }
+            if !path.is_file()
+                && let Err(error) = instance_state_store.remove(&id)
+            {
+                log::warn!(%error, %id, "failed to GC stale instance state entry");
             }
         }
     }

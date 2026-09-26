@@ -4,6 +4,10 @@
 and supports manual runs from the Actions page. It does not synchronize upstream
 source automatically.
 
+Builds on the same branch are serialized without cancelling an active build, so
+new commits do not discard an almost-finished Windows installer. GitHub keeps
+only the latest pending run when several updates arrive during a build.
+
 | Artifact | Contents |
 | --- | --- |
 | `custom-static-linux-x86_64` | core, cli, web-embed, mini (musl) |
@@ -47,8 +51,8 @@ missing VPN plugin frontend output. Neither failure was caused by a warning.
 
 | Diagnostic | Assessment |
 | --- | --- |
-| `private_interfaces`, unused test imports/helper, Clippy style checks | Needs source maintenance. The separate Test workflow uses `-D warnings` and fails on these; the packaging workflow does not disable warnings. |
-| `management-rpc` alone cannot import `management::full` | Actual existing feature-gating error found by Test's feature matrix, not a warning. It needs a separate source fix. Full builds and mini's `web-client` configuration include the required module. |
+| `private_interfaces`, unused test imports/helper, Clippy style checks | Source repair makes the connection-source type public like its API, removes unused imports, shares the tested protocol parser with production, and groups related hole-punch arguments. The Test workflow retains `-D warnings`. |
+| `management-rpc` alone cannot import `management::full` | Source repair gates state-store exports with `web-client`, matching the module definition, and gates the native RPC import with its management-only consumers. |
 | Unused items in mini/WASM and Unix-only imports on Windows | Mostly conditional-compilation hygiene; not evidence of a runtime failure. Gate declarations/imports with their consumers when maintaining these modules. |
 | musl drops `cdylib` | Expected for this static target; the Rust library and requested executables still build. |
 | `easytier_core.pdb` filename collision | Debug-symbol output naming conflict between the library and similarly named binary. Does not affect these stripped release executables, but should be resolved before publishing debug symbols. |
@@ -56,6 +60,11 @@ missing VPN plugin frontend output. Neither failure was caused by a warning.
 | Node 20, `url.parse()`, `punycode` deprecations | Tool/action dependency maintenance. The actions run under Node 24 successfully; upgrade the affected upstream actions when compatible versions are available. |
 | Vite chunks over 500 kB | Frontend download/startup performance advisory; does not prevent embedding or installation. |
 
-The separate Test run also recorded timeouts in the relay-coverage and UPnP
-integration tests. These are test failures, not harmless warnings. No test was
-disabled or marked successful as part of this build repair.
+The UPnP integration test explicitly disables WSS/HTTP3 preference because it
+verifies raw UDP mapping within ten seconds. The default preference gives those
+transports a thirty-second head start, which prevented the original test from
+observing the mapping. Its timeout and mapping/connection assertions are retained.
+The relay-coverage/failover test still has an intermittent startup ping timeout.
+Its root cause is unresolved; its original assertions and the relay implementation
+are unchanged. This separate Test failure does not gate build-artifact uploads.
+No test or warning check is disabled by these repairs.

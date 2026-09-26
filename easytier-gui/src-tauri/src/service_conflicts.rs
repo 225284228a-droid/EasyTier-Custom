@@ -3,6 +3,7 @@
 
 use anyhow::{Context as _, Result};
 
+#[cfg(target_os = "windows")]
 pub fn rpc_port(portal: &str) -> Result<u16> {
     let portal = normalize_rpc_portal(portal)?;
     if let Ok(port) = portal.parse::<u16>() {
@@ -21,15 +22,15 @@ pub fn normalize_rpc_portal(portal: &str) -> Result<String> {
     } else {
         portal
     };
-    if let Ok(port) = portal.parse::<u16>() {
-        if port != 0 {
-            return Ok(portal.to_owned());
-        }
+    if let Ok(port) = portal.parse::<u16>()
+        && port != 0
+    {
+        return Ok(portal.to_owned());
     }
-    if let Ok(address) = portal.parse::<std::net::SocketAddr>() {
-        if address.port() != 0 {
-            return Ok(address.to_string());
-        }
+    if let Ok(address) = portal.parse::<std::net::SocketAddr>()
+        && address.port() != 0
+    {
+        return Ok(address.to_string());
     }
     anyhow::bail!("service RPC portal must be a TCP IP:port or a nonzero port")
 }

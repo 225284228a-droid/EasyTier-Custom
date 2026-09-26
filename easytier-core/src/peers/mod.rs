@@ -37,7 +37,7 @@ pub(crate) enum PeerConnectionOrigin {
 /// user asked for from the ones P2P discovered on its own, so redundant
 /// automatic transports can be closed once a disguised connection is up.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PeerConnSource {
+pub enum PeerConnSource {
     /// Established from a peer URL configured by the user (manual connector).
     Manual,
     /// Accepted from a remote peer that dialed us; the remote side owns the

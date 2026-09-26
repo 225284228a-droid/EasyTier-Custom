@@ -291,6 +291,15 @@ where
     Ok(port)
 }
 
+pub struct TcpHolePunchDialOptions<'a> {
+    pub remote_mapped_addr: SocketAddr,
+    pub local_port: u16,
+    pub context: SocketContext,
+    pub admission: TcpHolePunchAdmission,
+    pub max_attempts: u32,
+    pub scheme: &'a str,
+}
+
 // TCP supports simultaneous connect, so both peers may dial from the mapped port.
 pub async fn try_connect_to_remote<H, AcceptedSocket>(
     host: Arc<H>,
@@ -300,17 +309,20 @@ pub async fn try_connect_to_remote<H, AcceptedSocket>(
                 AcceptedSocket = AcceptedSocket,
             >,
     >,
-    remote_mapped_addr: SocketAddr,
-    local_port: u16,
-    context: SocketContext,
-    admission: TcpHolePunchAdmission,
-    max_attempts: u32,
-    scheme: &str,
+    options: TcpHolePunchDialOptions<'_>,
 ) -> anyhow::Result<()>
 where
     H: VirtualTcpSocketFactory,
     AcceptedSocket: 'static,
 {
+    let TcpHolePunchDialOptions {
+        remote_mapped_addr,
+        local_port,
+        context,
+        admission,
+        max_attempts,
+        scheme,
+    } = options;
     tracing::info!(
         ?remote_mapped_addr,
         local_port,
@@ -984,12 +996,14 @@ where
                 let _ = try_connect_to_remote(
                     host,
                     transport_sink,
-                    remote_mapped_addr,
-                    local_port,
-                    socket_context,
-                    TcpHolePunchAdmission::Client,
-                    5,
-                    &connect_scheme,
+                    TcpHolePunchDialOptions {
+                        remote_mapped_addr,
+                        local_port,
+                        context: socket_context,
+                        admission: TcpHolePunchAdmission::Client,
+                        max_attempts: 5,
+                        scheme: &connect_scheme,
+                    },
                 )
                 .await;
             }
@@ -1221,12 +1235,14 @@ where
                 try_connect_to_remote(
                     self.host.clone(),
                     self.transport_sink.clone(),
-                    remote_mapped_addr,
-                    local_port,
-                    self.socket_context.clone(),
-                    TcpHolePunchAdmission::Server,
-                    1,
-                    requested_scheme,
+                    TcpHolePunchDialOptions {
+                        remote_mapped_addr,
+                        local_port,
+                        context: self.socket_context.clone(),
+                        admission: TcpHolePunchAdmission::Server,
+                        max_attempts: 1,
+                        scheme: requested_scheme,
+                    },
                 )
                 .await
             }
@@ -1953,10 +1969,7 @@ mod tests {
             match self.connect_mode {
                 MockConnectMode::FailFast => anyhow::bail!("mock connect refused"),
                 MockConnectMode::Succeed => Ok(MockPunchSocket(
-                    options
-                        .bind
-                        .local_addr
-                        .unwrap_or_else(|| options.remote_addr),
+                    options.bind.local_addr.unwrap_or(options.remote_addr),
                     options.remote_addr,
                 )),
                 MockConnectMode::Pending => std::future::pending().await,
@@ -2371,7 +2384,7 @@ mod tests {
                 unreachable!("filtered above");
             };
             // Targets walk the predicted window from the shared connector port.
-            assert!((40000..40010).contains(&*remote_port));
+            assert!((40000..40010).contains(remote_port));
             assert_eq!(*local_port, MOCK_LOCAL_PORT);
             assert_eq!(*reuse_addr, Some(true));
             assert!(reuse_port);
