@@ -155,8 +155,15 @@ export async function setServiceStatus(enable: boolean, rpcPortal?: string) {
   return await invoke('set_service_status', { enable, rpcPortal })
 }
 
-export async function retireConflictingServices(configDir: string, rpcPortal?: string) {
-  return await invoke<string[]>('retire_conflicting_services', { configDir, rpcPortal })
+export interface RetiredService {
+  name: string
+  /** "disabled" (reversible), "uninstalled" (irreversible), or "failed" */
+  action: 'disabled' | 'uninstalled' | 'failed' | string
+  error?: string
+}
+
+export async function retireConflictingServices(configDir: string, rpcPortal?: string, allowUninstall = false) {
+  return await invoke<RetiredService[]>('retire_conflicting_services', { configDir, rpcPortal, allowUninstall })
 }
 
 export async function getServiceStatus() {

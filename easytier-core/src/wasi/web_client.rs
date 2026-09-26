@@ -123,6 +123,8 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         only_use_wss_http3_for_hole_punching: config.only_use_wss_http3_for_hole_punching,
         prefer_wss_http3_for_p2p: config.prefer_wss_http3_for_p2p,
         disable_wss_http3_for_p2p: config.disable_wss_http3_for_p2p,
+        p2p_prefer_protocol: config.p2p_prefer_protocol.clone(),
+        close_redundant_conns_when_disguised: config.close_redundant_conns_when_disguised,
         secure_mode: config.secure_mode.clone(),
         acl: config.acl.clone(),
         port_forwards: config.port_forwards.clone(),

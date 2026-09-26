@@ -252,6 +252,25 @@ pub const CONFIG_SERVER_DEFAULT_PORT: u16 = 22020;
 /// Protocols accepted by `--config-server-listeners`.
 const SUPPORTED_CONFIG_SERVER_PROTOCOLS: &[&str] = &["tcp", "udp", "ws", "wss"];
 
+/// Checks whether the authority of `raw` carries an explicit `:port`. The url
+/// crate normalizes an explicit scheme default port (ws:80, wss:443) away, so
+/// "wss://host:443" becomes indistinguishable from "wss://host" after parsing;
+/// this looks at the raw string instead.
+fn raw_has_explicit_port(raw: &str, port: u16) -> bool {
+    let Some((_, rest)) = raw.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let port_str = if let Some(stripped) = host_port.strip_prefix('[') {
+        // IPv6 literal: the port (if any) follows the closing bracket.
+        stripped.split_once(']').and_then(|(_, tail)| tail.strip_prefix(':'))
+    } else {
+        host_port.rsplit_once(':').map(|(_, p)| p)
+    };
+    port_str.is_some_and(|p| p.parse::<u16>() == Ok(port))
+}
+
 fn parse_config_server_listener_urls(entries: &[String]) -> anyhow::Result<Vec<url::Url>> {
     let mut urls = Vec::new();
     for entry in entries {
@@ -266,6 +285,26 @@ fn parse_config_server_listener_urls(entries: &[String]) -> anyhow::Result<Vec<u
                     "unsupported config server listener protocol {:?} in {raw:?}, supported protocols: {}",
                     url.scheme(),
                     SUPPORTED_CONFIG_SERVER_PROTOCOLS.join(", ")
+                );
+            }
+            // An explicit ws:80 / wss:443 is silently normalized away by the
+            // URL parser, so the listener ends up on the EasyTier default
+            // port instead of the written one. Warn instead of failing.
+            let scheme_default_port = match url.scheme() {
+                "ws" => Some(80),
+                "wss" => Some(443),
+                _ => None,
+            };
+            if let Some(default_port) = scheme_default_port
+                && raw_has_explicit_port(raw, default_port)
+            {
+                eprintln!(
+                    "Warning: config server listener {raw:?} explicitly writes the {} default port {}, \
+                     which the URL parser normalizes away; it will listen on port {} instead. \
+                     Omit the port or choose a non-default one.",
+                    url.scheme(),
+                    default_port,
+                    CONFIG_SERVER_DEFAULT_PORT
                 );
             }
             urls.push(url);
@@ -635,5 +674,17 @@ mod tests {
         );
         let with_port = "wss://0.0.0.0:22023".parse::<url::Url>().unwrap();
         assert_eq!(normalize_listener_url(&with_port).port(), Some(22023));
+    }
+
+    #[test]
+    fn detects_explicit_scheme_default_ports_in_raw_urls() {
+        assert!(raw_has_explicit_port("wss://host:443", 443));
+        assert!(raw_has_explicit_port("ws://host:80/path?q=1", 80));
+        assert!(raw_has_explicit_port("wss://[2001:db8::1]:443/x", 443));
+        assert!(raw_has_explicit_port("wss://user@host:443", 443));
+        assert!(!raw_has_explicit_port("wss://host", 443));
+        assert!(!raw_has_explicit_port("wss://host:8443", 443));
+        assert!(!raw_has_explicit_port("wss://[::1]", 443));
+        assert!(!raw_has_explicit_port("wss://[::1]:", 443));
     }
 }

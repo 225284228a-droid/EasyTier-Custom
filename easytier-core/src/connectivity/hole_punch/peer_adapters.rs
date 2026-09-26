@@ -6,6 +6,8 @@ use std::{
 use async_trait::async_trait;
 use quanta::Instant;
 
+use crate::config::PeerDisguiseP2pFlags;
+
 use crate::{
     config::{P2pPolicyFlags, PeerId},
     foundation::task::ExternalTaskSignal,
@@ -57,9 +59,14 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                     .as_ref()
                     .map(Into::into)
                     .unwrap_or_default();
-                let use_disguise = self
-                    .p2p_policy_flags()
-                    .use_wss_http3_with_peer(&peer_disguise_flags);
+                // `None` while the route metadata is missing: the satisfied
+                // checks then rank with the last negotiated preference and
+                // leave the negotiated state untouched instead of flipping
+                // it to "no disguise".
+                let use_disguise = route.feature_flag.as_ref().map(|feature_flag| {
+                    let flags: PeerDisguiseP2pFlags = feature_flag.into();
+                    self.p2p_policy_flags().use_wss_http3_with_peer(&flags)
+                });
                 Some(UdpPunchCandidate {
                     peer_id: route.peer_id,
                     udp_nat_type,
@@ -160,9 +167,12 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
                     .as_ref()
                     .map(Into::into)
                     .unwrap_or_default();
-                let use_disguise = self
-                    .p2p_policy_flags()
-                    .use_wss_http3_with_peer(&peer_disguise_flags);
+                // `None` while the route metadata is missing; see the UDP
+                // candidate builder above.
+                let use_disguise = route.feature_flag.as_ref().map(|feature_flag| {
+                    let flags: PeerDisguiseP2pFlags = feature_flag.into();
+                    self.p2p_policy_flags().use_wss_http3_with_peer(&flags)
+                });
                 TcpPunchCandidate {
                     tcp_satisfied: self.has_connection_at_least_as_preferred(
                         route.peer_id,

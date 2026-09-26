@@ -114,13 +114,19 @@ impl WssDisguise {
         };
         for (key, value) in url.query_pairs() {
             match key.as_ref() {
+                // An empty `sni`/`host` value means "not set": using it
+                // verbatim would break the TLS SNI and the Host header.
                 "sni" => {
-                    disguise.enabled = true;
-                    disguise.sni = Some(value.into_owned());
+                    if !value.is_empty() {
+                        disguise.enabled = true;
+                        disguise.sni = Some(value.into_owned());
+                    }
                 }
                 "host" => {
-                    disguise.enabled = true;
-                    disguise.host = Some(value.into_owned());
+                    if !value.is_empty() {
+                        disguise.enabled = true;
+                        disguise.host = Some(value.into_owned());
+                    }
                 }
                 "path" => {
                     disguise.enabled = true;
@@ -170,11 +176,21 @@ impl WssDisguise {
     }
 
     /// SNI presented to the TLS layer. Defaults to the URL host, which keeps
-    /// the official behavior when no `sni` param is configured.
+    /// the official behavior when no `sni` param is configured. IP-literal
+    /// hosts are stringified explicitly: `url.domain()` returns None for
+    /// them, which used to degrade the SNI (and the Host header built from
+    /// it) to "localhost". An explicitly configured but empty `sni` param is
+    /// ignored, matching the http3 side.
     pub fn sni(&self, url: &url::Url) -> String {
         self.sni
             .clone()
-            .unwrap_or_else(|| url.domain().unwrap_or("localhost").to_owned())
+            .filter(|sni| !sni.is_empty())
+            .unwrap_or_else(|| match url.host() {
+                Some(url::Host::Domain(host)) => host.to_owned(),
+                Some(url::Host::Ipv4(host)) => host.to_string(),
+                Some(url::Host::Ipv6(host)) => host.to_string(),
+                None => "localhost".to_owned(),
+            })
     }
 
     /// Builds the HTTP request target (scheme/host/path/query) for the
@@ -652,6 +668,56 @@ pub mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpSocket,
     };
+
+    #[test]
+    fn wss_disguise_sni_handles_ip_literal_hosts() {
+        // url.domain() is None for IP literals; the SNI (and the Host header
+        // built from it) must not degrade to "localhost" for direct-IP peers.
+        let ipv4: url::Url = "wss://192.0.2.1:443/ws".parse().unwrap();
+        assert_eq!(WssDisguise::from_url(&ipv4).sni(&ipv4), "192.0.2.1");
+
+        let ipv6: url::Url = "wss://[2001:db8::1]:443/ws".parse().unwrap();
+        assert_eq!(WssDisguise::from_url(&ipv6).sni(&ipv6), "2001:db8::1");
+    }
+
+    #[test]
+    fn wss_disguise_empty_sni_param_falls_back_to_host() {
+        let url: url::Url = "wss://www.example.com:443?sni=".parse().unwrap();
+        let sni = WssDisguise::from_url(&url).sni(&url);
+        assert_eq!(sni, "www.example.com");
+        assert!(rustls::pki_types::ServerName::try_from(sni).is_ok());
+    }
+
+    #[test]
+    fn wss_disguise_sni_param_overrides_host() {
+        let url: url::Url = "wss://origin.example.com:443?sni=www.example.com"
+            .parse()
+            .unwrap();
+        assert_eq!(WssDisguise::from_url(&url).sni(&url), "www.example.com");
+    }
+
+    #[test]
+    fn wss_disguise_empty_host_param_is_ignored() {
+        let url: url::Url = "wss://www.example.com:443?host=".parse().unwrap();
+        let disguise = WssDisguise::from_url(&url);
+        assert!(disguise.host.is_none());
+        assert_eq!(disguise.sni(&url), "www.example.com");
+    }
+
+    #[test]
+    fn wss_disguise_request_uri_keeps_ip_literal_host() {
+        let url: url::Url = "wss://192.0.2.1:443/ws?sni=".parse().unwrap();
+        let uri = WssDisguise::from_url(&url)
+            .request_uri(&url)
+            .unwrap();
+        // The disguise params must be stripped and the IP host preserved
+        // (Url serialization may omit the wss default port).
+        let parsed: url::Url = uri.parse().unwrap();
+        assert_eq!(parsed.scheme(), "wss");
+        assert_eq!(parsed.host_str(), Some("192.0.2.1"));
+        assert_eq!(parsed.path(), "/ws");
+        assert!(parsed.query().unwrap_or("").is_empty());
+    }
 
     struct FailingWebSocketSink {
         close_called: bool,

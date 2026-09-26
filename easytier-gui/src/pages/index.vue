@@ -192,8 +192,50 @@ async function prepareConfigDir(mode: Mode) {
   }
 }
 
+/**
+ * Retires conflicting EasyTier services. The default action is reversible
+ * (stop + disable). Only if some services cannot be disabled does the user
+ * get asked for permission to uninstall them - uninstalling is irreversible.
+ */
+function retireConflicts(configDir: string, rpcPortal?: string): Promise<void> {
+  return retireConflictingServices(configDir, rpcPortal).then((retired) => {
+    if (!retired.length) return
+    console.warn('Handled conflicting EasyTier services:', retired)
+    const failed = retired.filter(r => r.action === 'failed')
+    if (!failed.length) return
+    const names = failed.map(r => r.name).join(', ')
+    return new Promise<void>((resolve) => {
+      confirm.require({
+        message: `${t('mode.retire_conflicts_confirm')}\n${names}`,
+        header: t('mode.retire_conflicts_header'),
+        icon: 'pi pi-exclamation-triangle',
+        rejectProps: {
+          label: t('web.common.cancel'),
+          severity: 'secondary',
+          outlined: true
+        },
+        acceptProps: {
+          label: t('mode.uninstall_service'),
+          severity: 'danger'
+        },
+        accept: async () => {
+          try {
+            const again = await retireConflictingServices(configDir, rpcPortal, true)
+            console.warn('Retired conflicting EasyTier services:', again)
+          } catch (e) {
+            console.error('Failed to remove conflicting EasyTier services', e)
+          } finally {
+            resolve()
+          }
+        },
+        reject: () => resolve(),
+      })
+    })
+  })
+}
+
 function rpcUrl(mode: Mode): string | undefined {
-  if (mode.mode === 'normal') return mode.rpc_portal
+  if (mode.mode === 'normal') return mode.rpc_portal?.replace('0.0.0.0', '127.0.0.1').replace('[::]', '[::1]')
   if (mode.mode === 'remote') return mode.remote_rpc_address
   if (/^\d+$/.test(mode.rpc_portal.trim())) return `tcp://127.0.0.1:${mode.rpc_portal.trim()}`
   return (mode.rpc_portal.includes('://') ? mode.rpc_portal : `tcp://${mode.rpc_portal}`)
@@ -259,8 +301,7 @@ async function initWithMode(mode: Mode) {
     await waitForServiceStop()
     if (await getServiceStatus() !== 'NotInstalled') await initService(undefined)
     if (mode.mode === 'normal') {
-      const retired = await retireConflictingServices(mode.config_dir!, mode.rpc_portal)
-      if (retired.length) console.warn('Removed conflicting EasyTier services:', retired)
+      await retireConflicts(mode.config_dir!, mode.rpc_portal)
     }
   }
   if (mode.mode !== 'normal') {
@@ -270,8 +311,7 @@ async function initWithMode(mode: Mode) {
 
   if (mode.mode === 'service') {
     if (type() !== 'android') {
-      const retired = await retireConflictingServices(mode.config_dir, mode.rpc_portal)
-      if (retired.length) console.warn('Removed conflicting EasyTier services:', retired)
+      await retireConflicts(mode.config_dir, mode.rpc_portal)
     }
     let serviceStatus = await getServiceStatus()
     const coreVersion = await getEasytierVersion()

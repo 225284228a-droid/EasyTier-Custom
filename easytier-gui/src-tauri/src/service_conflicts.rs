@@ -3,6 +3,18 @@
 
 use anyhow::{Context as _, Result};
 
+/// Result of retiring one conflicting service. Reported per service so a
+/// single failure cannot hide what already happened to the others.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RetireOutcome {
+    pub name: String,
+    /// "disabled" (stopped + start type disabled; reversible), "uninstalled"
+    /// (irreversible; only with explicit user confirmation) or "failed".
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 fn rpc_bind_address(portal: &str) -> Result<std::net::SocketAddr> {
     let portal = normalize_rpc_portal(portal)?;
     if let Ok(port) = portal.parse::<u16>() {
@@ -208,15 +220,91 @@ mod windows {
         Ok(())
     }
 
+    fn stop_service_within(name: &str, service: &Service, timeout: Duration) -> Result<()> {
+        if service.status()? != ServiceStatus::Running {
+            return Ok(());
+        }
+        service.stop()?;
+        let deadline = Instant::now() + timeout;
+        while service.status()? == ServiceStatus::Running {
+            if Instant::now() >= deadline {
+                anyhow::bail!(
+                    "service {name} did not stop within {}s",
+                    timeout.as_secs()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    }
+
+    /// Preferred, reversible retirement: stop the service and disable its
+    /// start type via `sc.exe config` (windows-service 0.8 cannot change only
+    /// the start type without rewriting the whole launch command). The
+    /// service stays installed and the user can re-enable it at any time.
+    fn disable_service(name: &str) -> Result<()> {
+        let service = Service::new(name.to_string())
+            .with_context(|| format!("failed to open conflicting EasyTier service {name}"))?;
+        stop_service_within(name, &service, Duration::from_secs(30))?;
+        let system_root = std::env::var_os("SystemRoot").context("SystemRoot is not set")?;
+        let sc = PathBuf::from(system_root).join("System32").join("sc.exe");
+        let result = std::process::Command::new(sc)
+            .args(["config", name, "start=", "disabled"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+            .with_context(|| format!("failed to run sc.exe for service {name}"))?;
+        if !result.status.success() {
+            anyhow::bail!(
+                "sc.exe failed to disable service {name}: {}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn retire_one(name: &str, allow_uninstall: bool) -> Result<&'static str> {
+        if let Err(error) = disable_service(name) {
+            if !allow_uninstall {
+                return Err(error.context(format!(
+                    "failed to stop and disable conflicting EasyTier service {name} (removal requires confirmation)"
+                )));
+            }
+        } else {
+            return Ok("disabled");
+        }
+
+        // Irreversible fallback, only reachable with explicit user
+        // confirmation: uninstall the service and force-terminate a stuck
+        // process.
+        let service = Service::new(name.to_string())
+            .with_context(|| format!("failed to open conflicting EasyTier service {name}"))?;
+        let force_needed = service.status()? == ServiceStatus::Running
+            && stop_service_within(name, &service, Duration::from_secs(30)).is_err();
+        if force_needed {
+            force_retire(name)?;
+            return Ok("uninstalled");
+        }
+        if service.status()? != ServiceStatus::NotInstalled {
+            service
+                .uninstall()
+                .or_else(|_| force_retire(name))
+                .with_context(|| {
+                    format!("failed to uninstall conflicting EasyTier service {name}")
+                })?;
+        }
+        Ok("uninstalled")
+    }
+
     pub(super) fn retire_conflicting_services(
         config_dir: &Path,
         portal: Option<&str>,
-    ) -> Result<Vec<String>> {
+        allow_uninstall: bool,
+    ) -> Result<Vec<RetireOutcome>> {
         let desired_address = portal.map(rpc_bind_address).transpose()?;
         let services = RegKey::predef(HKEY_LOCAL_MACHINE)
             .open_subkey_with_flags("SYSTEM\\CurrentControlSet\\Services", KEY_READ)
             .context("failed to enumerate Windows services")?;
-        let mut retired = Vec::new();
+        let mut outcomes = Vec::new();
         for name in services.enum_keys().flatten() {
             let Ok(key) = services.open_subkey_with_flags(&name, KEY_READ) else {
                 continue;
@@ -235,38 +323,24 @@ mod windows {
                 continue;
             }
 
-            let service = Service::new(name.clone())
-                .with_context(|| format!("failed to open conflicting EasyTier service {name}"))?;
-            let mut force_needed = false;
-            if service.status()? == ServiceStatus::Running {
-                if service.stop().is_err() {
-                    force_needed = true;
-                }
-                let deadline = Instant::now() + Duration::from_secs(30);
-                while !force_needed && service.status()? == ServiceStatus::Running {
-                    if Instant::now() >= deadline {
-                        force_needed = true;
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-            if force_needed {
-                force_retire(&name)?;
-                retired.push(name);
-                continue;
-            }
-            if service.status()? != ServiceStatus::NotInstalled {
-                service
-                    .uninstall()
-                    .or_else(|_| force_retire(&name))
-                    .with_context(|| {
-                        format!("failed to uninstall conflicting EasyTier service {name}")
-                    })?;
-                retired.push(name);
-            }
+            // One service's failure must not abort the loop: the caller needs
+            // to know the state of every service, including the ones already
+            // handled before the failure.
+            let outcome = match retire_one(&name, allow_uninstall) {
+                Ok(action) => RetireOutcome {
+                    name: name.clone(),
+                    action: action.to_owned(),
+                    error: None,
+                },
+                Err(error) => RetireOutcome {
+                    name: name.clone(),
+                    action: "failed".to_owned(),
+                    error: Some(format!("{error:#}")),
+                },
+            };
+            outcomes.push(outcome);
         }
-        Ok(retired)
+        Ok(outcomes)
     }
 
     #[cfg(test)]
@@ -339,14 +413,15 @@ mod windows {
 pub fn retire_conflicting_services(
     config_dir: &std::path::Path,
     portal: Option<&str>,
-) -> Result<Vec<String>> {
+    allow_uninstall: bool,
+) -> Result<Vec<RetireOutcome>> {
     #[cfg(target_os = "windows")]
     {
-        windows::retire_conflicting_services(config_dir, portal)
+        windows::retire_conflicting_services(config_dir, portal, allow_uninstall)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (config_dir, portal);
+        let _ = (config_dir, portal, allow_uninstall);
         Ok(Vec::new())
     }
 }

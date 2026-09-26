@@ -658,6 +658,11 @@ const WSS_EXCHANGE_FAILURE_BLACKLIST_THRESHOLD: u32 = 3;
 /// Local ports the symmetric responder fans out toward the cone initiator.
 /// Each dial keeps one NAT mapping alive inside the initiator's spray window.
 const SYMMETRIC_RESPONDER_SOCKET_COUNT: usize = 32;
+/// Inbound punch RPCs the responder serves concurrently. Each fan-out task
+/// can hold up to `SYMMETRIC_RESPONDER_SOCKET_COUNT` sockets for
+/// `SYMMETRIC_RESPONDER_HOLD`, so this bounds the worst-case handle usage;
+/// requests beyond it are rejected as busy (the initiator retries later).
+const MAX_CONCURRENT_RESPONDER_PUNCHES: usize = 4;
 /// Ports advertised to the cone initiator for spraying (`k = 0..max-1`).
 const PREDICTED_PORT_NUM: u32 = 50;
 /// Upper bound for a peer-supplied `max_port_num`, bounding spray sockets.
@@ -780,6 +785,23 @@ fn initiator_eligible(local_nat_type: NatType) -> bool {
 /// Easy-symmetric responders publish a port prediction window; unknown
 /// responders still fan out because the fan-out needs no remote cooperation.
 /// Plain symmetric NATs keep the legacy single-port dialer.
+/// Local TCP NAT type for punch decisions. A UDP-derived approximation
+/// (`tcp_nat_type_is_approximated`, i.e. the TCP STUN test was inconclusive)
+/// must not drive initiator eligibility, responder fan-out mode or spray
+/// port prediction - those would all act on a guess. Treat it as `Unknown`
+/// so only verified facts decide.
+fn normalize_local_tcp_nat_type(stun: &dyn StunInfoProvider) -> NatType {
+    let nat_type = NatType::try_from(stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
+    if nat_type != NatType::Unknown && stun.tcp_nat_type_is_approximated() {
+        tracing::debug!(
+            ?nat_type,
+            "tcp nat type is a udp-derived approximation, treating as unknown"
+        );
+        return NatType::Unknown;
+    }
+    nat_type
+}
+
 fn responder_uses_multi_socket(local_nat_type: NatType, disable_sym_hole_punching: bool) -> bool {
     !disable_sym_hole_punching
         && (local_nat_type == NatType::Unknown || is_easy_symmetric_tcp_nat(local_nat_type))
@@ -828,6 +850,12 @@ where
     tasks: Arc<Mutex<JoinSet<()>>>,
     reaper: Mutex<Option<AbortOnDropHandle<()>>>,
     stopping: AtomicBool,
+    /// Bounds concurrent inbound punch fan-outs. Without it every accepted
+    /// punch RPC spawns unconditionally, and a fan-out responder alone can
+    /// hold up to `SYMMETRIC_RESPONDER_SOCKET_COUNT` sockets for
+    /// `SYMMETRIC_RESPONDER_HOLD`, so a misbehaving peer could exhaust the
+    /// machine's handles. Mirrors the busy gate the UDP punch server has.
+    punch_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl<H, P> TcpHolePunchServer<H, P>
@@ -851,6 +879,9 @@ where
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             reaper: Mutex::new(None),
             stopping: AtomicBool::new(true),
+            punch_permits: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_RESPONDER_PUNCHES,
+            )),
         })
     }
 
@@ -928,8 +959,7 @@ where
         controller: Self::Controller,
         input: TcpHolePunchRequest,
     ) -> rpc_types::error::Result<TcpHolePunchResponse> {
-        let local_nat_type =
-            NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
+        let local_nat_type = normalize_local_tcp_nat_type(self.stun.as_ref());
         let policy = self.peer_source.p2p_policy_flags();
         tracing::debug!(?local_nat_type, "tcp hole punch rpc received");
         if local_nat_type == NatType::Unknown {
@@ -1015,11 +1045,20 @@ where
         };
         let use_multi_socket_responder =
             responder_uses_multi_socket(local_nat_type, policy.disable_sym_hole_punching);
+        let permit = self.punch_permits.clone().try_acquire_owned().map_err(|_| {
+            tracing::warn!(
+                ?remote_mapped_addr,
+                "tcp hole punch rpc rejected: responder busy with other punches"
+            );
+            anyhow::anyhow!("TCP hole punch responder is busy with other punches")
+        })?;
         let mut tasks = self.tasks.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) {
             return Err(rpc_types::error::Error::Shutdown);
         }
         tasks.spawn(async move {
+            // Freed when the punch finishes, bounding concurrent fan-outs.
+            let _permit = permit;
             if use_multi_socket_responder {
                 let _ = connect_as_symmetric_responder(
                     host,
@@ -1133,8 +1172,7 @@ where
             );
             return Ok(());
         }
-        let local_nat_type =
-            NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
+        let local_nat_type = normalize_local_tcp_nat_type(self.stun.as_ref());
         tracing::debug!(?local_nat_type, "tcp hole punch initiator start");
         if !initiator_eligible(local_nat_type) {
             tracing::debug!("tcp hole punch initiator skipped (symmetric)");
@@ -1351,8 +1389,7 @@ where
     async fn collect_peers_need_task(&self) -> Vec<PeerId> {
         let policy = self.peer_source.p2p_policy_flags();
 
-        let local_nat_type =
-            NatType::try_from(self.stun.get_stun_info().tcp_nat_type).unwrap_or(NatType::Unknown);
+        let local_nat_type = normalize_local_tcp_nat_type(self.stun.as_ref());
         if !initiator_eligible(local_nat_type) {
             tracing::trace!(
                 ?local_nat_type,

@@ -390,7 +390,9 @@ fn init_service() -> Result<(), String> {
 
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
-fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> Result<(), String> {
+async fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> Result<(), String> {
+    // SCM calls can block for seconds; run them on the blocking pool instead
+    // of the async runtime / main thread.
     match opts {
         Some(mut args) => {
             args.config_dir = shared_config_dir(&app, Some(&args.config_dir))?
@@ -406,27 +408,40 @@ fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> Result
                 return Err("file_log_dir exists but is not a directory".to_string());
             }
 
-            service::install(args).map_err(|e| format!("{:#}", e))?;
+            tokio::task::spawn_blocking(move || service::install(args))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("{:#}", e))?;
         }
         None => {
-            service::uninstall().map_err(|e| format!("{:#}", e))?;
+            tokio::task::spawn_blocking(service::uninstall)
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("{:#}", e))?;
         }
     }
     Ok(())
 }
 
 #[tauri::command]
-fn set_service_status(enable: bool, rpc_portal: Option<String>) -> Result<(), String> {
+async fn set_service_status(enable: bool, rpc_portal: Option<String>) -> Result<(), String> {
     #[cfg(not(target_os = "android"))]
     {
-        if enable {
-            let portal = rpc_portal
-                .as_deref()
-                .ok_or("RPC portal is required to start the service")?;
-            service_conflicts::ensure_rpc_port_free(portal)
-                .map_err(|error| format!("{error:#}"))?;
-        }
-        service::set_status(enable).map_err(|e| format!("{:#}", e))?;
+        // `ensure_rpc_port_free` binds a socket and `set_status` drives the
+        // SCM (service start/stop can block for seconds) - keep both off the
+        // async threads.
+        tokio::task::spawn_blocking(move || {
+            if enable {
+                let portal = rpc_portal
+                    .as_deref()
+                    .ok_or("RPC portal is required to start the service")?;
+                service_conflicts::ensure_rpc_port_free(portal)
+                    .map_err(|error| format!("{error:#}"))?;
+            }
+            service::set_status(enable).map_err(|e| format!("{:#}", e))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
     }
     #[cfg(target_os = "android")]
     let _ = rpc_portal;
@@ -438,10 +453,15 @@ async fn retire_conflicting_services(
     app: AppHandle,
     config_dir: String,
     rpc_portal: Option<String>,
-) -> Result<Vec<String>, String> {
+    allow_uninstall: bool,
+) -> Result<Vec<service_conflicts::RetireOutcome>, String> {
     let config_dir = shared_config_dir(&app, Some(&config_dir))?;
     tokio::task::spawn_blocking(move || {
-        service_conflicts::retire_conflicting_services(&config_dir, rpc_portal.as_deref())
+        service_conflicts::retire_conflicting_services(
+            &config_dir,
+            rpc_portal.as_deref(),
+            allow_uninstall,
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -549,6 +569,21 @@ mod managed_restore_tests {
         assert_eq!(connect, bind);
     }
 
+    #[test]
+    fn normal_mode_normalizes_wildcard_connect_addrs() {
+        let (bind, connect) = normalize_normal_mode_rpc_portal("0.0.0.0:15999").unwrap();
+        assert_eq!(bind.host_str(), Some("0.0.0.0"));
+        assert_eq!(connect.host_str(), Some("127.0.0.1"));
+
+        let (bind, connect) = normalize_normal_mode_rpc_portal("tcp://[::]:15999").unwrap();
+        assert_eq!(bind.host_str(), Some("[::]"));
+        assert_eq!(connect.host_str(), Some("[::1]"));
+
+        // The GUI never connects out via a wildcard addr; the connect URL
+        // must be dialable.
+        assert!(connect.socket_addrs(|| None).is_ok());
+    }
+
     #[tokio::test]
     async fn normal_mode_restores_the_service_config_dir_state() {
         let dir = tempfile::tempdir().unwrap();
@@ -635,11 +670,14 @@ async fn stop_local_backend() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_service_status() -> Result<&'static str, String> {
+async fn get_service_status() -> Result<&'static str, String> {
     #[cfg(not(target_os = "android"))]
     {
         use easytier::service_manager::ServiceStatus;
-        let status = service::status().map_err(|e| format!("{:#}", e))?;
+        let status = tokio::task::spawn_blocking(service::status)
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("{:#}", e))?;
         match status {
             ServiceStatus::NotInstalled => Ok("NotInstalled"),
             ServiceStatus::Stopped(_) => Ok("Stopped"),
@@ -663,9 +701,27 @@ fn normalize_normal_mode_rpc_portal(portal: &str) -> Result<(url::Url, url::Url)
         .map_err(|e| format!("invalid rpc portal: {:#}", e))?;
     let bind_url = portal_url.clone();
     let mut connect_url = portal_url.clone();
-    // if bind addr is 0.0.0.0, should convert to 127.0.0.1
-    if connect_url.host_str() == Some("0.0.0.0") {
-        connect_url.set_host(Some("127.0.0.1")).unwrap();
+    // Wildcard bind addrs are not valid connect targets; dial loopback
+    // instead. tcp:// is a non-special scheme for the url crate, so wildcard
+    // literals can arrive as Domain("[::]") as well as Ipv4/Ipv6 hosts.
+    match connect_url.host() {
+        Some(url::Host::Ipv4(ip)) if ip.is_unspecified() => {
+            connect_url.set_host(Some("127.0.0.1")).unwrap();
+        }
+        Some(url::Host::Ipv6(ip)) if ip.is_unspecified() => {
+            connect_url.set_host(Some("[::1]")).unwrap();
+        }
+        _ => match connect_url.host_str() {
+            Some("0.0.0.0") => {
+                connect_url.set_host(Some("127.0.0.1")).unwrap();
+            }
+            // The bare "::" and bracketed forms appear for non-special
+            // schemes (and user-typed portals); both mean IPv6 wildcard.
+            Some("::") | Some("[::]") => {
+                connect_url.set_host(Some("[::1]")).unwrap();
+            }
+            _ => {}
+        },
     }
     Ok((bind_url, connect_url))
 }

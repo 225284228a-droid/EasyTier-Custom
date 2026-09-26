@@ -1587,7 +1587,7 @@ impl PeerManagerCore {
         &self,
         peer_id: PeerId,
         target_scheme: &str,
-        use_disguise: bool,
+        use_disguise: Option<bool>,
     ) -> bool {
         self.peers
             .has_connection_at_least_as_preferred(peer_id, target_scheme, use_disguise)

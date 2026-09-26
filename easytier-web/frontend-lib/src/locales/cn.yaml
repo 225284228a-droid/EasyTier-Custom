@@ -486,6 +486,8 @@ mode:
   service_status_notinstalled: 未安装
   uninstall_service: 卸载服务
   stop_service: 停止服务
+  retire_conflicts_header: 移除冲突的 EasyTier 服务
+  retire_conflicts_confirm: 以下冲突服务无法停止并禁用，是否卸载它们？（卸载不可恢复，取消则保持已禁用状态）
   uninstall_service_confirm: 确定要卸载服务吗？
   uninstall_service_success: 服务卸载成功，已切换回普通模式
   stop_service_success: 服务停止成功

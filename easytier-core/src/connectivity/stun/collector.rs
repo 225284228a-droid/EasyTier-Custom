@@ -55,6 +55,14 @@ impl Default for StunServerConfig {
 pub trait StunInfoProvider: Send + Sync {
     fn get_stun_info(&self) -> StunInfo;
 
+    /// Whether the reported `tcp_nat_type` is a UDP-derived approximation
+    /// (TCP NAT detection was inconclusive). Consumers that decide based on
+    /// the exact TCP NAT type should treat it as `Unknown` instead of acting
+    /// on the borrowed UDP guess.
+    fn tcp_nat_type_is_approximated(&self) -> bool {
+        false
+    }
+
     async fn get_udp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
 
     async fn get_tcp_port_mapping(&self, local_port: u16) -> anyhow::Result<SocketAddr>;
@@ -390,6 +398,24 @@ where
     R: StunSocketRuntime,
     D: StunDnsRuntime + ?Sized,
 {
+    fn tcp_nat_type_is_approximated(&self) -> bool {
+        // Mirrors `tcp_nat_type_with_udp_fallback`: the fallback only kicks
+        // in when the TCP test was inconclusive but the UDP test is known.
+        let tcp_unknown = self
+            .tcp_nat_test_result
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|result| result.nat_type() == NatType::Unknown);
+        let udp_known = self
+            .udp_nat_test_result
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|result| result.nat_type() != NatType::Unknown);
+        tcp_unknown && udp_known
+    }
+
     fn get_stun_info(&self) -> StunInfo {
         self.start_stun_routine();
         let udp_result = self.udp_nat_test_result.read().unwrap().clone();

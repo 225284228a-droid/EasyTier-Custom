@@ -486,6 +486,8 @@ mode:
   service_status_notinstalled: Not Installed
   uninstall_service: Uninstall Service
   stop_service: Stop Service
+  retire_conflicts_header: Remove Conflicting EasyTier Services
+  retire_conflicts_confirm: The following conflicting services could not be stopped and disabled. Uninstall them? (Uninstalling is irreversible; cancel keeps them disabled.)
   uninstall_service_confirm: Are you sure you want to uninstall the service?
   uninstall_service_success: Service uninstalled successfully, switched back to normal mode
   stop_service_success: Service stopped successfully

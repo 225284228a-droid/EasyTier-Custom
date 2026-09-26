@@ -359,11 +359,8 @@ where
             .await
             .into_iter()
             .filter(|route| {
-                let peer_flags: PeerDisguiseP2pFlags = route
-                    .feature_flag
-                    .as_ref()
-                    .map(Into::into)
-                    .unwrap_or_default();
+                let peer_flags: Option<PeerDisguiseP2pFlags> =
+                    route.feature_flag.as_ref().map(Into::into);
                 let static_allowed = should_background_p2p_with_peer(
                     route.feature_flag.as_ref(),
                     data.options.allow_public_server,
@@ -383,7 +380,7 @@ where
                     ),
                     data.peer_manager.has_recent_traffic(route.peer_id, now),
                     data.peer_manager.has_directly_connected_conn(route.peer_id),
-                    data.connection_satisfies_policy(route.peer_id, &peer_flags),
+                    data.connection_satisfies_policy(route.peer_id, peer_flags.as_ref()),
                 )
             })
             .map(|route| route.peer_id)
@@ -404,13 +401,21 @@ impl<H> DirectConnectorData<H>
 where
     H: DirectConnectorHost,
 {
-    fn connection_satisfies_policy(&self, peer_id: PeerId, peer: &PeerDisguiseP2pFlags) -> bool {
-        let use_disguise = self
-            .peer_manager
-            .p2p_policy_flags()
-            .use_wss_http3_with_peer(peer);
+    fn connection_satisfies_policy(
+        &self,
+        peer_id: PeerId,
+        peer: Option<&PeerDisguiseP2pFlags>,
+    ) -> bool {
+        let use_disguise = peer.map(|peer| {
+            self.peer_manager
+                .p2p_policy_flags()
+                .use_wss_http3_with_peer(peer)
+        });
+        // Without route metadata keep today's dialing behavior: do not start
+        // new disguised attempts. The `Option` handed to the query keeps the
+        // negotiated preference untouched.
         let preferred = preferred_disguised_scheme(&self.options.default_protocol);
-        let target = if use_disguise {
+        let target = if use_disguise.unwrap_or(false) {
             preferred
                 .filter(|scheme| self.protocol.supports_scheme(scheme))
                 .or_else(|| {
@@ -425,15 +430,21 @@ where
         self.peer_manager
             .has_connection_at_least_as_preferred(peer_id, target, use_disguise)
     }
-    async fn peer_disguise_flags(&self, dst_peer_id: PeerId) -> PeerDisguiseP2pFlags {
+    /// Disguise flags of the destination peer, or `None` when the route (or
+    /// its feature flags) is not known yet. `None` callers must treat the
+    /// negotiated disguise preference as unknown instead of "disabled".
+    async fn peer_disguise_flags_opt(&self, dst_peer_id: PeerId) -> Option<PeerDisguiseP2pFlags> {
         self.peer_manager
             .list_route_snapshots()
             .await
             .into_iter()
             .find(|route| route.peer_id == dst_peer_id)
-            .and_then(|route| route.feature_flag)
-            .as_ref()
-            .map(Into::into)
+            .and_then(|route| route.feature_flag.as_ref().map(Into::into))
+    }
+
+    async fn peer_disguise_flags(&self, dst_peer_id: PeerId) -> PeerDisguiseP2pFlags {
+        self.peer_disguise_flags_opt(dst_peer_id)
+            .await
             .unwrap_or_default()
     }
 
@@ -482,7 +493,7 @@ where
             tracing::info!(?result, dst_peer_id, "direct-connect attempt returned");
             if self.connection_satisfies_policy(
                 dst_peer_id,
-                &self.peer_disguise_flags(dst_peer_id).await,
+                self.peer_disguise_flags_opt(dst_peer_id).await.as_ref(),
             ) {
                 return Ok(());
             }
@@ -495,7 +506,8 @@ where
         ip_list: GetIpListResponse,
     ) -> anyhow::Result<()> {
         let p2p_policy = self.peer_manager.p2p_policy_flags();
-        let peer_policy = self.peer_disguise_flags(dst_peer_id).await;
+        let peer_policy_opt = self.peer_disguise_flags_opt(dst_peer_id).await;
+        let peer_policy = peer_policy_opt.unwrap_or_default();
         // Derive the listener filter from the same policy predicates the
         // tunnel upgrade path uses, so a disable flag vetoes disguised
         // listeners here exactly as it does during protocol negotiation
@@ -575,7 +587,9 @@ where
                     .await;
             }
             let _ = tasks.join_all().await;
-            if self.connection_satisfies_policy(dst_peer_id, &peer_policy) {
+            if self
+                .connection_satisfies_policy(dst_peer_id, peer_policy_opt.as_ref())
+            {
                 return Ok(());
             }
         }
@@ -708,9 +722,9 @@ where
         for attempt in 0..=backoffs_ms.len() {
             let target_url = Url::parse(&url)?;
             let use_disguise = self
-                .peer_manager
-                .p2p_policy_flags()
-                .use_wss_http3_with_peer(&self.peer_disguise_flags(dst_peer_id).await);
+                .peer_disguise_flags_opt(dst_peer_id)
+                .await
+                .map(|flags| self.peer_manager.p2p_policy_flags().use_wss_http3_with_peer(&flags));
             let connected = || {
                 self.peer_manager.has_connection_at_least_as_preferred(
                     dst_peer_id,

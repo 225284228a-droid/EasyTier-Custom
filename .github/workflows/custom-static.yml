@@ -140,7 +140,10 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' "$GITHUB_SHA" > artifacts/COMMIT.txt
-          (cd artifacts && sha256sum easytier-* > SHA256SUMS)
+          # Cover every shipped file: the kernel drivers (WinDivert64.sys,
+          # wintun.dll, Packet.dll) are exactly the files users most need to
+          # verify. nullglob keeps this working on runners without drivers.
+          (cd artifacts && shopt -s nullglob && sha256sum easytier-* *.dll *.sys COMMIT.txt > SHA256SUMS)
           mkdir -p dist
           if [[ "$RUNNER_OS" == Linux ]]; then
             tar -czf "dist/easytier-$TARGET.tar.gz" -C artifacts .

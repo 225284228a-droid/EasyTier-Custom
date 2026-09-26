@@ -148,6 +148,17 @@ pub struct ClientManager {
     heartbeat_policy: HeartbeatPolicy,
 }
 
+/// Releases a listener slot on any exit path, including a panic inside the
+/// accept loop: without this, a panicking task would leak the slot and
+/// `is_running` would stay true forever with the port dead.
+struct ListenerCountGuard(Arc<AtomicU32>);
+
+impl Drop for ListenerCountGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl ClientManager {
     pub fn new(
         db: Db,
@@ -197,6 +208,7 @@ impl ClientManager {
         let feature_flags = self.feature_flags.clone();
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
+            let _slot = ListenerCountGuard(listeners_cnt);
             while let Ok(tunnel) = listener.accept().await {
                 let (tunnel, secure) = match web_security::accept_or_upgrade_server_tunnel(
                     tunnel,
@@ -209,8 +221,15 @@ impl ClientManager {
                         continue;
                     }
                 };
-                let info = tunnel.info().unwrap();
-                let client_url: url::Url = info.remote_addr.unwrap().into();
+                let Some(info) = tunnel.info() else {
+                    tracing::warn!("accepted tunnel carries no info, dropping connection");
+                    continue;
+                };
+                let Some(remote_addr) = info.remote_addr else {
+                    tracing::warn!("accepted tunnel carries no remote addr, dropping connection");
+                    continue;
+                };
+                let client_url: url::Url = remote_addr.into();
                 let location = Self::lookup_location(&client_url, geoip_db.clone());
                 tracing::info!(
                     "New session from {:?}, secure: {}, location: {:?}",
@@ -232,7 +251,6 @@ impl ClientManager {
                 sessions.insert(client_url, session.clone());
                 session.mark_route_ready();
             }
-            listeners_cnt.fetch_sub(1, Ordering::Relaxed);
         });
 
         Ok(local_url)

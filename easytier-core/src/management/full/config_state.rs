@@ -9,7 +9,10 @@ use std::{
     collections::HashMap,
     io::Write as _,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use atomic_write_file::{AtomicWriteFile, OpenOptions};
@@ -28,9 +31,23 @@ struct StateFile {
     instances: HashMap<String, InstanceState>,
 }
 
-fn read_state_file(path: &Path) -> Option<StateFile> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+enum LoadResult {
+    Loaded(StateFile),
+    /// No state file yet (fresh config dir): keep the default behavior.
+    Missing,
+    /// The file exists but cannot be read or parsed.
+    Corrupt(String),
+}
+
+fn load_state_file(path: &Path) -> LoadResult {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str(&contents) {
+            Ok(state) => LoadResult::Loaded(state),
+            Err(error) => LoadResult::Corrupt(format!("parse error: {error}")),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => LoadResult::Missing,
+        Err(error) => LoadResult::Corrupt(format!("read error: {error}")),
+    }
 }
 
 fn write_state_file(path: &Path, state: &StateFile) -> anyhow::Result<()> {
@@ -57,17 +74,34 @@ fn write_state_file(path: &Path, state: &StateFile) -> anyhow::Result<()> {
 pub struct InstanceStateStore {
     path: Option<PathBuf>,
     inner: Mutex<StateFile>,
+    /// Set when the state file exists but could not be read or parsed.
+    /// Unknown instances then fail safe to "disabled" instead of surprising
+    /// the user by starting every network they had stopped. Cleared again
+    /// once a fresh state has been persisted successfully.
+    corrupt_on_load: AtomicBool,
 }
 
 impl InstanceStateStore {
     pub fn new(config_dir: Option<&Path>) -> Self {
         let path = config_dir.map(|dir| dir.join(STATE_FILE_NAME));
-        let inner = Mutex::new(
-            path.as_deref()
-                .and_then(read_state_file)
-                .unwrap_or_default(),
-        );
-        Self { path, inner }
+        let (inner, corrupt_reason) = match path.as_deref().map(load_state_file) {
+            Some(LoadResult::Loaded(state)) => (state, None),
+            Some(LoadResult::Missing) | None => (StateFile::default(), None),
+            Some(LoadResult::Corrupt(reason)) => (StateFile::default(), Some(reason)),
+        };
+        let corrupt_on_load = corrupt_reason.is_some();
+        if let Some(reason) = corrupt_reason {
+            tracing::warn!(
+                ?path,
+                reason,
+                "instance state file is unreadable; treating it as empty, unknown instances stay disabled until state is rewritten"
+            );
+        }
+        Self {
+            path,
+            inner: Mutex::new(inner),
+            corrupt_on_load: AtomicBool::new(corrupt_on_load),
+        }
     }
 
     /// Convenience constructor for an in-memory no-op store (no config dir).
@@ -83,9 +117,12 @@ impl InstanceStateStore {
 
     /// Whether the instance should run at startup. Unknown instances default
     /// to enabled so that pre-existing config files keep their official
-    /// "scan and start everything" behavior.
+    /// "scan and start everything" behavior - unless the state file existed
+    /// but could not be read: then fail safe to disabled so a corrupt file
+    /// cannot resurrect every network the user had stopped.
     pub fn is_enabled(&self, instance_id: &uuid::Uuid) -> bool {
-        self.enabled_state(instance_id).unwrap_or(true)
+        let default_enabled = !self.corrupt_on_load.load(Ordering::Relaxed);
+        self.enabled_state(instance_id).unwrap_or(default_enabled)
     }
 
     pub fn enabled_state(&self, instance_id: &uuid::Uuid) -> Option<bool> {
@@ -144,6 +181,7 @@ impl InstanceStateStore {
     fn persist(&self, state: &StateFile) -> anyhow::Result<()> {
         if let Some(path) = self.path.as_deref() {
             write_state_file(path, state)?;
+            self.corrupt_on_load.store(false, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -205,10 +243,24 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_state_file_falls_back_to_defaults() {
+    fn missing_state_file_keeps_default_enabled() {
+        let dir = temp_dir();
+        // No state file at all: fresh config dir, official scan-and-start.
+        let store = InstanceStateStore::new(Some(&dir));
+        assert!(store.is_enabled(&uuid::Uuid::new_v4()));
+    }
+
+    #[test]
+    fn corrupt_state_file_fails_safe_to_disabled() {
         let dir = temp_dir();
         std::fs::write(dir.join(STATE_FILE_NAME), "not json").unwrap();
         let store = InstanceStateStore::new(Some(&dir));
+        // The file exists but is unreadable: starting every unknown instance
+        // would resurrect networks the user had stopped.
+        assert!(!store.is_enabled(&uuid::Uuid::new_v4()));
+        // Recovery: once fresh state is persisted the default is restored.
+        let id = uuid::Uuid::new_v4();
+        store.set_enabled(id, true).unwrap();
         assert!(store.is_enabled(&uuid::Uuid::new_v4()));
     }
 
@@ -219,7 +271,8 @@ mod tests {
         let store = InstanceStateStore::new(Some(&dir));
         std::fs::create_dir(dir.join(STATE_FILE_NAME)).unwrap();
         assert!(store.set_enabled(id, false).is_err());
-        assert!(store.is_enabled(&id));
+        // The in-memory map is unchanged: the id was never recorded.
+        assert_eq!(store.enabled_state(&id), None);
         std::fs::remove_dir(dir.join(STATE_FILE_NAME)).unwrap();
         store.set_enabled(id, false).unwrap();
         std::fs::remove_file(dir.join(STATE_FILE_NAME)).unwrap();
