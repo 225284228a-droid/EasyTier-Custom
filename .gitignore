@@ -49,3 +49,8 @@ easytier-gui/src-tauri/*.sys
 
 # contrib
 go.sum
+
+# Local planning and agent context
+/CONTEXT.md
+/REFACTOR_PLAN.md
+/docs/*-plan.md
