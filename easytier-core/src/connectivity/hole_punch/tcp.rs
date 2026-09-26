@@ -653,6 +653,7 @@ where
 }
 
 const BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
+const WSS_EXCHANGE_FAILURE_BLACKLIST_THRESHOLD: u32 = 3;
 
 /// Local ports the symmetric responder fans out toward the cone initiator.
 /// Each dial keeps one NAT mapping alive inside the initiator's spray window.
@@ -691,12 +692,14 @@ fn fallback_listener_options(
 
 struct TcpHolePunchBlacklist {
     entries: DashMap<PeerId, Instant>,
+    wss_exchange_failures: DashMap<PeerId, u32>,
 }
 
 impl TcpHolePunchBlacklist {
     fn new() -> Self {
         Self {
             entries: DashMap::new(),
+            wss_exchange_failures: DashMap::new(),
         }
     }
 
@@ -718,6 +721,21 @@ impl TcpHolePunchBlacklist {
     fn cleanup(&self) {
         self.entries
             .retain(|_, inserted_at| inserted_at.elapsed() < BLACKLIST_TIMEOUT);
+    }
+
+    fn record_wss_exchange_failure(&self, peer_id: PeerId) {
+        let mut failures = self.wss_exchange_failures.entry(peer_id).or_insert(0);
+        *failures += 1;
+        let should_blacklist = *failures >= WSS_EXCHANGE_FAILURE_BLACKLIST_THRESHOLD;
+        drop(failures);
+        if should_blacklist {
+            self.wss_exchange_failures.remove(&peer_id);
+            self.insert(peer_id);
+        }
+    }
+
+    fn clear_wss_exchange_failures(&self, peer_id: PeerId) {
+        self.wss_exchange_failures.remove(&peer_id);
     }
 }
 
@@ -1162,7 +1180,8 @@ where
         // a feature-trimmed build that still broadcasts a preference). Retry
         // once with raw TCP when policy allows it. Generic execution errors
         // can also be transient (e.g. remote STUN failures), so strict mode
-        // leaves them to backoff rather than caching a capability failure.
+        // tracks consecutive failures and applies the TTL blacklist after a
+        // bounded number of attempts.
         if requested_scheme == "wss"
             && allow_raw
             && matches!(&response, Err(rpc_types::error::Error::ExecutionError(_)))
@@ -1187,7 +1206,14 @@ where
                 )
                 .await;
         }
+        if requested_scheme == "wss"
+            && !allow_raw
+            && matches!(&response, Err(rpc_types::error::Error::ExecutionError(_)))
+        {
+            self.blacklist.record_wss_exchange_failure(dst_peer_id);
+        }
         let response = handle_rpc_result(response, dst_peer_id, &self.blacklist)?;
+        self.blacklist.clear_wss_exchange_failures(dst_peer_id);
         if requested_scheme == "wss" && response.scheme != "wss" {
             if !allow_raw {
                 self.blacklist.insert(dst_peer_id);
@@ -2320,6 +2346,37 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert!(requests.iter().all(|request| request.scheme == "wss"));
         assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn strict_wss_blacklists_after_repeated_execution_errors() {
+        let host = MockHolePunchHost::new(MockConnectMode::Succeed);
+        let (mut data, rpc, _tunnel_sink) = mock_connector_data(
+            host,
+            NatType::FullCone,
+            P2pPolicyFlags {
+                only_use_wss_http3_for_hole_punching: true,
+                ..Default::default()
+            },
+            TcpHolePunchResponse {
+                scheme: "wss".into(),
+                ..legacy_response()
+            },
+        );
+        Arc::get_mut(&mut data).unwrap().supports_wss_hole_punching = true;
+        for _ in 0..WSS_EXCHANGE_FAILURE_BLACKLIST_THRESHOLD {
+            rpc.execution_errors
+                .lock()
+                .unwrap()
+                .push_back("this node does not support WSS hole punching");
+        }
+
+        for _ in 0..WSS_EXCHANGE_FAILURE_BLACKLIST_THRESHOLD - 1 {
+            assert!(data.do_punch_as_initiator(2).await.is_err());
+            assert!(!data.blacklist.contains(2));
+        }
+        assert!(data.do_punch_as_initiator(2).await.is_err());
+        assert!(data.blacklist.contains(2));
     }
 
     #[tokio::test]

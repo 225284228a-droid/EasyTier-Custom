@@ -3786,6 +3786,40 @@ virtual_ip = "10.82.0.2/24"
         }
 
         #[tokio::test]
+        async fn disable_ephemeral_instance_without_config_dir_stops_it() {
+            let manager = Arc::new(InstanceManager::new(
+                Factory(CoreProcessRuntime::new(), Arc::new(AtomicBool::new(false))),
+                None,
+            ));
+            let config = TomlConfig::default();
+            config.set_inst_name("ephemeral-instance".to_owned());
+            config.set_listeners(Vec::new());
+            let mut flags = config.get_flags();
+            flags.no_tun = false;
+            config.set_flags(flags);
+            let id = config.get_id();
+            manager
+                .run_network_instance(
+                    config,
+                    ConfigFileControl::new(None, ConfigFilePermission::default()),
+                )
+                .unwrap();
+
+            let process = ProcessManagement::new(
+                manager.clone(),
+                Arc::new(Hooks::default()),
+                Arc::new(Files::default()),
+                Arc::new(InstanceStateStore::in_memory()),
+            );
+            process
+                .set_network_instance_enabled(id, false)
+                .await
+                .unwrap();
+
+            assert!(manager.instance(id).is_none());
+        }
+
+        #[tokio::test]
         async fn active_and_catalog_path_conflict_cannot_change_persisted_state() {
             let f = Fixture::new();
             let (id, path) = f.saved("catalog-home", 0);

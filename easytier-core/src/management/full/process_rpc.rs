@@ -279,19 +279,33 @@ where
         Ok(Some((config, control)))
     }
 
-    async fn stop_instances_locked(&self, ids: &[uuid::Uuid]) -> anyhow::Result<()> {
-        // Validate every replacement before stopping any existing network.
+    async fn stop_instances_locked(
+        &self,
+        ids: &[uuid::Uuid],
+        require_known_instances: bool,
+    ) -> anyhow::Result<()> {
+        // Validate every recoverable config before stopping any existing
+        // network. Instances without persistent configuration (e.g. started
+        // without a config directory) can still be stopped; they simply
+        // cannot be re-enabled from disk afterwards. Start plans additionally
+        // reject ids that refer to no running instance and no config at all.
         let mut controls = Vec::new();
         for id in ids {
-            let Some((_, control)) = self.load_saved_config(*id).await? else {
-                anyhow::bail!("instance {id} has no recoverable persistent configuration");
-            };
-            if control.path.as_deref().and_then(Path::parent)
-                != self.instances.config_dir().map(PathBuf::as_path)
-            {
-                anyhow::bail!("instance {id} is not managed by the config directory");
+            match self.load_saved_config(*id).await? {
+                Some((_, control)) => {
+                    if control.path.as_deref().and_then(Path::parent)
+                        != self.instances.config_dir().map(PathBuf::as_path)
+                    {
+                        anyhow::bail!("instance {id} is not managed by the config directory");
+                    }
+                    controls.push((*id, control));
+                }
+                None => {
+                    if require_known_instances && self.instances.instance(*id).is_none() {
+                        anyhow::bail!("instance {id} has no recoverable persistent configuration");
+                    }
+                }
             }
-            controls.push((*id, control));
         }
         for (id, control) in controls {
             self.instances.register_managed_config(id, control)?;
@@ -348,7 +362,7 @@ where
                 "instance name {instance_name} is already used by a running instance; change the network name or stop that instance first"
             );
         }
-        self.stop_instances_locked(&ids).await
+        self.stop_instances_locked(&ids, true).await
     }
 
     async fn is_remote_removable(&self, control: &ConfigFileControl) -> bool {
@@ -886,7 +900,7 @@ where
                 anyhow::bail!("post-run hook failed: {error}");
             }
         } else {
-            return self.stop_instances_locked(&[instance_id]).await;
+            return self.stop_instances_locked(&[instance_id], false).await;
         }
         if let Err(error) = self.state_store.set_enabled(instance_id, enabled) {
             self.instances
