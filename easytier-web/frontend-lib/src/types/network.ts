@@ -135,9 +135,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     disable_tcp_hole_punching: false,
     disable_udp_hole_punching: false,
     only_use_wss_http3_for_hole_punching: false,
-    prefer_wss_http3_for_p2p: true,
+    prefer_wss_http3_for_p2p: false,
     disable_wss_http3_for_p2p: false,
-    p2p_prefer_protocol: 'tcp',
+    p2p_prefer_protocol: 'udp',
     close_redundant_conns_when_disguised: false,
     disable_upnp: false,
     enable_udp_broadcast_relay: false,
@@ -323,10 +323,10 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
   normalized.enable_bbr ??= false
-  normalized.prefer_wss_http3_for_p2p ??= true
+  normalized.prefer_wss_http3_for_p2p ??= false
   normalized.disable_wss_http3_for_p2p ??= false
   normalized.only_use_wss_http3_for_hole_punching ??= false
-  normalized.p2p_prefer_protocol ??= 'tcp'
+  normalized.p2p_prefer_protocol ??= 'udp'
   normalized.close_redundant_conns_when_disguised ??= false
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []

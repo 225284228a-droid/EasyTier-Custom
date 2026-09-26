@@ -77,7 +77,7 @@ impl HostConnectorEnvironmentSnapshot {
                 .copied()
                 .map(Into::into)
                 .collect(),
-            listeners: Default::default(),
+            ..Default::default()
         }
     }
 

@@ -213,8 +213,15 @@ where
         }
 
         let transport = ManualTransport::from_url(&endpoint.url)?;
-        let connected = if transport == ManualTransport::ByteStream {
-            ConnectedTransport::ByteStream(self.host.connect_byte_stream(&endpoint.url).await?)
+        let tunnel = if transport == ManualTransport::ByteStream {
+            self.protocol
+                .upgrade_client(
+                    ConnectedTransport::ByteStream(
+                        self.host.connect_byte_stream(&endpoint.url).await?,
+                    ),
+                    endpoint.url,
+                )
+                .await?
         } else {
             let remote_addr = resolve_url_addrs(
                 &endpoint.url,
@@ -226,21 +233,19 @@ where
             .choose(&mut rand::thread_rng())
             .copied()
             .ok_or(TunnelError::NoDnsRecordFound(ip_version))?;
-            connect_resolved(
+            connect_resolved_tunnel(
                 self.host.clone(),
                 transport,
                 remote_addr,
                 Vec::new(),
                 self.options.tcp_bind.clone(),
                 self.options.udp_bind.clone(),
+                self.protocol.clone(),
+                endpoint.url,
             )
             .await?
         };
 
-        let tunnel = self
-            .protocol
-            .upgrade_client(connected, endpoint.url)
-            .await?;
         Ok(apply_resolved_endpoint_info(
             tunnel,
             requested_url,
@@ -868,23 +873,27 @@ where
                 });
         }
         let transport = transport.expect("non-Ring endpoint should have a transport");
-        let connected = match resolved {
+        match resolved {
             Some((remote_addr, bind_addrs)) => {
-                connect_resolved(
+                connect_resolved_tunnel(
                     data.host.clone(),
                     transport,
                     remote_addr,
                     bind_addrs,
                     data.options.tcp_bind.clone(),
                     data.options.udp_bind.clone(),
+                    data.protocol.clone(),
+                    endpoint.url,
                 )
-                .await?
+                .await
             }
             None => {
-                ConnectedTransport::ByteStream(data.host.connect_byte_stream(&endpoint.url).await?)
+                let connected = ConnectedTransport::ByteStream(
+                    data.host.connect_byte_stream(&endpoint.url).await?,
+                );
+                data.protocol.upgrade_client(connected, endpoint.url).await
             }
-        };
-        data.protocol.upgrade_client(connected, endpoint.url).await
+        }
     })
     .await?;
     let tunnel =
@@ -931,6 +940,44 @@ where
             anyhow::bail!("external byte streams do not use an IP transport address")
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn connect_resolved_tunnel<H>(
+    host: Arc<H>,
+    transport: ManualTransport,
+    remote_addr: SocketAddr,
+    bind_addrs: Vec<SocketAddr>,
+    tcp_bind: TcpBindOptions,
+    udp_bind: UdpBindOptions,
+    protocol: Arc<dyn ClientProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>>,
+    url: Url,
+) -> anyhow::Result<Box<dyn Tunnel>>
+where
+    H: ManualConnectorHost,
+{
+    if let ManualTransport::Udp(mode @ UdpSessionMode::Classified(_)) = transport {
+        return transport::connect_udp_with(
+            host,
+            remote_addr,
+            bind_addrs,
+            udp_bind,
+            mode,
+            move |connected| {
+                let protocol = protocol.clone();
+                let url = url.clone();
+                async move {
+                    protocol
+                        .upgrade_client(ConnectedTransport::Udp(connected), url)
+                        .await
+                }
+            },
+        )
+        .await;
+    }
+    let connected =
+        connect_resolved(host, transport, remote_addr, bind_addrs, tcp_bind, udp_bind).await?;
+    protocol.upgrade_client(connected, url).await
 }
 
 pub(crate) async fn resolve_remote_addr<H>(
@@ -995,7 +1042,7 @@ pub(crate) async fn collect_bind_addrs<H>(
 where
     H: ManualConnectorHost,
 {
-    if is_udp && remote_addr.is_ipv6() {
+    if remote_addr.ip().is_loopback() || (is_udp && remote_addr.is_ipv6()) {
         return Ok(Vec::new());
     }
 
@@ -1248,6 +1295,76 @@ mod tests {
         }
         assert!(ManualTransport::from_url(&"http://127.0.0.1:1".parse().unwrap()).is_err());
         assert!(validate_manual_url(&"http://127.0.0.1:1".parse().unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn classified_manual_candidates_race_protocol_completion() {
+        use crate::{
+            host::testkit::{TestHost, TestTcpSocket},
+            socket::udp::UdpSessionSocket,
+        };
+
+        struct Protocol {
+            attempts: Mutex<Vec<IpAddr>>,
+        }
+
+        #[async_trait]
+        impl ClientProtocolUpgrader<TestTcpSocket> for Protocol {
+            fn supports_scheme(&self, scheme: &str) -> bool {
+                scheme == "http3"
+            }
+
+            async fn upgrade_client(
+                &self,
+                connected: ConnectedTransport<TestTcpSocket>,
+                url: Url,
+            ) -> anyhow::Result<Box<dyn Tunnel>> {
+                let ConnectedTransport::Udp(connected) = connected else {
+                    anyhow::bail!("expected UDP transport");
+                };
+                let local_addr = connected.session().local_addr()?;
+                self.attempts.lock().unwrap().push(local_addr.ip());
+                if local_addr.ip() == IpAddr::from([192, 0, 2, 1]) {
+                    anyhow::bail!("first interface protocol handshake failed");
+                }
+                let (socket, _peer) = crate::tunnel::ring::create_ring_socket_pair(16);
+                Ok(Box::new(crate::tunnel::ring::RingTunnel::new(
+                    socket,
+                    Some(TunnelInfo {
+                        tunnel_type: "http3".to_owned(),
+                        local_addr: None,
+                        remote_addr: Some(url.into()),
+                        resolved_remote_addr: None,
+                    }),
+                )))
+            }
+        }
+
+        let protocol = Arc::new(Protocol {
+            attempts: Mutex::new(Vec::new()),
+        });
+        let url: Url = "http3://198.51.100.1:11014".parse().unwrap();
+        let tunnel = connect_resolved_tunnel(
+            Arc::new(TestHost::default()),
+            ManualTransport::from_url(&url).unwrap(),
+            "198.51.100.1:11014".parse().unwrap(),
+            vec![
+                "192.0.2.1:0".parse().unwrap(),
+                "192.0.2.2:0".parse().unwrap(),
+            ],
+            TcpBindOptions::default(),
+            UdpBindOptions::direct_connect(),
+            protocol.clone(),
+            url.clone(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            protocol.attempts.lock().unwrap().as_slice(),
+            &[IpAddr::from([192, 0, 2, 1]), IpAddr::from([192, 0, 2, 2])]
+        );
+        assert_eq!(Url::from(tunnel.info().unwrap().remote_addr.unwrap()), url);
     }
 
     #[tokio::test]

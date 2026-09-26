@@ -66,7 +66,7 @@ where
 
 #[derive(Debug, Default)]
 pub(crate) struct RunningListenerRegistry {
-    listeners: std::sync::Mutex<Vec<(Url, usize)>>,
+    listeners: std::sync::Mutex<Vec<(Url, usize, usize)>>,
 }
 
 impl RunningListenerRegistry {
@@ -75,32 +75,41 @@ impl RunningListenerRegistry {
             .lock()
             .unwrap()
             .iter()
-            .map(|(url, _)| url.clone())
+            .map(|(url, _, _)| url.clone())
             .collect()
     }
 
-    fn register(self: &Arc<Self>, url: Url) -> RunningListenerRegistration {
+    fn register(self: &Arc<Self>, url: Url, udp_http3: bool) -> RunningListenerRegistration {
         let mut listeners = self.listeners.lock().unwrap();
-        if let Some((_, count)) = listeners.iter_mut().find(|(listener, _)| listener == &url) {
+        if let Some((_, count, http3_count)) = listeners
+            .iter_mut()
+            .find(|(listener, _, _)| listener == &url)
+        {
             *count += 1;
+            *http3_count += usize::from(udp_http3);
         } else {
-            listeners.push((url.clone(), 1));
+            listeners.push((url.clone(), 1, usize::from(udp_http3)));
         }
         RunningListenerRegistration {
             registry: self.clone(),
             url,
+            udp_http3,
         }
     }
 
-    fn unregister(&self, url: &Url) {
+    fn unregister(&self, url: &Url, udp_http3: bool) {
         let mut listeners = self.listeners.lock().unwrap();
-        let Some(index) = listeners.iter().position(|(listener, _)| listener == url) else {
+        let Some(index) = listeners
+            .iter()
+            .position(|(listener, _, _)| listener == url)
+        else {
             return;
         };
         if listeners[index].1 == 1 {
             listeners.remove(index);
         } else {
             listeners[index].1 -= 1;
+            listeners[index].2 -= usize::from(udp_http3);
         }
     }
 }
@@ -108,17 +117,28 @@ impl RunningListenerRegistry {
 struct RunningListenerRegistration {
     registry: Arc<RunningListenerRegistry>,
     url: Url,
+    udp_http3: bool,
 }
 
 impl Drop for RunningListenerRegistration {
     fn drop(&mut self) {
-        self.registry.unregister(&self.url);
+        self.registry.unregister(&self.url, self.udp_http3);
     }
 }
 
 impl crate::connectivity::LocalListenerUrls for RunningListenerRegistry {
     fn local_listener_urls(&self) -> Vec<Url> {
         self.running_listeners()
+    }
+
+    fn udp_http3_listener_urls(&self) -> Vec<Url> {
+        self.listeners
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(url, _, count)| url.scheme() == "udp" && *count > 0)
+            .map(|(url, _, _)| url.clone())
+            .collect()
     }
 }
 
@@ -483,7 +503,7 @@ where
         registry: Arc<RunningListenerRegistry>,
     ) -> Self {
         let url = listener.local_url();
-        let registry = registry.register(url.clone());
+        let registry = registry.register(url.clone(), listener.accepts_http3_on_udp());
         events.emit(CoreEvent::ListenerAdded {
             url: url.clone(),
             connection_counter: listener.connection_counter(),
@@ -625,13 +645,30 @@ mod tests {
     fn running_listener_registry_reference_counts_duplicate_urls() {
         let registry = Arc::new(RunningListenerRegistry::default());
         let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
-        let first = registry.register(url.clone());
-        let second = registry.register(url.clone());
+        let first = registry.register(url.clone(), false);
+        let second = registry.register(url.clone(), false);
         assert_eq!(registry.running_listeners(), vec![url.clone()]);
 
         drop(first);
         assert_eq!(registry.running_listeners(), vec![url.clone()]);
         drop(second);
+        assert!(registry.running_listeners().is_empty());
+    }
+
+    #[test]
+    fn udp_http3_capability_tracks_only_ready_registrations() {
+        use crate::connectivity::LocalListenerUrls;
+
+        let registry = Arc::new(RunningListenerRegistry::default());
+        let url: Url = "udp://[::]:11010".parse().unwrap();
+        let raw = registry.register(url.clone(), false);
+        assert!(registry.udp_http3_listener_urls().is_empty());
+        let http3 = registry.register(url.clone(), true);
+        assert_eq!(registry.udp_http3_listener_urls(), vec![url.clone()]);
+        drop(http3);
+        assert!(registry.udp_http3_listener_urls().is_empty());
+        assert_eq!(registry.running_listeners(), vec![url]);
+        drop(raw);
         assert!(registry.running_listeners().is_empty());
     }
 

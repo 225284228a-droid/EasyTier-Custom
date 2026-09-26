@@ -29,7 +29,7 @@ pub(crate) fn default_instance_name() -> String {
 pub fn gen_default_flags() -> Flags {
     #[allow(deprecated)]
     Flags {
-        default_protocol: "tcp".to_string(),
+        default_protocol: "udp".to_string(),
         dev_name: "".to_string(),
         enable_encryption: true,
         enable_ipv6: true,
@@ -75,7 +75,7 @@ pub fn gen_default_flags() -> Flags {
         enable_udp_broadcast_relay: false,
         socket_mark: None,
         only_use_wss_http3_for_hole_punching: false,
-        prefer_wss_http3_for_p2p: true,
+        prefer_wss_http3_for_p2p: false,
         disable_wss_http3_for_p2p: false,
         close_redundant_conns_when_disguised: false,
     }

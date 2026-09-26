@@ -92,6 +92,21 @@ where
         session.keep_layer_alive(layer);
         Ok(session)
     }
+
+    pub fn enable_classified_accept(&self, protocol: UdpSessionProtocol) -> anyhow::Result<()> {
+        self.layer()?.enable_classified_accept(protocol)?;
+        Ok(())
+    }
+
+    pub async fn accept_classified_session(
+        &self,
+        protocol: UdpSessionProtocol,
+    ) -> anyhow::Result<UdpSession> {
+        let layer = self.layer()?;
+        let mut session = layer.accept_classified_session(protocol).await?;
+        session.keep_layer_alive(layer);
+        Ok(session)
+    }
 }
 
 impl<F> fmt::Debug for UdpSessionSocketListener<F>

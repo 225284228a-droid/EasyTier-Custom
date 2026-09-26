@@ -276,15 +276,18 @@ impl CoreInstanceConfig {
 
         let tcp_bind = TcpBindOptions::default().with_context(socket_context.clone());
         let udp_bind = UdpBindOptions::direct_connect().with_context(socket_context.clone());
-        let listeners = Some(ListenerRuntimeConfig::new(
-            config
-                .get_listener_uris()
-                .into_iter()
-                .filter(|url| host.accepts_runtime_url(url))
-                .collect(),
-            flags.enable_ipv6,
-            socket_context.clone(),
-        ));
+        let listeners = Some(
+            ListenerRuntimeConfig::new(
+                config
+                    .get_listener_uris()
+                    .into_iter()
+                    .filter(|url| host.accepts_runtime_url(url))
+                    .collect(),
+                flags.enable_ipv6,
+                socket_context.clone(),
+            )
+            .with_udp_http3(!flags.disable_wss_http3_for_p2p),
+        );
         let socks5_bind = (!host.ignore_unsupported_config || host.gateway_enabled)
             .then(|| config.get_socks5_portal())
             .flatten()

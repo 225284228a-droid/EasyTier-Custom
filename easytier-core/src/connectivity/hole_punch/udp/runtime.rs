@@ -105,26 +105,40 @@ pub struct UdpPunchListener<S> {
     pub conn_counter: Arc<dyn ListenerConnectionCounter>,
     pub acceptor: Box<dyn UdpPunchAcceptor>,
     pub(crate) port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
-    pub scheme: &'static str,
+    pub scheme: UdpPunchScheme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UdpPunchScheme {
     Udp,
     Http3,
+    /// Compatibility with peers that encapsulate HTTP3 in EasyTier UDP sessions.
+    Http3Mux,
 }
 
 impl UdpPunchScheme {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Udp => "udp",
-            Self::Http3 => "http3",
+            Self::Http3 | Self::Http3Mux => "http3",
         }
     }
 
-    pub fn from_wire(value: &str) -> Self {
+    pub fn is_native_http3(self) -> bool {
+        self == Self::Http3
+    }
+
+    pub fn is_http3(self) -> bool {
+        matches!(self, Self::Http3 | Self::Http3Mux)
+    }
+
+    pub fn from_wire(value: &str, native_http3: bool) -> Self {
         if value.eq_ignore_ascii_case("http3") {
-            Self::Http3
+            if native_http3 {
+                Self::Http3
+            } else {
+                Self::Http3Mux
+            }
         } else {
             Self::Udp
         }
@@ -571,7 +585,8 @@ mod tests {
                 ..Default::default()
             }),
             has_direct_connection: false,
-            has_http3_connection: false,
+            udp_satisfied: false,
+            http3_satisfied: false,
             has_recent_traffic: false,
             peer_disguise_flags: Default::default(),
         }

@@ -24,6 +24,10 @@ pub mod transport;
 /// query rather than on the listener module's concrete registry type.
 pub trait LocalListenerUrls: Debug + Send + Sync + 'static {
     fn local_listener_urls(&self) -> Vec<Url>;
+
+    fn udp_http3_listener_urls(&self) -> Vec<Url> {
+        Vec::new()
+    }
 }
 
 /// Empty [`LocalListenerUrls`] for connectors that track no listeners.

@@ -52,20 +52,31 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                 let Ok(udp_nat_type) = crate::proto::common::NatType::try_from(udp_nat_type) else {
                     return None;
                 };
+                let peer_disguise_flags = route
+                    .feature_flag
+                    .as_ref()
+                    .map(Into::into)
+                    .unwrap_or_default();
+                let use_disguise = self
+                    .p2p_policy_flags()
+                    .use_wss_http3_with_peer(&peer_disguise_flags);
                 Some(UdpPunchCandidate {
                     peer_id: route.peer_id,
                     udp_nat_type,
                     feature_flag: route.feature_flag,
                     has_direct_connection: peer_map.has_peer(route.peer_id),
-                    has_http3_connection: peer_map
-                        .get_peer_by_id(route.peer_id)
-                        .is_some_and(|peer| peer.has_http3_conn()),
+                    udp_satisfied: self.has_connection_at_least_as_preferred(
+                        route.peer_id,
+                        "udp",
+                        use_disguise,
+                    ),
+                    http3_satisfied: self.has_connection_at_least_as_preferred(
+                        route.peer_id,
+                        "http3",
+                        use_disguise,
+                    ),
                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
-                    peer_disguise_flags: route
-                        .feature_flag
-                        .as_ref()
-                        .map(Into::into)
-                        .unwrap_or_default(),
+                    peer_disguise_flags,
                 })
             })
             .collect()
@@ -143,23 +154,38 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
         self.list_route_snapshots()
             .await
             .into_iter()
-            .map(|route| TcpPunchCandidate {
-                has_disguised_connection: self.has_disguised_conn(route.peer_id),
-                peer_id: route.peer_id,
-                tcp_nat_type: route
-                    .stun_info
-                    .as_ref()
-                    .map(|info| info.tcp_nat_type)
-                    .and_then(|nat_type| NatType::try_from(nat_type).ok())
-                    .unwrap_or(NatType::Unknown),
-                feature_flag: route.feature_flag,
-                has_direct_connection: peer_map.has_peer(route.peer_id),
-                has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
-                peer_disguise_flags: route
+            .map(|route| {
+                let peer_disguise_flags = route
                     .feature_flag
                     .as_ref()
                     .map(Into::into)
-                    .unwrap_or_default(),
+                    .unwrap_or_default();
+                let use_disguise = self
+                    .p2p_policy_flags()
+                    .use_wss_http3_with_peer(&peer_disguise_flags);
+                TcpPunchCandidate {
+                    tcp_satisfied: self.has_connection_at_least_as_preferred(
+                        route.peer_id,
+                        "tcp",
+                        use_disguise,
+                    ),
+                    wss_satisfied: self.has_connection_at_least_as_preferred(
+                        route.peer_id,
+                        "wss",
+                        use_disguise,
+                    ),
+                    peer_id: route.peer_id,
+                    tcp_nat_type: route
+                        .stun_info
+                        .as_ref()
+                        .map(|info| info.tcp_nat_type)
+                        .and_then(|nat_type| NatType::try_from(nat_type).ok())
+                        .unwrap_or(NatType::Unknown),
+                    feature_flag: route.feature_flag,
+                    has_direct_connection: peer_map.has_peer(route.peer_id),
+                    has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
+                    peer_disguise_flags,
+                }
             })
             .collect()
     }

@@ -1583,6 +1583,20 @@ impl PeerManagerCore {
             .is_some_and(|peer| peer.has_disguised_conn())
     }
 
+    pub(crate) fn has_connection_at_least_as_preferred(
+        &self,
+        peer_id: PeerId,
+        target_scheme: &str,
+        use_disguise: bool,
+    ) -> bool {
+        self.peers
+            .has_connection_at_least_as_preferred(peer_id, target_scheme, use_disguise)
+            || self
+                .foreign_network_client
+                .get_peer_map()
+                .has_connection_at_least_as_preferred(peer_id, target_scheme, use_disguise)
+    }
+
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,

@@ -46,6 +46,10 @@ pub trait SocketListener: Debug + Send {
 
     fn local_url(&self) -> Url;
 
+    fn accepts_http3_on_udp(&self) -> bool {
+        false
+    }
+
     fn connection_counter(&self) -> Arc<dyn ListenerConnectionCounter> {
         Arc::new(EmptyConnectionCounter)
     }

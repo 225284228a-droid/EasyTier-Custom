@@ -15,7 +15,10 @@ struct TestServerProtocol;
 #[async_trait]
 impl ServerProtocolUpgrader<()> for TestServerProtocol {
     fn supports_scheme(&self, scheme: &str) -> bool {
-        matches!(scheme, "ws" | "wss" | "wg" | "quic" | "faketcp" | "unix")
+        matches!(
+            scheme,
+            "ws" | "wss" | "wg" | "quic" | "http3" | "faketcp" | "unix"
+        )
     }
 
     async fn upgrade_tcp(
@@ -110,6 +113,46 @@ fn core_plans_transport_and_external_listener_capabilities() {
     ));
     assert_eq!(plan.external[0].0.url.scheme(), "faketcp");
     assert_eq!(plan.external[0].1.socket_mark, Some(7));
+}
+
+#[test]
+fn udp_http3_companion_requires_policy_and_runtime_support_without_extra_bindings() {
+    for enabled in [false, true] {
+        for supported in [false, true] {
+            let config = ListenerRuntimeConfig::new(
+                vec!["udp://0.0.0.0:11010".parse().unwrap()],
+                true,
+                SocketContext::default(),
+            )
+            .with_udp_http3(enabled);
+            let protocol =
+                supported.then_some(&TestServerProtocol as &dyn ServerProtocolUpgrader<()>);
+            let plan = prepare_listener_plan::<(), ()>(
+                Some(&config),
+                uuid::Uuid::new_v4(),
+                protocol,
+                None,
+            )
+            .unwrap();
+            assert!(plan.failures.is_empty());
+            assert_eq!(plan.transports.len(), 3);
+            for transport in &plan.transports[1..] {
+                let TransportListenerConfig::Udp {
+                    url,
+                    accept_kind,
+                    http3_companion,
+                    ..
+                } = transport
+                else {
+                    panic!("expected original UDP listener and IPv6 shadow");
+                };
+                assert_eq!(url.scheme(), "udp");
+                assert_eq!(url.port(), Some(11010));
+                assert_eq!(*accept_kind, UdpSessionAcceptKind::EasyTierMux);
+                assert_eq!(*http3_companion, enabled && supported);
+            }
+        }
+    }
 }
 
 #[test]

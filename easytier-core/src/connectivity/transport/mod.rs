@@ -7,6 +7,7 @@ mod tcp;
 mod udp;
 
 pub(crate) use tcp::connect_tcp;
+pub(crate) use udp::connect_udp_with;
 pub use udp::{ConnectedUdpSession, UdpSessionMode, connect_udp};
 
 /// A host-created non-IP byte stream with host-provided endpoint metadata.

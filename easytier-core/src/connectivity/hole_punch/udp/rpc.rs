@@ -58,6 +58,7 @@ fn select_listener_request_to_rpc(request: SelectPunchListener) -> SelectPunchLi
         force_new: request.force_new,
         prefer_port_mapping: request.prefer_port_mapping,
         scheme: request.scheme.as_str().to_owned(),
+        native_http3: request.scheme.is_native_http3(),
     }
 }
 
@@ -65,7 +66,7 @@ fn select_listener_request_from_rpc(input: SelectPunchListenerRequest) -> Select
     SelectPunchListener {
         force_new: input.force_new,
         prefer_port_mapping: input.prefer_port_mapping,
-        scheme: UdpPunchScheme::from_wire(&input.scheme),
+        scheme: UdpPunchScheme::from_wire(&input.scheme, input.native_http3),
     }
 }
 
@@ -73,7 +74,7 @@ fn select_listener_response_from_rpc(
     response: SelectPunchListenerResponse,
 ) -> Result<CoreSelectPunchListenerResponse, UdpHolePunchSignalError> {
     Ok(CoreSelectPunchListenerResponse {
-        scheme: UdpPunchScheme::from_wire(&response.scheme),
+        scheme: UdpPunchScheme::from_wire(&response.scheme, response.native_http3),
         listener_mapped_addr: SocketAddr::from(
             response
                 .listener_mapped_addr
@@ -88,6 +89,7 @@ fn select_listener_response_to_rpc(
     SelectPunchListenerResponse {
         listener_mapped_addr: Some(response.listener_mapped_addr.into()),
         scheme: response.scheme.as_str().to_owned(),
+        native_http3: response.scheme.is_native_http3(),
     }
 }
 
@@ -133,6 +135,7 @@ fn both_easy_symmetric_request_to_rpc(
         udp_socket_count: request.udp_socket_count,
         wait_time_ms: request.wait_time_ms,
         scheme: request.scheme.as_str().to_owned(),
+        native_http3: request.scheme.is_native_http3(),
     }
 }
 
@@ -158,7 +161,7 @@ fn both_easy_symmetric_response_from_rpc(
     CoreSendPunchPacketBothEasySymResponse {
         is_busy: response.is_busy,
         base_mapped_addr: response.base_mapped_addr.map(SocketAddr::from),
-        scheme: UdpPunchScheme::from_wire(&response.scheme),
+        scheme: UdpPunchScheme::from_wire(&response.scheme, response.native_http3),
     }
 }
 
@@ -169,6 +172,7 @@ fn both_easy_symmetric_response_to_rpc(
         is_busy: response.is_busy,
         base_mapped_addr: response.base_mapped_addr.map(Into::into),
         scheme: response.scheme.as_str().to_owned(),
+        native_http3: response.scheme.is_native_http3(),
     }
 }
 
@@ -443,7 +447,7 @@ fn both_easy_symmetric_request_from_rpc(
         dst_port_num: input.dst_port_num,
         udp_socket_count: input.udp_socket_count,
         wait_time_ms: input.wait_time_ms,
-        scheme: UdpPunchScheme::from_wire(&input.scheme),
+        scheme: UdpPunchScheme::from_wire(&input.scheme, input.native_http3),
     })
 }
 
@@ -639,11 +643,14 @@ mod tests {
         let rpc_request = select_listener_request_to_rpc(domain_request.clone());
         assert!(rpc_request.force_new);
         assert!(!rpc_request.prefer_port_mapping);
+        assert_eq!(rpc_request.scheme, "http3");
+        assert!(rpc_request.native_http3);
         assert_eq!(
             select_listener_request_from_rpc(SelectPunchListenerRequest {
                 force_new: true,
                 prefer_port_mapping: false,
                 scheme: "http3".to_owned(),
+                native_http3: true,
             }),
             domain_request
         );
@@ -683,6 +690,7 @@ mod tests {
                     "198.51.100.1:31001".parse::<SocketAddr>().unwrap().into()
                 ),
                 scheme: String::new(),
+                native_http3: false,
             })
             .unwrap()
             .scheme,
@@ -701,6 +709,165 @@ mod tests {
             both_easy_symmetric_response_from_rpc(SendPunchPacketBothEasySymResponse::default())
                 .scheme,
             UdpPunchScheme::Udp
+        );
+    }
+
+    #[test]
+    fn native_and_legacy_http3_negotiation_are_distinct() {
+        let mapped_addr: SocketAddr = "198.51.100.1:31001".parse().unwrap();
+        for (wire, native_http3, scheme) in [
+            ("http3", true, UdpPunchScheme::Http3),
+            ("http3", false, UdpPunchScheme::Http3Mux),
+            ("", false, UdpPunchScheme::Udp),
+            ("", true, UdpPunchScheme::Udp),
+        ] {
+            let request = select_listener_request_from_rpc(SelectPunchListenerRequest {
+                scheme: wire.to_owned(),
+                native_http3,
+                ..Default::default()
+            });
+            assert_eq!(request.scheme, scheme);
+            let response = CoreSelectPunchListenerResponse {
+                listener_mapped_addr: mapped_addr,
+                scheme,
+            };
+            let rpc = select_listener_response_to_rpc(response.clone());
+            assert_eq!(rpc.scheme, scheme.as_str());
+            assert_eq!(rpc.native_http3, scheme.is_native_http3());
+            assert_eq!(select_listener_response_from_rpc(rpc).unwrap(), response);
+
+            let request = both_easy_symmetric_request_from_rpc(SendPunchPacketBothEasySymRequest {
+                public_ip: Some(Ipv4Addr::new(203, 0, 113, 6).into()),
+                scheme: wire.to_owned(),
+                native_http3,
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(request.scheme, scheme);
+            assert_eq!(
+                both_easy_symmetric_request_to_rpc(request).scheme,
+                scheme.as_str()
+            );
+            let response = CoreSendPunchPacketBothEasySymResponse {
+                is_busy: false,
+                base_mapped_addr: Some(mapped_addr),
+                scheme,
+            };
+            assert_eq!(
+                both_easy_symmetric_response_from_rpc(both_easy_symmetric_response_to_rpc(
+                    response.clone()
+                )),
+                response
+            );
+        }
+        assert_eq!(
+            UdpPunchScheme::from_wire("future-unknown", true),
+            UdpPunchScheme::Udp
+        );
+        assert_eq!(UdpPunchScheme::Http3Mux.as_str(), "http3");
+        assert_eq!(UdpPunchScheme::Http3.as_str(), "http3");
+    }
+
+    #[test]
+    fn legacy_http3_schemas_ignore_native_capability_in_all_four_messages() {
+        use prost::Message as _;
+
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct LegacySelectRequest {
+            #[prost(string, tag = "3")]
+            scheme: String,
+        }
+
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct LegacySelectResponse {
+            #[prost(message, optional, tag = "1")]
+            listener_mapped_addr: Option<crate::proto::common::SocketAddr>,
+            #[prost(string, tag = "2")]
+            scheme: String,
+        }
+
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct LegacyBothRequest {
+            #[prost(message, optional, tag = "2")]
+            public_ip: Option<crate::proto::common::Ipv4Addr>,
+            #[prost(string, tag = "6")]
+            scheme: String,
+        }
+
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct LegacyBothResponse {
+            #[prost(bool, tag = "1")]
+            is_busy: bool,
+            #[prost(message, optional, tag = "2")]
+            base_mapped_addr: Option<crate::proto::common::SocketAddr>,
+            #[prost(string, tag = "3")]
+            scheme: String,
+        }
+
+        let request = select_listener_request_to_rpc(SelectPunchListener {
+            force_new: false,
+            prefer_port_mapping: false,
+            scheme: UdpPunchScheme::Http3,
+        });
+        let legacy = LegacySelectRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(legacy.scheme, "http3");
+        let decoded =
+            SelectPunchListenerRequest::decode(legacy.encode_to_vec().as_slice()).unwrap();
+        assert!(!decoded.native_http3);
+        assert_eq!(
+            select_listener_request_from_rpc(decoded).scheme,
+            UdpPunchScheme::Http3Mux
+        );
+
+        let mapped_addr: SocketAddr = "198.51.100.1:31001".parse().unwrap();
+        let response = select_listener_response_to_rpc(CoreSelectPunchListenerResponse {
+            listener_mapped_addr: mapped_addr,
+            scheme: UdpPunchScheme::Http3,
+        });
+        let legacy = LegacySelectResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(legacy.scheme, "http3");
+        let decoded =
+            SelectPunchListenerResponse::decode(legacy.encode_to_vec().as_slice()).unwrap();
+        assert!(!decoded.native_http3);
+        assert_eq!(
+            select_listener_response_from_rpc(decoded).unwrap().scheme,
+            UdpPunchScheme::Http3Mux
+        );
+
+        let request = both_easy_symmetric_request_to_rpc(SendPunchPacketBothEasySym {
+            udp_socket_count: 25,
+            public_ip: Ipv4Addr::new(203, 0, 113, 6),
+            transaction_id: 16,
+            dst_port_num: 34000,
+            wait_time_ms: 2500,
+            scheme: UdpPunchScheme::Http3,
+        });
+        let legacy = LegacyBothRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(legacy.scheme, "http3");
+        let decoded =
+            SendPunchPacketBothEasySymRequest::decode(legacy.encode_to_vec().as_slice()).unwrap();
+        assert!(!decoded.native_http3);
+        assert_eq!(
+            both_easy_symmetric_request_from_rpc(decoded)
+                .unwrap()
+                .scheme,
+            UdpPunchScheme::Http3Mux
+        );
+
+        let response =
+            both_easy_symmetric_response_to_rpc(CoreSendPunchPacketBothEasySymResponse {
+                is_busy: false,
+                base_mapped_addr: Some(mapped_addr),
+                scheme: UdpPunchScheme::Http3,
+            });
+        let legacy = LegacyBothResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(legacy.scheme, "http3");
+        let decoded =
+            SendPunchPacketBothEasySymResponse::decode(legacy.encode_to_vec().as_slice()).unwrap();
+        assert!(!decoded.native_http3);
+        assert_eq!(
+            both_easy_symmetric_response_from_rpc(decoded).scheme,
+            UdpPunchScheme::Http3Mux
         );
     }
 
@@ -806,6 +973,7 @@ mod tests {
         assert_eq!(rpc.dst_port_num, 34000);
         assert_eq!(rpc.wait_time_ms, 2500);
         assert_eq!(rpc.scheme, "http3");
+        assert!(rpc.native_http3);
         assert_eq!(both_easy_symmetric_request_from_rpc(rpc).unwrap(), request);
     }
 

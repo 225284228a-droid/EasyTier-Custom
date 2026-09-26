@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use url::{Host, Url};
 
 use crate::{
-    config::{PeerDisguiseP2pFlags, PeerId, preferred_disguised_scheme},
+    config::{PeerDisguiseP2pFlags, PeerId, p2p_protocol_rank, preferred_disguised_scheme},
     connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
@@ -127,19 +127,7 @@ fn direct_listener_sort_key(
     default_protocol: &str,
     use_disguise_protocols: bool,
 ) -> u8 {
-    if use_disguise_protocols && matches!(scheme, "wss" | "http3") {
-        return match preferred_disguised_scheme(default_protocol) {
-            Some(preferred) if scheme == preferred => 5,
-            _ => 4,
-        };
-    }
-    if scheme == default_protocol {
-        3
-    } else if scheme == "udp" {
-        2
-    } else {
-        1
-    }
+    u8::MAX - p2p_protocol_rank(default_protocol, use_disguise_protocols, scheme)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,7 +146,7 @@ pub struct DirectConnectorOptions {
 impl Default for DirectConnectorOptions {
     fn default() -> Self {
         Self {
-            default_protocol: "tcp".to_owned(),
+            default_protocol: "udp".to_owned(),
             enable_ipv6: true,
             allow_public_server: false,
             bind_device: false,
@@ -417,16 +405,25 @@ where
     H: DirectConnectorHost,
 {
     fn connection_satisfies_policy(&self, peer_id: PeerId, peer: &PeerDisguiseP2pFlags) -> bool {
-        if self
+        let use_disguise = self
             .peer_manager
             .p2p_policy_flags()
-            .use_wss_http3_with_peer(peer)
-            && (self.protocol.supports_scheme("wss") || self.protocol.supports_scheme("http3"))
-        {
-            self.peer_manager.has_disguised_conn(peer_id)
+            .use_wss_http3_with_peer(peer);
+        let preferred = preferred_disguised_scheme(&self.options.default_protocol);
+        let target = if use_disguise {
+            preferred
+                .filter(|scheme| self.protocol.supports_scheme(scheme))
+                .or_else(|| {
+                    ["wss", "http3"]
+                        .into_iter()
+                        .find(|scheme| self.protocol.supports_scheme(scheme))
+                })
+                .unwrap_or(&self.options.default_protocol)
         } else {
-            self.peer_manager.has_directly_connected_conn(peer_id)
-        }
+            &self.options.default_protocol
+        };
+        self.peer_manager
+            .has_connection_at_least_as_preferred(peer_id, target, use_disguise)
     }
     async fn peer_disguise_flags(&self, dst_peer_id: PeerId) -> PeerDisguiseP2pFlags {
         self.peer_manager
@@ -517,8 +514,20 @@ where
             .listeners
             .clone()
             .into_iter()
+            .chain(
+                ip_list
+                    .udp_http3_listeners
+                    .iter()
+                    .filter(|listener| {
+                        use_disguise_protocols
+                            && self.protocol.supports_scheme("http3")
+                            && Url::try_from(*listener).is_ok_and(|url| url.scheme() == "http3")
+                    })
+                    .cloned(),
+            )
             .map(Into::<Url>::into)
             .filter(|listener| listener.scheme() != "ring")
+            .filter(|listener| self.protocol.supports_scheme(listener.scheme()))
             .filter(|listener| {
                 if only_disguised_protocols {
                     matches!(listener.scheme(), "wss" | "http3")
@@ -547,6 +556,8 @@ where
                 use_disguise_protocols,
             )
         });
+        let mut seen = HashSet::new();
+        available_listeners.retain(|listener| seen.insert(listener.clone()));
 
         while !available_listeners.is_empty() {
             let mut tasks = JoinSet::new();
@@ -695,14 +706,17 @@ where
 
         let backoffs_ms = [1000i64, 2000, 4000];
         for attempt in 0..=backoffs_ms.len() {
-            let preferred_target =
-                Url::parse(&url).is_ok_and(|url| matches!(url.scheme(), "wss" | "http3"));
+            let target_url = Url::parse(&url)?;
+            let use_disguise = self
+                .peer_manager
+                .p2p_policy_flags()
+                .use_wss_http3_with_peer(&self.peer_disguise_flags(dst_peer_id).await);
             let connected = || {
-                if preferred_target {
-                    self.peer_manager.has_disguised_conn(dst_peer_id)
-                } else {
-                    self.peer_manager.has_directly_connected_conn(dst_peer_id)
-                }
+                self.peer_manager.has_connection_at_least_as_preferred(
+                    dst_peer_id,
+                    target_url.scheme(),
+                    use_disguise,
+                )
             };
             if connected() {
                 return Ok(());
@@ -781,6 +795,7 @@ where
         let bind_addrs = if self.options.bind_device
             && self.options.allow_interface_bind
             && transport.supports_interface_bind()
+            && !remote_addr.ip().is_loopback()
         {
             collect_bind_addrs(
                 self.peer_manager.as_ref(),
@@ -804,6 +819,27 @@ where
                     )
                     .await?,
                 ),
+                DirectTransport::Udp(mode @ UdpSessionMode::Classified(_)) => {
+                    let protocol = self.protocol.clone();
+                    let tunnel = transport::connect_udp_with(
+                        self.host.clone(),
+                        remote_addr,
+                        bind_addrs,
+                        self.options.udp_bind.clone(),
+                        mode,
+                        move |session| {
+                            let protocol = protocol.clone();
+                            let url = url.clone();
+                            async move {
+                                protocol
+                                    .upgrade_client(ConnectedTransport::Udp(session), url)
+                                    .await
+                            }
+                        },
+                    )
+                    .await?;
+                    return self.admit(tunnel, dst_peer_id).await;
+                }
                 DirectTransport::Udp(mode) => ConnectedTransport::Udp(
                     transport::connect_udp(
                         self.host.clone(),
@@ -1181,9 +1217,15 @@ where
                 .as_ref(),
         )
         .await;
-        response.listeners = self
-            .host
-            .mapped_listeners()
+        let mapped_listeners = self.host.mapped_listeners();
+        response.udp_http3_listeners = http3_listener_aliases(
+            self.running_listeners.udp_http3_listener_urls(),
+            &mapped_listeners,
+        )
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        response.listeners = mapped_listeners
             .into_iter()
             .chain(self.running_listeners.local_listener_urls())
             .map(Into::into)
@@ -1286,6 +1328,30 @@ fn mapped_listener_port(url: &Url) -> Option<u16> {
         .or_else(|| crate::connectivity::protocol::protocol_default_port(url.scheme()))
 }
 
+fn http3_listener_aliases(ready_udp: Vec<Url>, mapped: &[Url]) -> Vec<Url> {
+    if ready_udp.is_empty() {
+        return Vec::new();
+    }
+    // Mapped listeners are the configured external aliases of this instance's
+    // UDP sockets. Preserve their external ports, including translated ports.
+    let mut aliases = Vec::new();
+    for mut url in ready_udp.into_iter().chain(mapped.iter().cloned()) {
+        if url.scheme() != "udp" {
+            continue;
+        }
+        let Some(port) = mapped_listener_port(&url) else {
+            continue;
+        };
+        if url.set_scheme("http3").is_ok()
+            && url.set_port(Some(port)).is_ok()
+            && !aliases.contains(&url)
+        {
+            aliases.push(url);
+        }
+    }
+    aliases
+}
+
 async fn resolve_mapped_listener_addrs(
     listener: &Url,
     context: SocketContext,
@@ -1327,6 +1393,54 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http3_aliases_preserve_mapped_ports_and_disappear_without_ready_udp() {
+        let mapped = vec![
+            "udp://203.0.113.1:23456".parse().unwrap(),
+            "udp://[2001:db8::1]:34567".parse().unwrap(),
+            "tcp://203.0.113.1:23456".parse().unwrap(),
+        ];
+        assert!(http3_listener_aliases(Vec::new(), &mapped).is_empty());
+        let aliases = http3_listener_aliases(
+            vec![
+                "udp://0.0.0.0:11010".parse().unwrap(),
+                "udp://[::]:11010".parse().unwrap(),
+            ],
+            &mapped,
+        );
+        assert_eq!(
+            aliases,
+            vec![
+                "http3://0.0.0.0:11010".parse::<Url>().unwrap(),
+                "http3://[::]:11010".parse().unwrap(),
+                "http3://203.0.113.1:23456".parse().unwrap(),
+                "http3://[2001:db8::1]:34567".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn http3_capability_field_keeps_official_listener_wire_compatible() {
+        use prost::Message;
+
+        #[derive(Clone, PartialEq, Message)]
+        struct OfficialResponse {
+            #[prost(message, repeated, tag = "5")]
+            listeners: Vec<crate::proto::common::Url>,
+        }
+        let raw: crate::proto::common::Url = "udp://127.0.0.1:11010".parse().unwrap();
+        let response = GetIpListResponse {
+            listeners: vec![raw.clone()],
+            udp_http3_listeners: vec!["http3://127.0.0.1:11010".parse().unwrap()],
+            ..Default::default()
+        };
+        let official = OfficialResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(official.listeners, vec![raw]);
+        let decoded = GetIpListResponse::decode(official.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.listeners, official.listeners);
+        assert!(decoded.udp_http3_listeners.is_empty());
+    }
 
     impl<H> DirectConnectorRpcHandler<H>
     where

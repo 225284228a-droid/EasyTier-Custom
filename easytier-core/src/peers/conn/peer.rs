@@ -16,15 +16,68 @@ use crate::peers::{
     util::shrink_dashmap,
 };
 use crate::{
-    config::{PeerId, preferred_disguised_scheme},
+    config::{PeerId, p2p_protocol_rank},
     packet::ZCPacket,
     peers::error::Error,
-    proto::{core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
+    proto::{common::FlagsInConfig, core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
 };
 use tokio_util::task::AbortOnDropHandle;
 
 type ArcPeerConn = Arc<PeerConn>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
+
+#[derive(Debug, Clone, Copy)]
+enum PeerConnCloseEvent {
+    Closed(PeerConnId),
+    Redundant {
+        conn_id: PeerConnId,
+        replacement_id: PeerConnId,
+        use_disguise: bool,
+    },
+}
+
+impl PeerConnCloseEvent {
+    fn removable_id(
+        &self,
+        conns: &ConnMap,
+        flags: &FlagsInConfig,
+        negotiated: Option<bool>,
+    ) -> Option<PeerConnId> {
+        let Self::Redundant {
+            conn_id,
+            replacement_id,
+            use_disguise,
+        } = *self
+        else {
+            let Self::Closed(id) = *self else {
+                unreachable!()
+            };
+            return Some(id);
+        };
+        if !flags.close_redundant_conns_when_disguised
+            || negotiated != Some(use_disguise)
+            || use_disguise_preference(flags, negotiated) != use_disguise
+        {
+            return None;
+        }
+        let replacement = conns.get(&replacement_id)?.value().clone();
+        let conn = conns.get(&conn_id)?.value().clone();
+        if replacement.is_closed()
+            || conn_latency_sort_key(
+                replacement.get_stats().latency_us,
+                replacement.is_hole_punched(),
+            )
+            .0
+            || conn.conn_source() != PeerConnSource::Automatic
+        {
+            return None;
+        }
+        let replacement_rank =
+            conn_protocol_rank(&replacement, &flags.default_protocol, use_disguise)?;
+        let rank = conn_protocol_rank(&conn, &flags.default_protocol, use_disguise)?;
+        (rank > replacement_rank).then_some(conn_id)
+    }
+}
 
 fn conn_latency_sort_key(latency_us: u64, is_hole_punched: bool) -> (bool, u64) {
     (is_hole_punched && latency_us == 0, latency_us)
@@ -33,16 +86,10 @@ fn conn_latency_sort_key(latency_us: u64, is_hole_punched: bool) -> (bool, u64) 
 fn preferred_conn_sort_key(
     latency_us: u64,
     is_hole_punched: bool,
-    prefer: bool,
-    disguised: bool,
-    disguised_rank: u8,
-) -> (bool, bool, u8, u64) {
+    protocol_rank: u8,
+) -> (bool, u8, u64) {
     let (unverified, latency) = conn_latency_sort_key(latency_us, is_hole_punched);
-    // `disguised_rank` orders the two disguised transports: 0 for the one that
-    // matches the configured P2P transport preference (udp -> http3,
-    // tcp -> wss), 1 for the other. It never reorders non-disguised paths,
-    // which the `prefer && !disguised` term already handles.
-    (unverified, prefer && !disguised, disguised_rank, latency)
+    (unverified, protocol_rank, latency)
 }
 
 fn disguised_tunnel_scheme(tunnel_type: &str) -> Option<&'static str> {
@@ -64,12 +111,119 @@ fn conn_is_disguised(conn: &PeerConn) -> bool {
     conn_disguised_scheme(conn).is_some()
 }
 
-/// Whether a connection must be dropped once a disguised connection to the
-/// same peer is up. Only the transports P2P discovered on its own are
-/// redundant: peers the user configured and inbound connections are kept,
-/// because dropping them would only make the other side reconnect.
-fn is_redundant_once_disguised(disguised: bool, source: PeerConnSource) -> bool {
-    !disguised && source == PeerConnSource::Automatic
+fn use_disguise_preference(flags: &FlagsInConfig, negotiated: Option<bool>) -> bool {
+    !flags.disable_wss_http3_for_p2p
+        && negotiated
+            .unwrap_or(flags.prefer_wss_http3_for_p2p || flags.only_use_wss_http3_for_hole_punching)
+}
+
+fn conn_protocol_rank(conn: &PeerConn, default_protocol: &str, use_disguise: bool) -> Option<u8> {
+    if conn.is_attached() {
+        return None;
+    }
+    let tunnel = conn.get_conn_info().tunnel?;
+    if tunnel.tunnel_type.rsplit('-').next() == Some("ring") {
+        return None;
+    }
+    Some(p2p_protocol_rank(
+        default_protocol,
+        use_disguise,
+        &tunnel.tunnel_type,
+    ))
+}
+
+fn select_preferred_conn(
+    conns: &ConnMap,
+    flags: &FlagsInConfig,
+    use_disguise: bool,
+) -> Option<ArcPeerConn> {
+    conns
+        .iter()
+        .filter(|conn| !conn.value().is_closed())
+        .min_by_key(|conn| {
+            let conn = conn.value();
+            preferred_conn_sort_key(
+                conn.get_stats().latency_us,
+                conn.is_hole_punched(),
+                conn_protocol_rank(conn, &flags.default_protocol, use_disguise).unwrap_or(0),
+            )
+        })
+        .map(|conn| conn.value().clone())
+}
+
+async fn reconcile_peer_connections(
+    conns: &ConnMap,
+    flags: &FlagsInConfig,
+    negotiated_disguise: &AtomicCell<Option<bool>>,
+    default_conn: &ArcSwapOption<PeerConn>,
+    update_lock: &Mutex<()>,
+    close_event_sender: &mpsc::Sender<PeerConnCloseEvent>,
+    peer_id: PeerId,
+) {
+    let (replacement, use_disguise) = {
+        let _update_guard = update_lock.lock();
+        let use_disguise = use_disguise_preference(flags, negotiated_disguise.load());
+        let selected = select_preferred_conn(conns, flags, use_disguise);
+        default_conn.store(selected.clone());
+        (selected, use_disguise)
+    };
+    if !flags.close_redundant_conns_when_disguised || negotiated_disguise.load().is_none() {
+        return;
+    }
+    let Some(replacement) = replacement else {
+        return;
+    };
+    // A freshly punched path is usable for pruning only after a successful
+    // round trip. Keep the fallback while its first ping is still pending.
+    if conn_latency_sort_key(
+        replacement.get_stats().latency_us,
+        replacement.is_hole_punched(),
+    )
+    .0
+    {
+        return;
+    }
+    let Some(replacement_rank) =
+        conn_protocol_rank(&replacement, &flags.default_protocol, use_disguise)
+    else {
+        return;
+    };
+    let redundant = conns
+        .iter()
+        .filter(|entry| {
+            let conn = entry.value();
+            !conn.is_closed()
+                && conn.conn_source() == PeerConnSource::Automatic
+                && conn_protocol_rank(conn, &flags.default_protocol, use_disguise)
+                    .is_some_and(|rank| rank > replacement_rank)
+        })
+        .map(|entry| entry.key().to_owned())
+        .collect::<Vec<_>>();
+
+    for conn_id in redundant {
+        if replacement.is_closed()
+            || !conns.contains_key(&replacement.get_conn_id())
+            || use_disguise != use_disguise_preference(flags, negotiated_disguise.load())
+        {
+            break;
+        }
+        tracing::info!(
+            ?conn_id,
+            %peer_id,
+            replacement_conn_id = %replacement.get_conn_id(),
+            "a preferred connection is ready, closing a redundant automatic connection"
+        );
+        if let Err(error) = close_event_sender
+            .send(PeerConnCloseEvent::Redundant {
+                conn_id,
+                replacement_id: replacement.get_conn_id(),
+                use_disguise,
+            })
+            .await
+        {
+            tracing::warn!(?conn_id, %error, "failed to close redundant connection");
+        }
+    }
 }
 
 pub struct Peer {
@@ -79,7 +233,7 @@ pub struct Peer {
 
     packet_recv_chan: PacketRecvChan,
 
-    close_event_sender: mpsc::Sender<PeerConnId>,
+    close_event_sender: mpsc::Sender<PeerConnCloseEvent>,
     #[allow(dead_code)]
     close_event_listener: AbortOnDropHandle<()>,
 
@@ -87,10 +241,11 @@ pub struct Peer {
 
     default_conn: Arc<ArcSwapOption<PeerConn>>,
     default_conn_update_lock: Arc<Mutex<()>>,
+    negotiated_disguise: Arc<AtomicCell<Option<bool>>>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
     #[allow(dead_code)]
-    default_conn_clear_task: AbortOnDropHandle<()>,
+    conn_maintenance_task: AbortOnDropHandle<()>,
 }
 
 impl Peer {
@@ -100,7 +255,8 @@ impl Peer {
         context: ArcPeerContext,
     ) -> Self {
         let conns: ConnMap = Arc::new(DashMap::new());
-        let (close_event_sender, mut close_event_receiver) = mpsc::channel(10);
+        let (close_event_sender, mut close_event_receiver) =
+            mpsc::channel::<PeerConnCloseEvent>(10);
         let shutdown_notifier = Arc::new(tokio::sync::Notify::new());
         let peer_identity_type = Arc::new(AtomicCell::new(None));
         let peer_identity_type_copy = peer_identity_type.clone();
@@ -108,12 +264,14 @@ impl Peer {
         let peer_public_key_copy = peer_public_key.clone();
         let default_conn = Arc::new(ArcSwapOption::empty());
         let default_conn_update_lock = Arc::new(Mutex::new(()));
+        let negotiated_disguise = Arc::new(AtomicCell::new(None));
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
         let context_copy = context.clone();
         let default_conn_copy = default_conn.clone();
         let default_conn_update_lock_copy = default_conn_update_lock.clone();
+        let negotiated_disguise_copy = negotiated_disguise.clone();
         let close_event_listener = AbortOnDropHandle::new(tokio::spawn(
             async move {
                 loop {
@@ -131,7 +289,10 @@ impl Peer {
 
                             let removed_conn = {
                                 let _update_guard = default_conn_update_lock_copy.lock();
-                                let removed_conn = conns_copy.remove(&ret);
+                                // Cleanup is conditional until the actual removal: a newer
+                                // preference or failed replacement must retain the fallback.
+                                let Some(conn_id) = ret.removable_id(&conns_copy, &context_copy.flags(), negotiated_disguise_copy.load()) else { continue };
+                                let removed_conn = conns_copy.remove(&conn_id);
                                 if let Some((_, conn)) = removed_conn.as_ref() {
                                     let cached_conn = default_conn_copy.load();
                                     if cached_conn
@@ -172,11 +333,24 @@ impl Peer {
 
         let conns_copy = conns.clone();
         let default_conn_copy = default_conn.clone();
-        let default_conn_clear_task = AbortOnDropHandle::new(tokio::spawn(async move {
+        let context_copy = context.clone();
+        let default_conn_update_lock_copy = default_conn_update_lock.clone();
+        let close_event_sender_copy = close_event_sender.clone();
+        let negotiated_disguise_copy = negotiated_disguise.clone();
+        let conn_maintenance_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 crate::foundation::time::sleep(std::time::Duration::from_secs(5)).await;
                 if conns_copy.len() > 1 {
-                    default_conn_copy.store(None);
+                    reconcile_peer_connections(
+                        &conns_copy,
+                        &context_copy.flags(),
+                        &negotiated_disguise_copy,
+                        &default_conn_copy,
+                        &default_conn_update_lock_copy,
+                        &close_event_sender_copy,
+                        peer_node_id,
+                    )
+                    .await;
                 }
             }
         }));
@@ -193,9 +367,10 @@ impl Peer {
             shutdown_notifier,
             default_conn,
             default_conn_update_lock,
+            negotiated_disguise,
             peer_identity_type,
             peer_public_key,
-            default_conn_clear_task,
+            conn_maintenance_task,
         }
     }
 
@@ -242,7 +417,10 @@ impl Peer {
             if let Some(mut waiter) = close_notifier.get_waiter().await {
                 let _ = waiter.recv().await;
             }
-            if let Err(e) = close_event_sender.send(conn_id).await {
+            if let Err(e) = close_event_sender
+                .send(PeerConnCloseEvent::Closed(conn_id))
+                .await
+            {
                 tracing::warn!(?conn_id, "failed to send close event: {}", e);
             }
         });
@@ -250,46 +428,21 @@ impl Peer {
         self.context
             .issue_event(PeerEvent::PeerConnAdded(conn_info));
 
-        if self.context.flags().close_redundant_conns_when_disguised {
-            self.close_redundant_conns_with_disguised_peer().await;
-        }
+        self.reconcile_connections().await;
         Ok(())
     }
 
-    /// Closes the non-disguised connections that P2P established automatically
-    /// while a disguised connection to this peer is up. User-configured peers
-    /// and inbound connections stay connected, because dropping them would only
-    /// make the other side reconnect.
-    async fn close_redundant_conns_with_disguised_peer(&self) {
-        if !self
-            .conns
-            .iter()
-            .any(|entry| !entry.value().is_closed() && conn_is_disguised(entry.value()))
-        {
-            return;
-        }
-
-        let redundant = self
-            .conns
-            .iter()
-            .filter(|entry| {
-                let conn = entry.value();
-                !conn.is_closed()
-                    && is_redundant_once_disguised(conn_is_disguised(conn), conn.conn_source())
-            })
-            .map(|entry| entry.value().get_conn_id())
-            .collect::<Vec<_>>();
-
-        for conn_id in redundant {
-            tracing::info!(
-                ?conn_id,
-                peer_id = %self.peer_node_id,
-                "a disguised connection is up, closing the redundant automatically established connection"
-            );
-            if let Err(error) = self.close_event_sender.send(conn_id).await {
-                tracing::warn!(?conn_id, %error, "failed to close redundant connection");
-            }
-        }
+    async fn reconcile_connections(&self) {
+        reconcile_peer_connections(
+            &self.conns,
+            &self.context.flags(),
+            &self.negotiated_disguise,
+            &self.default_conn,
+            &self.default_conn_update_lock,
+            &self.close_event_sender,
+            self.peer_node_id,
+        )
+        .await;
     }
 
     fn select_conn(&self) -> Option<ArcPeerConn> {
@@ -302,30 +455,11 @@ impl Peer {
         // confirmed liveness yet. Prefer any other connection, so a freshly admitted
         // hole-punched path cannot steal traffic before its first successful ping.
         let flags = self.context.flags();
-        let prefer = !flags.disable_wss_http3_for_p2p
-            && (flags.prefer_wss_http3_for_p2p || flags.only_use_wss_http3_for_hole_punching);
-        let preferred_disguised = preferred_disguised_scheme(&flags.default_protocol);
-        let selected = self
-            .conns
-            .iter()
-            .filter(|conn| !conn.value().is_closed())
-            .min_by_key(|conn| {
-                let conn = conn.value();
-                let disguised = conn_is_disguised(conn);
-                let disguised_rank = if prefer && disguised && preferred_disguised.is_some() {
-                    u8::from(conn_disguised_scheme(conn) != preferred_disguised)
-                } else {
-                    0
-                };
-                preferred_conn_sort_key(
-                    conn.get_stats().latency_us,
-                    conn.is_hole_punched(),
-                    prefer,
-                    disguised,
-                    disguised_rank,
-                )
-            })
-            .map(|conn| conn.value().clone());
+        let selected = select_preferred_conn(
+            &self.conns,
+            &flags,
+            use_disguise_preference(&flags, self.negotiated_disguise.load()),
+        );
 
         if let Some(conn) = selected.as_ref() {
             self.default_conn.store(Some(conn.clone()));
@@ -354,7 +488,10 @@ impl Peer {
         if !has_key {
             return Err(Error::NotFound);
         }
-        self.close_event_sender.send(*conn_id).await.unwrap();
+        self.close_event_sender
+            .send(PeerConnCloseEvent::Closed(*conn_id))
+            .await
+            .unwrap();
         Ok(())
     }
 
@@ -388,9 +525,26 @@ impl Peer {
             .any(|entry| !entry.value().is_closed() && conn_is_disguised(entry.value()))
     }
 
-    pub(crate) fn has_http3_conn(&self) -> bool {
+    pub(crate) fn has_connection_at_least_as_preferred(
+        &self,
+        target_scheme: &str,
+        use_disguise: bool,
+    ) -> bool {
+        // Routing knows both endpoints' policy; retain its negotiation so
+        // forwarding and cleanup use the same preference as the schedulers.
+        {
+            let _update_guard = self.default_conn_update_lock.lock();
+            if self.negotiated_disguise.swap(Some(use_disguise)) != Some(use_disguise) {
+                self.default_conn.store(None);
+            }
+        }
+        let default_protocol = self.context.flags().default_protocol;
+        let target_rank = p2p_protocol_rank(&default_protocol, use_disguise, target_scheme);
         self.conns.iter().any(|entry| {
-            !entry.value().is_closed() && conn_disguised_scheme(entry.value()) == Some("http3")
+            let conn = entry.value();
+            !conn.is_closed()
+                && conn_protocol_rank(conn, &default_protocol, use_disguise)
+                    .is_some_and(|rank| rank <= target_rank)
         })
     }
 
@@ -447,25 +601,29 @@ impl Drop for Peer {
 
 #[cfg(test)]
 mod tests {
-    use super::{conn_latency_sort_key, disguised_tunnel_scheme};
+    use std::{sync::Arc, time::Duration};
+
+    use crate::{
+        packet::{PacketType, ZCPacket},
+        peers::{
+            PeerConnSource, PeerConnectionOrigin,
+            conn::{peer_conn::PeerConn, peer_session::PeerSessionStore},
+            context::ArcPeerContext,
+            create_packet_recv_chan,
+            test_support::NoopPeerContext,
+        },
+        proto::common::{FlagsInConfig, TunnelInfo},
+        tunnel::ring::{RingTunnel, create_ring_socket_pair},
+    };
+
+    use super::{Peer, PeerConnCloseEvent, conn_latency_sort_key, disguised_tunnel_scheme};
 
     #[test]
-    fn disguise_preference_wins_after_liveness_is_verified() {
+    fn protocol_preference_wins_only_after_liveness_is_verified() {
         use super::preferred_conn_sort_key as key;
-        // (latency, hole_punched, prefer, disguised, disguised_rank)
-        assert!(key(50_000, true, true, true, 0) < key(1_000, false, true, false, 0));
-        assert!(key(1_000, false, true, false, 0) < key(0, true, true, true, 0));
-        assert!(key(1_000, false, false, false, 0) < key(50_000, true, false, true, 0));
-    }
-
-    #[test]
-    fn p2p_transport_preference_orders_the_disguised_transports() {
-        use super::preferred_conn_sort_key as key;
-        // The disguised transport matching the configured preference (rank 0)
-        // wins over the other one (rank 1), regardless of the extra latency.
-        assert!(key(50_000, false, true, true, 0) < key(1_000, false, true, true, 1));
-        // Both disguised transports still win over raw paths.
-        assert!(key(1_000, false, true, true, 1) < key(500, false, true, false, 0));
+        assert!(key(50_000, true, 0) < key(1_000, false, 1));
+        assert!(key(1_000, false, 1) < key(0, true, 0));
+        assert!(key(1_000, false, 0) < key(50_000, true, 0));
     }
 
     #[test]
@@ -475,21 +633,6 @@ mod tests {
         assert_eq!(disguised_tunnel_scheme("http3"), Some("http3"));
         assert_eq!(disguised_tunnel_scheme("tcp"), None);
         assert_eq!(disguised_tunnel_scheme("quic-http3-wrap"), None);
-    }
-
-    #[test]
-    fn only_automatic_plain_conns_are_redundant_once_disguised() {
-        use super::{PeerConnSource, is_redundant_once_disguised as redundant};
-
-        // P2P-discovered plain transports are dropped while a disguised
-        // connection is up.
-        assert!(redundant(false, PeerConnSource::Automatic));
-        // The disguised connection itself and user-configured / inbound
-        // connections are always kept.
-        assert!(!redundant(true, PeerConnSource::Automatic));
-        assert!(!redundant(false, PeerConnSource::Manual));
-        assert!(!redundant(false, PeerConnSource::Inbound));
-        assert!(!redundant(true, PeerConnSource::Manual));
     }
 
     #[test]
@@ -505,5 +648,411 @@ mod tests {
     #[test]
     fn verified_lower_latency_path_can_be_preferred() {
         assert!(conn_latency_sort_key(5_000, true) < conn_latency_sort_key(20_000, false));
+    }
+
+    async fn handshaken_connection(
+        context: ArcPeerContext,
+        scheme: &str,
+        source: PeerConnSource,
+        origin: PeerConnectionOrigin,
+        is_hole_punched: bool,
+    ) -> (PeerConn, PeerConn) {
+        let (client_socket, server_socket) = create_ring_socket_pair(64);
+        let tunnel_info = Some(TunnelInfo {
+            tunnel_type: scheme.to_owned(),
+            ..Default::default()
+        });
+        let session_store = Arc::new(PeerSessionStore::new());
+        let mut client = PeerConn::new_with_peer_id_hint_and_origin(
+            1,
+            context,
+            Box::new(RingTunnel::new(client_socket, tunnel_info.clone())),
+            None,
+            session_store.clone(),
+            origin,
+            source,
+        );
+        client.set_is_hole_punched(is_hole_punched);
+        let mut server = PeerConn::new(
+            2,
+            Arc::new(NoopPeerContext::default()),
+            Box::new(RingTunnel::new(server_socket, tunnel_info)),
+            session_store,
+        );
+        let (client_result, server_result) = tokio::join!(
+            client.do_handshake_as_client(),
+            server.do_handshake_as_server_ext(|_, _| Ok(())),
+        );
+        client_result.unwrap();
+        server_result.unwrap();
+        (client, server)
+    }
+
+    fn data_packet() -> ZCPacket {
+        let mut packet = ZCPacket::new_with_payload(b"preferred-path");
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        packet
+    }
+
+    async fn check_preferred_transition(default_protocol: &str, use_disguise: bool, strict: bool) {
+        let (preferred, fallback) = match (default_protocol, use_disguise) {
+            ("udp", true) => ("http3", "wss"),
+            ("tcp", true) => ("wss", "http3"),
+            ("udp", false) => ("udp", "wss"),
+            ("tcp", false) => ("tcp", "http3"),
+            _ => unreachable!(),
+        };
+        let context: ArcPeerContext =
+            Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                default_protocol: default_protocol.to_owned(),
+                prefer_wss_http3_for_p2p: use_disguise && !strict,
+                only_use_wss_http3_for_hole_punching: strict,
+                close_redundant_conns_when_disguised: true,
+                ..Default::default()
+            }));
+        let (local_tx, _local_rx) = create_packet_recv_chan();
+        let peer = Peer::new(2, local_tx, context.clone());
+        let (old, mut old_remote) = handshaken_connection(
+            context.clone(),
+            fallback,
+            PeerConnSource::Automatic,
+            PeerConnectionOrigin::Network,
+            false,
+        )
+        .await;
+        let old_id = old.get_conn_id();
+        let (old_tx, mut old_rx) = create_packet_recv_chan();
+        old_remote.start_recv_loop(old_tx).await;
+        peer.add_peer_conn(old).await.unwrap();
+        assert!(!peer.has_connection_at_least_as_preferred(preferred, use_disguise));
+
+        let (replacement, mut replacement_remote) = handshaken_connection(
+            context.clone(),
+            preferred,
+            PeerConnSource::Automatic,
+            PeerConnectionOrigin::Network,
+            true,
+        )
+        .await;
+        let replacement_id = replacement.get_conn_id();
+        peer.add_peer_conn(replacement).await.unwrap();
+        assert!(peer.has_connection_at_least_as_preferred(preferred, use_disguise));
+        assert!(peer.conns.contains_key(&old_id));
+        assert_eq!(peer.get_default_conn_id(), old_id);
+        peer.send_msg(data_packet()).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), old_rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload(),
+            b"preferred-path"
+        );
+
+        let (replacement_tx, mut replacement_rx) = create_packet_recv_chan();
+        replacement_remote.start_recv_loop(replacement_tx).await;
+        // No further admission occurs after the replacement's first ping:
+        // maintenance must notice it and retire the old connection itself.
+        tokio::time::timeout(Duration::from_secs(7), async {
+            while peer.conns.contains_key(&old_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("verified preferred path should retire the fallback");
+        assert_eq!(peer.get_default_conn_id(), replacement_id);
+        assert!(
+            peer.conns
+                .get(&replacement_id)
+                .unwrap()
+                .get_stats()
+                .latency_us
+                > 0
+        );
+        peer.send_msg(data_packet()).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), replacement_rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload(),
+            b"preferred-path"
+        );
+
+        drop(replacement_remote);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while peer.conns.contains_key(&replacement_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!peer.has_connection_at_least_as_preferred(preferred, use_disguise));
+        let (recovered, mut recovered_remote) = handshaken_connection(
+            context,
+            fallback,
+            PeerConnSource::Automatic,
+            PeerConnectionOrigin::Network,
+            false,
+        )
+        .await;
+        let (recovered_tx, mut recovered_rx) = create_packet_recv_chan();
+        recovered_remote.start_recv_loop(recovered_tx).await;
+        peer.add_peer_conn(recovered).await.unwrap();
+        assert!(!peer.has_connection_at_least_as_preferred(preferred, use_disguise));
+        peer.send_msg(data_packet()).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), recovered_rx.recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_preferred_protocol_retires_fallback_without_new_admission() {
+        tokio::join!(
+            check_preferred_transition("udp", true, false),
+            check_preferred_transition("tcp", true, false),
+            check_preferred_transition("udp", false, false),
+            check_preferred_transition("tcp", false, false),
+            check_preferred_transition("udp", true, true),
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_unverified_preferred_path_keeps_working_fallback() {
+        let context: ArcPeerContext =
+            Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                default_protocol: "udp".to_owned(),
+                prefer_wss_http3_for_p2p: true,
+                close_redundant_conns_when_disguised: true,
+                ..Default::default()
+            }));
+        let (local_tx, _local_rx) = create_packet_recv_chan();
+        let peer = Peer::new(2, local_tx, context.clone());
+        let (fallback, mut fallback_remote) = handshaken_connection(
+            context.clone(),
+            "wss",
+            PeerConnSource::Automatic,
+            PeerConnectionOrigin::Network,
+            false,
+        )
+        .await;
+        let fallback_id = fallback.get_conn_id();
+        let (remote_tx, mut remote_rx) = create_packet_recv_chan();
+        fallback_remote.start_recv_loop(remote_tx).await;
+        peer.add_peer_conn(fallback).await.unwrap();
+        assert!(!peer.has_connection_at_least_as_preferred("http3", true));
+        let (replacement, replacement_remote) = handshaken_connection(
+            context,
+            "http3",
+            PeerConnSource::Automatic,
+            PeerConnectionOrigin::Network,
+            true,
+        )
+        .await;
+        let replacement_id = replacement.get_conn_id();
+        peer.add_peer_conn(replacement).await.unwrap();
+        drop(replacement_remote);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while peer.conns.contains_key(&replacement_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        peer.reconcile_connections().await;
+        assert!(peer.conns.contains_key(&fallback_id));
+        assert!(!peer.has_connection_at_least_as_preferred("http3", true));
+        peer.send_msg(data_packet()).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), remote_rx.recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_cleanup_rechecks_policy_and_replacement_at_removal() {
+        for preference_changed in [false, true] {
+            let context: ArcPeerContext =
+                Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                    default_protocol: "udp".to_owned(),
+                    prefer_wss_http3_for_p2p: true,
+                    close_redundant_conns_when_disguised: true,
+                    ..Default::default()
+                }));
+            let (tx, _rx) = create_packet_recv_chan();
+            let peer = Peer::new(2, tx, context.clone());
+            let (udp, _udp_remote) = handshaken_connection(
+                context.clone(),
+                "udp",
+                PeerConnSource::Automatic,
+                PeerConnectionOrigin::Network,
+                false,
+            )
+            .await;
+            let udp_id = udp.get_conn_id();
+            let (wss, _wss_remote) = handshaken_connection(
+                context,
+                "wss",
+                PeerConnSource::Automatic,
+                PeerConnectionOrigin::Network,
+                false,
+            )
+            .await;
+            let wss_id = wss.get_conn_id();
+            peer.add_peer_conn(udp).await.unwrap();
+            peer.add_peer_conn(wss).await.unwrap();
+            peer.has_connection_at_least_as_preferred("udp", false);
+            if !preference_changed {
+                peer.close_event_sender
+                    .try_send(PeerConnCloseEvent::Closed(udp_id))
+                    .unwrap();
+            }
+            peer.close_event_sender
+                .try_send(PeerConnCloseEvent::Redundant {
+                    conn_id: wss_id,
+                    replacement_id: udp_id,
+                    use_disguise: false,
+                })
+                .unwrap();
+            if preference_changed {
+                peer.has_connection_at_least_as_preferred("http3", true);
+                peer.close_event_sender
+                    .try_send(PeerConnCloseEvent::Redundant {
+                        conn_id: udp_id,
+                        replacement_id: wss_id,
+                        use_disguise: true,
+                    })
+                    .unwrap();
+            }
+            tokio::task::yield_now().await;
+            assert!(peer.conns.contains_key(&wss_id));
+            assert!(!peer.conns.contains_key(&udp_id));
+            assert_eq!(peer.select_conn().unwrap().get_conn_id(), wss_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_preserves_manual_inbound_attached_and_equal_rank_connections() {
+        let context: ArcPeerContext =
+            Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                default_protocol: "udp".to_owned(),
+                close_redundant_conns_when_disguised: true,
+                ..Default::default()
+            }));
+        let (local_tx, _local_rx) = create_packet_recv_chan();
+        let peer = Peer::new(2, local_tx, context.clone());
+        peer.has_connection_at_least_as_preferred("udp", false);
+        let mut remote_conns = Vec::new();
+        let mut kept_ids = Vec::new();
+        for (scheme, source, origin) in [
+            ("wss", PeerConnSource::Manual, PeerConnectionOrigin::Network),
+            (
+                "wss",
+                PeerConnSource::Inbound,
+                PeerConnectionOrigin::Network,
+            ),
+            (
+                "udp",
+                PeerConnSource::Automatic,
+                PeerConnectionOrigin::Network,
+            ),
+            (
+                "udp",
+                PeerConnSource::Automatic,
+                PeerConnectionOrigin::Network,
+            ),
+            (
+                "ring",
+                PeerConnSource::Automatic,
+                PeerConnectionOrigin::Attached,
+            ),
+        ] {
+            let (conn, remote) =
+                handshaken_connection(context.clone(), scheme, source, origin, false).await;
+            kept_ids.push(conn.get_conn_id());
+            remote_conns.push(remote);
+            peer.add_peer_conn(conn).await.unwrap();
+        }
+        peer.reconcile_connections().await;
+        tokio::task::yield_now().await;
+        assert_eq!(peer.conns.len(), kept_ids.len());
+        for id in kept_ids {
+            assert!(peer.conns.contains_key(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn negotiated_peer_policy_overrides_local_disguise_preference() {
+        for cleanup_enabled in [false, true] {
+            let context: ArcPeerContext =
+                Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                    default_protocol: "udp".to_owned(),
+                    prefer_wss_http3_for_p2p: true,
+                    close_redundant_conns_when_disguised: cleanup_enabled,
+                    ..Default::default()
+                }));
+            let (local_tx, _local_rx) = create_packet_recv_chan();
+            let peer = Peer::new(2, local_tx, context.clone());
+            let (wss, _wss_remote) = handshaken_connection(
+                context.clone(),
+                "wss",
+                PeerConnSource::Automatic,
+                PeerConnectionOrigin::Network,
+                false,
+            )
+            .await;
+            let wss_id = wss.get_conn_id();
+            peer.add_peer_conn(wss).await.unwrap();
+            let (udp, _udp_remote) = handshaken_connection(
+                context,
+                "udp",
+                PeerConnSource::Automatic,
+                PeerConnectionOrigin::Network,
+                false,
+            )
+            .await;
+            let udp_id = udp.get_conn_id();
+            peer.add_peer_conn(udp).await.unwrap();
+            assert!(peer.conns.contains_key(&wss_id));
+            assert!(peer.conns.contains_key(&udp_id));
+            assert!(peer.has_connection_at_least_as_preferred("udp", false));
+            assert_eq!(peer.select_conn().unwrap().get_conn_id(), udp_id);
+            peer.reconcile_connections().await;
+            assert_eq!(peer.get_default_conn_id(), udp_id);
+            if cleanup_enabled {
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while peer.conns.contains_key(&wss_id) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+            assert_eq!(peer.conns.contains_key(&wss_id), !cleanup_enabled);
+            assert!(peer.conns.contains_key(&udp_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn attached_ring_does_not_satisfy_network_transport_preference() {
+        let context: ArcPeerContext = Arc::new(NoopPeerContext::default());
+        let (local_tx, _local_rx) = create_packet_recv_chan();
+        let peer = Peer::new(2, local_tx, context.clone());
+        let (conn, _remote) = handshaken_connection(
+            context,
+            "ring",
+            PeerConnSource::Automatic,
+            PeerConnectionOrigin::Attached,
+            false,
+        )
+        .await;
+        peer.add_peer_conn(conn).await.unwrap();
+        assert!(!peer.has_connection_at_least_as_preferred("udp", false));
+        assert!(!peer.has_connection_at_least_as_preferred("http3", true));
     }
 }

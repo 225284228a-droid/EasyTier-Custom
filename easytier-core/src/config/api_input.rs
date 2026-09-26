@@ -888,6 +888,54 @@ mod tests {
     }
 
     #[test]
+    fn p2p_defaults_and_explicit_settings_round_trip_through_toml() {
+        let defaults = TomlConfigLoader::default().get_flags();
+        assert!(!defaults.prefer_wss_http3_for_p2p);
+        assert_eq!(defaults.default_protocol, "udp");
+        assert!(!defaults.only_use_wss_http3_for_hole_punching);
+        assert!(!defaults.disable_wss_http3_for_p2p);
+        assert!(!defaults.close_redundant_conns_when_disguised);
+
+        for (prefer, protocol) in [
+            (None, None),
+            (Some(false), Some("udp")),
+            (Some(true), Some("tcp")),
+        ] {
+            let input = NetworkConfig {
+                prefer_wss_http3_for_p2p: prefer,
+                p2p_prefer_protocol: protocol.map(str::to_owned),
+                ..standalone_config()
+            };
+            let expected_prefer = prefer.unwrap_or(false);
+            let expected_protocol = protocol.unwrap_or("udp");
+            let config = input.gen_config().unwrap();
+            let flags = config.get_flags();
+            assert_eq!(flags.prefer_wss_http3_for_p2p, expected_prefer);
+            assert_eq!(flags.default_protocol, expected_protocol);
+
+            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            let flags = restored.get_flags();
+            assert_eq!(flags.prefer_wss_http3_for_p2p, expected_prefer);
+            assert_eq!(flags.default_protocol, expected_protocol);
+            let output = NetworkConfig::new_from_config(&restored).unwrap();
+            assert_eq!(output.prefer_wss_http3_for_p2p, Some(expected_prefer));
+            assert_eq!(
+                output.p2p_prefer_protocol.as_deref(),
+                Some(expected_protocol)
+            );
+            #[cfg(feature = "web-client")]
+            {
+                let output = crate::config::api::network_config_from_toml(&restored);
+                assert_eq!(output.prefer_wss_http3_for_p2p, Some(expected_prefer));
+                assert_eq!(
+                    output.p2p_prefer_protocol.as_deref(),
+                    Some(expected_protocol)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn bbr_defaults_off_and_round_trips_independently_of_quic_proxy() {
         for value in [None, Some(false), Some(true)] {
             let input = NetworkConfig {
@@ -1034,7 +1082,7 @@ network_name = "old-network"
 network_secret = "secret"
 
 [flags]
-default_protocol = "udp"
+default_protocol = "tcp"
 disable_p2p = true
 "#;
         let parsed = TomlConfigLoader::new_from_str(original).unwrap();
@@ -1056,7 +1104,7 @@ disable_p2p = true
             merged["network_identity"]["network_name"].as_str(),
             Some("edited-network")
         );
-        assert_eq!(merged["flags"]["default_protocol"].as_str(), Some("udp"));
+        assert_eq!(merged["flags"]["default_protocol"].as_str(), Some("tcp"));
         assert!(
             !merged["flags"]
                 .as_table()

@@ -369,9 +369,31 @@ pub(crate) fn preferred_disguised_scheme(default_protocol: &str) -> Option<&'sta
     }
 }
 
+/// Common ordering for automatic connection attempts and existing peer paths.
+/// A lower rank is preferred; resolution prefixes on tunnel types are ignored.
+pub(crate) fn p2p_protocol_rank(default_protocol: &str, use_disguise: bool, scheme: &str) -> u8 {
+    let default_protocol = default_protocol.trim().to_ascii_lowercase();
+    let scheme = scheme.rsplit('-').next().unwrap_or(scheme);
+    if use_disguise && matches!(scheme, "wss" | "http3") {
+        return match preferred_disguised_scheme(&default_protocol) {
+            Some(preferred) if scheme != preferred => 1,
+            _ => 0,
+        };
+    }
+
+    let raw_rank = if scheme == default_protocol {
+        0
+    } else if scheme == "udp" || (scheme == "tcp" && default_protocol == "udp") {
+        1
+    } else {
+        2
+    };
+    raw_rank + if use_disguise { 2 } else { 0 }
+}
+
 #[cfg(test)]
 mod preferred_disguised_scheme_tests {
-    use super::preferred_disguised_scheme;
+    use super::{p2p_protocol_rank, preferred_disguised_scheme};
 
     #[test]
     fn p2p_transport_preference_selects_the_disguised_transport() {
@@ -380,6 +402,25 @@ mod preferred_disguised_scheme_tests {
         assert_eq!(preferred_disguised_scheme(" tcp "), Some("wss"));
         assert_eq!(preferred_disguised_scheme("wg"), None);
         assert_eq!(preferred_disguised_scheme(""), None);
+    }
+
+    #[test]
+    fn connection_and_dial_order_follow_the_same_transport_preference() {
+        for (preferred, use_disguise, order) in [
+            ("udp", true, ["http3", "wss", "udp", "tcp"]),
+            ("tcp", true, ["wss", "http3", "tcp", "udp"]),
+            ("udp", false, ["udp", "tcp", "wss", "http3"]),
+            ("tcp", false, ["tcp", "udp", "wss", "http3"]),
+        ] {
+            let ranks = order.map(|scheme| p2p_protocol_rank(preferred, use_disguise, scheme));
+            assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]));
+            assert!(ranks[0] < ranks[1]);
+        }
+        assert_eq!(p2p_protocol_rank(" UDP ", true, "http-txt-http3"), 0);
+        assert_eq!(p2p_protocol_rank("wg", false, "wg"), 0);
+        assert_eq!(p2p_protocol_rank("wg", false, "udp"), 1);
+        assert_eq!(p2p_protocol_rank("wg", true, "wss"), 0);
+        assert_eq!(p2p_protocol_rank("wg", true, "http3"), 0);
     }
 }
 

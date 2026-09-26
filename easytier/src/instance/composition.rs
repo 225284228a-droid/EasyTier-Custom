@@ -679,4 +679,599 @@ mod tests {
         instance_b.stop().await;
         instance_a.stop().await;
     }
+
+    #[cfg(feature = "quic")]
+    mod native_http3 {
+        use std::{
+            net::{Ipv4Addr, SocketAddr},
+            sync::Mutex,
+            time::{Duration, Instant},
+        };
+
+        use crate::proto::common::TunnelInfo;
+        use easytier_core::{
+            config::PeerId,
+            packet::{UDP_TUNNEL_HEADER_SIZE, UDPTunnelHeader},
+            socket::udp::parse_quic_initial_dcid,
+        };
+        use zerocopy::FromBytes;
+
+        use super::*;
+
+        fn build_instance(
+            network: &str,
+            overlay_ip: &str,
+            listeners: Vec<url::Url>,
+            automatic_p2p: bool,
+        ) -> (
+            Arc<NativeCoreInstance>,
+            tokio::sync::mpsc::Receiver<Vec<u8>>,
+        ) {
+            let global = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+                network.to_owned(),
+                "shared-secret".to_owned(),
+            )));
+            global.set_ipv4(Some(overlay_ip.parse().unwrap()));
+            let mut flags = global.get_flags();
+            flags.enable_ipv6 = true;
+            flags.default_protocol = "udp".to_owned();
+            flags.disable_p2p = !automatic_p2p;
+            flags.lazy_p2p = false;
+            flags.prefer_wss_http3_for_p2p = automatic_p2p;
+            flags.disable_wss_http3_for_p2p = false;
+            flags.only_use_wss_http3_for_hole_punching = false;
+            flags.close_redundant_conns_when_disguised = true;
+            flags.disable_tcp_hole_punching = true;
+            flags.disable_udp_hole_punching = true;
+            flags.disable_sym_hole_punching = true;
+            flags.disable_upnp = true;
+            global.set_flags(flags);
+
+            let (sink, packets) = create_host_packet_channel();
+            let mut config = test_core_instance_config(&global);
+            tracing::debug!(?config.peer.snapshot.flags, "native HTTP3 test instance flags");
+            config.connectivity.initial_peers.clear();
+            config.connectivity.listeners = (!listeners.is_empty()).then(|| {
+                ListenerRuntimeConfig::new(
+                    listeners,
+                    false,
+                    config.connectivity.direct.udp_bind.context.clone(),
+                )
+                .with_udp_http3(true)
+            });
+            config.connectivity.startup_plan.gateway = false;
+            config.connectivity.startup_plan.packet_proxy = false;
+            config.connectivity.stun.udp_servers.clear();
+            config.connectivity.stun.tcp_servers.clear();
+            config.connectivity.stun.udp_v6_servers.clear();
+            config.connectivity.manual = Default::default();
+            config.connectivity.direct.testing = true;
+            let mut adapters =
+                runtime_core_host_adapters(global, CoreProcessRuntime::new(), Arc::new(sink));
+            #[cfg(feature = "proxy-cidr-monitor")]
+            {
+                adapters.proxy_cidr_monitor_enabled = false;
+            }
+            adapters.udp_hole_punch_platform = None;
+            (NativeCoreInstance::new(config, adapters).unwrap(), packets)
+        }
+
+        async fn wait_for_connection(
+            instance: &NativeCoreInstance,
+            peer_id: PeerId,
+            scheme: &str,
+            selected: bool,
+        ) -> TunnelInfo {
+            let result = tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    for peer in instance.peer_snapshots().await {
+                        if peer.peer_id != peer_id {
+                            continue;
+                        }
+                        let default_conn = peer.default_conn_id.map(|id| id.to_string());
+                        for conn in peer.conns {
+                            if conn.is_closed
+                                || (selected
+                                    && default_conn.as_deref() != Some(conn.conn_id.as_str()))
+                            {
+                                continue;
+                            }
+                            if let Some(tunnel) = conn.tunnel
+                                && tunnel.tunnel_type.rsplit('-').next() == Some(scheme)
+                            {
+                                return tunnel;
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            match result {
+                Ok(tunnel) => tunnel,
+                Err(_) => panic!(
+                    "peer {peer_id} did not acquire a {scheme} connection (selected={selected}); \
+                     local_peer={}; listeners={:?}; connectors={:?}; peers={:#?}; routes={:#?}; \
+                     latest_error={:?}",
+                    instance.peer_id(),
+                    instance.running_listeners(),
+                    instance.list_connectors(),
+                    instance.peer_snapshots().await,
+                    instance.route_snapshots().await,
+                    instance.latest_error(),
+                ),
+            }
+        }
+
+        fn ip_packet(source: Ipv4Addr, destination: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
+            let mut packet = vec![0; 28 + payload.len()];
+            let packet_len = packet.len() as u16;
+            {
+                let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet);
+                ipv4.set_version(4);
+                ipv4.set_header_len(20);
+                ipv4.set_total_len(packet_len);
+                ipv4.set_hop_limit(64);
+                ipv4.set_next_header(IpProtocol::Udp);
+                ipv4.set_src_addr(source);
+                ipv4.set_dst_addr(destination);
+            }
+            {
+                let mut udp = UdpPacket::new_unchecked(&mut packet[20..]);
+                udp.set_src_port(10000);
+                udp.set_dst_port(10001);
+                udp.set_len(8 + payload.len() as u16);
+                udp.payload_mut().copy_from_slice(payload);
+                udp.fill_checksum(&IpAddress::Ipv4(source), &IpAddress::Ipv4(destination));
+            }
+            Ipv4Packet::new_unchecked(&mut packet).fill_checksum();
+            packet
+        }
+
+        async fn deliver_packet(
+            sender: &NativeCoreInstance,
+            receiver: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+            packet: &[u8],
+        ) {
+            let received = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    sender
+                        .packet_plane()
+                        .send_ip_packet(HostPacket::copy_from_payload(packet))
+                        .await
+                        .unwrap();
+                    match tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await {
+                        Ok(Some(received)) if received == packet => return received,
+                        Ok(Some(_)) => {}
+                        Ok(None) => panic!("native host packet sink closed"),
+                        Err(_) => {}
+                    }
+                }
+            })
+            .await
+            .expect("native host packet round trip timed out");
+            assert_eq!(received, packet);
+        }
+
+        const BURST_MARKER: &[u8] = b"native-http3-encrypted-burst";
+
+        #[derive(Debug, Default)]
+        struct WireObservations {
+            datagrams: usize,
+            bytes: usize,
+            initial_datagrams: usize,
+            nonstandard_initial_versions: usize,
+            easytier_envelopes: usize,
+            plaintext_markers: usize,
+            first_client_datagram: Option<Vec<u8>>,
+        }
+
+        impl WireObservations {
+            fn observe(&mut self, datagram: &[u8], from_client: bool) {
+                self.datagrams += 1;
+                self.bytes += datagram.len();
+                if from_client && self.first_client_datagram.is_none() {
+                    self.first_client_datagram = Some(datagram.to_vec());
+                }
+                if parse_quic_initial_dcid(datagram).is_some() {
+                    self.initial_datagrams += 1;
+                    if datagram[1..5] != 1u32.to_be_bytes() {
+                        self.nonstandard_initial_versions += 1;
+                    }
+                }
+                if let Some(header) = UDPTunnelHeader::ref_from_prefix(datagram)
+                    && header.padding == 0
+                    && (1..=7).contains(&header.msg_type)
+                    && usize::from(header.len.get()) + UDP_TUNNEL_HEADER_SIZE == datagram.len()
+                {
+                    self.easytier_envelopes += 1;
+                }
+                self.plaintext_markers += usize::from(
+                    datagram
+                        .windows(BURST_MARKER.len())
+                        .any(|window| window == BURST_MARKER),
+                );
+            }
+        }
+
+        async fn observe_udp_wire(
+            bind: &str,
+            server_addr: SocketAddr,
+        ) -> (
+            SocketAddr,
+            Arc<Mutex<WireObservations>>,
+            tokio_util::task::AbortOnDropHandle<()>,
+        ) {
+            let socket = tokio::net::UdpSocket::bind(bind).await.unwrap();
+            let address = socket.local_addr().unwrap();
+            let observations = Arc::new(Mutex::new(WireObservations::default()));
+            let observed = observations.clone();
+            let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                let mut buffer = vec![0; 65536];
+                let mut client_addr = None;
+                loop {
+                    let (length, source) = socket.recv_from(&mut buffer).await.unwrap();
+                    let from_client = source != server_addr;
+                    let target = if from_client {
+                        client_addr = Some(source);
+                        server_addr
+                    } else {
+                        client_addr.expect("HTTP3 client must send the first datagram")
+                    };
+                    observed
+                        .lock()
+                        .unwrap()
+                        .observe(&buffer[..length], from_client);
+                    socket.send_to(&buffer[..length], target).await.unwrap();
+                }
+            }));
+            (address, observations, task)
+        }
+
+        async fn transfer_burst(
+            sender: &NativeCoreInstance,
+            receiver: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+            source: Ipv4Addr,
+            destination: Ipv4Addr,
+            observations: &Mutex<WireObservations>,
+        ) -> usize {
+            let packets = (0u32..256)
+                .map(|sequence| {
+                    let mut payload = vec![0x5a; 1024];
+                    payload[..BURST_MARKER.len()].copy_from_slice(BURST_MARKER);
+                    payload[BURST_MARKER.len()..BURST_MARKER.len() + 4]
+                        .copy_from_slice(&sequence.to_be_bytes());
+                    ip_packet(source, destination, &payload)
+                })
+                .collect::<Vec<_>>();
+            let mut sent_count = 0;
+            let mut received_count = 0;
+            let mut ignored_count = 0;
+            let mut seen = [false; 256];
+            // Keep this transport workload below core's 128-packet NIC queue.
+            let credits = tokio::sync::Semaphore::new(64);
+            let send = async {
+                for packet in &packets {
+                    let credit = credits.acquire().await.unwrap();
+                    sender
+                        .packet_plane()
+                        .send_ip_packet(HostPacket::copy_from_payload(packet))
+                        .await
+                        .unwrap();
+                    credit.forget();
+                    sent_count += 1;
+                }
+            };
+            let receive = async {
+                // The packet plane carries IP datagrams, whose processing may
+                // reorder them. Require every exact packet once, without adding
+                // an ordering guarantee to the underlying UDP flow.
+                let mut count = 0;
+                while count < packets.len() {
+                    let received = receiver.recv().await.expect("native packet sink closed");
+                    received_count += 1;
+                    if !received
+                        .windows(BURST_MARKER.len())
+                        .any(|window| window == BURST_MARKER)
+                    {
+                        ignored_count += 1;
+                        continue;
+                    }
+                    let sequence_offset = 28 + BURST_MARKER.len();
+                    let sequence = u32::from_be_bytes(
+                        received
+                            .get(sequence_offset..sequence_offset + 4)
+                            .expect("truncated burst packet")
+                            .try_into()
+                            .unwrap(),
+                    ) as usize;
+                    assert!(
+                        sequence < packets.len(),
+                        "invalid burst sequence {sequence}"
+                    );
+                    assert_eq!(
+                        received, packets[sequence],
+                        "burst packet {sequence} was corrupted"
+                    );
+                    assert!(!seen[sequence], "duplicate burst packet {sequence}");
+                    seen[sequence] = true;
+                    count += 1;
+                    credits.add_permits(1);
+                }
+            };
+            let result = tokio::time::timeout(Duration::from_secs(15), async {
+                tokio::join!(send, receive);
+            })
+            .await;
+            if result.is_err() {
+                let missing = seen
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(sequence, seen)| (!seen).then_some(sequence))
+                    .collect::<Vec<_>>();
+                let wire = format!("{:?}", observations.lock().unwrap());
+                panic!(
+                    "HTTP3 burst {source} -> {destination} timed out: sent={sent_count}; \
+                     received={received_count}; ignored={ignored_count}; missing={missing:?}; \
+                     wire={wire}; peers={:#?}; routes={:#?}",
+                    sender.peer_snapshots().await,
+                    sender.route_snapshots().await,
+                );
+            }
+            packets.iter().map(Vec::len).sum()
+        }
+
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn native_core_http3_companion_preserves_public_wire_and_burst_delivery(
+            #[values("127.0.0.1:0", "[::1]:0")] bind: &str,
+        ) {
+            tokio::time::timeout(Duration::from_secs(90), async {
+                for listener_scheme in ["http3", "udp"] {
+                    let network = "native-http3-wire-parity";
+                    let (server, mut server_packets) = build_instance(
+                        network,
+                        "10.254.0.1/24",
+                        vec![format!("{listener_scheme}://{bind}").parse().unwrap()],
+                        false,
+                    );
+                    let (client, mut client_packets) =
+                        build_instance(network, "10.254.0.2/24", Vec::new(), false);
+                    let (start_server, start_client) = tokio::join!(server.start(), client.start());
+                    start_server.unwrap();
+                    start_client.unwrap();
+                    let listener = server
+                        .running_listeners()
+                        .into_iter()
+                        .find(|url| url.scheme() == listener_scheme)
+                        .unwrap();
+                    let server_addr = listener.socket_addrs(|| None).unwrap()[0];
+                    let (relay_addr, observations, relay) =
+                        observe_udp_wire(bind, server_addr).await;
+                    client
+                        .add_connector(
+                            format!("http3://{relay_addr}?sni=www.example.com")
+                                .parse()
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    let client_tunnel =
+                        wait_for_connection(&client, server.peer_id(), "http3", true).await;
+                    let requested_url: url::Url = client_tunnel.remote_addr.unwrap().into();
+                    assert_eq!(
+                        requested_url
+                            .query_pairs()
+                            .find(|(key, _)| key == "sni")
+                            .map(|(_, value)| value.into_owned())
+                            .as_deref(),
+                        Some("www.example.com")
+                    );
+                    wait_for_connection(&server, client.peer_id(), "http3", true).await;
+                    let warmup = ip_packet(
+                        "10.254.0.2".parse().unwrap(),
+                        "10.254.0.1".parse().unwrap(),
+                        b"HTTP3 wire test warmup",
+                    );
+                    deliver_packet(&client, &mut server_packets, &warmup).await;
+                    let reply_warmup = ip_packet(
+                        "10.254.0.1".parse().unwrap(),
+                        "10.254.0.2".parse().unwrap(),
+                        b"HTTP3 wire test reply warmup",
+                    );
+                    deliver_packet(&server, &mut client_packets, &reply_warmup).await;
+
+                    let started = Instant::now();
+                    let sent = transfer_burst(
+                        &client,
+                        &mut server_packets,
+                        "10.254.0.2".parse().unwrap(),
+                        "10.254.0.1".parse().unwrap(),
+                        &observations,
+                    )
+                    .await;
+                    let replied = transfer_burst(
+                        &server,
+                        &mut client_packets,
+                        "10.254.0.1".parse().unwrap(),
+                        "10.254.0.2".parse().unwrap(),
+                        &observations,
+                    )
+                    .await;
+                    let elapsed = started.elapsed();
+                    assert_eq!(sent, 256 * (1024 + 28));
+                    assert_eq!(replied, sent);
+                    let observed = observations.lock().unwrap();
+                    let first = observed.first_client_datagram.as_ref().unwrap();
+                    assert!(
+                        parse_quic_initial_dcid(first).is_some(),
+                        "public HTTP3 must begin with QUIC Initial, not EasyTier framing"
+                    );
+                    assert!(observed.initial_datagrams > 0);
+                    assert_eq!(observed.nonstandard_initial_versions, 0);
+                    assert_eq!(observed.easytier_envelopes, 0);
+                    assert_eq!(observed.plaintext_markers, 0);
+                    println!(
+                        "native HTTP3 {listener_scheme} {bind}: 512 packets, {} IP bytes, \
+                         {} wire datagrams, {} wire bytes, {:.2} Mbps in {:.3}s",
+                        sent + replied,
+                        observed.datagrams,
+                        observed.bytes,
+                        (sent + replied) as f64 * 8.0 / elapsed.as_secs_f64() / 1_000_000.0,
+                        elapsed.as_secs_f64(),
+                    );
+                    drop(observed);
+                    client.stop().await;
+                    server.stop().await;
+                    relay.abort();
+                    assert!(relay.await.unwrap_err().is_cancelled());
+                }
+            })
+            .await
+            .expect("native HTTP3 wire and burst parity test timed out");
+        }
+
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn native_core_udp_listener_round_trips_raw_udp_and_http3_on_one_port(
+            #[values("127.0.0.1:0", "[::1]:0")] bind: &str,
+        ) {
+            tokio::time::timeout(Duration::from_secs(45), async {
+                let network = "native-dual-udp-http3";
+                let (server, mut server_packets) = build_instance(
+                    network,
+                    "10.252.0.1/24",
+                    vec![format!("udp://{bind}").parse().unwrap()],
+                    false,
+                );
+                let (raw, mut raw_packets) =
+                    build_instance(network, "10.252.0.2/24", Vec::new(), false);
+                let (http3, mut http3_packets) =
+                    build_instance(network, "10.252.0.3/24", Vec::new(), false);
+                let (start_server, start_raw, start_http3) =
+                    tokio::join!(server.start(), raw.start(), http3.start());
+                start_server.unwrap();
+                start_raw.unwrap();
+                start_http3.unwrap();
+
+                let listeners = server.running_listeners();
+                assert!(!listeners.iter().any(|url| url.scheme() == "http3"));
+                let udp_listeners = listeners
+                    .into_iter()
+                    .filter(|url| url.scheme() == "udp")
+                    .collect::<Vec<_>>();
+                assert_eq!(udp_listeners.len(), 1);
+                let udp_url = udp_listeners[0].clone();
+                let mut http3_url = udp_url.clone();
+                http3_url.set_scheme("http3").unwrap();
+                raw.add_connector(udp_url.clone()).unwrap();
+                http3.add_connector(http3_url.clone()).unwrap();
+
+                wait_for_connection(&raw, server.peer_id(), "udp", true).await;
+                let http3_tunnel =
+                    wait_for_connection(&http3, server.peer_id(), "http3", true).await;
+                let remote_url: url::Url = http3_tunnel.remote_addr.unwrap().into();
+                assert_eq!(remote_url.scheme(), "http3");
+                assert_eq!(remote_url.host(), http3_url.host());
+                assert_eq!(remote_url.port(), http3_url.port());
+                let accepted = wait_for_connection(&server, http3.peer_id(), "http3", true).await;
+                let local_url: url::Url = accepted.local_addr.unwrap().into();
+                assert_eq!(local_url.port(), udp_url.port());
+
+                for (client, packets, client_ip, marker) in [
+                    (&raw, &mut raw_packets, "10.252.0.2", b"raw UDP".as_slice()),
+                    (
+                        &http3,
+                        &mut http3_packets,
+                        "10.252.0.3",
+                        b"HTTP3".as_slice(),
+                    ),
+                ] {
+                    let request = ip_packet(
+                        client_ip.parse().unwrap(),
+                        "10.252.0.1".parse().unwrap(),
+                        marker,
+                    );
+                    deliver_packet(client, &mut server_packets, &request).await;
+                    let reply = ip_packet(
+                        "10.252.0.1".parse().unwrap(),
+                        client_ip.parse().unwrap(),
+                        marker,
+                    );
+                    deliver_packet(&server, packets, &reply).await;
+                }
+                assert!(server.connected_peers().await.contains(&raw.peer_id()));
+                assert!(server.connected_peers().await.contains(&http3.peer_id()));
+
+                http3.stop().await;
+                raw.stop().await;
+                server.stop().await;
+            })
+            .await
+            .expect("native dual UDP/HTTP3 listener test timed out");
+        }
+
+        #[cfg(feature = "websocket")]
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn native_core_direct_upgrades_tcp_or_wss_to_http3_companion(
+            #[values("127.0.0.1:0", "[::1]:0")] bind: &str,
+            #[values("tcp", "wss")] bootstrap_scheme: &str,
+        ) {
+            tokio::time::timeout(Duration::from_secs(45), async {
+                let network = "native-auto-http3-upgrade";
+                let (server, mut server_packets) = build_instance(
+                    network,
+                    "10.253.0.1/24",
+                    vec![
+                        format!("{bootstrap_scheme}://{bind}").parse().unwrap(),
+                        format!("udp://{bind}").parse().unwrap(),
+                    ],
+                    true,
+                );
+                let (client, mut client_packets) =
+                    build_instance(network, "10.253.0.2/24", Vec::new(), true);
+                let (start_server, start_client) = tokio::join!(server.start(), client.start());
+                start_server.unwrap();
+                start_client.unwrap();
+                let listeners = server.running_listeners();
+                assert!(!listeners.iter().any(|url| url.scheme() == "http3"));
+                let bootstrap = listeners
+                    .iter()
+                    .find(|url| url.scheme() == bootstrap_scheme)
+                    .unwrap()
+                    .clone();
+                let udp_url = listeners.iter().find(|url| url.scheme() == "udp").unwrap();
+                client.add_connector(bootstrap).unwrap();
+                wait_for_connection(&client, server.peer_id(), bootstrap_scheme, false).await;
+
+                // The only connector is TCP/WSS, so HTTP3 must be discovered via peer RPC.
+                let upgraded = wait_for_connection(&client, server.peer_id(), "http3", true).await;
+                let remote_url: url::Url = upgraded.remote_addr.unwrap().into();
+                assert_eq!(remote_url.scheme(), "http3");
+                assert_eq!(remote_url.host(), udp_url.host());
+                assert_eq!(remote_url.port(), udp_url.port());
+                wait_for_connection(&server, client.peer_id(), "http3", true).await;
+                assert_eq!(client.list_connectors().len(), 1);
+                // Preference cleanup must retain the explicitly configured bootstrap path.
+                wait_for_connection(&client, server.peer_id(), bootstrap_scheme, false).await;
+
+                let request = ip_packet(
+                    "10.253.0.2".parse().unwrap(),
+                    "10.253.0.1".parse().unwrap(),
+                    b"automatic HTTP3 request",
+                );
+                deliver_packet(&client, &mut server_packets, &request).await;
+                let reply = ip_packet(
+                    "10.253.0.1".parse().unwrap(),
+                    "10.253.0.2".parse().unwrap(),
+                    b"automatic HTTP3 reply",
+                );
+                deliver_packet(&server, &mut client_packets, &reply).await;
+                client.stop().await;
+                server.stop().await;
+            })
+            .await
+            .expect("native automatic HTTP3 upgrade test timed out");
+        }
+    }
 }

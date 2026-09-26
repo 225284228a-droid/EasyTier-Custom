@@ -36,19 +36,25 @@
 - 新增 HTTP3 隧道实现和协议适配，扩展 WSS 传输，并将 HTTP3 默认监听端口设为 `11014`。
 - WSS URL 支持 SNI、Host、请求路径、User-Agent、Accept-Language 和 padding 参数；padding 间隔/长度有边界限制。
 - 增加全局 `sni` 配置，用于出站 WSS/HTTP3 连接。
+- 全局 SNI 为空时保留 URL 中显式配置的 SNI；HTTP3 使用 IPv6 地址作为默认服务器名时移除 URL 方括号，避免 TLS 服务器名校验失败。
 - GUI/Web 编辑 URL 时保留路径、查询参数和 fragment。
 
-相关代码：`easytier/src/tunnel/http3.rs`、`websocket.rs`、`protocol/adapters/`。这里的“伪装”描述传输格式与握手参数，不是不可识别或不可封锁的保证。
+相关代码：`easytier/src/tunnel/http3.rs`、`websocket.rs`、`protocol/adapters/`。这里的“伪装”描述传输格式与握手参数，不是不可识别或不可封锁的保证。HTTP3 隧道使用 TLS 1.3 和 `h3` ALPN，但应用流仍为自定义隧道帧，并非完整的浏览器 HTTP/3 请求；原生 QUIC 打洞的数据包已去除外层 EasyTier UDP 头部，NAT 控制探测包仍沿用现有 EasyTier 格式。
 
 ### 4. P2P 协议策略与连接管理
 
 - 增加优先、禁用、仅使用 WSS/HTTP3 的 P2P/打洞策略；直连、TCP 打洞和 UDP 打洞都会参考对端能力。
 - TCP 打洞成功的连接可升级为 WSS；双方支持伪装 P2P 时，UDP 打洞会按次协商 HTTP3。严格模式要求 HTTP3，不能降级；优先模式在远端或本机不支持时回退裸 UDP。
-- UDP 打洞监听器按 `udp` / `http3` 分池复用，HTTP3 与 WSS 打洞一样使用打洞过程中的自动临时监听端口，不依赖手动公布的 HTTP3/WSS 服务监听器。
+- 新版双方通过打洞 RPC 的 `native_http3` 能力协商原生 QUIC，去除 HTTP3 数据外层的 EasyTier UDP 头部。旧魔改节点未返回该能力时仍使用原封装，官方节点的空 scheme 仍表示裸 UDP；SNI、TLS 1.3、`h3` ALPN 和 BBR 沿用原 HTTP3 引擎。
+- UDP 打洞监听器按裸 UDP、原生 HTTP3、旧版封装 HTTP3 分池复用，HTTP3 与 WSS 打洞一样使用打洞过程中的自动临时监听端口，不依赖手动公布的 HTTP3/WSS 服务监听器。
+- 支持 HTTP3 的节点会在已配置的 UDP 公网监听端口同时接受 HTTP3，并仅公布已就绪的升级端点；自动P2P无需另加 HTTP3 监听或端口。普通 TCP 公网监听不因此变为 WSS。
 - `default_protocol = "udp"` 将 HTTP3 排在 WSS 前，`"tcp"` 则相反；GUI/Web 提供该协议偏好选择。对普通 UDP/TCP 打洞，该选项分别对应 HTTP3/WSS 升级偏好。
 - 打洞 RPC 的 scheme 字段为空表示官方主线裸 UDP/TCP 协议。官方 peer 不返回新字段时，本分支在优先模式下回退裸 UDP；严格模式不会接受降级连接。
-- 严格模式下选择 `udp` 时，已有 WSS 连接仍会继续尝试 HTTP3 打洞；已有 HTTP3 连接后停止重复打洞。选择 `tcp` 时，已有 WSS 连接可满足连接要求。
-- 可选 `close_redundant_conns_when_disguised`：伪装连接建立后关闭自动 P2P 建立的普通连接，保留手动配置连接和入站连接。
+- 已有回退连接仍会继续尝试首选协议；协商伪装且选择 `udp` 时，已有 WSS 连接仍会继续尝试 HTTP3，选择 `tcp` 时则优先 WSS。
+- HTTP3 打洞立即进入首次调度；优先模式下 30 秒后允许并行尝试裸 UDP 回退，已有同级或更优连接时停止重复尝试。严格模式不启动裸 UDP 回退。
+- 多网卡 HTTP3 拨号在协议握手成功后才选定网卡，避免把尚未验证的 UDP 会话当成可用链路；本机回环地址由系统选择回环路径。
+- 可选 `close_redundant_conns_when_disguised`（界面为“首选连接建立后断开多余连接”）：首选连接确认可用后，清理同一对等节点较低优先级的自动P2P连接。协商伪装且选择 UDP 时 HTTP3 可替换 WSS；不主动伪装且选择 UDP 时普通 UDP 可替换 WSS。保留手动连接、普通入站连接、附加连接和同级连接，开关仍默认关闭。
+- 新建配置及未指定字段统一默认“不主动使用伪装”和 UDP，GUI/Web 与内核一致；明确保存的伪装策略、TCP/UDP 选择保持不变。旧 TOML 若省略了当时的默认值，加载后采用新的默认值。
 - 修复 SNI 改写 URL 后连接身份不一致导致的重连堆积，并替换相同 URL 的重复客户端连接。
 - `disable_p2p` 调整为半严格行为：拒绝普通节点发起的 TCP/UDP 打洞 RPC，保留声明 `need_p2p` 的节点例外，不主动断开已有连接。
 
@@ -75,10 +81,11 @@
 | TOML 选项 | 当前默认值 | 作用 |
 | --- | --- | --- |
 | 顶层 `sni` | 未设置 | 出站 WSS/HTTP3 的全局 SNI |
-| `[flags] prefer_wss_http3_for_p2p` | `true` | 优先协商 WSS/HTTP3 |
+| `[flags] default_protocol` | `"udp"` | 自动P2P优先 UDP，协商伪装时优先 HTTP3 |
+| `[flags] prefer_wss_http3_for_p2p` | `false` | 启用后优先协商 WSS/HTTP3；默认仅响应需要伪装的对端 |
 | `[flags] disable_wss_http3_for_p2p` | `false` | 禁止自动 P2P 使用 WSS/HTTP3 |
 | `[flags] only_use_wss_http3_for_hole_punching` | `false` | 限制自动 P2P/打洞使用伪装传输 |
-| `[flags] close_redundant_conns_when_disguised` | `false` | 清理自动建立的冗余普通连接 |
+| `[flags] close_redundant_conns_when_disguised` | `false` | 首选连接可用后清理较低优先级的自动P2P连接 |
 | `[flags] enable_bbr` | `false` | 为 QUIC/HTTP3 发送端启用 BBR |
 
 这些策略受本机构建能力和对端能力影响。与原版混用时不要假定扩展功能全部可用；强制仅使用 WSS/HTTP3 可能减少可连接路径。启用互相冲突的策略可能使连接无法建立。
@@ -93,13 +100,15 @@ cd EasyTier-Custom
 cargo build --release --locked -p easytier
 ```
 
-此前源码发布在 Windows 上执行：
+本次修改在 Windows 上完成以下验证：
 
-```sh
-cargo test -p easytier-core --lib connectivity:: --locked
-```
+- 核心连接与打洞测试 190 项、配置测试 78 项、监听测试 38 项、连接生命周期测试 11 项，以及 UDP/HTTP3 监听组装测试通过。
+- 原生实例测试 9 项通过，覆盖 IPv4/IPv6 下 TCP/WSS 到 HTTP3 的自动升级、同一 UDP 端口双协议收发，以及 QUIC 报文格式和双向数据完整性。
+- HTTP3 协议测试 11 项和 SNI 适配测试 6 项通过，覆盖 TLS 1.3、`h3` ALPN、BBR 独立开关和旧版 UDP 封装升级。
+- 共享前端测试 28 项、配置导出测试 10 项通过；共享前端、GUI/Web 前端类型检查与构建通过。
+- `cargo check --workspace --locked --offline`、`cargo fmt --all --check` 和 `git diff --check` 通过。
 
-结果：157 个测试通过，0 失败。覆盖连接、打洞与 STUN 单元测试；这不代表所有平台构建、GUI、真实 NAT 网络或完整端到端场景已经验证。本次发布为源码发布，不附带经过发布验证的二进制。
+同端口性能检查使用本机回环与抓包转发器，对比独立 HTTP3 监听和 UDP 共用监听。双方路由就绪后，每方向发送 256 个数据包，最多保持 64 个未收齐包，避免触及核心现有 128 包主机出站队列的溢出丢包策略；校验逐包内容和完整性。三轮复测均通过，但短时 debug 吞吐存在调度波动，不是公网吞吐、真实 NAT 成功率或跨平台性能保证。本次交付为源码，不附带经过发布验证的安装包。
 
 ## 审阅完整差异
 

@@ -223,15 +223,15 @@ p2p_disguise_mode_default: 默认（不主动使用）
 p2p_disguise_mode_prefer: 优先使用 WSS/HTTP3
 p2p_disguise_mode_disable: 禁用 WSS/HTTP3
 p2p_disguise_mode_only: 仅使用 WSS/HTTP3
-p2p_disguise_mode_help: 自动P2P优先使用 WSS 和 HTTP/3，同时允许回退到 TCP/UDP；默认不主动使用伪装协议但响应需要伪装的对端；也可彻底禁用两个伪装协议，或仅使用这两个协议进行P2P。手动连接和普通直连不受影响。
+p2p_disguise_mode_help: 默认不主动使用伪装协议，但响应需要伪装的对端；优先模式会尝试 WSS 和 HTTP/3，并允许回退到 TCP/UDP；也可禁用两个伪装协议，或仅使用这两个协议进行自动P2P。手动连接不受影响。
 
 p2p_prefer_protocol: P2P 优先协议
 p2p_prefer_protocol_tcp: 优先 TCP（可用时 WSS）
 p2p_prefer_protocol_udp: 优先 UDP（可用时 HTTP3）
-p2p_prefer_protocol_help: 自动P2P的传输偏好。在已配置的直连监听器中，选 UDP 会将 HTTP3 排在 WSS 前，选 TCP 则相反。此设置不会创建监听器，也不会将普通 UDP 打洞变为 HTTP3。HTTP3 直连需添加 HTTP3 监听；HTTP3 UDP 打洞需双方都启用“仅使用 WSS/HTTP3”。
+p2p_prefer_protocol_help: 默认优先 UDP。协商使用伪装时，选 UDP 优先 HTTP3，选 TCP 优先 WSS；不主动使用伪装时则优先对应的普通协议。支持 HTTP3 的节点会在已配置的 UDP 监听端口同时接受 HTTP3，自动P2P无需另加 HTTP3 监听；打洞使用临时监听端口。已有回退连接时仍会尝试首选协议。
 
-close_redundant_conns_when_disguised: 伪装连接后断开多余连接
-close_redundant_conns_when_disguised_help: 与某对等节点建立 WSS/HTTP3 伪装连接后，自动断开 P2P 自行发现并建立的其它协议连接；手动配置的对等节点和对方的入站连接会保留。默认关闭。
+close_redundant_conns_when_disguised: 首选连接建立后断开多余连接
+close_redundant_conns_when_disguised_help: 首选连接可用后，断开同一对等节点由自动P2P建立的较低优先级连接。协商使用伪装且优先 UDP 时，HTTP3 可替换 WSS；不主动使用伪装且优先 UDP 时，UDP 可替换 WSS。手动连接、普通入站连接和同级连接会保留。默认关闭。
 
 enable_udp_broadcast_relay: UDP 广播中继
 enable_udp_broadcast_relay_help: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"

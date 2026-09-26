@@ -100,6 +100,8 @@ pub struct ListenerRuntimeConfig {
     pub urls: Vec<Url>,
     pub enable_ipv6: bool,
     pub socket_context: SocketContext,
+    #[serde(default)]
+    pub udp_http3: bool,
 }
 
 impl ListenerRuntimeConfig {
@@ -108,7 +110,13 @@ impl ListenerRuntimeConfig {
             urls,
             enable_ipv6,
             socket_context,
+            udp_http3: false,
         }
+    }
+
+    pub fn with_udp_http3(mut self, enabled: bool) -> Self {
+        self.udp_http3 = enabled;
+        self
     }
 
     pub(crate) fn request(&self, self_id: uuid::Uuid) -> ListenerPlanRequest {
@@ -202,6 +210,10 @@ where
                     config.socket_context.clone(),
                 );
                 transports.push(TransportListenerConfig::Udp {
+                    http3_companion: config.udp_http3
+                        && listener.url.scheme() == "udp"
+                        && server_protocol
+                            .is_some_and(|protocol| protocol.supports_scheme("http3")),
                     url: listener.url,
                     request,
                     accept_kind,

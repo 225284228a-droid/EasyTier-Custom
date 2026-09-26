@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -27,6 +28,38 @@ use super::{
     UdpSymToConePunchClient, collect_udp_punch_tasks, punch_cone_to_cone,
     should_blacklist_signal_error,
 };
+
+fn udp_attempt_ready(
+    scheme: UdpPunchScheme,
+    preferred_elapsed: Option<std::time::Duration>,
+) -> bool {
+    // Only raw UDP fallback waits for the disguised transports. HTTP3 itself
+    // must enter the first scheduling round, even when WSS is already up.
+    scheme == UdpPunchScheme::Http3
+        || preferred_elapsed.is_none_or(|elapsed| elapsed.as_secs() >= 30)
+}
+
+fn ready_udp_attempts(
+    task: UdpPunchTaskInfo,
+    raw_fallback_allowed: bool,
+    preferred_elapsed: Option<std::time::Duration>,
+) -> Vec<UdpPunchTaskInfo> {
+    let mut attempts = Vec::with_capacity(2);
+    if udp_attempt_ready(task.scheme, preferred_elapsed) {
+        attempts.push(task);
+    }
+    if task.scheme == UdpPunchScheme::Http3
+        && raw_fallback_allowed
+        && !task.require_http3
+        && udp_attempt_ready(UdpPunchScheme::Udp, preferred_elapsed)
+    {
+        attempts.push(UdpPunchTaskInfo {
+            scheme: UdpPunchScheme::Udp,
+            ..task
+        });
+    }
+    attempts
+}
 
 #[derive(Clone, Default)]
 pub struct UdpSymPunchLock {
@@ -202,13 +235,7 @@ where
             Ok(Some(socket)) => {
                 let (connected, requested_url) = socket.into_connected();
                 let scheme = requested_url.scheme().to_owned();
-                if task_info.scheme == UdpPunchScheme::Http3
-                    && self
-                        .peer_source
-                        .p2p_policy_flags()
-                        .only_use_wss_http3_for_hole_punching
-                    && scheme != "http3"
-                {
+                if task_info.require_http3 && scheme != "http3" {
                     tracing::warn!(
                         peer_id = task_info.dst_peer_id,
                         %scheme,
@@ -262,6 +289,7 @@ where
                 self.signaling.clone(),
                 task_info.dst_peer_id,
                 task_info.scheme,
+                task_info.require_http3,
             )
             .await;
             let ret = self.map_client_result(task_info.dst_peer_id, ret);
@@ -297,6 +325,7 @@ where
                     self.signaling.clone(),
                     task_info.dst_peer_id,
                     task_info.scheme,
+                    task_info.require_http3,
                 )
                 .await;
                 let ret = self.map_client_result(task_info.dst_peer_id, ret);
@@ -317,6 +346,7 @@ where
                         &mut port_idx,
                         task_info.my_nat_type,
                         task_info.scheme,
+                        task_info.require_http3,
                     )
                     .await
             };
@@ -351,6 +381,7 @@ where
                     self.signaling.clone(),
                     task_info.dst_peer_id,
                     task_info.scheme,
+                    task_info.require_http3,
                 )
                 .await;
                 let ret = self.map_client_result(task_info.dst_peer_id, ret);
@@ -371,6 +402,7 @@ where
                         task_info.my_nat_type,
                         task_info.dst_nat_type,
                         task_info.scheme,
+                        task_info.require_http3,
                         &mut is_busy,
                     )
                     .await
@@ -440,26 +472,27 @@ where
         let my_peer_id = data.peer_source.local_peer_id();
         let policy = data.peer_source.p2p_policy_flags();
         let candidates = data.peer_source.candidates().await;
+        let raw_fallback_peers: HashSet<_> = candidates
+            .iter()
+            .filter(|candidate| {
+                !candidate.udp_satisfied
+                    && policy.allow_raw_with_peer(&candidate.peer_disguise_flags)
+            })
+            .map(|candidate| candidate.peer_id)
+            .collect();
         data.preferred_attempt_started.retain(|peer_id, _| {
             candidates.iter().any(|candidate| {
                 candidate.peer_id == *peer_id
                     && policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
             })
         });
-        // Prefer mode gives direct WSS/HTTP3 and WSS punching a head start
-        // before trying raw UDP. Strict mode's UDP path is already HTTP3,
-        // so delaying it would let WSS win before HTTP3 is even attempted.
-        let candidates = candidates.into_iter().filter(|candidate| {
-            policy.only_use_wss_http3_for_hole_punching
-                || !policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
-                || data
-                    .preferred_attempt_started
+        for candidate in &candidates {
+            if policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags) {
+                data.preferred_attempt_started
                     .entry(candidate.peer_id)
-                    .or_insert_with(Instant::now)
-                    .elapsed()
-                    .as_secs()
-                    >= 30
-        });
+                    .or_insert_with(Instant::now);
+            }
+        }
         let peers_to_connect = collect_udp_punch_tasks(
             my_peer_id,
             my_nat_type,
@@ -467,7 +500,18 @@ where
             data.transport_sink.supports_scheme("http3"),
             candidates,
             |peer_id| data.blacklist.contains(peer_id),
-        );
+        )
+        .into_iter()
+        .flat_map(|task| {
+            ready_udp_attempts(
+                task,
+                raw_fallback_peers.contains(&task.dst_peer_id),
+                data.preferred_attempt_started
+                    .get(&task.dst_peer_id)
+                    .map(|started| started.elapsed()),
+            )
+        })
+        .collect::<Vec<_>>();
         for task in &peers_to_connect {
             tracing::info!(
                 peer_id = task.dst_peer_id,
@@ -565,7 +609,27 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::UdpSymPunchLock;
+    use super::{
+        UdpPunchScheme, UdpPunchTaskInfo, UdpSymPunchLock, ready_udp_attempts, udp_attempt_ready,
+    };
+
+    #[test]
+    fn http3_starts_immediately_while_raw_fallback_keeps_its_grace_period() {
+        use std::time::Duration;
+        assert!(udp_attempt_ready(
+            UdpPunchScheme::Http3,
+            Some(Duration::ZERO)
+        ));
+        assert!(!udp_attempt_ready(
+            UdpPunchScheme::Udp,
+            Some(Duration::from_secs(29))
+        ));
+        assert!(udp_attempt_ready(
+            UdpPunchScheme::Udp,
+            Some(Duration::from_secs(30))
+        ));
+        assert!(udp_attempt_ready(UdpPunchScheme::Udp, None));
+    }
 
     #[test]
     fn symmetric_punch_locks_are_scoped_per_instance() {
@@ -576,5 +640,37 @@ mod tests {
         let _first_guard = first.try_lock().unwrap();
         assert!(first_clone.try_lock().is_err());
         assert!(second.try_lock().is_ok());
+    }
+
+    #[test]
+    fn failed_http3_can_fall_back_after_grace_but_strict_or_better_paths_do_not() {
+        use std::time::Duration;
+        let task = UdpPunchTaskInfo {
+            scheme: UdpPunchScheme::Http3,
+            require_http3: false,
+            dst_peer_id: 2,
+            dst_nat_type: crate::proto::common::NatType::PortRestricted.into(),
+            my_nat_type: crate::proto::common::NatType::PortRestricted.into(),
+        };
+        assert_eq!(
+            ready_udp_attempts(task, true, Some(Duration::ZERO)),
+            vec![task]
+        );
+        let attempts = ready_udp_attempts(task, true, Some(Duration::from_secs(30)));
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].scheme, UdpPunchScheme::Http3);
+        assert_eq!(attempts[1].scheme, UdpPunchScheme::Udp);
+        assert_eq!(
+            ready_udp_attempts(task, false, Some(Duration::from_secs(30))),
+            vec![task]
+        );
+        let strict = UdpPunchTaskInfo {
+            require_http3: true,
+            ..task
+        };
+        assert_eq!(
+            ready_udp_attempts(strict, true, Some(Duration::from_secs(30))),
+            vec![strict]
+        );
     }
 }

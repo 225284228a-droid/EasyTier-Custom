@@ -22,8 +22,8 @@ use crate::{
         IpVersion, ListenerConnectionCounter, SocketContext, SocketListener,
         tcp::{TcpListenOptions, TcpSocketListener, VirtualTcpListener, VirtualTcpListenerFactory},
         udp::{
-            UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionSocket,
-            UdpSessionSocketListener, VirtualUdpSocketFactory,
+            UdpSession, UdpSessionAcceptKind, UdpSessionListenRequest, UdpSessionProtocol,
+            UdpSessionSocket, UdpSessionSocketListener, VirtualUdpSocketFactory,
         },
     },
     tunnel::{Tunnel, ring::RingTunnelRegistry},
@@ -185,6 +185,7 @@ pub(crate) enum TransportListenerConfig {
         url: Url,
         request: UdpSessionListenRequest,
         accept_kind: UdpSessionAcceptKind,
+        http3_companion: bool,
         must_succeed: bool,
     },
 }
@@ -409,6 +410,7 @@ where
     url: Url,
     request: UdpSessionListenRequest,
     accept_kind: UdpSessionAcceptKind,
+    http3_companion: bool,
     host: Arc<H>,
     dns: Arc<dyn DnsResolver>,
     inner: Option<UdpSessionSocketListener<H>>,
@@ -424,18 +426,21 @@ where
         url: Url,
         request: UdpSessionListenRequest,
         accept_kind: UdpSessionAcceptKind,
+        http3_companion: bool,
         host: Arc<H>,
         dns: Arc<dyn DnsResolver>,
     ) -> Self {
-        let protocol_admission = matches!(
-            accept_kind,
-            UdpSessionAcceptKind::Classified(crate::socket::udp::UdpSessionProtocol::Quic)
-        )
+        let protocol_admission = (http3_companion
+            || matches!(
+                accept_kind,
+                UdpSessionAcceptKind::Classified(crate::socket::udp::UdpSessionProtocol::Quic)
+            ))
         .then(ServerProtocolAdmissionController::quic);
         Self {
             url,
             request,
             accept_kind,
+            http3_companion,
             host,
             dns,
             inner: None,
@@ -499,14 +504,31 @@ where
             self.host.clone(),
         );
         inner.listen().await?;
+        if self.http3_companion {
+            inner.enable_classified_accept(UdpSessionProtocol::Quic)?;
+        }
         self.inner = Some(inner);
         Ok(())
     }
 
     async fn accept(&mut self) -> anyhow::Result<Self::Accepted> {
         loop {
-            let session = self.inner()?.accept().await?;
-            let admission = match &self.protocol_admission {
+            let http3_companion = self.http3_companion;
+            let inner = self.inner()?;
+            let (session, is_http3) = if http3_companion {
+                tokio::select! {
+                    session = inner.accept_session() => (session?, false),
+                    session = inner.accept_classified_session(UdpSessionProtocol::Quic) => (session?, true),
+                }
+            } else {
+                (inner.accept_session().await?, false)
+            };
+            let needs_admission = is_http3
+                || matches!(
+                    self.accept_kind,
+                    UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic)
+                );
+            let admission = match self.protocol_admission.as_ref().filter(|_| needs_admission) {
                 Some(controller) => match controller.try_admit() {
                     Some(admission) => Some(admission),
                     None => {
@@ -519,9 +541,13 @@ where
                 },
                 None => None,
             };
+            let mut local_url = self.local_url();
+            if is_http3 {
+                local_url.set_scheme("http3").expect("valid HTTP3 scheme");
+            }
             return Ok(AcceptedTransport::Udp {
                 session,
-                local_url: self.local_url(),
+                local_url,
                 admission,
             });
         }
@@ -539,6 +565,10 @@ where
             .as_ref()
             .map(SocketListener::connection_counter)
             .unwrap_or_else(|| Arc::new(EmptyTransportConnectionCounter))
+    }
+
+    fn accepts_http3_on_udp(&self) -> bool {
+        self.http3_companion && self.inner.is_some()
     }
 }
 
@@ -648,6 +678,7 @@ where
                     url,
                     request,
                     accept_kind,
+                    http3_companion,
                     ..
                 } => {
                     let host = host.clone();
@@ -658,6 +689,7 @@ where
                                 url.clone(),
                                 request.clone(),
                                 accept_kind,
+                                http3_companion,
                                 host.clone(),
                                 dns.clone(),
                             ))
@@ -1221,6 +1253,7 @@ mod tests {
                 SocketContext::default().with_socket_mark(Some(7)),
             ),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+            false,
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1251,6 +1284,7 @@ mod tests {
                 SocketContext::default(),
             ),
             UdpSessionAcceptKind::EasyTierMux,
+            false,
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1331,6 +1365,7 @@ mod tests {
                 "127.0.0.1:0".parse()?,
             )),
             UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
+            false,
             host.clone(),
             Arc::new(MockDns),
         );
@@ -1367,6 +1402,78 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn udp_http3_companion_shares_one_socket_and_keeps_raw_admission_independent()
+    -> anyhow::Result<()> {
+        for (bind, remote) in [
+            ("127.0.0.1:0", "127.0.0.1:32000"),
+            ("[::1]:0", "[::1]:32000"),
+        ] {
+            let host = Arc::new(MockHost::new());
+            let mut listener = UdpTransportListener::<MockHost, MockTcpSocket>::new(
+                format!("udp://{bind}").parse()?,
+                UdpSessionListenRequest::new(UdpBindOptions::port_bound_listener(bind.parse()?)),
+                UdpSessionAcceptKind::EasyTierMux,
+                true,
+                host.clone(),
+                Arc::new(MockDns),
+            );
+            listener.protocol_admission = Some(ServerProtocolAdmissionController::new(1, 1));
+            assert!(!listener.accepts_http3_on_udp());
+            listener.listen().await?;
+            assert!(listener.accepts_http3_on_udp());
+            assert_eq!(host.udp_sockets.lock().unwrap().len(), 1);
+            let local_url = listener.local_url();
+            let socket = host.udp_socket(0);
+            let peer_addr: SocketAddr = remote.parse()?;
+
+            socket.receive_from(quic_initial_packet(1), peer_addr);
+            let http3 = crate::foundation::time::timeout(Duration::from_secs(1), listener.accept())
+                .await??;
+            let AcceptedTransport::Udp {
+                local_url: http3_url,
+                session,
+                admission,
+            } = &http3
+            else {
+                anyhow::bail!("expected an HTTP3 UDP session");
+            };
+            assert_eq!(http3_url.scheme(), "http3");
+            assert_eq!(http3_url.port(), local_url.port());
+            assert_eq!(session.kind(), UdpSessionKind::Quic);
+            assert!(admission.is_some());
+
+            // Exhausting HTTP3 admission must not block an official raw-UDP peer.
+            let second_peer = SocketAddr::new(peer_addr.ip(), peer_addr.port() + 1);
+            socket.receive_from(quic_initial_packet(2), second_peer);
+            let raw_peer = SocketAddr::new(peer_addr.ip(), peer_addr.port() + 3);
+            socket.receive_from(new_syn_packet(1, 2).into_bytes().to_vec(), raw_peer);
+            let raw = crate::foundation::time::timeout(Duration::from_secs(1), listener.accept())
+                .await??;
+            let AcceptedTransport::Udp {
+                local_url: raw_url,
+                session,
+                admission,
+            } = &raw
+            else {
+                anyhow::bail!("expected a raw UDP session");
+            };
+            assert_eq!(raw_url, &local_url);
+            assert_eq!(session.kind(), UdpSessionKind::EasyTierMux);
+            assert!(admission.is_none());
+
+            drop(http3);
+            let third_peer = SocketAddr::new(peer_addr.ip(), peer_addr.port() + 2);
+            socket.receive_from(quic_initial_packet(3), third_peer);
+            let next = crate::foundation::time::timeout(Duration::from_secs(1), listener.accept())
+                .await??;
+            assert_eq!(next.local_url().scheme(), "http3");
+            assert_eq!(host.udp_sockets.lock().unwrap().len(), 1);
+            drop(raw);
+        }
         Ok(())
     }
 
@@ -1497,6 +1604,7 @@ mod tests {
                         "127.0.0.1:0".parse().unwrap(),
                     )),
                     accept_kind: UdpSessionAcceptKind::EasyTierMux,
+                    http3_companion: false,
                     must_succeed: true,
                 },
                 TransportListenerConfig::Udp {
@@ -1505,6 +1613,7 @@ mod tests {
                         "127.0.0.1:0".parse().unwrap(),
                     )),
                     accept_kind: UdpSessionAcceptKind::Classified(UdpSessionProtocol::WireGuard),
+                    http3_companion: false,
                     must_succeed: true,
                 },
             ],

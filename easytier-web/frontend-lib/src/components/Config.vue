@@ -151,7 +151,7 @@ type P2pPreferProtocol = 'tcp' | 'udp'
 // "tcp" prefers WSS.
 const p2pPreferProtocol = computed<P2pPreferProtocol>({
   get() {
-    return curNetwork.value.p2p_prefer_protocol === 'udp' ? 'udp' : 'tcp'
+    return (curNetwork.value.p2p_prefer_protocol ?? 'udp') === 'udp' ? 'udp' : 'tcp'
   },
   set(value: P2pPreferProtocol) {
     curNetwork.value.p2p_prefer_protocol = value

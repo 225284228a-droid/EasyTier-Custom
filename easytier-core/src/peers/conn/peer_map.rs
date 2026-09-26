@@ -187,6 +187,17 @@ impl PeerMap {
         peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
     }
 
+    pub(crate) fn has_connection_at_least_as_preferred(
+        &self,
+        peer_id: PeerId,
+        target_scheme: &str,
+        use_disguise: bool,
+    ) -> bool {
+        self.get_peer_by_id(peer_id).is_some_and(|peer| {
+            peer.has_connection_at_least_as_preferred(target_scheme, use_disguise)
+        })
+    }
+
     pub(crate) fn has_direct_attached_peer(&self, peer_id: PeerId) -> bool {
         self.get_peer_by_id(peer_id)
             .is_some_and(|peer| peer.has_direct_attached_conn())

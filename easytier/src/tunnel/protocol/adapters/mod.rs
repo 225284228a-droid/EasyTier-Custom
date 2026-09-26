@@ -18,6 +18,9 @@ pub(super) type ServerAdapter = Arc<dyn ServerProtocolUpgrader<RuntimeTcpSocket>
 
 fn apply_sni_override(mut url: url::Url, sni: &str) -> url::Url {
     let sni = sni.trim();
+    if sni.is_empty() {
+        return url;
+    }
     let query = url
         .query_pairs()
         .filter(|(key, _)| key != "sni")
@@ -27,9 +30,7 @@ fn apply_sni_override(mut url: url::Url, sni: &str) -> url::Url {
     {
         let mut pairs = url.query_pairs_mut();
         pairs.extend_pairs(query);
-        if !sni.is_empty() {
-            pairs.append_pair("sni", sni);
-        }
+        pairs.append_pair("sni", sni);
     }
     url
 }
@@ -81,13 +82,23 @@ mod tests {
             updated.as_str(),
             "wss://192.0.2.1/path?token=abc&sni=www.cloudflare.com"
         );
+    }
 
-        let fallback = apply_sni_override(
-            "wss://192.0.2.1/path?token=abc&sni=old.example"
-                .parse()
-                .unwrap(),
-            "",
-        );
-        assert_eq!(fallback.as_str(), "wss://192.0.2.1/path?token=abc");
+    #[rstest::rstest]
+    #[test]
+    fn empty_global_sni_preserves_per_url_override(
+        #[values("wss", "http3")] scheme: &str,
+        #[values("", " \t ")] global_sni: &str,
+    ) {
+        let url: url::Url = format!("{scheme}://[::1]:11014/path?token=abc&sni=www.example.com")
+            .parse()
+            .unwrap();
+        assert_eq!(apply_sni_override(url.clone(), global_sni), url);
+    }
+
+    #[test]
+    fn empty_global_sni_does_not_add_a_query() {
+        let url: url::Url = "http3://[::1]:11014".parse().unwrap();
+        assert_eq!(apply_sni_override(url.clone(), ""), url);
     }
 }

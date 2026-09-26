@@ -67,7 +67,8 @@ pub struct TcpPunchCandidate {
     pub tcp_nat_type: NatType,
     pub feature_flag: Option<PeerFeatureFlag>,
     pub has_direct_connection: bool,
-    pub has_disguised_connection: bool,
+    pub tcp_satisfied: bool,
+    pub wss_satisfied: bool,
     pub has_recent_traffic: bool,
     pub peer_disguise_flags: PeerDisguiseP2pFlags,
 }
@@ -1322,6 +1323,11 @@ where
         for candidate in self.peer_source.candidates().await {
             let use_wss_engine = policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
                 && self.supports_wss_hole_punching;
+            let already_connected = if use_wss_engine {
+                candidate.wss_satisfied
+            } else {
+                candidate.tcp_satisfied
+            };
             let static_allowed = should_background_p2p_with_peer(
                 candidate.feature_flag.as_ref(),
                 false,
@@ -1335,9 +1341,7 @@ where
                 policy.disable_p2p,
                 policy.need_p2p,
             ) && (candidate.has_recent_traffic
-                || (candidate.has_direct_connection
-                    && use_wss_engine
-                    && !candidate.has_disguised_connection));
+                || (candidate.has_direct_connection && !already_connected));
             if !static_allowed && !dynamic_allowed {
                 continue;
             }
@@ -1356,9 +1360,7 @@ where
                 tracing::debug!(peer_id, "tcp hole punch task collect skip blacklisted");
                 continue;
             }
-            if candidate.has_direct_connection
-                && (!use_wss_engine || candidate.has_disguised_connection)
-            {
+            if already_connected {
                 tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
                 continue;
             }
@@ -2049,7 +2051,8 @@ mod tests {
                 tcp_nat_type: NatType::FullCone,
                 feature_flag: None,
                 has_direct_connection: false,
-                has_disguised_connection: false,
+                tcp_satisfied: false,
+                wss_satisfied: false,
                 has_recent_traffic: true,
                 peer_disguise_flags: PeerDisguiseP2pFlags::default(),
             }]

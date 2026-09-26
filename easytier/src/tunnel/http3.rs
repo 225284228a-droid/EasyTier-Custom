@@ -1,9 +1,11 @@
-//! HTTP/3 disguised QUIC tunnel.
+//! HTTP/3-disguised framed QUIC tunnel.
 //!
 //! Unlike the plain `quic://` tunnel (which uses a fake crypto layer and no
 //! ALPN), `http3://` speaks real TLS 1.3 with the `h3` ALPN and a configurable
-//! SNI, so the wire traffic is indistinguishable from a browser's HTTP/3
-//! connection and can pass SNI-whitelist QoS policies.
+//! SNI. Its UDP datagrams use native QUIC framing, while its bidirectional
+//! application stream carries EasyTier frames rather than HTTP/3 requests and
+//! control streams. This provides passive protocol/SNI camouflage, not a
+//! guarantee of browser fingerprints or HTTP/3 active-probe compatibility.
 //!
 //! Usage:
 //! - listen: `--listen http3://0.0.0.0:11014`
@@ -109,7 +111,12 @@ fn resolve_sni(url: &url::Url) -> String {
         .find(|(key, _)| key == "sni")
         .map(|(_, value)| value.into_owned())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| url.host_str().unwrap_or("localhost").to_owned())
+        .unwrap_or_else(|| match url.host() {
+            Some(url::Host::Domain(host)) => host.to_owned(),
+            Some(url::Host::Ipv4(host)) => host.to_string(),
+            Some(url::Host::Ipv6(host)) => host.to_string(),
+            None => "localhost".to_owned(),
+        })
 }
 
 struct ConnWrapper {
@@ -401,6 +408,17 @@ mod tests {
 
         let default: url::Url = "http3://origin.example.com:11014".parse().unwrap();
         assert_eq!(resolve_sni(&default), "origin.example.com");
+    }
+
+    #[rstest::rstest]
+    #[case("http3://[::1]:11014", "::1")]
+    #[case("http3://[2001:db8::1]:11014?sni=", "2001:db8::1")]
+    #[case("http3://[::1]:11014?sni=www.example.com", "www.example.com")]
+    #[test]
+    fn http3_ipv6_resolves_a_valid_tls_server_name(#[case] url: &str, #[case] expected: &str) {
+        let server_name = resolve_sni(&url.parse().unwrap());
+        assert_eq!(server_name, expected);
+        assert!(rustls::pki_types::ServerName::try_from(server_name).is_ok());
     }
 
     #[rstest::rstest]

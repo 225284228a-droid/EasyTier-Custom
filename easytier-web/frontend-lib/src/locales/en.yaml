@@ -218,19 +218,19 @@ only_use_wss_http3_for_hole_punching: Only Use WSS/HTTP3 for P2P
 only_use_wss_http3_for_hole_punching_help: Use only WSS and HTTP/3 for automatic P2P and NAT hole punching; ordinary direct connections and manual connections are unaffected.
 
 p2p_disguise_mode: Automatic P2P Protocol
-p2p_disguise_mode_default: Default (no preference)
+p2p_disguise_mode_default: Default (do not initiate)
 p2p_disguise_mode_prefer: Prefer WSS/HTTP3
 p2p_disguise_mode_disable: Disable WSS/HTTP3
 p2p_disguise_mode_only: Only WSS/HTTP3
-p2p_disguise_mode_help: Prefer WSS and HTTP/3 while allowing TCP/UDP fallback, keep them off unless a peer requires them, ban both disguise protocols, or restrict automatic P2P to WSS and HTTP/3. Manual and ordinary direct connections are never affected.
+p2p_disguise_mode_help: By default, do not initiate disguised P2P, but accept peers that require it. Prefer mode tries WSS and HTTP/3 while allowing TCP/UDP fallback. You can also disable both disguise protocols or restrict automatic P2P to them. Manual connections are unaffected.
 
 p2p_prefer_protocol: P2P Preferred Protocol
 p2p_prefer_protocol_tcp: Prefer TCP (WSS if available)
 p2p_prefer_protocol_udp: Prefer UDP (HTTP3 if available)
-p2p_prefer_protocol_help: Preferred automatic P2P transport. Among configured direct listeners, UDP ranks HTTP3 ahead of WSS and TCP ranks WSS ahead of HTTP3. This setting does not create listeners or convert ordinary UDP punching to HTTP3. Add an HTTP3 listener for HTTP3 direct connections; both peers must enable WSS/HTTP3-only mode for HTTP3 UDP punching.
+p2p_prefer_protocol_help: Defaults to UDP. When disguise is negotiated, UDP prefers HTTP3 and TCP prefers WSS; otherwise the corresponding ordinary protocol is preferred. Nodes with HTTP3 support also accept HTTP3 on configured UDP listener ports, so automatic P2P needs no extra HTTP3 listener. Hole punching uses temporary listener ports. Existing fallback connections do not stop attempts to establish the preferred protocol.
 
-close_redundant_conns_when_disguised: Drop Redundant Connections
-close_redundant_conns_when_disguised_help: Once a disguised (WSS/HTTP3) connection to a peer is up, close the other connections P2P discovered automatically. Peers you configured manually and inbound connections are kept. Off by default.
+close_redundant_conns_when_disguised: Close Redundant Connections on Preferred Transport
+close_redundant_conns_when_disguised_help: Once the preferred connection is usable, close lower-priority automatic P2P connections to the same peer. With UDP preferred, HTTP3 can replace WSS when disguise is negotiated; ordinary UDP can replace WSS when disguise is not initiated. Manual connections, ordinary inbound connections, and equally ranked connections are kept. Off by default.
 
 enable_udp_broadcast_relay: UDP Broadcast Relay
 enable_udp_broadcast_relay_help: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."
