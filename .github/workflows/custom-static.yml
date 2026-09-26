@@ -1,0 +1,164 @@
+name: Custom Static Builds
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-static-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            name: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Prepare compiler and embedded web frontend
+        uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.target }}
+          gui: 'false'
+          pnpm: 'true'
+          token: ${{ github.token }}
+
+      - uses: mlugg/setup-zig@v2
+        if: runner.os == 'Linux'
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Linux'
+        with:
+          tool: cargo-zigbuild@0.23.2
+
+      - name: Build core, CLI and embedded web server
+        run: |
+          set -euo pipefail
+          BUILD=build
+          SUFFIX=.exe
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            BUILD=zigbuild
+            SUFFIX=
+          fi
+          test -s easytier-web/frontend/dist/index.html
+          test -s easytier-web/frontend/dist/config-generator/index.html
+          cargo "$BUILD" --locked --release --target "$TARGET" -p easytier --bin easytier-core --bin easytier-cli
+          cargo "$BUILD" --locked --release --target "$TARGET" -p easytier-web --features embed
+          mkdir -p artifacts
+          cp "target/$TARGET/release/easytier-core$SUFFIX" artifacts/
+          cp "target/$TARGET/release/easytier-cli$SUFFIX" artifacts/
+          cp "target/$TARGET/release/easytier-web$SUFFIX" "artifacts/easytier-web-embed$SUFFIX"
+
+      # Build separately so full-feature binaries do not enable mini's optional features.
+      - name: Build Linux mini
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          cargo zigbuild --locked --profile mini --target "$TARGET" -p easytier-mini
+          cp "target/$TARGET/mini/easytier-mini" artifacts/
+
+      - name: Verify Linux static linking and executable startup
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          for bin in artifacts/easytier-*; do
+            file "$bin"
+            readelf -lW "$bin" > /tmp/program-headers.txt
+            readelf -dW "$bin" > /tmp/dynamic-section.txt
+            if grep -q INTERP /tmp/program-headers.txt || grep -q '(NEEDED)' /tmp/dynamic-section.txt; then
+              echo "::error::$bin is not fully static"
+              exit 1
+            fi
+            "$bin" --help > /dev/null
+          done
+
+      - name: Build Windows GUI and include network drivers
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          cp easytier/third_party/x86_64/*.dll easytier-gui/src-tauri/
+          cp easytier/third_party/x86_64/*.sys easytier-gui/src-tauri/
+          pnpm --dir easytier-gui tauri build --target "$TARGET" --bundles nsis -- --locked
+          cp target/"$TARGET"/release/bundle/nsis/*.exe artifacts/
+          cp easytier/third_party/x86_64/*.dll artifacts/
+          cp easytier/third_party/x86_64/*.sys artifacts/
+
+      - name: Verify Windows static CRT
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem "$installation\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$dumpbin) { throw 'dumpbin not found' }
+          foreach ($name in 'core', 'cli', 'web-embed', 'gui') {
+            $binary = "artifacts/easytier-$name.exe"
+            if ($name -eq 'gui') { $binary = "target/$env:TARGET/release/easytier-gui.exe" }
+            $dependencies = & $dumpbin.FullName /dependents $binary
+            if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $name" }
+            if ($dependencies -match '(?i)(VCRUNTIME|MSVCP|MSVCR|ucrtbase|api-ms-win-crt-).*\.dll') {
+              throw "$name links a dynamic CRT"
+            }
+          }
+
+      - name: Package with checksums and preserve Unix executable permissions
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$GITHUB_SHA" > artifacts/COMMIT.txt
+          (cd artifacts && sha256sum easytier-* > SHA256SUMS)
+          mkdir -p dist
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            tar -czf "dist/easytier-$TARGET.tar.gz" -C artifacts .
+          else
+            7z a "dist/easytier-$TARGET.zip" ./artifacts/*
+          fi
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: custom-static-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  cleanup:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Keep this successful build and remove older build artifacts
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prune = require('./.github/scripts/prune-build-artifacts.cjs');
+            await prune({ github, context, core });
