@@ -42,9 +42,11 @@
 
 ### 4. P2P 协议策略与连接管理
 
-- 增加优先、禁用、仅使用 WSS/HTTP3 的 P2P/打洞策略；直连和 TCP 打洞会参考对端能力，HTTP3 UDP 打洞目前要求双方启用严格模式。
-- TCP 打洞成功的连接可升级为 WSS；两端均启用 `only_use_wss_http3_for_hole_punching` 且支持 HTTP3 时，UDP 打洞连接可升级为 HTTP3。
-- `default_protocol = "udp"` 将已公布的 HTTP3 直连监听器排在 WSS 前，`"tcp"` 则相反；GUI/Web 提供该协议偏好选择。此选项不创建 HTTP3/WSS 监听器，也不把普通 UDP 打洞升级为 HTTP3。Web 默认监听列表不包含 HTTP3/WSS，按需手动添加。
+- 增加优先、禁用、仅使用 WSS/HTTP3 的 P2P/打洞策略；直连、TCP 打洞和 UDP 打洞都会参考对端能力。
+- TCP 打洞成功的连接可升级为 WSS；双方支持伪装 P2P 时，UDP 打洞会按次协商 HTTP3。严格模式要求 HTTP3，不能降级；优先模式在远端或本机不支持时回退裸 UDP。
+- UDP 打洞监听器按 `udp` / `http3` 分池复用，HTTP3 与 WSS 打洞一样使用打洞过程中的自动临时监听端口，不依赖手动公布的 HTTP3/WSS 服务监听器。
+- `default_protocol = "udp"` 将 HTTP3 排在 WSS 前，`"tcp"` 则相反；GUI/Web 提供该协议偏好选择。对普通 UDP/TCP 打洞，该选项分别对应 HTTP3/WSS 升级偏好。
+- 打洞 RPC 的 scheme 字段为空表示官方主线裸 UDP/TCP 协议。官方 peer 不返回新字段时，本分支在优先模式下回退裸 UDP；严格模式不会接受降级连接。
 - 严格模式下选择 `udp` 时，已有 WSS 连接仍会继续尝试 HTTP3 打洞；已有 HTTP3 连接后停止重复打洞。选择 `tcp` 时，已有 WSS 连接可满足连接要求。
 - 可选 `close_redundant_conns_when_disguised`：伪装连接建立后关闭自动 P2P 建立的普通连接，保留手动配置连接和入站连接。
 - 修复 SNI 改写 URL 后连接身份不一致导致的重连堆积，并替换相同 URL 的重复客户端连接。

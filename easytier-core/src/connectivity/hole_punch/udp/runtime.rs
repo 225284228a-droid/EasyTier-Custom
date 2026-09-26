@@ -108,6 +108,29 @@ pub struct UdpPunchListener<S> {
     pub scheme: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UdpPunchScheme {
+    Udp,
+    Http3,
+}
+
+impl UdpPunchScheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Udp => "udp",
+            Self::Http3 => "http3",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("http3") {
+            Self::Http3
+        } else {
+            Self::Udp
+        }
+    }
+}
+
 pub struct UdpResolvedPublicAddr {
     pub mapped_addr: SocketAddr,
     pub(crate) port_mapping_lease: Option<Box<dyn UdpPortMappingLease>>,
@@ -117,11 +140,13 @@ pub struct UdpResolvedPublicAddr {
 pub struct SelectPunchListener {
     pub force_new: bool,
     pub prefer_port_mapping: bool,
+    pub scheme: UdpPunchScheme,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectPunchListenerResponse {
     pub listener_mapped_addr: SocketAddr,
+    pub scheme: UdpPunchScheme,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,12 +190,14 @@ pub struct SendPunchPacketBothEasySym {
     pub transaction_id: u32,
     pub dst_port_num: u32,
     pub wait_time_ms: u32,
+    pub scheme: UdpPunchScheme,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendPunchPacketBothEasySymResponse {
     pub is_busy: bool,
     pub base_mapped_addr: Option<SocketAddr>,
+    pub scheme: UdpPunchScheme,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -252,6 +279,10 @@ pub trait UdpHolePunchInbound: Send + Sync {
 
 #[async_trait]
 pub trait UdpHolePunchTransportSink: Send + Sync {
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        scheme == "udp"
+    }
+
     async fn add_client_transport(
         &self,
         connected: ConnectedUdpSession,
@@ -351,6 +382,10 @@ where
     TcpSocket: 'static,
     T: HolePunchTunnelSink,
 {
+    fn supports_scheme(&self, scheme: &str) -> bool {
+        scheme == "udp" || (scheme == "http3" && self.http3_server_protocol.is_some())
+    }
+
     async fn add_client_transport(
         &self,
         connected: ConnectedUdpSession,
@@ -450,17 +485,20 @@ pub trait UdpHolePunchRuntime: Send + Sync + 'static {
     async fn create_listener(
         &self,
         prefer_port_mapping: bool,
+        scheme: UdpPunchScheme,
     ) -> anyhow::Result<UdpPunchListener<Self::Socket>>;
 
     async fn create_port_bound_listener(
         &self,
         port: u16,
+        scheme: UdpPunchScheme,
     ) -> anyhow::Result<UdpPunchListener<Self::Socket>>;
 
     async fn connect_with_socket(
         &self,
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
+        scheme: UdpPunchScheme,
     ) -> anyhow::Result<UdpPunchSocket>;
 }
 

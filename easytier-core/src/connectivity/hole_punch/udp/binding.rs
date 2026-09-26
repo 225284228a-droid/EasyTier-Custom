@@ -2,7 +2,6 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Weak},
 };
 
@@ -30,8 +29,8 @@ use crate::{
 
 use super::{
     ProtocolUdpHolePunchTransportSink, UdpHolePunchConnector, UdpHolePunchPeerSource,
-    UdpHolePunchRuntime, UdpPunchAcceptor, UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr,
-    UdpSymPunchLock,
+    UdpHolePunchRuntime, UdpPunchAcceptor, UdpPunchListener, UdpPunchScheme, UdpPunchSocket,
+    UdpResolvedPublicAddr, UdpSymPunchLock,
     rpc::{PeerRpcUdpHolePunchSignaling, UdpHolePunchRpcEndpoint, UdpHolePunchRpcSource},
 };
 
@@ -121,7 +120,7 @@ where
     server: Arc<CoreUdpHolePunchEndpoint<H, P>>,
     client: CoreUdpHolePunchConnector<H, P>,
     peer_source: Arc<P>,
-    http3_mode: Arc<AtomicBool>,
+    http3_supported: bool,
 }
 
 impl<H, P> CoreUdpHolePunchService<H, P>
@@ -157,17 +156,8 @@ where
         } else {
             ProtocolUdpHolePunchTransportSink::new(protocol, peer_source.clone())
         });
-        // HTTP3 punching engages only under the strict-only policy, where raw
-        // UDP is forbidden anyway. The task collector requires a peer that
-        // advertises the same mode. In prefer mode raw UDP stays the punch
-        // transport until per-punch scheme negotiation exists: a QUIC upgrade
-        // against a raw-UDP peer can never complete, so enabling it globally
-        // would break punching with every peer that lacks HTTP3 support.
-        let http3_enabled = supports_http3
-            && peer_source
-                .p2p_policy_flags()
-                .only_use_wss_http3_for_hole_punching;
-        let http3_mode = Arc::new(AtomicBool::new(http3_enabled));
+        // HTTP3 is negotiated per punch. Peers on the official mainline omit
+        // the negotiation field, so they still receive the raw-UDP protocol.
         let runtime = Arc::new(CoreUdpHolePunchRuntime::new(
             host,
             peer_source.clone(),
@@ -175,7 +165,6 @@ where
             platform,
             events,
             socket_context,
-            http3_mode.clone(),
         ));
         let sym_punch_lock = UdpSymPunchLock::default();
         let client = UdpHolePunchConnector::new(
@@ -195,10 +184,13 @@ where
                 sym_punch_lock,
                 runtime,
                 peer_source.clone(),
+                peer_source
+                    .p2p_policy_flags()
+                    .only_use_wss_http3_for_hole_punching,
             ),
             client,
             peer_source,
-            http3_mode,
+            http3_supported: supports_http3,
         }
     }
 
@@ -210,11 +202,10 @@ where
         // Under the only-WSS/HTTP3 policy UDP punching is still possible,
         // but every punch must upgrade to HTTP3; without that capability
         // there is no compliant UDP transport left.
-        if policy.only_use_wss_http3_for_hole_punching && !self.http3_mode.load(Ordering::Acquire) {
+        if policy.only_use_wss_http3_for_hole_punching && !self.http3_supported {
             tracing::warn!("HTTP3 hole punching unavailable: this runtime lacks HTTP3 support");
             return Ok(());
         }
-
         self.server.start().await;
         self.peer_source
             .register_rpc_service(UdpHolePunchRpcServer::new(Arc::downgrade(&self.server)));
@@ -304,7 +295,6 @@ where
     platform: Option<Arc<dyn UdpPortMappingPlatform>>,
     events: Arc<dyn crate::events::CoreEventSink>,
     socket_context: SocketContext,
-    http3_mode: Arc<AtomicBool>,
 }
 
 impl<H, P> CoreUdpHolePunchRuntime<H, P>
@@ -320,7 +310,6 @@ where
         platform: Option<Arc<dyn UdpPortMappingPlatform>>,
         events: Arc<dyn crate::events::CoreEventSink>,
         socket_context: SocketContext,
-        http3_mode: Arc<AtomicBool>,
     ) -> Self {
         Self {
             host,
@@ -329,15 +318,6 @@ where
             platform,
             events,
             socket_context,
-            http3_mode,
-        }
-    }
-
-    fn punch_scheme(&self) -> &'static str {
-        if self.http3_mode.load(Ordering::Acquire) {
-            "http3"
-        } else {
-            "udp"
         }
     }
 
@@ -352,6 +332,7 @@ where
         &self,
         resolve_public_addr: bool,
         port: Option<u16>,
+        scheme: UdpPunchScheme,
     ) -> anyhow::Result<UdpPunchListener<HostUdpSocket<H>>> {
         let bind = match port {
             Some(port) => UdpBindOptions::hole_punch_candidate().with_local_addr(Some(
@@ -377,7 +358,7 @@ where
         });
         let acceptor = Box::new(CoreUdpPunchAcceptor {
             layer,
-            scheme: self.punch_scheme(),
+            scheme: scheme.as_str(),
         });
 
         Ok(UdpPunchListener {
@@ -386,7 +367,7 @@ where
             conn_counter,
             acceptor,
             port_mapping_lease: resolved.port_mapping_lease,
-            scheme: self.punch_scheme(),
+            scheme: scheme.as_str(),
         })
     }
 
@@ -469,21 +450,25 @@ where
     async fn create_listener(
         &self,
         _prefer_port_mapping: bool,
+        scheme: UdpPunchScheme,
     ) -> anyhow::Result<UdpPunchListener<Self::Socket>> {
-        self.create_listener_with_mapping(true, None).await
+        self.create_listener_with_mapping(true, None, scheme).await
     }
 
     async fn create_port_bound_listener(
         &self,
         port: u16,
+        scheme: UdpPunchScheme,
     ) -> anyhow::Result<UdpPunchListener<Self::Socket>> {
-        self.create_listener_with_mapping(false, Some(port)).await
+        self.create_listener_with_mapping(false, Some(port), scheme)
+            .await
     }
 
     async fn connect_with_socket(
         &self,
         socket: Arc<Self::Socket>,
         remote: SocketAddr,
+        scheme: UdpPunchScheme,
     ) -> anyhow::Result<UdpPunchSocket> {
         self.validate_socket_route(socket.socket_context(), remote)
             .await?;
@@ -500,7 +485,7 @@ where
             session,
             remote,
             layer,
-            self.punch_scheme(),
+            scheme.as_str(),
         ))
     }
 }

@@ -23,8 +23,9 @@ use crate::connectivity::hole_punch::policy::BackOff;
 use super::{
     BLACKLIST_TIMEOUT_SEC, UdpBothEasySymPunchClient, UdpHolePunchClientError,
     UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling, UdpHolePunchTransportSink,
-    UdpNatType, UdpPunchClientMethod, UdpPunchSocket, UdpPunchTaskInfo, UdpSymToConePunchClient,
-    collect_udp_punch_tasks, punch_cone_to_cone, should_blacklist_signal_error,
+    UdpNatType, UdpPunchClientMethod, UdpPunchScheme, UdpPunchSocket, UdpPunchTaskInfo,
+    UdpSymToConePunchClient, collect_udp_punch_tasks, punch_cone_to_cone,
+    should_blacklist_signal_error,
 };
 
 #[derive(Clone, Default)]
@@ -179,6 +180,7 @@ where
     #[tracing::instrument(skip(self))]
     async fn handle_punch_result(
         &self,
+        task_info: &UdpPunchTaskInfo,
         ret: Result<Option<UdpPunchSocket>, Error>,
         backoff: Option<&mut BackOff>,
         round: Option<&mut u32>,
@@ -200,6 +202,21 @@ where
             Ok(Some(socket)) => {
                 let (connected, requested_url) = socket.into_connected();
                 let scheme = requested_url.scheme().to_owned();
+                if task_info.scheme == UdpPunchScheme::Http3
+                    && self
+                        .peer_source
+                        .p2p_policy_flags()
+                        .only_use_wss_http3_for_hole_punching
+                    && scheme != "http3"
+                {
+                    tracing::warn!(
+                        peer_id = task_info.dst_peer_id,
+                        %scheme,
+                        "rejecting downgraded UDP hole-punch transport"
+                    );
+                    op(true);
+                    return false;
+                }
                 if let Err(err) = self
                     .transport_sink
                     .add_client_transport(connected, requested_url)
@@ -244,12 +261,13 @@ where
                 self.runtime.clone(),
                 self.signaling.clone(),
                 task_info.dst_peer_id,
+                task_info.scheme,
             )
             .await;
             let ret = self.map_client_result(task_info.dst_peer_id, ret);
 
             if self
-                .handle_punch_result(ret, Some(&mut backoff), None)
+                .handle_punch_result(&task_info, ret, Some(&mut backoff), None)
                 .await
             {
                 break;
@@ -278,10 +296,11 @@ where
                     self.runtime.clone(),
                     self.signaling.clone(),
                     task_info.dst_peer_id,
+                    task_info.scheme,
                 )
                 .await;
                 let ret = self.map_client_result(task_info.dst_peer_id, ret);
-                if self.handle_punch_result(ret, None, None).await {
+                if self.handle_punch_result(&task_info, ret, None, None).await {
                     break;
                 }
                 if self.should_skip_blacklisted(task_info.dst_peer_id) {
@@ -297,13 +316,14 @@ where
                         round,
                         &mut port_idx,
                         task_info.my_nat_type,
+                        task_info.scheme,
                     )
                     .await
             };
             let ret = self.map_client_result(task_info.dst_peer_id, ret);
 
             if self
-                .handle_punch_result(ret, Some(&mut backoff), Some(&mut round))
+                .handle_punch_result(&task_info, ret, Some(&mut backoff), Some(&mut round))
                 .await
             {
                 break;
@@ -330,10 +350,11 @@ where
                     self.runtime.clone(),
                     self.signaling.clone(),
                     task_info.dst_peer_id,
+                    task_info.scheme,
                 )
                 .await;
                 let ret = self.map_client_result(task_info.dst_peer_id, ret);
-                if self.handle_punch_result(ret, None, None).await {
+                if self.handle_punch_result(&task_info, ret, None, None).await {
                     break;
                 }
                 if self.should_skip_blacklisted(task_info.dst_peer_id) {
@@ -349,6 +370,7 @@ where
                         task_info.dst_peer_id,
                         task_info.my_nat_type,
                         task_info.dst_nat_type,
+                        task_info.scheme,
                         &mut is_busy,
                     )
                     .await
@@ -358,7 +380,7 @@ where
             if is_busy {
                 backoff.rollback();
             } else if self
-                .handle_punch_result(ret, Some(&mut backoff), None)
+                .handle_punch_result(&task_info, ret, Some(&mut backoff), None)
                 .await
             {
                 break;
@@ -438,16 +460,20 @@ where
                     .as_secs()
                     >= 30
         });
-        let peers_to_connect =
-            collect_udp_punch_tasks(my_peer_id, my_nat_type, policy, candidates, |peer_id| {
-                data.blacklist.contains(peer_id)
-            });
+        let peers_to_connect = collect_udp_punch_tasks(
+            my_peer_id,
+            my_nat_type,
+            policy,
+            data.transport_sink.supports_scheme("http3"),
+            candidates,
+            |peer_id| data.blacklist.contains(peer_id),
+        );
         for task in &peers_to_connect {
             tracing::info!(
                 peer_id = task.dst_peer_id,
                 peer_nat_type = ?task.dst_nat_type,
                 ?my_nat_type,
-                scheme = if policy.only_use_wss_http3_for_hole_punching { "http3" } else { "udp" },
+                scheme = task.scheme.as_str(),
                 "found peer to do hole punching"
             );
         }

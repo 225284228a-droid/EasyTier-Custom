@@ -28,7 +28,8 @@ pub(crate) use runtime::{
     SendPunchPacketEasySym, SendPunchPacketHardSym, SendPunchPacketHardSymResponse,
     UdpHolePunchInbound, UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignalError,
     UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpPunchAcceptor, UdpPunchInboundGate,
-    UdpPunchListener, UdpPunchSocket, UdpResolvedPublicAddr, should_blacklist_signal_error,
+    UdpPunchListener, UdpPunchScheme, UdpPunchSocket, UdpResolvedPublicAddr,
+    should_blacklist_signal_error,
 };
 pub(crate) use server::UdpHolePunchServer;
 pub(crate) use socket_array::UdpSocketArray;

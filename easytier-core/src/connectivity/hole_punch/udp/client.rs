@@ -22,7 +22,7 @@ use crate::{
 use super::{
     SelectPunchListener, SendPunchPacketBothEasySym, SendPunchPacketCone, SendPunchPacketEasySym,
     SendPunchPacketHardSym, UdpHolePunchRuntime, UdpHolePunchSignalError, UdpHolePunchSignaling,
-    UdpNatType, UdpPunchSocket, UdpSocketArray,
+    UdpNatType, UdpPunchScheme, UdpPunchSocket, UdpSocketArray,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +54,7 @@ pub async fn punch_cone_to_cone<R, S>(
     runtime: Arc<R>,
     signaling: Arc<S>,
     dst_peer_id: PeerId,
+    desired_scheme: UdpPunchScheme,
 ) -> UdpHolePunchClientResult<Option<UdpPunchSocket>>
 where
     R: UdpHolePunchRuntime,
@@ -70,10 +71,12 @@ where
             SelectPunchListener {
                 force_new: false,
                 prefer_port_mapping: true,
+                scheme: desired_scheme,
             },
         )
         .await?;
     let remote_mapped_addr = resp.listener_mapped_addr;
+    let actual_scheme = resp.scheme;
 
     let local_socket = UdpHolePunchRuntime::bind_udp(
         runtime.as_ref(),
@@ -140,7 +143,7 @@ where
 
         for _ in 0..2 {
             match runtime
-                .connect_with_socket(socket.socket.clone(), remote_mapped_addr)
+                .connect_with_socket(socket.socket.clone(), remote_mapped_addr, actual_scheme)
                 .await
             {
                 Ok(socket) => {
@@ -298,6 +301,7 @@ where
         packet: &[u8],
         tid: u32,
         remote_mapped_addr: SocketAddr,
+        actual_scheme: UdpPunchScheme,
         punch_task: &AbortOnDropHandle<T>,
     ) -> anyhow::Result<Option<UdpPunchSocket>> {
         let mut ret_socket = None;
@@ -318,7 +322,7 @@ where
 
             match self
                 .runtime
-                .connect_with_socket(socket.socket.clone(), remote_mapped_addr)
+                .connect_with_socket(socket.socket.clone(), remote_mapped_addr, actual_scheme)
                 .await
             {
                 Ok(socket) => {
@@ -343,6 +347,7 @@ where
         round: u32,
         last_port_idx: &mut usize,
         my_nat_info: UdpNatType,
+        desired_scheme: UdpPunchScheme,
     ) -> UdpHolePunchClientResult<Option<UdpPunchSocket>> {
         let udp_array = self.prepare_udp_array().await?;
 
@@ -353,17 +358,19 @@ where
                 SelectPunchListener {
                     force_new: false,
                     prefer_port_mapping: true,
+                    scheme: desired_scheme,
                 },
             )
             .await?;
 
         let remote_mapped_addr = resp.listener_mapped_addr;
+        let actual_scheme = resp.scheme;
 
         if self.try_direct_connect.load(Ordering::Relaxed) {
             let socket = self.runtime.bind_direct_connect_udp().await?;
             if let Ok(socket) = self
                 .runtime
-                .connect_with_socket(socket, remote_mapped_addr)
+                .connect_with_socket(socket, remote_mapped_addr, actual_scheme)
                 .await
             {
                 return Ok(Some(socket));
@@ -403,7 +410,14 @@ where
                 ),
             ));
             let ret_socket = self
-                .check_hole_punch_result(&udp_array, &packet, tid, remote_mapped_addr, &punch_task)
+                .check_hole_punch_result(
+                    &udp_array,
+                    &packet,
+                    tid,
+                    remote_mapped_addr,
+                    actual_scheme,
+                    &punch_task,
+                )
                 .await?;
 
             let task_ret = punch_task.await;
@@ -425,7 +439,14 @@ where
                 port_index,
             )));
         let ret_socket = self
-            .check_hole_punch_result(&udp_array, &packet, tid, remote_mapped_addr, &punch_task)
+            .check_hole_punch_result(
+                &udp_array,
+                &packet,
+                tid,
+                remote_mapped_addr,
+                actual_scheme,
+                &punch_task,
+            )
             .await?;
 
         let punch_task_result = punch_task.await;
@@ -470,6 +491,7 @@ where
         dst_peer_id: PeerId,
         my_nat_info: UdpNatType,
         peer_nat_info: UdpNatType,
+        desired_scheme: UdpPunchScheme,
         is_busy: &mut bool,
     ) -> UdpHolePunchClientResult<Option<UdpPunchSocket>> {
         *is_busy = false;
@@ -512,6 +534,7 @@ where
                     } as u32,
                     udp_socket_count: UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM as u32,
                     wait_time_ms: REMOTE_WAIT_TIME_MS as u32,
+                    scheme: desired_scheme,
                 },
             )
             .await?;
@@ -521,6 +544,7 @@ where
             return Err(anyhow::anyhow!("remote is busy").into());
         }
 
+        let actual_scheme = remote_ret.scheme;
         let mut remote_mapped_addr = remote_ret
             .base_mapped_addr
             .ok_or(anyhow::anyhow!("remote_mapped_addr is required"))?;
@@ -565,7 +589,7 @@ where
             for _ in 0..2 {
                 match self
                     .runtime
-                    .connect_with_socket(socket.socket.clone(), remote_mapped_addr)
+                    .connect_with_socket(socket.socket.clone(), remote_mapped_addr, actual_scheme)
                     .await
                 {
                     Ok(socket) => {
@@ -673,6 +697,7 @@ mod tests {
         async fn create_listener(
             &self,
             _prefer_port_mapping: bool,
+            _scheme: UdpPunchScheme,
         ) -> anyhow::Result<super::super::UdpPunchListener<Self::Socket>> {
             unimplemented!("not used by cone client tests")
         }
@@ -680,6 +705,7 @@ mod tests {
         async fn create_port_bound_listener(
             &self,
             _port: u16,
+            _scheme: UdpPunchScheme,
         ) -> anyhow::Result<super::super::UdpPunchListener<Self::Socket>> {
             unimplemented!("not used by cone client tests")
         }
@@ -688,6 +714,7 @@ mod tests {
             &self,
             _socket: Arc<Self::Socket>,
             _remote: SocketAddr,
+            _scheme: UdpPunchScheme,
         ) -> anyhow::Result<UdpPunchSocket> {
             unimplemented!("not used by cone client tests")
         }
@@ -770,7 +797,7 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new());
         let signaling = Arc::new(RejectingSignaling);
 
-        let err = punch_cone_to_cone(runtime.clone(), signaling, 2)
+        let err = punch_cone_to_cone(runtime.clone(), signaling, 2, UdpPunchScheme::Udp)
             .await
             .unwrap_err();
 
@@ -797,6 +824,7 @@ mod tests {
     }
 
     struct RecordingSignaling {
+        select_requests: tokio::sync::Mutex<Vec<SelectPunchListener>>,
         easy_requests: tokio::sync::Mutex<Vec<SendPunchPacketEasySym>>,
         hard_requests: tokio::sync::Mutex<Vec<SendPunchPacketHardSym>>,
         both_requests: tokio::sync::Mutex<Vec<SendPunchPacketBothEasySym>>,
@@ -807,12 +835,14 @@ mod tests {
     impl RecordingSignaling {
         fn new(next_port_index: u32) -> Self {
             Self {
+                select_requests: tokio::sync::Mutex::new(Vec::new()),
                 easy_requests: tokio::sync::Mutex::new(Vec::new()),
                 hard_requests: tokio::sync::Mutex::new(Vec::new()),
                 both_requests: tokio::sync::Mutex::new(Vec::new()),
                 both_response: super::super::SendPunchPacketBothEasySymResponse {
                     is_busy: false,
                     base_mapped_addr: Some(SocketAddr::from(([127, 0, 0, 1], 40144))),
+                    scheme: UdpPunchScheme::Http3,
                 },
                 next_port_index,
             }
@@ -832,10 +862,12 @@ mod tests {
         async fn select_punch_listener(
             &self,
             _dst_peer_id: PeerId,
-            _request: SelectPunchListener,
+            request: SelectPunchListener,
         ) -> Result<super::super::SelectPunchListenerResponse, UdpHolePunchSignalError> {
+            self.select_requests.lock().await.push(request);
             Ok(super::super::SelectPunchListenerResponse {
                 listener_mapped_addr: SocketAddr::from(([127, 0, 0, 1], 30000)),
+                scheme: UdpPunchScheme::Http3,
             })
         }
 
@@ -888,7 +920,13 @@ mod tests {
 
         let mut last_port_idx = 7;
         let ret = client
-            .do_hole_punching(2, 3, &mut last_port_idx, NatType::SymmetricEasyInc.into())
+            .do_hole_punching(
+                2,
+                3,
+                &mut last_port_idx,
+                NatType::SymmetricEasyInc.into(),
+                UdpPunchScheme::Http3,
+            )
             .await
             .unwrap();
 
@@ -896,6 +934,14 @@ mod tests {
         assert_eq!(stun.port_mapping_count.load(Ordering::Relaxed), 1);
 
         let easy_requests = signaling.easy_requests.lock().await;
+        assert_eq!(
+            signaling.select_requests.lock().await.as_slice(),
+            &[SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: true,
+                scheme: UdpPunchScheme::Http3,
+            }]
+        );
         assert_eq!(easy_requests.len(), 1);
         let req = &easy_requests[0];
         assert_eq!(
@@ -922,7 +968,13 @@ mod tests {
 
         let mut last_port_idx = 123;
         let ret = client
-            .do_hole_punching(2, 4, &mut last_port_idx, NatType::Symmetric.into())
+            .do_hole_punching(
+                2,
+                4,
+                &mut last_port_idx,
+                NatType::Symmetric.into(),
+                UdpPunchScheme::Http3,
+            )
             .await
             .unwrap();
 
@@ -957,6 +1009,7 @@ mod tests {
             super::super::SendPunchPacketBothEasySymResponse {
                 is_busy: true,
                 base_mapped_addr: None,
+                scheme: UdpPunchScheme::Udp,
             },
         ));
         let client =
@@ -968,6 +1021,7 @@ mod tests {
                 2,
                 NatType::SymmetricEasyInc.into(),
                 NatType::SymmetricEasyDec.into(),
+                UdpPunchScheme::Http3,
                 &mut is_busy,
             )
             .await
@@ -991,5 +1045,6 @@ mod tests {
             UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM as u32
         );
         assert_eq!(req.wait_time_ms, REMOTE_WAIT_TIME_MS as u32);
+        assert_eq!(req.scheme, UdpPunchScheme::Http3);
     }
 }

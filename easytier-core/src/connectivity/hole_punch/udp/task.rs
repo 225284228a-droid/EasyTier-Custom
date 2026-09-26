@@ -5,7 +5,7 @@ use crate::{
 
 use super::{
     super::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
-    UdpNatType,
+    UdpNatType, UdpPunchScheme,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub struct UdpPunchCandidate {
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct UdpPunchTaskInfo {
+    pub scheme: UdpPunchScheme,
     pub dst_peer_id: PeerId,
     pub dst_nat_type: UdpNatType,
     pub my_nat_type: UdpNatType,
@@ -30,6 +31,7 @@ pub fn collect_udp_punch_tasks<I, F>(
     my_peer_id: PeerId,
     my_nat_type: UdpNatType,
     policy: P2pPolicyFlags,
+    http3_supported: bool,
     candidates: I,
     is_blacklisted: F,
 ) -> Vec<UdpPunchTaskInfo>
@@ -44,14 +46,18 @@ where
     candidates
         .into_iter()
         .filter_map(|candidate| {
-            // The strict policy still permits UDP punching when the resulting
-            // session is upgraded to HTTP3. Both endpoints must select that
-            // mode until the punch RPC negotiates a scheme per attempt.
+            // HTTP3 punching is negotiated per attempt. An official-mainline
+            // peer does not advertise these feature flags, so it stays on raw
+            // UDP and remains compatible.
+            let wants_http3 = policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
+                && (policy.only_use_wss_http3_for_hole_punching || policy.prefer_http3_for_p2p);
+            let use_http3 = wants_http3 && http3_supported;
             if policy.only_use_wss_http3_for_hole_punching
                 != candidate.peer_disguise_flags.only_use_wss_http3_for_p2p
-                || (policy.only_use_wss_http3_for_hole_punching
-                    && !policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags))
             {
+                return None;
+            }
+            if wants_http3 && policy.only_use_wss_http3_for_hole_punching && !use_http3 {
                 return None;
             }
             let static_allowed = should_background_p2p_with_peer(
@@ -73,7 +79,9 @@ where
 
             let peer_id = candidate.peer_id;
             let already_connected =
-                if policy.only_use_wss_http3_for_hole_punching && policy.prefer_http3_for_p2p {
+                if policy.only_use_wss_http3_for_hole_punching && !policy.prefer_http3_for_p2p {
+                    candidate.has_direct_connection
+                } else if use_http3 {
                     candidate.has_http3_connection
                 } else {
                     candidate.has_direct_connection
@@ -93,6 +101,11 @@ where
             }
 
             Some(UdpPunchTaskInfo {
+                scheme: if use_http3 {
+                    UdpPunchScheme::Http3
+                } else {
+                    UdpPunchScheme::Udp
+                },
                 dst_peer_id: peer_id,
                 dst_nat_type: peer_nat_type,
                 my_nat_type,
@@ -124,9 +137,14 @@ mod tests {
         policy: P2pPolicyFlags,
         candidates: Vec<UdpPunchCandidate>,
     ) -> Vec<UdpPunchTaskInfo> {
-        collect_udp_punch_tasks(my_peer_id, my_nat_type.into(), policy, candidates, |_| {
-            false
-        })
+        collect_udp_punch_tasks(
+            my_peer_id,
+            my_nat_type.into(),
+            policy,
+            true,
+            candidates,
+            |_| false,
+        )
     }
 
     #[test]
@@ -157,6 +175,7 @@ mod tests {
 
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].dst_peer_id, 2);
+        assert_eq!(tasks[0].scheme, UdpPunchScheme::Http3);
     }
 
     #[test]
@@ -249,6 +268,7 @@ mod tests {
             1,
             NatType::PortRestricted.into(),
             P2pPolicyFlags::default(),
+            true,
             vec![direct, candidate(3, NatType::PortRestricted)],
             |peer_id| peer_id == 3,
         );
@@ -271,6 +291,52 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].dst_peer_id, 3);
         assert_eq!(tasks[0].dst_nat_type, NatType::PortRestricted.into());
+        assert_eq!(tasks[0].scheme, UdpPunchScheme::Udp);
+    }
+
+    #[test]
+    fn strict_http3_task_requires_local_http3_runtime() {
+        let mut peer = candidate(2, NatType::PortRestricted);
+        peer.peer_disguise_flags.only_use_wss_http3_for_p2p = true;
+        let policy = P2pPolicyFlags {
+            only_use_wss_http3_for_hole_punching: true,
+            ..Default::default()
+        };
+
+        assert!(
+            collect_udp_punch_tasks(
+                1,
+                NatType::PortRestricted.into(),
+                policy,
+                false,
+                vec![peer],
+                |_| false,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn prefer_http3_falls_back_to_udp_without_local_runtime() {
+        let mut peer = candidate(2, NatType::PortRestricted);
+        peer.peer_disguise_flags.prefer_wss_http3_for_p2p = true;
+        let policy = P2pPolicyFlags {
+            prefer_http3_for_p2p: true,
+            prefer_wss_http3_for_p2p: true,
+            ..Default::default()
+        };
+
+        let tasks = collect_udp_punch_tasks(
+            1,
+            NatType::PortRestricted.into(),
+            policy,
+            false,
+            vec![peer],
+            |_| false,
+        );
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].scheme, UdpPunchScheme::Udp);
     }
 
     #[test]

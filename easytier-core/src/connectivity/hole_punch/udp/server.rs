@@ -28,8 +28,8 @@ use super::{
     SelectPunchListenerResponse, SendPunchPacketBothEasySym, SendPunchPacketBothEasySymResponse,
     SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym,
     SendPunchPacketHardSymResponse, UdpHolePunchInbound, UdpHolePunchRuntime,
-    UdpHolePunchSignalError, UdpHolePunchTransportSink, UdpPunchListener, UdpSocketArray,
-    UdpSymPunchLock, can_reuse_port_mapping_listener, can_reuse_public_listener,
+    UdpHolePunchSignalError, UdpHolePunchTransportSink, UdpPunchListener, UdpPunchScheme,
+    UdpSocketArray, UdpSymPunchLock, can_reuse_port_mapping_listener, can_reuse_public_listener,
     select_reusable_port_mapping_listener_idx, select_reusable_public_listener_idx,
     should_create_public_listener, should_retry_public_listener_selection,
 };
@@ -37,6 +37,7 @@ use super::{
 const MAX_K1_FOR_RANDOM_HARD_SYM: u32 = 180;
 
 pub struct SelectedUdpPunchListener<S> {
+    pub scheme: UdpPunchScheme,
     /// Kept for listener-selection side effects and tests; production callers
     /// only consume `mapped_addr`.
     #[allow(dead_code)]
@@ -53,6 +54,7 @@ where
     common: Arc<UdpHolePunchServerCommon<R, T>>,
     both_easy_sym_server: UdpBothEasySymPunchServer<R, T>,
     shuffled_port_vec: Arc<Vec<u16>>,
+    http3_required: bool,
     admission: RwLock<()>,
     stopping: AtomicBool,
 }
@@ -67,6 +69,7 @@ where
         stun: Arc<dyn StunInfoProvider>,
         transport_sink: Arc<T>,
         sym_punch_lock: UdpSymPunchLock,
+        http3_required: bool,
     ) -> Self {
         let common = Arc::new(UdpHolePunchServerCommon::new(
             runtime.clone(),
@@ -75,7 +78,8 @@ where
         ));
         let both_easy_sym_common =
             Arc::new(UdpHolePunchServerCommon::new(runtime, stun, transport_sink));
-        let both_easy_sym_server = UdpBothEasySymPunchServer::new(both_easy_sym_common);
+        let both_easy_sym_server =
+            UdpBothEasySymPunchServer::new(both_easy_sym_common, http3_required);
         let mut shuffled_port_vec: Vec<u16> = (1..=65535).collect();
         shuffled_port_vec.shuffle(&mut rand::thread_rng());
 
@@ -84,6 +88,7 @@ where
             common,
             both_easy_sym_server,
             shuffled_port_vec: Arc::new(shuffled_port_vec),
+            http3_required,
             admission: RwLock::new(()),
             stopping: AtomicBool::new(true),
         }
@@ -258,9 +263,26 @@ where
         request: SelectPunchListener,
     ) -> Result<SelectPunchListenerResponse, UdpHolePunchSignalError> {
         let _admission = self.admit().await?;
+        if self.http3_required && request.scheme != UdpPunchScheme::Http3 {
+            return Err(UdpHolePunchSignalError::RemoteRejected(
+                "raw UDP hole punching is disabled by HTTP3-only policy".into(),
+            ));
+        }
+        let scheme = if request.scheme == UdpPunchScheme::Http3
+            && self.common.transport_sink.supports_scheme("http3")
+        {
+            UdpPunchScheme::Http3
+        } else {
+            UdpPunchScheme::Udp
+        };
+        if self.http3_required && scheme != UdpPunchScheme::Http3 {
+            return Err(UdpHolePunchSignalError::RemoteRejected(
+                "HTTP3 hole punching is unsupported".into(),
+            ));
+        }
         let selected = self
             .common
-            .select_listener(request.force_new, request.prefer_port_mapping)
+            .select_listener(request.force_new, request.prefer_port_mapping, scheme)
             .await
             .ok_or_else(|| {
                 UdpHolePunchSignalError::RemoteRejected("no listener available".into())
@@ -268,9 +290,9 @@ where
 
         Ok(SelectPunchListenerResponse {
             listener_mapped_addr: selected.mapped_addr,
+            scheme: selected.scheme,
         })
     }
-
     async fn send_punch_packet_cone(
         &self,
         request: SendPunchPacketCone,
@@ -477,13 +499,14 @@ where
         &self,
         force_new_listener: bool,
         prefer_port_mapping: bool,
+        scheme: UdpPunchScheme,
     ) -> Option<SelectedUdpPunchListener<R::Socket>> {
         let mut force_new_listener = force_new_listener;
 
         loop {
             let (listener_count, has_reusable_listener, has_port_mapping_listener) = {
                 let listeners = self.listeners.lock().await;
-                let states = listener_reuse_states(listeners.as_slice());
+                let states = listener_reuse_states(listeners.as_slice(), scheme);
                 (
                     states.len(),
                     states.iter().any(can_reuse_public_listener),
@@ -500,10 +523,15 @@ where
 
             if should_create {
                 tracing::warn!(
+                    scheme = scheme.as_str(),
                     max_listeners = MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS,
                     "creating udp hole punching listener"
                 );
-                match self.runtime.create_listener(prefer_port_mapping).await {
+                match self
+                    .runtime
+                    .create_listener(prefer_port_mapping, scheme)
+                    .await
+                {
                     Ok(listener) => self.add_listener(listener).await,
                     Err(err) => {
                         tracing::warn!(?err, "failed to create udp hole punching listener");
@@ -511,10 +539,16 @@ where
                 }
             }
 
-            let mut listeners = self.listeners.lock().await;
-            let listener_count = listeners.len();
-            let states = listener_reuse_states(listeners.as_slice());
-            let listener_idx = if prefer_port_mapping {
+            let listeners = self.listeners.lock().await;
+            let scheme_indexes = listeners
+                .iter()
+                .enumerate()
+                .filter(|(_, listener)| listener.scheme == scheme.as_str())
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let listener_count = scheme_indexes.len();
+            let states = listener_reuse_states(listeners.as_slice(), scheme);
+            let local_idx = if prefer_port_mapping {
                 select_reusable_port_mapping_listener_idx(&states)
                     .or_else(|| {
                         if should_create && states.last().is_some_and(can_reuse_public_listener) {
@@ -525,15 +559,16 @@ where
                     })
                     .or_else(|| select_reusable_public_listener_idx(&states))
             } else if should_create {
-                listeners.len().checked_sub(1)
+                listener_count.checked_sub(1)
             } else {
                 select_reusable_public_listener_idx(&states)
             };
 
-            let Some(listener_idx) = listener_idx else {
+            let Some(local_idx) = local_idx else {
                 tracing::warn!(
                     ?force_new_listener,
                     ?prefer_port_mapping,
+                    scheme = scheme.as_str(),
                     listener_count,
                     max_listeners = MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS,
                     "no available udp hole punching listener with mapped address"
@@ -549,12 +584,12 @@ where
                 }
                 return None;
             };
-
-            let listener = &mut listeners[listener_idx];
+            let listener = &listeners[scheme_indexes[local_idx]];
             if !can_reuse_public_listener(&listener.reuse_state()) {
                 tracing::warn!(
                     ?force_new_listener,
                     ?prefer_port_mapping,
+                    scheme = scheme.as_str(),
                     listener_count,
                     max_listeners = MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS,
                     "selected udp hole punching listener is not reusable"
@@ -565,12 +600,14 @@ where
             return Some(SelectedUdpPunchListener {
                 socket: listener.get_socket(),
                 mapped_addr: listener.mapped_addr,
+                scheme,
             });
         }
     }
 }
 
 struct UdpPunchListenerRecord<S> {
+    scheme: &'static str,
     socket: Arc<S>,
     tasks: Mutex<JoinSet<()>>,
     connection_tasks: Arc<Mutex<JoinSet<()>>>,
@@ -599,7 +636,7 @@ where
             conn_counter,
             mut acceptor,
             port_mapping_lease,
-            scheme: _,
+            scheme,
         } = listener;
 
         let running = Arc::new(AtomicCell::new(true));
@@ -646,6 +683,7 @@ where
         tracing::warn!(?mapped_addr, "udp hole punching listener started");
 
         Self {
+            scheme,
             socket,
             tasks: Mutex::new(tasks),
             connection_tasks,
@@ -714,12 +752,14 @@ where
 
 fn listener_reuse_states<S>(
     listeners: &[Arc<UdpPunchListenerRecord<S>>],
+    scheme: UdpPunchScheme,
 ) -> Vec<ReusableUdpPunchListener>
 where
     S: VirtualUdpSocket + 'static,
 {
     listeners
         .iter()
+        .filter(|listener| listener.scheme == scheme.as_str())
         .map(|listener| listener.reuse_state())
         .collect()
 }
@@ -796,6 +836,7 @@ where
     T: UdpHolePunchTransportSink + 'static,
 {
     common: Arc<UdpHolePunchServerCommon<R, T>>,
+    http3_required: bool,
     task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
@@ -804,9 +845,10 @@ where
     R: UdpHolePunchRuntime,
     T: UdpHolePunchTransportSink + 'static,
 {
-    pub fn new(common: Arc<UdpHolePunchServerCommon<R, T>>) -> Self {
+    pub fn new(common: Arc<UdpHolePunchServerCommon<R, T>>, http3_required: bool) -> Self {
         Self {
             common,
+            http3_required,
             task: Mutex::new(None),
         }
     }
@@ -826,9 +868,23 @@ where
         request: SendPunchPacketBothEasySym,
     ) -> anyhow::Result<SendPunchPacketBothEasySymResponse> {
         tracing::info!("send_punch_packet_both_easy_sym start");
+        if self.http3_required && request.scheme != UdpPunchScheme::Http3 {
+            anyhow::bail!("raw UDP hole punching is disabled by HTTP3-only policy");
+        }
+        let actual_scheme = if request.scheme == UdpPunchScheme::Http3
+            && self.common.transport_sink.supports_scheme("http3")
+        {
+            UdpPunchScheme::Http3
+        } else {
+            UdpPunchScheme::Udp
+        };
+        if self.http3_required && actual_scheme != UdpPunchScheme::Http3 {
+            anyhow::bail!("HTTP3 hole punching is unsupported");
+        }
         let busy_resp = Ok(SendPunchPacketBothEasySymResponse {
             is_busy: true,
             base_mapped_addr: None,
+            scheme: actual_scheme,
         });
         let Ok(mut locked_task) = self.task.try_lock() else {
             return busy_resp;
@@ -892,7 +948,11 @@ where
                     let remote_addr = s.remote_addr;
                     drop(s);
 
-                    let listener = match common.runtime.create_port_bound_listener(port).await {
+                    let listener = match common
+                        .runtime
+                        .create_port_bound_listener(port, actual_scheme)
+                        .await
+                    {
                         Ok(listener) => listener,
                         Err(e) => {
                             tracing::warn!(?e, "failed to create listener");
@@ -944,6 +1004,7 @@ where
         Ok(SendPunchPacketBothEasySymResponse {
             is_busy: false,
             base_mapped_addr: Some(cur_mapped_addr),
+            scheme: actual_scheme,
         })
     }
 }
@@ -1021,12 +1082,14 @@ mod tests {
 
     struct MockRuntime {
         listeners: StdMutex<VecDeque<UdpPunchListener<MockSocket>>>,
+        created_schemes: StdMutex<Vec<&'static str>>,
     }
 
     impl MockRuntime {
         fn new(listeners: Vec<UdpPunchListener<MockSocket>>) -> Self {
             Self {
                 listeners: StdMutex::new(listeners.into()),
+                created_schemes: StdMutex::new(Vec::new()),
             }
         }
     }
@@ -1056,7 +1119,9 @@ mod tests {
         async fn create_listener(
             &self,
             _prefer_port_mapping: bool,
+            scheme: UdpPunchScheme,
         ) -> anyhow::Result<UdpPunchListener<Self::Socket>> {
+            self.created_schemes.lock().unwrap().push(scheme.as_str());
             self.listeners
                 .lock()
                 .unwrap()
@@ -1067,14 +1132,16 @@ mod tests {
         async fn create_port_bound_listener(
             &self,
             _port: u16,
+            scheme: UdpPunchScheme,
         ) -> anyhow::Result<UdpPunchListener<Self::Socket>> {
-            self.create_listener(false).await
+            self.create_listener(false, scheme).await
         }
 
         async fn connect_with_socket(
             &self,
             socket: Arc<Self::Socket>,
             remote: SocketAddr,
+            _scheme: UdpPunchScheme,
         ) -> anyhow::Result<UdpPunchSocket> {
             let session =
                 UdpSession::identity_standalone(socket, remote, UdpSessionKind::EasyTierMux)?;
@@ -1130,7 +1197,11 @@ mod tests {
         }
     }
 
-    fn listener(port: u16, sockets: Vec<UdpPunchSocket>) -> UdpPunchListener<MockSocket> {
+    fn listener_with_scheme(
+        port: u16,
+        sockets: Vec<UdpPunchSocket>,
+        scheme: &'static str,
+    ) -> UdpPunchListener<MockSocket> {
         UdpPunchListener {
             socket: Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], port)),
@@ -1143,16 +1214,25 @@ mod tests {
                 sockets: sockets.into(),
             }),
             port_mapping_lease: None,
-            scheme: "udp",
+            scheme,
         }
+    }
+
+    fn listener(port: u16, sockets: Vec<UdpPunchSocket>) -> UdpPunchListener<MockSocket> {
+        listener_with_scheme(port, sockets, "udp")
     }
 
     #[tokio::test]
     async fn server_keeps_both_easy_sym_listener_pool_separate() {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
-        let server =
-            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default());
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            sink,
+            UdpSymPunchLock::default(),
+            false,
+        );
 
         assert!(!Arc::ptr_eq(
             &server.common,
@@ -1165,8 +1245,13 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
 
-        let _server =
-            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default());
+        let _server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            sink,
+            UdpSymPunchLock::default(),
+            false,
+        );
     }
 
     #[tokio::test]
@@ -1176,7 +1261,10 @@ mod tests {
         let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
 
         common.start().await;
-        common.select_listener(false, false).await.unwrap();
+        common
+            .select_listener(false, false, UdpPunchScheme::Udp)
+            .await
+            .unwrap();
         common.stop().await;
 
         assert!(common.cleanup_task.lock().await.is_none());
@@ -1189,7 +1277,10 @@ mod tests {
         let sink = Arc::new(MockSink::default());
         let common = UdpHolePunchServerCommon::new(runtime, mock_stun(), sink);
 
-        let selected = common.select_listener(false, true).await.unwrap();
+        let selected = common
+            .select_listener(false, true, UdpPunchScheme::Udp)
+            .await
+            .unwrap();
 
         assert_eq!(
             selected.mapped_addr,
@@ -1200,6 +1291,82 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 10000))
         );
         assert!(common.find_listener(&selected.mapped_addr).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn listener_pools_are_selected_by_scheme() {
+        let runtime = Arc::new(MockRuntime::new(vec![
+            listener_with_scheme(10010, Vec::new(), "http3"),
+            listener_with_scheme(10011, Vec::new(), "udp"),
+        ]));
+        let sink = Arc::new(MockSink::default());
+        let common = UdpHolePunchServerCommon::new(runtime.clone(), mock_stun(), sink);
+
+        let http3 = common
+            .select_listener(false, false, UdpPunchScheme::Http3)
+            .await
+            .unwrap();
+        let udp = common
+            .select_listener(false, false, UdpPunchScheme::Udp)
+            .await
+            .unwrap();
+
+        assert_eq!(http3.scheme, UdpPunchScheme::Http3);
+        assert_eq!(http3.mapped_addr.port(), 10010);
+        assert_eq!(udp.scheme, UdpPunchScheme::Udp);
+        assert_eq!(udp.mapped_addr.port(), 10011);
+        assert_eq!(
+            runtime.created_schemes.lock().unwrap().as_slice(),
+            ["http3", "udp"]
+        );
+    }
+
+    #[tokio::test]
+    async fn prefer_mode_downgrades_unsupported_http3_listener_to_udp() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener(10012, Vec::new())]));
+        let sink = Arc::new(MockSink::default());
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            sink,
+            UdpSymPunchLock::default(),
+            false,
+        );
+        server.start().await;
+
+        let response = server
+            .select_punch_listener(SelectPunchListener {
+                force_new: false,
+                prefer_port_mapping: false,
+                scheme: UdpPunchScheme::Http3,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.scheme, UdpPunchScheme::Udp);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn strict_mode_rejects_raw_and_unsupported_http3_listener() {
+        let runtime = Arc::new(MockRuntime::new(Vec::new()));
+        let sink = Arc::new(MockSink::default());
+        let server =
+            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default(), true);
+        server.start().await;
+
+        for scheme in [UdpPunchScheme::Udp, UdpPunchScheme::Http3] {
+            let err = server
+                .select_punch_listener(SelectPunchListener {
+                    force_new: false,
+                    prefer_port_mapping: false,
+                    scheme,
+                })
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("HTTP3"));
+        }
+        server.stop().await;
     }
 
     #[tokio::test]
@@ -1221,7 +1388,10 @@ mod tests {
         let sink = Arc::new(MockSink::default());
         let common = UdpHolePunchServerCommon::new(runtime, mock_stun(), sink.clone());
 
-        common.select_listener(false, false).await.unwrap();
+        common
+            .select_listener(false, false, UdpPunchScheme::Udp)
+            .await
+            .unwrap();
 
         for _ in 0..10 {
             if sink.server_tunnels.load(Ordering::Relaxed) == 1 {
@@ -1359,13 +1529,14 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
         let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
-        let server = UdpBothEasySymPunchServer::new(common);
+        let server = UdpBothEasySymPunchServer::new(common, false);
         let request = SendPunchPacketBothEasySym {
             udp_socket_count: 1,
             public_ip: Ipv4Addr::new(198, 51, 100, 1),
             transaction_id: 9,
             dst_port_num: 20000,
             wait_time_ms: 500,
+            scheme: UdpPunchScheme::Udp,
         };
 
         let first_response = server
@@ -1384,5 +1555,28 @@ mod tests {
             .unwrap();
         assert!(busy_response.is_busy);
         assert!(busy_response.base_mapped_addr.is_none());
+    }
+
+    #[tokio::test]
+    async fn both_easy_sym_strict_mode_rejects_raw_udp_request() {
+        let runtime = Arc::new(MockRuntime::new(Vec::new()));
+        let sink = Arc::new(MockSink::default());
+        let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
+        let server = UdpBothEasySymPunchServer::new(common, true);
+        let request = SendPunchPacketBothEasySym {
+            udp_socket_count: 1,
+            public_ip: Ipv4Addr::new(198, 51, 100, 1),
+            transaction_id: 9,
+            dst_port_num: 20000,
+            wait_time_ms: 500,
+            scheme: UdpPunchScheme::Udp,
+        };
+
+        let err = server
+            .send_punch_packet_both_easy_sym(request)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("HTTP3-only policy"));
     }
 }

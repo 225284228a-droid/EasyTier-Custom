@@ -204,10 +204,14 @@ service DirectConnectorRpc {
 message SelectPunchListenerRequest {
   bool force_new = 1;
   bool prefer_port_mapping = 2;
+  // Empty keeps the official raw-UDP punch protocol compatible.
+  string scheme = 3;
 }
 
 message SelectPunchListenerResponse {
   common.SocketAddr listener_mapped_addr = 1;
+  // Empty keeps the official raw-UDP punch protocol compatible.
+  string scheme = 2;
 }
 
 message SendPunchPacketConeRequest {
@@ -250,12 +254,14 @@ message SendPunchPacketBothEasySymRequest {
 
   uint32 dst_port_num = 4;
   uint32 wait_time_ms = 5;
+  string scheme = 6;
 }
 
 message SendPunchPacketBothEasySymResponse {
   // is doing punch with other peer
   bool is_busy = 1;
   common.SocketAddr base_mapped_addr = 2;
+  string scheme = 3;
 }
 
 service UdpHolePunchRpc {

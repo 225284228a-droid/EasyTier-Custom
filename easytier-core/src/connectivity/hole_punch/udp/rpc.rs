@@ -11,7 +11,8 @@ use crate::{
         SendPunchPacketCone, SendPunchPacketEasySym, SendPunchPacketHardSym,
         SendPunchPacketHardSymResponse as CoreSendPunchPacketHardSymResponse, UdpHolePunchInbound,
         UdpHolePunchRuntime, UdpHolePunchServer as CoreUdpHolePunchServer, UdpHolePunchSignalError,
-        UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpPunchInboundGate, UdpSymPunchLock,
+        UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpPunchInboundGate, UdpPunchScheme,
+        UdpSymPunchLock,
     },
     connectivity::stun::StunInfoProvider,
     proto::{
@@ -56,6 +57,7 @@ fn select_listener_request_to_rpc(request: SelectPunchListener) -> SelectPunchLi
     SelectPunchListenerRequest {
         force_new: request.force_new,
         prefer_port_mapping: request.prefer_port_mapping,
+        scheme: request.scheme.as_str().to_owned(),
     }
 }
 
@@ -63,6 +65,7 @@ fn select_listener_request_from_rpc(input: SelectPunchListenerRequest) -> Select
     SelectPunchListener {
         force_new: input.force_new,
         prefer_port_mapping: input.prefer_port_mapping,
+        scheme: UdpPunchScheme::from_wire(&input.scheme),
     }
 }
 
@@ -70,6 +73,7 @@ fn select_listener_response_from_rpc(
     response: SelectPunchListenerResponse,
 ) -> Result<CoreSelectPunchListenerResponse, UdpHolePunchSignalError> {
     Ok(CoreSelectPunchListenerResponse {
+        scheme: UdpPunchScheme::from_wire(&response.scheme),
         listener_mapped_addr: SocketAddr::from(
             response
                 .listener_mapped_addr
@@ -83,6 +87,7 @@ fn select_listener_response_to_rpc(
 ) -> SelectPunchListenerResponse {
     SelectPunchListenerResponse {
         listener_mapped_addr: Some(response.listener_mapped_addr.into()),
+        scheme: response.scheme.as_str().to_owned(),
     }
 }
 
@@ -127,6 +132,7 @@ fn both_easy_symmetric_request_to_rpc(
         dst_port_num: request.dst_port_num,
         udp_socket_count: request.udp_socket_count,
         wait_time_ms: request.wait_time_ms,
+        scheme: request.scheme.as_str().to_owned(),
     }
 }
 
@@ -152,6 +158,7 @@ fn both_easy_symmetric_response_from_rpc(
     CoreSendPunchPacketBothEasySymResponse {
         is_busy: response.is_busy,
         base_mapped_addr: response.base_mapped_addr.map(SocketAddr::from),
+        scheme: UdpPunchScheme::from_wire(&response.scheme),
     }
 }
 
@@ -161,6 +168,7 @@ fn both_easy_symmetric_response_to_rpc(
     SendPunchPacketBothEasySymResponse {
         is_busy: response.is_busy,
         base_mapped_addr: response.base_mapped_addr.map(Into::into),
+        scheme: response.scheme.as_str().to_owned(),
     }
 }
 
@@ -333,8 +341,15 @@ where
         sym_punch_lock: UdpSymPunchLock,
         runtime: Arc<R>,
         inbound_gate: Arc<dyn UdpPunchInboundGate>,
+        http3_required: bool,
     ) -> Arc<Self> {
-        let inner = CoreUdpHolePunchServer::new(runtime, stun, transport_sink, sym_punch_lock);
+        let inner = CoreUdpHolePunchServer::new(
+            runtime,
+            stun,
+            transport_sink,
+            sym_punch_lock,
+            http3_required,
+        );
         Arc::new(Self {
             inner,
             inbound_gate,
@@ -428,6 +443,7 @@ fn both_easy_symmetric_request_from_rpc(
         dst_port_num: input.dst_port_num,
         udp_socket_count: input.udp_socket_count,
         wait_time_ms: input.wait_time_ms,
+        scheme: UdpPunchScheme::from_wire(&input.scheme),
     })
 }
 
@@ -618,6 +634,7 @@ mod tests {
         let domain_request = SelectPunchListener {
             force_new: true,
             prefer_port_mapping: false,
+            scheme: UdpPunchScheme::Http3,
         };
         let rpc_request = select_listener_request_to_rpc(domain_request.clone());
         assert!(rpc_request.force_new);
@@ -626,6 +643,7 @@ mod tests {
             select_listener_request_from_rpc(SelectPunchListenerRequest {
                 force_new: true,
                 prefer_port_mapping: false,
+                scheme: "http3".to_owned(),
             }),
             domain_request
         );
@@ -633,6 +651,7 @@ mod tests {
         let mapped_addr: SocketAddr = "198.51.100.1:31001".parse().unwrap();
         let core_response = CoreSelectPunchListenerResponse {
             listener_mapped_addr: mapped_addr,
+            scheme: UdpPunchScheme::Http3,
         };
         let rpc_response = select_listener_response_to_rpc(core_response.clone());
         assert_eq!(
@@ -649,6 +668,39 @@ mod tests {
         assert_eq!(
             error,
             UdpHolePunchSignalError::RemoteRejected("missing listener_mapped_addr".to_owned())
+        );
+    }
+
+    #[test]
+    fn official_empty_scheme_maps_to_raw_udp() {
+        assert_eq!(
+            select_listener_request_from_rpc(SelectPunchListenerRequest::default()).scheme,
+            UdpPunchScheme::Udp
+        );
+        assert_eq!(
+            select_listener_response_from_rpc(SelectPunchListenerResponse {
+                listener_mapped_addr: Some(
+                    "198.51.100.1:31001".parse::<SocketAddr>().unwrap().into()
+                ),
+                scheme: String::new(),
+            })
+            .unwrap()
+            .scheme,
+            UdpPunchScheme::Udp
+        );
+        assert_eq!(
+            both_easy_symmetric_request_from_rpc(SendPunchPacketBothEasySymRequest {
+                public_ip: Some(Ipv4Addr::new(203, 0, 113, 6).into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .scheme,
+            UdpPunchScheme::Udp
+        );
+        assert_eq!(
+            both_easy_symmetric_response_from_rpc(SendPunchPacketBothEasySymResponse::default())
+                .scheme,
+            UdpPunchScheme::Udp
         );
     }
 
@@ -744,6 +796,7 @@ mod tests {
             transaction_id: 16,
             dst_port_num: 34000,
             wait_time_ms: 2500,
+            scheme: UdpPunchScheme::Http3,
         };
 
         let rpc = both_easy_symmetric_request_to_rpc(request.clone());
@@ -752,6 +805,7 @@ mod tests {
         assert_eq!(rpc.transaction_id, 16);
         assert_eq!(rpc.dst_port_num, 34000);
         assert_eq!(rpc.wait_time_ms, 2500);
+        assert_eq!(rpc.scheme, "http3");
         assert_eq!(both_easy_symmetric_request_from_rpc(rpc).unwrap(), request);
     }
 
@@ -767,6 +821,7 @@ mod tests {
         let both_response = CoreSendPunchPacketBothEasySymResponse {
             is_busy: true,
             base_mapped_addr: Some("198.51.100.8:31008".parse().unwrap()),
+            scheme: UdpPunchScheme::Http3,
         };
         let both_rpc = both_easy_symmetric_response_to_rpc(both_response.clone());
         assert!(both_rpc.is_busy);
