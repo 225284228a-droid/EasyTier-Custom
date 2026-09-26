@@ -35,6 +35,7 @@ struct ManagedRuntimeContinuity {
     runtime_id: Option<uuid::Uuid>,
     session_epoch: u64,
     state: SharedManagedRuntimeState,
+    mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Debug)]
@@ -45,6 +46,22 @@ pub struct StorageInner {
 }
 
 impl StorageInner {
+    pub(super) fn runtime_mutation_lock(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        self.managed_runtime_states
+            .entry(identify)
+            .or_insert_with(|| ManagedRuntimeContinuity {
+                runtime_id: None,
+                session_epoch: 0,
+                state: Arc::new(std::sync::Mutex::new(ManagedRuntimeState::default())),
+                mutation_lock: Arc::default(),
+            })
+            .mutation_lock
+            .clone()
+    }
+
     pub(super) fn owns_authorized_session(
         &self,
         stoken: &StorageToken,
@@ -79,6 +96,13 @@ impl TryFrom<WeakRefStorage> for Storage {
 }
 
 impl Storage {
+    pub(super) fn runtime_mutation_lock(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        self.0.runtime_mutation_lock(identify)
+    }
+
     pub fn new(db: Db) -> Self {
         Storage(Arc::new(StorageInner {
             user_clients_map: DashMap::new(),
@@ -109,10 +133,12 @@ impl Storage {
                     return new_state();
                 }
                 let state = new_state();
+                let mutation_lock = current.mutation_lock.clone();
                 entry.insert(ManagedRuntimeContinuity {
                     runtime_id,
                     session_epoch,
                     state: state.clone(),
+                    mutation_lock,
                 });
                 state
             }
@@ -122,6 +148,7 @@ impl Storage {
                     runtime_id,
                     session_epoch,
                     state: state.clone(),
+                    mutation_lock: Arc::default(),
                 });
                 state
             }
@@ -275,6 +302,7 @@ impl Storage {
                 runtime_id: None,
                 session_epoch,
                 state: Arc::new(std::sync::Mutex::new(ManagedRuntimeState::default())),
+                mutation_lock: Arc::default(),
             });
         if session_epoch < continuity.session_epoch {
             return;
@@ -517,6 +545,26 @@ mod tests {
         storage.update_session_client(old.clone(), 40, true, 1);
         assert!(!storage.0.owns_authorized_session(&old, 1));
         assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
+    }
+
+    #[tokio::test]
+    async fn runtime_mutations_stay_serialized_across_legacy_reconnects() {
+        let storage = Storage::new(Db::memory_db().await);
+        let machine_id = uuid::Uuid::new_v4();
+        let identify = (1, machine_id);
+        let guard = storage.runtime_mutation_lock(identify).lock_owned().await;
+        for epoch in 1..=2 {
+            storage.bind_managed_runtime_state(1, machine_id, None, epoch);
+            assert!(storage.runtime_mutation_lock(identify).try_lock().is_err());
+        }
+        assert!(
+            storage
+                .runtime_mutation_lock((2, machine_id))
+                .try_lock()
+                .is_ok()
+        );
+        drop(guard);
+        assert!(storage.runtime_mutation_lock(identify).try_lock().is_ok());
     }
 
     #[tokio::test]

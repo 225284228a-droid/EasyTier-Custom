@@ -606,6 +606,11 @@ impl
         save: bool,
         source: ConfigSource,
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        let _mutation = self
+            .storage
+            .runtime_mutation_lock(identify)
+            .lock_owned()
+            .await;
         if !self.supports_local_configs(&identify).await {
             let client = self
                 .get_rpc_client(identify)
@@ -663,42 +668,76 @@ impl
         if inst_ids.is_empty() {
             return Ok(());
         }
+        let _mutation = self
+            .storage
+            .runtime_mutation_lock(identify)
+            .lock_owned()
+            .await;
         let client = self
             .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
-        if !self.supports_local_configs(&identify).await {
-            self.get_storage()
-                .delete_network_configs(identify, &inst_ids)
-                .await
-                .map_err(RemoteClientError::PersistentError)?;
-
-            client
-                .delete_network_instance(
-                    BaseController::default(),
-                    DeleteNetworkInstanceRequest {
-                        inst_ids: inst_ids.into_iter().map(Into::into).collect(),
-                    },
-                )
-                .await?;
-            return Ok(());
-        }
-
-        client
+        let local_configs = self.supports_local_configs(&identify).await;
+        let complete_delete = local_configs
+            && client
+                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+                .await?
+                .supports_persisted_config_management
+                == Some(true);
+        let response = client
             .delete_network_instance(
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
-                    inst_ids: inst_ids.iter().cloned().map(Into::into).collect(),
+                    inst_ids: inst_ids.iter().copied().map(Into::into).collect(),
                 },
             )
             .await?;
-        client
-            .remove_network_instance_config(
-                BaseController::default(),
-                RemoveNetworkInstanceConfigRequest {
-                    inst_ids: inst_ids.into_iter().map(Into::into).collect(),
-                },
-            )
-            .await?;
+        let mut remaining: HashSet<Uuid> = response
+            .remain_inst_ids
+            .into_iter()
+            .map(Into::into)
+            .filter(|id| inst_ids.contains(id))
+            .collect();
+        if local_configs && !complete_delete {
+            // Older local-config cores only delete running instances. Never
+            // pass a refused deletion on to their config-only removal RPC.
+            let stopped: Vec<_> = inst_ids
+                .iter()
+                .filter(|id| !remaining.contains(id))
+                .copied()
+                .map(Into::into)
+                .collect();
+            if !stopped.is_empty() {
+                let response = client
+                    .remove_network_instance_config(
+                        BaseController::default(),
+                        RemoveNetworkInstanceConfigRequest { inst_ids: stopped },
+                    )
+                    .await?;
+                remaining.extend(response.remain_inst_ids.into_iter().map(Uuid::from));
+            }
+        }
+        if !local_configs {
+            let removed: Vec<_> = inst_ids
+                .iter()
+                .filter(|id| !remaining.contains(id))
+                .copied()
+                .collect();
+            self.get_storage()
+                .delete_network_configs(identify, &removed)
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+        }
+        if !remaining.is_empty() {
+            return Err(RemoteClientError::Other(format!(
+                "failed to delete network instances: {}",
+                inst_ids
+                    .iter()
+                    .filter(|id| remaining.contains(id))
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
         Ok(())
     }
 
@@ -708,6 +747,11 @@ impl
         inst_id: uuid::Uuid,
         disabled: bool,
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        let _mutation = self
+            .storage
+            .runtime_mutation_lock(identify)
+            .lock_owned()
+            .await;
         let client = self
             .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -723,7 +767,7 @@ impl
                     .await
                     .map_err(RemoteClientError::PersistentError)?;
 
-                client
+                let response = client
                     .delete_network_instance(
                         BaseController::default(),
                         DeleteNetworkInstanceRequest {
@@ -731,6 +775,11 @@ impl
                         },
                     )
                     .await?;
+                if response.remain_inst_ids.contains(&inst_id.into()) {
+                    return Err(RemoteClientError::Other(format!(
+                        "network instance {inst_id} could not be stopped"
+                    )));
+                }
             } else {
                 client
                     .run_network_instance(
@@ -788,6 +837,11 @@ impl
         config: easytier::proto::api::manage::NetworkConfig,
         source: ConfigSource,
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        let _mutation = self
+            .storage
+            .runtime_mutation_lock(identify)
+            .lock_owned()
+            .await;
         if !self.supports_local_configs(&identify).await {
             self.get_storage()
                 .insert_or_update_user_network_config(identify, inst_id, config, source)
@@ -1704,6 +1758,204 @@ mod tests {
         .unwrap();
         println!("{:?}", req);
         println!("{:?}", mgr);
+    }
+
+    #[tokio::test]
+    async fn legacy_delete_keeps_rejected_configs_in_web_storage() {
+        use easytier_core::management::{ConfigFileControl, ConfigFilePermission};
+
+        let (webhook_config, webhook_server, _) = test_webhook_config().await;
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
+            Arc::new(FeatureFlags::default()),
+            webhook_config,
+        );
+        let server_addr = add_random_udp_listener(&mut mgr).await;
+        let core_manager = Arc::new(native_instance_manager());
+        let machine_id = uuid::Uuid::new_v4();
+        let client = start_web_client_for_test(server_addr, machine_id, core_manager.clone()).await;
+        let user_id = wait_for_validated_user(&mgr, machine_id).await;
+        let identify = (user_id, machine_id);
+        wait_for_condition(
+            || async { mgr.handle_list_network_instance_ids(identify).await.is_ok() },
+            Duration::from_secs(12),
+        )
+        .await;
+        let removable_id = uuid::Uuid::new_v4();
+        let protected_id = uuid::Uuid::new_v4();
+        for id in [removable_id, protected_id] {
+            let config = NetworkConfig {
+                instance_id: Some(id.to_string()),
+                network_name: Some(format!("legacy-delete-{id}")),
+                networking_method: Some(NetworkingMethod::Standalone as i32),
+                no_tun: Some(true),
+                disable_p2p: Some(true),
+                ..Default::default()
+            };
+            let permission = if id == protected_id {
+                ConfigFilePermission::from(ConfigFilePermission::NO_DELETE)
+            } else {
+                ConfigFilePermission::default()
+            };
+            core_manager
+                .run_network_instance(
+                    config.gen_config().unwrap(),
+                    ConfigFileControl::new(None, permission),
+                )
+                .unwrap();
+            mgr.insert_or_update_user_network_config(identify, id, config, ConfigSource::User)
+                .await
+                .unwrap();
+        }
+        assert!(
+            mgr.handle_update_network_state(identify, protected_id, true)
+                .await
+                .is_err()
+        );
+        assert!(
+            !mgr.get_network_config(identify, &protected_id.to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .disabled
+        );
+        let error = mgr
+            .handle_remove_network_instances(identify, vec![removable_id, protected_id])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(&protected_id.to_string()));
+        assert!(!error.to_string().contains(&removable_id.to_string()));
+        assert!(
+            core_manager.instance(removable_id).is_none(),
+            "removable instance survived: {error}"
+        );
+        assert!(core_manager.instance(protected_id).is_some());
+        assert!(
+            mgr.get_network_config(identify, &removable_id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mgr.get_network_config(identify, &protected_id.to_string())
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // A later heartbeat must not resurrect the successfully deleted row.
+        let session = mgr.get_session_by_machine_id(user_id, &machine_id).unwrap();
+        wait_for_condition(
+            || async {
+                session.get_heartbeat_req().await.is_some_and(|req| {
+                    req.running_network_instances.contains(&protected_id.into())
+                        && !req.running_network_instances.contains(&removable_id.into())
+                })
+            },
+            Duration::from_secs(12),
+        )
+        .await;
+        assert!(core_manager.instance(removable_id).is_none());
+
+        client.shutdown().await;
+        core_manager.retain_network_instances(&[]).await.unwrap();
+        webhook_server.abort();
+    }
+
+    #[tokio::test]
+    async fn local_config_delete_reports_protected_networks_and_removes_other_configs() {
+        use easytier::common::config::{ConfigLoader as _, load_config_from_file};
+
+        let (webhook_config, webhook_server, _) = test_webhook_config().await;
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            HeartbeatPolicy::from_millis(0, 15_000).unwrap(),
+            Arc::new(FeatureFlags::default()),
+            webhook_config,
+        );
+        let server_addr = add_random_udp_listener(&mut mgr).await;
+        let config_dir =
+            std::env::temp_dir().join(format!("easytier-web-delete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let core_manager = local_config_instance_manager(config_dir.clone());
+        let machine_id = uuid::Uuid::new_v4();
+        let client = start_web_client_for_test(server_addr, machine_id, core_manager.clone()).await;
+        let user_id = wait_for_validated_user(&mgr, machine_id).await;
+        wait_for_local_config_capability(&mgr, user_id, machine_id).await;
+        let identify = (user_id, machine_id);
+        let running_id = uuid::Uuid::new_v4();
+        let saved_id = uuid::Uuid::new_v4();
+        let protected_id = uuid::Uuid::new_v4();
+        let network = |id: uuid::Uuid| NetworkConfig {
+            instance_id: Some(id.to_string()),
+            network_name: Some(format!("delete-test-{id}")),
+            networking_method: Some(NetworkingMethod::Standalone as i32),
+            no_tun: Some(true),
+            disable_p2p: Some(true),
+            ..Default::default()
+        };
+        mgr.handle_run_network_instance(identify, network(running_id), true)
+            .await
+            .unwrap();
+        mgr.handle_save_network_config(identify, saved_id, network(saved_id))
+            .await
+            .unwrap();
+
+        let mut protected = network(protected_id);
+        protected.network_secret =
+            Some("${EASYTIER_WEB_DELETE_TEST_UNSET_SECRET:-protected-secret}".to_string());
+        let protected = protected.gen_config().unwrap();
+        protected.set_listeners(Vec::new());
+        let protected_path = config_dir.join(format!("{protected_id}.toml"));
+        std::fs::write(&protected_path, protected.dump()).unwrap();
+        let (protected, control) = load_config_from_file(&protected_path, Some(&config_dir), false)
+            .await
+            .unwrap();
+        assert!(control.is_read_only() && control.is_no_delete());
+        core_manager
+            .run_network_instance(protected, control)
+            .unwrap();
+
+        let error = mgr
+            .handle_remove_network_instances(identify, vec![running_id, saved_id, protected_id])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(&protected_id.to_string()));
+        assert!(core_manager.instance(running_id).is_none());
+        assert!(!config_dir.join(format!("{running_id}.toml")).exists());
+        assert!(!config_dir.join(format!("{saved_id}.toml")).exists());
+        assert!(core_manager.instance(protected_id).is_some());
+        assert!(protected_path.is_file());
+        let ids = mgr
+            .handle_list_network_instance_ids(identify)
+            .await
+            .unwrap();
+        assert!(!ids.disabled_inst_ids.contains(&saved_id.into()));
+        assert!(ids.running_inst_ids.contains(&protected_id.into()));
+
+        // The config-only endpoint must enforce the same loader permissions.
+        use easytier::proto::api::manage::RemoveNetworkInstanceConfigRequest;
+        let response = mgr
+            .get_rpc_client(identify)
+            .unwrap()
+            .remove_network_instance_config(
+                Default::default(),
+                RemoveNetworkInstanceConfigRequest {
+                    inst_ids: vec![protected_id.into()],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.remain_inst_ids, vec![protected_id.into()]);
+        assert!(protected_path.is_file());
+
+        client.shutdown().await;
+        core_manager.retain_network_instances(&[]).await.unwrap();
+        webhook_server.abort();
+        std::fs::remove_dir_all(config_dir).unwrap();
     }
 
     #[tokio::test]

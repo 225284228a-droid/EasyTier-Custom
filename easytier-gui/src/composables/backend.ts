@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { Api, NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
 import { type ConfigSource, normalizeConfigSource } from './config_source'
+import { readRemoteConfigs } from './remote_configs'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
@@ -134,8 +135,12 @@ export async function sendConfigs(enabledNetworks: string[], migrationKey?: stri
 }
 
 /** Rebuild the GUI-only cache from the active core without replaying old state. */
-export async function syncConfigsFromCore() {
-  return invoke('load_configs', { configs: [], enabledNetworks: [] })
+export async function syncConfigsFromCore(remoteRpcUrl?: string) {
+  const configs = remoteRpcUrl ? parseStoredConfigs(readRemoteConfigs(remoteRpcUrl)) : []
+  return invoke('load_configs', {
+    configs: configs.map(({ config, source }) => ({ config: NetworkTypes.toBackendNetworkConfig(config), source })),
+    enabledNetworks: [],
+  })
 }
 
 export async function getNetworkMetas(instanceIds: string[]) {
@@ -162,8 +167,8 @@ export async function resolveSharedConfigDir(configDir?: string) {
   return await invoke<string>('resolve_shared_config_dir', { configDir })
 }
 
-export async function initRpcConnection(isNormalMode: boolean, url?: string, configDir?: string) {
-  return await invoke('init_rpc_connection', { isNormalMode, url, configDir })
+export async function initRpcConnection(isNormalMode: boolean, url?: string, configDir?: string, remoteConfigCache = false) {
+  return await invoke('init_rpc_connection', { isNormalMode, url, configDir, remoteConfigCache })
 }
 
 export async function isClientRunning() {

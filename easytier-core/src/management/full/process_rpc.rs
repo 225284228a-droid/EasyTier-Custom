@@ -38,6 +38,15 @@ use super::{
 
 #[async_trait::async_trait]
 pub trait InstanceMutationHooks: Send + Sync + 'static {
+    /// Plans a start without calling back into process mutations.
+    async fn prepare_start(
+        &self,
+        _config: &TomlConfig,
+        _active: &[ActiveInstanceForStart],
+    ) -> Result<Vec<uuid::Uuid>, String> {
+        Ok(Vec::new())
+    }
+
     fn manages_remote_config_instances(&self) -> bool {
         false
     }
@@ -56,6 +65,20 @@ pub trait InstanceMutationHooks: Send + Sync + 'static {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    async fn post_stop_network_instances(
+        &self,
+        _instance_ids: &[uuid::Uuid],
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveInstanceForStart {
+    pub instance_id: uuid::Uuid,
+    pub no_tun: bool,
+    pub source: ConfigSource,
 }
 
 #[async_trait::async_trait]
@@ -67,6 +90,19 @@ pub trait ConfigFileStorage: Send + Sync + 'static {
     async fn inspect(&self, path: &Path) -> ConfigFileControl;
 
     async fn read(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>>;
+
+    async fn load_config(
+        &self,
+        path: &Path,
+        _config_dir: Option<&Path>,
+    ) -> anyhow::Result<Option<(TomlConfig, ConfigFileControl)>> {
+        let Some(contents) = self.read(path).await? else {
+            return Ok(None);
+        };
+        let contents = String::from_utf8(contents)?;
+        let config = TomlConfig::new_from_str_with_source(&path.display().to_string(), &contents)?;
+        Ok(Some((config, self.inspect(path).await)))
+    }
 
     /// Atomically replaces the file and restricts newly created files to the
     /// current user when the Host supports file permissions.
@@ -169,6 +205,152 @@ where
         self.state_store.clone()
     }
 
+    fn restore_enabled_state(
+        &self,
+        instance_id: uuid::Uuid,
+        previous: Option<bool>,
+    ) -> anyhow::Result<()> {
+        match previous {
+            Some(enabled) => self.state_store.set_enabled(instance_id, enabled),
+            None => self.state_store.remove(&instance_id),
+        }
+    }
+
+    fn saved_config_path(&self, instance_id: uuid::Uuid) -> Option<PathBuf> {
+        self.instances
+            .config_control(instance_id)
+            .and_then(|control| control.path)
+            .or_else(|| {
+                self.instances
+                    .managed_config_control(instance_id)
+                    .and_then(|control| control.path)
+            })
+            .or_else(|| {
+                self.instances
+                    .config_dir()
+                    .map(|dir| dir.join(format!("{instance_id}.toml")))
+            })
+    }
+
+    fn ensure_config_identity(&self, instance_id: uuid::Uuid) -> anyhow::Result<()> {
+        if let (Some(active), Some(registered)) = (
+            self.instances.config_control(instance_id),
+            self.instances.managed_config_control(instance_id),
+        ) && active.path != registered.path
+        {
+            anyhow::bail!(
+                "running instance {instance_id} uses a different config file from the managed catalog"
+            );
+        }
+        Ok(())
+    }
+
+    async fn load_saved_config(
+        &self,
+        instance_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<(TomlConfig, ConfigFileControl)>> {
+        self.ensure_config_identity(instance_id)?;
+        let Some(path) = self.saved_config_path(instance_id) else {
+            return Ok(None);
+        };
+        let Some((config, mut control)) = self
+            .storage
+            .load_config(&path, self.instances.config_dir().map(PathBuf::as_path))
+            .await?
+        else {
+            return Ok(None);
+        };
+        if config.get_id() != instance_id {
+            anyhow::bail!(
+                "config file {} does not contain instance {instance_id}",
+                path.display()
+            );
+        }
+        if let Some(active) = self.instances.config_control(instance_id) {
+            control.permission = ConfigFilePermission::from(
+                u8::from(control.permission) | u8::from(active.permission),
+            );
+        }
+        if let Some(registered) = self.instances.managed_config_control(instance_id) {
+            control.permission = ConfigFilePermission::from(
+                u8::from(control.permission) | u8::from(registered.permission),
+            );
+        }
+        Ok(Some((config, control)))
+    }
+
+    async fn stop_instances_locked(&self, ids: &[uuid::Uuid]) -> anyhow::Result<()> {
+        // Validate every replacement before stopping any existing network.
+        let mut controls = Vec::new();
+        for id in ids {
+            let Some((_, control)) = self.load_saved_config(*id).await? else {
+                anyhow::bail!("instance {id} has no recoverable persistent configuration");
+            };
+            if control.path.as_deref().and_then(Path::parent)
+                != self.instances.config_dir().map(PathBuf::as_path)
+            {
+                anyhow::bail!("instance {id} is not managed by the config directory");
+            }
+            controls.push((*id, control));
+        }
+        for (id, control) in controls {
+            self.instances.register_managed_config(id, control)?;
+        }
+        let stopped = ids
+            .iter()
+            .copied()
+            .filter(|id| self.instances.instance(*id).is_some())
+            .collect::<Vec<_>>();
+        self.state_store.set_enabled_batch(ids, false)?;
+        self.instances
+            .delete_network_instances(stopped.clone())
+            .await?;
+        if !ids.is_empty() {
+            self.hooks
+                .post_stop_network_instances(ids)
+                .await
+                .map_err(|error| anyhow::anyhow!("post-stop hook failed: {error}"))?;
+        }
+        Ok(())
+    }
+
+    async fn prepare_start_locked(&self, config: &TomlConfig) -> anyhow::Result<()> {
+        let active = self
+            .instances
+            .instances()
+            .into_iter()
+            .filter_map(|instance| {
+                instance.toml_config().map(|config| ActiveInstanceForStart {
+                    instance_id: instance.instance_id(),
+                    no_tun: config.get_flags().no_tun,
+                    source: config.get_network_config_source(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let ids = self
+            .hooks
+            .prepare_start(config, &active)
+            .await
+            .map_err(|error| anyhow::anyhow!("start preparation failed: {error}"))?;
+        let ids = ids
+            .into_iter()
+            .filter(|id| *id != config.get_id())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let instance_name = config.get_inst_name();
+        if self.instances.instances().iter().any(|instance| {
+            instance.instance_id() != config.get_id()
+                && !ids.contains(&instance.instance_id())
+                && instance.instance_name() == instance_name
+        }) {
+            anyhow::bail!(
+                "instance name {instance_name} is already used by a running instance; change the network name or stop that instance first"
+            );
+        }
+        self.stop_instances_locked(&ids).await
+    }
+
     async fn is_remote_removable(&self, control: &ConfigFileControl) -> bool {
         if control.is_read_only() || !control.is_deletable() {
             return false;
@@ -191,13 +373,30 @@ where
         if require_deletable && !control.is_deletable() {
             anyhow::bail!("instance {instance_id} is no-delete, cannot be overwritten");
         }
-        if let Some(path) = control.path.as_deref()
-            && self.storage.inspect(path).await.is_read_only()
-        {
-            anyhow::bail!(
-                "config file {} is read-only, cannot be overwritten",
-                path.display()
-            );
+        if let Some(path) = control.path.as_deref() {
+            let loaded = self
+                .storage
+                .load_config(path, self.instances.config_dir().map(PathBuf::as_path))
+                .await?;
+            if loaded
+                .as_ref()
+                .is_some_and(|(config, _)| config.get_id() != instance_id)
+            {
+                anyhow::bail!(
+                    "config file {} does not contain instance {instance_id}",
+                    path.display()
+                );
+            }
+            let current = match loaded {
+                Some((_, control)) => control,
+                None => self.storage.inspect(path).await,
+            };
+            if current.is_read_only() || (require_deletable && !current.is_deletable()) {
+                anyhow::bail!(
+                    "config file {} is protected, cannot be overwritten",
+                    path.display()
+                );
+            }
         }
         Ok(())
     }
@@ -264,10 +463,12 @@ where
         requested_source: Option<ConfigSource>,
     ) -> anyhow::Result<uuid::Uuid> {
         let remote_managed = self.hooks.manages_remote_config_instances();
+        let previous_enabled = self.state_store.enabled_state(&instance_id);
+        self.ensure_config_identity(instance_id)?;
 
         let mut replacing = false;
         let mut restore_instance = None;
-        let mut control = if let Some(control) = self.instances.config_control(instance_id) {
+        let control = if let Some(control) = self.instances.config_control(instance_id) {
             let existing_source = self.instances.config_source(instance_id);
             let error_message = self
                 .instances
@@ -287,6 +488,11 @@ where
                 .config(instance_id)
                 .map(|config| (config, control.clone()));
             control
+        } else if let Some(control) = self.instances.managed_config_control(instance_id) {
+            self.ensure_overwritable(instance_id, &control, remote_managed)
+                .await?;
+            config.set_network_config_source(requested_source);
+            control
         } else if let Some(config_dir) = self.instances.config_dir() {
             config.set_network_config_source(requested_source);
             ConfigFileControl::new(
@@ -298,10 +504,23 @@ where
             ConfigFileControl::new(None, ConfigFilePermission::default())
         };
 
-        self.hooks
-            .pre_run_network_instance(&config)
-            .await
-            .map_err(|error| anyhow::anyhow!("pre-run hook failed: {error}"))?;
+        self.ensure_overwritable(instance_id, &control, remote_managed)
+            .await?;
+        if !replacing {
+            self.state_store.set_enabled(instance_id, false)?;
+        }
+        if let Err(error) = self.prepare_start_locked(&config).await {
+            if !replacing {
+                self.restore_enabled_state(instance_id, previous_enabled)?;
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.hooks.pre_run_network_instance(&config).await {
+            if !replacing {
+                self.restore_enabled_state(instance_id, previous_enabled)?;
+            }
+            return Err(anyhow::anyhow!("pre-run hook failed: {error}"));
+        }
 
         if replacing {
             self.ensure_overwritable(instance_id, &control, remote_managed)
@@ -319,6 +538,9 @@ where
                 }),
                 Ok(None) => Some(ConfigFileCleanup::Remove(path.to_owned())),
                 Err(error) => {
+                    if !replacing {
+                        self.restore_enabled_state(instance_id, previous_enabled)?;
+                    }
                     return Err(anyhow::anyhow!(
                         "failed to back up config file {} before overwrite: {error}",
                         path.display()
@@ -326,8 +548,13 @@ where
                 }
             };
             if let Err(error) = self.storage.write(path, config.dump().as_bytes()).await {
-                tracing::warn!(%error, path = %path.display(), "failed to write config file");
-                control.set_read_only(true);
+                if !replacing {
+                    self.restore_enabled_state(instance_id, previous_enabled)?;
+                }
+                return Err(anyhow::anyhow!(
+                    "failed to write config file {}: {error}",
+                    path.display()
+                ));
             } else {
                 file_cleanup = cleanup;
             }
@@ -341,22 +568,58 @@ where
             return Err(error);
         }
 
-        if let Err(error) = self.instances.run_network_instance(config, control) {
+        if let Err(error) = self.instances.run_network_instance(config, control.clone()) {
             self.rollback_started_instance(None, file_cleanup, restore_instance)
                 .await;
+            if !replacing {
+                self.restore_enabled_state(instance_id, previous_enabled)?;
+            }
             return Err(error);
         }
 
         if let Err(error) = self.hooks.post_run_network_instance(&instance_id).await {
-            if remote_managed {
-                self.rollback_started_instance(Some(instance_id), file_cleanup, restore_instance)
-                    .await;
-                return Err(anyhow::anyhow!("post-run hook failed: {error}"));
+            let restoring = restore_instance.is_some();
+            let cleanup = if restoring { file_cleanup } else { None };
+            self.rollback_started_instance(Some(instance_id), cleanup, restore_instance)
+                .await;
+            if !restoring {
+                if control.path.as_deref().and_then(Path::parent)
+                    == self.instances.config_dir().map(PathBuf::as_path)
+                    && control.path.is_some()
+                {
+                    self.instances
+                        .register_managed_config(instance_id, control)?;
+                } else {
+                    self.restore_enabled_state(instance_id, previous_enabled)?;
+                }
+                let _ = self.hooks.post_stop_network_instances(&[instance_id]).await;
             }
-            tracing::warn!(%error, "post-run hook failed");
+            return Err(anyhow::anyhow!("post-run hook failed: {error}"));
+        }
+        if control.path.as_deref().and_then(Path::parent)
+            == self.instances.config_dir().map(PathBuf::as_path)
+            && control.path.is_some()
+        {
+            self.instances
+                .register_managed_config(instance_id, control.clone())?;
         }
         if let Err(error) = self.state_store.set_enabled(instance_id, true) {
-            tracing::warn!(%error, %instance_id, "failed to persist enabled state");
+            let restoring = restore_instance.is_some();
+            self.rollback_started_instance(
+                Some(instance_id),
+                if restoring { file_cleanup } else { None },
+                restore_instance,
+            )
+            .await;
+            if !restoring {
+                let _ = self.hooks.post_stop_network_instances(&[instance_id]).await;
+                if control.path.is_some() && self.instances.config_dir().is_some() {
+                    let _ = self.state_store.set_enabled(instance_id, false);
+                } else {
+                    let _ = self.restore_enabled_state(instance_id, previous_enabled);
+                }
+            }
+            return Err(error);
         }
         Ok(instance_id)
     }
@@ -431,47 +694,90 @@ where
     ) -> anyhow::Result<InstanceMutationResult> {
         let _mutation = self.mutation_lock.lock().await;
         let requested = requested.into_iter().collect::<HashSet<_>>();
-        let remote_managed = self.hooks.manages_remote_config_instances();
         let mut removed = Vec::new();
-        let mut files = Vec::new();
-        for instance in self.instances.instances() {
-            let instance_id = instance.instance_id();
-            if !requested.contains(&instance_id) {
+        for instance_id in &requested {
+            let active = self.instances.config_control(*instance_id);
+            if self.instances.instance(*instance_id).is_some() && active.is_none() {
                 continue;
             }
-            let Some(control) = self.instances.config_control(instance_id) else {
-                continue;
-            };
-            let removable = if remote_managed {
-                self.is_remote_removable(&control).await
-            } else {
-                control.is_deletable()
-            };
-            if removable {
-                removed.push(instance_id);
-                files.extend(control.path);
-            }
-        }
-        let remaining = self
-            .instances
-            .delete_network_instances(removed.clone())
-            .await?;
-        self.notify_removed_instances(&removed).await?;
-        for instance_id in &removed {
-            let _ = self.state_store.remove(instance_id);
-        }
-        for path in files {
-            if remote_managed && self.storage.inspect(&path).await.is_read_only() {
+            if active
+                .as_ref()
+                .is_some_and(|control| control.is_read_only() || !control.is_deletable())
+            {
                 continue;
             }
-            match self.storage.remove(&path).await {
-                Ok(()) => {}
-                Err(error) if is_not_found_error(&error) => {}
+            let loaded = match self.load_saved_config(*instance_id).await {
+                Ok(loaded) => loaded,
                 Err(error) => {
-                    tracing::warn!(%error, path = %path.display(), "failed to remove config file");
+                    tracing::warn!(%error, %instance_id, "failed to inspect config for deletion");
+                    continue;
+                }
+            };
+            if loaded
+                .as_ref()
+                .is_some_and(|(_, control)| control.is_read_only() || !control.is_deletable())
+            {
+                continue;
+            }
+            let path = loaded
+                .as_ref()
+                .and_then(|(_, control)| control.path.clone())
+                .or_else(|| active.as_ref().and_then(|control| control.path.clone()));
+            let was_running = self.instances.instance(*instance_id).is_some();
+            if was_running {
+                if let Err(error) = self.state_store.set_enabled(*instance_id, false) {
+                    tracing::warn!(%error, %instance_id, "failed to persist stopped state before deletion");
+                    continue;
+                }
+                if let Err(error) = self
+                    .instances
+                    .delete_network_instances([*instance_id])
+                    .await
+                {
+                    tracing::warn!(%error, %instance_id, "failed to stop instance for deletion");
+                    continue;
+                }
+                if let Err(error) = self
+                    .hooks
+                    .post_stop_network_instances(&[*instance_id])
+                    .await
+                {
+                    tracing::warn!(%error, %instance_id, "post-stop hook failed during deletion");
+                    continue;
                 }
             }
+            if let Some(path) = path {
+                let current = self.storage.inspect(&path).await;
+                if current.is_read_only() || !current.is_deletable() {
+                    continue;
+                }
+                match self.storage.remove(&path).await {
+                    Ok(()) => {}
+                    Err(error) if is_not_found_error(&error) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, path = %path.display(), "failed to remove config file");
+                        continue;
+                    }
+                }
+            }
+            if let Err(error) = self.state_store.remove(instance_id) {
+                tracing::warn!(%error, %instance_id, "failed to clear deleted instance state");
+                continue;
+            }
+            self.instances.unregister_managed_config(*instance_id);
+            removed.push(*instance_id);
         }
+        self.notify_removed_instances(&removed).await?;
+        let mut remaining = self
+            .instances
+            .instance_ids()
+            .into_iter()
+            .chain(self.state_store.disabled_instance_ids())
+            .chain(requested.into_iter().filter(|id| !removed.contains(id)))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        remaining.sort();
         Ok(InstanceMutationResult {
             remaining_instance_ids: remaining,
             removed_instance_ids: removed,
@@ -508,8 +814,13 @@ where
         let Some(config_dir) = self.instances.config_dir() else {
             anyhow::bail!("config dir is not configured, cannot save config file");
         };
-        let path = config_dir.join(format!("{instance_id}.toml"));
-        let existing = self.storage.inspect(&path).await;
+        let path = self
+            .saved_config_path(instance_id)
+            .unwrap_or_else(|| config_dir.join(format!("{instance_id}.toml")));
+        let existing = match self.load_saved_config(instance_id).await? {
+            Some((_, control)) => control,
+            None => self.storage.inspect(&path).await,
+        };
         if existing.is_read_only() {
             anyhow::bail!(
                 "config file {} is read-only, cannot save config",
@@ -517,11 +828,16 @@ where
             );
         }
         config.set_network_config_source(requested_source.or(Some(ConfigSource::Web)));
-        self.storage
-            .write(&path, config.dump().as_bytes())
-            .await
-            .map_err(|error| anyhow::anyhow!("failed to save config file: {error}"))?;
+        let previous_enabled = self.state_store.enabled_state(&instance_id);
         self.state_store.set_enabled(instance_id, false)?;
+        if let Err(error) = self.storage.write(&path, config.dump().as_bytes()).await {
+            self.restore_enabled_state(instance_id, previous_enabled)?;
+            return Err(anyhow::anyhow!("failed to save config file: {error}"));
+        }
+        self.instances.register_managed_config(
+            instance_id,
+            ConfigFileControl::new(Some(path), existing.permission),
+        )?;
         Ok(instance_id)
     }
 
@@ -533,55 +849,52 @@ where
         enabled: bool,
     ) -> anyhow::Result<()> {
         let _mutation = self.mutation_lock.lock().await;
+        self.ensure_config_identity(instance_id)?;
         if enabled {
             if self.instances.instance(instance_id).is_some() {
+                self.state_store.set_enabled(instance_id, true)?;
                 return Ok(());
             }
-            let Some(config_dir) = self.instances.config_dir() else {
+            if self.instances.config_dir().is_none() {
                 anyhow::bail!("config dir is not configured, cannot restore instance");
-            };
-            let path = config_dir.join(format!("{instance_id}.toml"));
-            let contents = self
-                .storage
-                .read(&path)
-                .await
-                .map_err(|error| anyhow::anyhow!("failed to read config file: {error}"))?
-                .ok_or_else(|| {
+            }
+            let (config, control) =
+                self.load_saved_config(instance_id).await?.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "config file {} not found, cannot enable instance",
-                        path.display()
+                        "config file for instance {instance_id} not found, cannot enable instance"
                     )
                 })?;
-            let config_str = String::from_utf8(contents)
-                .map_err(|error| anyhow::anyhow!("config file is not valid utf8: {error}"))?;
-            let config =
-                TomlConfig::new_from_str_with_source(&path.display().to_string(), &config_str)
-                    .map_err(|error| {
-                        anyhow::anyhow!("failed to parse config file {}: {error}", path.display())
-                    })?;
-            // Saving a config is unrestricted, but starting it is not: two
-            // running instances must never share a name, and name lookups
-            // (CLI, management API) assume the same.
-            let instance_name = config.get_inst_name();
-            if let Some(existing) =
-                super::resolve_optional_instance_by_name(self.instances.as_ref(), &instance_name)?
-                && existing.instance_id() != instance_id
+            if control.path.as_deref().and_then(Path::parent)
+                != self.instances.config_dir().map(PathBuf::as_path)
             {
-                anyhow::bail!(
-                    "instance name {instance_name} is already used by a running instance; \
-                     change the network name or stop that instance first"
-                );
+                anyhow::bail!("instance {instance_id} is not managed by the config directory");
             }
-            let control = self.storage.inspect(&path).await;
+            self.state_store.set_enabled(instance_id, false)?;
+            self.prepare_start_locked(&config).await?;
+            self.hooks
+                .pre_run_network_instance(&config)
+                .await
+                .map_err(|error| anyhow::anyhow!("pre-run hook failed: {error}"))?;
+            self.instances
+                .register_managed_config(instance_id, control.clone())?;
             self.instances.run_network_instance(config, control)?;
-        } else {
-            if self.instances.instance(instance_id).is_some() {
+            if let Err(error) = self.hooks.post_run_network_instance(&instance_id).await {
                 self.instances
                     .delete_network_instances([instance_id])
                     .await?;
+                let _ = self.hooks.post_stop_network_instances(&[instance_id]).await;
+                anyhow::bail!("post-run hook failed: {error}");
             }
+        } else {
+            return self.stop_instances_locked(&[instance_id]).await;
         }
-        self.state_store.set_enabled(instance_id, enabled)?;
+        if let Err(error) = self.state_store.set_enabled(instance_id, enabled) {
+            self.instances
+                .delete_network_instances([instance_id])
+                .await?;
+            let _ = self.hooks.post_stop_network_instances(&[instance_id]).await;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -594,12 +907,28 @@ where
         let _mutation = self.mutation_lock.lock().await;
         let mut removed = Vec::new();
         for instance_id in requested {
-            let Some(config_dir) = self.instances.config_dir() else {
+            if self.instances.config_dir().is_none() {
                 continue;
+            }
+            if self
+                .instances
+                .config_control(*instance_id)
+                .is_some_and(|control| control.is_read_only() || !control.is_deletable())
+            {
+                continue;
+            }
+            let loaded = match self.load_saved_config(*instance_id).await {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    tracing::warn!(%error, %instance_id, "failed to inspect config for removal");
+                    continue;
+                }
             };
-            let path = config_dir.join(format!("{instance_id}.toml"));
-            let control = self.storage.inspect(&path).await;
-            if !control.is_read_only() && control.is_deletable() {
+            if let Some((_, control)) = loaded {
+                if control.is_read_only() || !control.is_deletable() {
+                    continue;
+                }
+                let path = control.path.expect("loaded config file has a path");
                 match self.storage.remove(&path).await {
                     Ok(()) => {}
                     // The file may already be gone (deleted by hand while the
@@ -612,7 +941,11 @@ where
                     }
                 }
             }
-            self.state_store.remove(instance_id)?;
+            if let Err(error) = self.state_store.remove(instance_id) {
+                tracing::warn!(%error, %instance_id, "failed to clear removed config state");
+                continue;
+            }
+            self.instances.unregister_managed_config(*instance_id);
             removed.push(*instance_id);
         }
         Ok(removed)
@@ -623,26 +956,19 @@ where
         &self,
         instance_id: uuid::Uuid,
     ) -> anyhow::Result<Option<(NetworkConfig, ConfigSource)>> {
-        let Some(config_dir) = self.instances.config_dir() else {
+        if self
+            .instances
+            .managed_config_control(instance_id)
+            .is_some_and(|control| control.is_read_only())
+        {
+            anyhow::bail!("configuration for instance {instance_id} is read-only");
+        }
+        let Some((config, control)) = self.load_saved_config(instance_id).await? else {
             return Ok(None);
         };
-        let path = config_dir.join(format!("{instance_id}.toml"));
-        let contents = match self.storage.read(&path).await {
-            Ok(Some(contents)) => contents,
-            _ => return Ok(None),
-        };
-        let config_str = match String::from_utf8(contents) {
-            Ok(config_str) => config_str,
-            Err(_) => return Ok(None),
-        };
-        let config =
-            match TomlConfig::new_from_str_with_source(&path.display().to_string(), &config_str) {
-                Ok(config) => config,
-                Err(error) => {
-                    tracing::warn!(%error, path = %path.display(), "failed to parse config file");
-                    return Ok(None);
-                }
-            };
+        if control.is_read_only() {
+            anyhow::bail!("configuration for instance {instance_id} is read-only");
+        }
         let source = config.get_network_config_source();
         Ok(Some((network_config_from_toml(&config), source)))
     }
@@ -897,6 +1223,7 @@ where
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            supports_persisted_config_management: Some(true),
         })
     }
 
@@ -997,18 +1324,21 @@ where
             if !request_contains(&requested_ids, instance_id) {
                 continue;
             }
-            if let Some((config, source)) = self
-                .management
-                .get_network_instance_config_from_file(instance_id)
-                .await?
-            {
-                let network_name = config.network_name.unwrap_or_default();
+            let loaded = match self.management.load_saved_config(instance_id).await {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    tracing::warn!(%error, %instance_id, "failed to read disabled instance metadata");
+                    continue;
+                }
+            };
+            if let Some((config, control)) = loaded {
+                let network_name = config.get_network_identity().network_name;
                 metas.push(NetworkMeta {
                     inst_id: Some(instance_id.into()),
                     network_name: network_name.clone(),
-                    config_permission: 0,
-                    instance_name: network_name,
-                    source: config_source_to_rpc(source),
+                    config_permission: control.permission.into(),
+                    instance_name: config.get_inst_name(),
+                    source: config_source_to_rpc(config.get_network_config_source()),
                 });
             }
         }

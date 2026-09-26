@@ -55,6 +55,7 @@ where
     both_easy_sym_server: UdpBothEasySymPunchServer<R, T>,
     shuffled_port_vec: Arc<Vec<u16>>,
     http3_required: bool,
+    http3_disabled: bool,
     admission: RwLock<()>,
     stopping: AtomicBool,
 }
@@ -70,6 +71,7 @@ where
         transport_sink: Arc<T>,
         sym_punch_lock: UdpSymPunchLock,
         http3_required: bool,
+        http3_disabled: bool,
     ) -> Self {
         let common = Arc::new(UdpHolePunchServerCommon::new(
             runtime.clone(),
@@ -79,7 +81,7 @@ where
         let both_easy_sym_common =
             Arc::new(UdpHolePunchServerCommon::new(runtime, stun, transport_sink));
         let both_easy_sym_server =
-            UdpBothEasySymPunchServer::new(both_easy_sym_common, http3_required);
+            UdpBothEasySymPunchServer::new(both_easy_sym_common, http3_required, http3_disabled);
         let mut shuffled_port_vec: Vec<u16> = (1..=65535).collect();
         shuffled_port_vec.shuffle(&mut rand::thread_rng());
 
@@ -89,6 +91,7 @@ where
             both_easy_sym_server,
             shuffled_port_vec: Arc::new(shuffled_port_vec),
             http3_required,
+            http3_disabled,
             admission: RwLock::new(()),
             stopping: AtomicBool::new(true),
         }
@@ -263,6 +266,11 @@ where
         request: SelectPunchListener,
     ) -> Result<SelectPunchListenerResponse, UdpHolePunchSignalError> {
         let _admission = self.admit().await?;
+        if self.http3_disabled && request.scheme.is_http3() {
+            return Err(UdpHolePunchSignalError::RemoteRejected(
+                "HTTP3 hole punching is disabled by the local P2P policy".into(),
+            ));
+        }
         if self.http3_required && !request.scheme.is_http3() {
             return Err(UdpHolePunchSignalError::RemoteRejected(
                 "raw UDP hole punching is disabled by HTTP3-only policy".into(),
@@ -836,6 +844,7 @@ where
 {
     common: Arc<UdpHolePunchServerCommon<R, T>>,
     http3_required: bool,
+    http3_disabled: bool,
     task: Mutex<Option<AbortOnDropHandle<()>>>,
 }
 
@@ -844,10 +853,15 @@ where
     R: UdpHolePunchRuntime,
     T: UdpHolePunchTransportSink + 'static,
 {
-    pub fn new(common: Arc<UdpHolePunchServerCommon<R, T>>, http3_required: bool) -> Self {
+    pub fn new(
+        common: Arc<UdpHolePunchServerCommon<R, T>>,
+        http3_required: bool,
+        http3_disabled: bool,
+    ) -> Self {
         Self {
             common,
             http3_required,
+            http3_disabled,
             task: Mutex::new(None),
         }
     }
@@ -867,6 +881,9 @@ where
         request: SendPunchPacketBothEasySym,
     ) -> anyhow::Result<SendPunchPacketBothEasySymResponse> {
         tracing::info!("send_punch_packet_both_easy_sym start");
+        if self.http3_disabled && request.scheme.is_http3() {
+            anyhow::bail!("HTTP3 hole punching is disabled by the local P2P policy");
+        }
         if self.http3_required && !request.scheme.is_http3() {
             anyhow::bail!("raw UDP hole punching is disabled by HTTP3-only policy");
         }
@@ -1081,6 +1098,7 @@ mod tests {
     struct MockRuntime {
         listeners: StdMutex<VecDeque<UdpPunchListener<MockSocket>>>,
         created_schemes: StdMutex<Vec<UdpPunchScheme>>,
+        bound_sockets: AtomicUsize,
     }
 
     impl MockRuntime {
@@ -1088,6 +1106,7 @@ mod tests {
             Self {
                 listeners: StdMutex::new(listeners.into()),
                 created_schemes: StdMutex::new(Vec::new()),
+                bound_sockets: AtomicUsize::new(0),
             }
         }
     }
@@ -1097,6 +1116,7 @@ mod tests {
         type Socket = MockSocket;
 
         async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            self.bound_sockets.fetch_add(1, Ordering::Relaxed);
             Ok(Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
                 sent: tokio::sync::Mutex::new(Vec::new()),
@@ -1147,7 +1167,10 @@ mod tests {
         }
     }
 
-    struct MockStunInfoProvider;
+    #[derive(Default)]
+    struct MockStunInfoProvider {
+        udp_mappings: AtomicUsize,
+    }
 
     #[async_trait]
     impl StunInfoProvider for MockStunInfoProvider {
@@ -1156,6 +1179,7 @@ mod tests {
         }
 
         async fn get_udp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            self.udp_mappings.fetch_add(1, Ordering::Relaxed);
             Ok(SocketAddr::from(([203, 0, 113, 1], 10000)))
         }
 
@@ -1167,7 +1191,7 @@ mod tests {
     }
 
     fn mock_stun() -> Arc<dyn StunInfoProvider> {
-        Arc::new(MockStunInfoProvider)
+        Arc::new(MockStunInfoProvider::default())
     }
 
     #[derive(Default)]
@@ -1235,6 +1259,7 @@ mod tests {
             sink,
             UdpSymPunchLock::default(),
             false,
+            false,
         );
 
         assert!(!Arc::ptr_eq(
@@ -1253,6 +1278,7 @@ mod tests {
             mock_stun(),
             sink,
             UdpSymPunchLock::default(),
+            false,
             false,
         );
     }
@@ -1345,6 +1371,7 @@ mod tests {
             sink,
             UdpSymPunchLock::default(),
             false,
+            false,
         );
         server.start().await;
 
@@ -1365,8 +1392,14 @@ mod tests {
     async fn strict_mode_rejects_raw_and_unsupported_http3_listener() {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
-        let server =
-            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default(), true);
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            sink,
+            UdpSymPunchLock::default(),
+            true,
+            false,
+        );
         server.start().await;
 
         for scheme in [
@@ -1397,8 +1430,14 @@ mod tests {
             http3_supported: true,
             ..Default::default()
         });
-        let server =
-            UdpHolePunchServer::new(runtime, mock_stun(), sink, UdpSymPunchLock::default(), true);
+        let server = UdpHolePunchServer::new(
+            runtime,
+            mock_stun(),
+            sink,
+            UdpSymPunchLock::default(),
+            true,
+            false,
+        );
         server.start().await;
 
         for scheme in [UdpPunchScheme::Http3, UdpPunchScheme::Http3Mux] {
@@ -1413,6 +1452,118 @@ mod tests {
             assert_eq!(response.scheme, scheme);
         }
         server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn disabled_http3_rejects_both_inbound_paths_before_allocating_resources() {
+        for http3_required in [false, true] {
+            let runtime = Arc::new(MockRuntime::new(Vec::new()));
+            let stun = Arc::new(MockStunInfoProvider::default());
+            let sink = Arc::new(MockSink {
+                http3_supported: true,
+                ..Default::default()
+            });
+            let server = UdpHolePunchServer::new(
+                runtime.clone(),
+                stun.clone(),
+                sink,
+                UdpSymPunchLock::default(),
+                http3_required,
+                true,
+            );
+            server.start().await;
+
+            for scheme in [UdpPunchScheme::Http3, UdpPunchScheme::Http3Mux] {
+                let error = server
+                    .select_punch_listener(SelectPunchListener {
+                        force_new: true,
+                        prefer_port_mapping: false,
+                        scheme,
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("disabled by the local P2P policy")
+                );
+
+                let error = server
+                    .send_punch_packet_both_easy_sym(SendPunchPacketBothEasySym {
+                        udp_socket_count: 1,
+                        public_ip: Ipv4Addr::new(198, 51, 100, 1),
+                        transaction_id: 9,
+                        dst_port_num: 20000,
+                        wait_time_ms: 500,
+                        scheme,
+                    })
+                    .await
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("disabled by the local P2P policy")
+                );
+            }
+
+            assert!(runtime.created_schemes.lock().unwrap().is_empty());
+            assert_eq!(runtime.bound_sockets.load(Ordering::Relaxed), 0);
+            assert_eq!(stun.udp_mappings.load(Ordering::Relaxed), 0);
+            assert!(server.common.listeners.lock().await.is_empty());
+            assert!(
+                server
+                    .both_easy_sym_server
+                    .common
+                    .listeners
+                    .lock()
+                    .await
+                    .is_empty()
+            );
+            assert!(server.both_easy_sym_server.task.lock().await.is_none());
+            server.stop().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_http3_preserves_raw_udp_unless_strict_policy_requires_http3() {
+        for http3_required in [false, true] {
+            let runtime = Arc::new(MockRuntime::new(vec![listener(10016, Vec::new())]));
+            let server = UdpHolePunchServer::new(
+                runtime.clone(),
+                mock_stun(),
+                Arc::new(MockSink {
+                    http3_supported: true,
+                    ..Default::default()
+                }),
+                UdpSymPunchLock::default(),
+                http3_required,
+                true,
+            );
+            server.start().await;
+            let response = server
+                .select_punch_listener(SelectPunchListener {
+                    force_new: false,
+                    prefer_port_mapping: false,
+                    scheme: UdpPunchScheme::Udp,
+                })
+                .await;
+            if http3_required {
+                assert!(
+                    response
+                        .unwrap_err()
+                        .to_string()
+                        .contains("HTTP3-only policy")
+                );
+                assert!(runtime.created_schemes.lock().unwrap().is_empty());
+            } else {
+                assert_eq!(response.unwrap().scheme, UdpPunchScheme::Udp);
+                assert_eq!(
+                    runtime.created_schemes.lock().unwrap().as_slice(),
+                    [UdpPunchScheme::Udp]
+                );
+            }
+            server.stop().await;
+        }
     }
 
     #[tokio::test]
@@ -1575,7 +1726,7 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
         let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
-        let server = UdpBothEasySymPunchServer::new(common, false);
+        let server = UdpBothEasySymPunchServer::new(common, false, false);
         let request = SendPunchPacketBothEasySym {
             udp_socket_count: 1,
             public_ip: Ipv4Addr::new(198, 51, 100, 1),
@@ -1608,7 +1759,7 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new(Vec::new()));
         let sink = Arc::new(MockSink::default());
         let common = Arc::new(UdpHolePunchServerCommon::new(runtime, mock_stun(), sink));
-        let server = UdpBothEasySymPunchServer::new(common, true);
+        let server = UdpBothEasySymPunchServer::new(common, true, false);
         let request = SendPunchPacketBothEasySym {
             udp_socket_count: 1,
             public_ip: Ipv4Addr::new(198, 51, 100, 1),

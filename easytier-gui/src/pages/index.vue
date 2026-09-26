@@ -225,11 +225,12 @@ async function connectWithRetry(mode: Mode, attempts: number): Promise<boolean> 
   throw lastError
 }
 
-async function refreshFromCore() {
-  if (type() === 'android') {
+async function refreshFromCore(mode: Mode = currentMode.value) {
+  if (type() === 'android' && mode.mode !== 'remote') {
     await sendConfigs([], 'core-config-migrated:normal')
   } else {
-    await syncConfigsFromCore().catch(error => console.warn('Failed to refresh GUI config cache', error))
+    await syncConfigsFromCore(mode.mode === 'remote' ? rpcUrl(mode) : undefined)
+      .catch(error => console.warn('Failed to refresh GUI config cache', error))
   }
   try {
     const ids = await remoteClient.value.list_network_instance_ids()
@@ -298,7 +299,7 @@ async function initWithMode(mode: Mode) {
   if (mode.mode === 'normal') normalWebClientInitialized = false
   const connected = await connectWithRetry(mode, mode.mode === 'service' ? 5 : 3)
   if (connected) {
-    await refreshFromCore()
+    await refreshFromCore(mode)
     if (mode.mode === 'normal') {
       await initWebClient(mode.config_server_url || undefined)
       normalWebClientInitialized = true
@@ -546,7 +547,7 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
 ])
 
 async function connectRpcClient(mode: Mode) {
-  await initRpcConnection(mode.mode === 'normal', rpcUrl(mode), mode.mode === 'normal' ? mode.config_dir : undefined)
+  await initRpcConnection(mode.mode === 'normal', rpcUrl(mode), mode.mode === 'normal' ? mode.config_dir : undefined, mode.mode === 'remote')
   console.log('easytier rpc connection established, mode:', mode.mode)
 }
 

@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "tcp-hole-punch"), allow(dead_code))]
 
 use std::{
+    future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
         Arc, Mutex,
@@ -301,6 +302,16 @@ pub struct TcpHolePunchDialOptions<'a> {
     pub scheme: &'a str,
 }
 
+async fn complete_punch_within<F>(window: Duration, attempt: F) -> anyhow::Result<()>
+where
+    F: Future<Output = anyhow::Result<()>>,
+{
+    // The window includes protocol upgrade and admission, not just TCP dialing.
+    crate::foundation::time::timeout(window, attempt)
+        .await
+        .context("TCP hole-punch connect and upgrade window elapsed")?
+}
+
 // TCP supports simultaneous connect, so both peers may dial from the mapped port.
 pub async fn try_connect_to_remote<H, AcceptedSocket>(
     host: Arc<H>,
@@ -338,64 +349,67 @@ where
     });
     let requested_url = mapped_addr_url(scheme, remote_mapped_addr)?;
 
-    let start = crate::foundation::time::Instant::now();
-    let mut attempts = 0_u32;
-    while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
-        attempts = attempts.wrapping_add(1);
-        let bind = hole_punch_bind_options(context.clone(), bind_addr);
-        let options =
-            TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
-        if let Ok(Ok(socket)) =
-            crate::foundation::time::timeout(Duration::from_secs(3), host.connect_tcp(options))
-                .await
-        {
-            let admission_result = transport_sink
-                .add_connected_transport(socket, requested_url.clone(), admission)
-                .await;
-            match admission_result {
-                Ok(()) => {}
-                Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
-                Err(TcpHolePunchTransportError::Admission(error)) => {
-                    tracing::error!(
-                        ?remote_mapped_addr,
-                        local_port,
-                        attempts,
-                        ?error,
-                        "tcp hole punch server connected and added client tunnel failed"
-                    );
-                    continue;
+    complete_punch_within(Duration::from_secs(10), async {
+        let start = crate::foundation::time::Instant::now();
+        let mut attempts = 0_u32;
+        while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
+            attempts = attempts.wrapping_add(1);
+            let bind = hole_punch_bind_options(context.clone(), bind_addr);
+            let options =
+                TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
+            if let Ok(Ok(socket)) =
+                crate::foundation::time::timeout(Duration::from_secs(3), host.connect_tcp(options))
+                    .await
+            {
+                let admission_result = transport_sink
+                    .add_connected_transport(socket, requested_url.clone(), admission)
+                    .await;
+                match admission_result {
+                    Ok(()) => {}
+                    Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
+                    Err(TcpHolePunchTransportError::Admission(error)) => {
+                        tracing::error!(
+                            ?remote_mapped_addr,
+                            local_port,
+                            attempts,
+                            ?error,
+                            "tcp hole punch server connected and added client tunnel failed"
+                        );
+                        continue;
+                    }
                 }
-            }
 
-            tracing::info!(
+                tracing::info!(
+                    ?remote_mapped_addr,
+                    local_port,
+                    attempts,
+                    ?admission,
+                    "tcp hole punch server connected and added tunnel"
+                );
+                return Ok(());
+            }
+            tracing::trace!(
                 ?remote_mapped_addr,
                 local_port,
                 attempts,
-                ?admission,
-                "tcp hole punch server connected and added tunnel"
+                "tcp hole punch server connect attempt failed"
             );
-            return Ok(());
+            let sleep_ms = rand::thread_rng().gen_range(10..100);
+            crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
         }
-        tracing::trace!(
+
+        tracing::warn!(
             ?remote_mapped_addr,
             local_port,
             attempts,
-            "tcp hole punch server connect attempt failed"
+            "tcp hole punch server connect loop timeout"
         );
-        let sleep_ms = rand::thread_rng().gen_range(10..100);
-        crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
-    }
 
-    tracing::warn!(
-        ?remote_mapped_addr,
-        local_port,
-        attempts,
-        "tcp hole punch server connect loop timeout"
-    );
-
-    Err(anyhow::anyhow!(
-        "tcp hole punch server connect loop timeout"
-    ))
+        Err(anyhow::anyhow!(
+            "tcp hole punch server connect loop timeout"
+        ))
+    })
+    .await
 }
 
 /// Symmetric-side fan-out dialer: keeps `SYMMETRIC_RESPONDER_SOCKET_COUNT`
@@ -445,44 +459,47 @@ where
         let transport_sink = transport_sink.clone();
         let requested_url = requested_url.clone();
         tasks.spawn(async move {
-            let start = crate::foundation::time::Instant::now();
-            while start.elapsed() < SYMMETRIC_RESPONDER_HOLD {
-                if let Ok(Ok(socket)) = crate::foundation::time::timeout(
-                    SYMMETRIC_RESPONDER_DIAL_TIMEOUT,
-                    host.connect_tcp(options.clone()),
-                )
-                .await
-                {
-                    let admission_result = transport_sink
-                        .add_connected_transport(socket, requested_url.clone(), admission)
-                        .await;
-                    match admission_result {
-                        Ok(()) => {}
-                        Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
-                        Err(TcpHolePunchTransportError::Admission(error)) => {
-                            tracing::warn!(
-                                ?remote_mapped_addr,
-                                port,
-                                ?error,
-                                "tcp hole punch symmetric responder tunnel admission failed"
-                            );
-                            continue;
+            complete_punch_within(SYMMETRIC_RESPONDER_HOLD, async {
+                let start = crate::foundation::time::Instant::now();
+                while start.elapsed() < SYMMETRIC_RESPONDER_HOLD {
+                    if let Ok(Ok(socket)) = crate::foundation::time::timeout(
+                        SYMMETRIC_RESPONDER_DIAL_TIMEOUT,
+                        host.connect_tcp(options.clone()),
+                    )
+                    .await
+                    {
+                        let admission_result = transport_sink
+                            .add_connected_transport(socket, requested_url.clone(), admission)
+                            .await;
+                        match admission_result {
+                            Ok(()) => {}
+                            Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
+                            Err(TcpHolePunchTransportError::Admission(error)) => {
+                                tracing::warn!(
+                                    ?remote_mapped_addr,
+                                    port,
+                                    ?error,
+                                    "tcp hole punch symmetric responder tunnel admission failed"
+                                );
+                                continue;
+                            }
                         }
-                    }
 
-                    tracing::info!(
-                        ?remote_mapped_addr,
-                        port,
-                        "tcp hole punch symmetric responder connected and added tunnel"
-                    );
-                    return Ok(());
+                        tracing::info!(
+                            ?remote_mapped_addr,
+                            port,
+                            "tcp hole punch symmetric responder connected and added tunnel"
+                        );
+                        return Ok(());
+                    }
+                    let sleep_ms = rand::thread_rng().gen_range(50..150);
+                    crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
                 }
-                let sleep_ms = rand::thread_rng().gen_range(50..150);
-                crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
-            }
-            Err(anyhow::anyhow!(
-                "tcp hole punch symmetric responder dial loop timeout"
-            ))
+                Err(anyhow::anyhow!(
+                    "tcp hole punch symmetric responder dial loop timeout"
+                ))
+            })
+            .await
         });
     }
 
@@ -543,40 +560,43 @@ where
         let transport_sink = transport_sink.clone();
         let requested_url = mapped_addr_url(scheme, target_addr)?;
         tasks.spawn(async move {
-            let start = crate::foundation::time::Instant::now();
-            while start.elapsed() < SPRAY_WINDOW {
-                if let Ok(Ok(socket)) = crate::foundation::time::timeout(
-                    SPRAY_DIAL_TIMEOUT,
-                    host.connect_tcp(options.clone()),
-                )
-                .await
-                {
-                    let admission_result = transport_sink
-                        .add_connected_transport(socket, requested_url.clone(), admission)
-                        .await;
-                    match admission_result {
-                        Ok(()) => {}
-                        Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
-                        Err(TcpHolePunchTransportError::Admission(error)) => {
-                            tracing::warn!(
-                                ?target_addr,
-                                ?error,
-                                "tcp hole punch spray tunnel admission failed"
-                            );
-                            continue;
+            complete_punch_within(SPRAY_WINDOW, async {
+                let start = crate::foundation::time::Instant::now();
+                while start.elapsed() < SPRAY_WINDOW {
+                    if let Ok(Ok(socket)) = crate::foundation::time::timeout(
+                        SPRAY_DIAL_TIMEOUT,
+                        host.connect_tcp(options.clone()),
+                    )
+                    .await
+                    {
+                        let admission_result = transport_sink
+                            .add_connected_transport(socket, requested_url.clone(), admission)
+                            .await;
+                        match admission_result {
+                            Ok(()) => {}
+                            Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
+                            Err(TcpHolePunchTransportError::Admission(error)) => {
+                                tracing::warn!(
+                                    ?target_addr,
+                                    ?error,
+                                    "tcp hole punch spray tunnel admission failed"
+                                );
+                                continue;
+                            }
                         }
-                    }
 
-                    tracing::info!(
-                        ?target_addr,
-                        "tcp hole punch spray connected and added tunnel"
-                    );
-                    return Ok(());
+                        tracing::info!(
+                            ?target_addr,
+                            "tcp hole punch spray connected and added tunnel"
+                        );
+                        return Ok(());
+                    }
+                    let sleep_ms = rand::thread_rng().gen_range(50..150);
+                    crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
                 }
-                let sleep_ms = rand::thread_rng().gen_range(50..150);
-                crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
-            }
-            Err(anyhow::anyhow!("tcp hole punch spray timeout"))
+                Err(anyhow::anyhow!("tcp hole punch spray timeout"))
+            })
+            .await
         });
     }
 
@@ -1140,15 +1160,13 @@ where
             .await;
         // A remote that cannot serve WSS rejects the exchange outright (e.g.
         // a feature-trimmed build that still broadcasts a preference). Retry
-        // once with raw TCP when policy allows it, and stop hammering the
-        // peer when no fallback is permitted.
+        // once with raw TCP when policy allows it. Generic execution errors
+        // can also be transient (e.g. remote STUN failures), so strict mode
+        // leaves them to backoff rather than caching a capability failure.
         if requested_scheme == "wss"
+            && allow_raw
             && matches!(&response, Err(rpc_types::error::Error::ExecutionError(_)))
         {
-            if !allow_raw {
-                self.blacklist.insert(dst_peer_id);
-                anyhow::bail!("peer {dst_peer_id} rejected WSS hole punching");
-            }
             tracing::warn!(
                 dst_peer_id,
                 "peer rejected WSS hole punching, retrying raw TCP"
@@ -1796,7 +1814,15 @@ mod tests {
 
     /// Socket type for the mock host: satisfies the stream contract without
     /// carrying data; reads hit EOF immediately.
-    struct MockPunchSocket(SocketAddr, SocketAddr);
+    struct MockPunchSocket(SocketAddr, SocketAddr, Option<Arc<AtomicUsize>>);
+
+    impl Drop for MockPunchSocket {
+        fn drop(&mut self) {
+            if let Some(active_sockets) = &self.2 {
+                active_sockets.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
 
     impl tokio::io::AsyncRead for MockPunchSocket {
         fn poll_read(
@@ -1869,6 +1895,7 @@ mod tests {
         events: Mutex<Vec<MockHostEvent>>,
         connect_mode: MockConnectMode,
         accept_queue: Arc<Mutex<VecDeque<MockPunchSocket>>>,
+        active_sockets: Arc<AtomicUsize>,
     }
 
     impl MockHolePunchHost {
@@ -1877,6 +1904,7 @@ mod tests {
                 events: Mutex::new(Vec::new()),
                 connect_mode,
                 accept_queue: Arc::new(Mutex::new(VecDeque::new())),
+                active_sockets: Arc::new(AtomicUsize::new(0)),
             })
         }
 
@@ -1970,10 +1998,14 @@ mod tests {
             });
             match self.connect_mode {
                 MockConnectMode::FailFast => anyhow::bail!("mock connect refused"),
-                MockConnectMode::Succeed => Ok(MockPunchSocket(
-                    options.bind.local_addr.unwrap_or(options.remote_addr),
-                    options.remote_addr,
-                )),
+                MockConnectMode::Succeed => {
+                    self.active_sockets.fetch_add(1, Ordering::SeqCst);
+                    Ok(MockPunchSocket(
+                        options.bind.local_addr.unwrap_or(options.remote_addr),
+                        options.remote_addr,
+                        Some(self.active_sockets.clone()),
+                    ))
+                }
                 MockConnectMode::Pending => std::future::pending().await,
             }
         }
@@ -2006,6 +2038,7 @@ mod tests {
     struct MockTcpHolePunchRpc {
         response: TcpHolePunchResponse,
         requests: Arc<Mutex<Vec<TcpHolePunchRequest>>>,
+        execution_errors: Arc<Mutex<VecDeque<&'static str>>>,
     }
 
     #[async_trait]
@@ -2018,6 +2051,9 @@ mod tests {
             input: TcpHolePunchRequest,
         ) -> rpc_types::error::Result<TcpHolePunchResponse> {
             self.requests.lock().unwrap().push(input);
+            if let Some(message) = self.execution_errors.lock().unwrap().pop_front() {
+                return Err(anyhow::anyhow!(message).into());
+            }
             Ok(self.response.clone())
         }
     }
@@ -2054,7 +2090,10 @@ mod tests {
                 tcp_satisfied: false,
                 wss_satisfied: false,
                 has_recent_traffic: true,
-                peer_disguise_flags: PeerDisguiseP2pFlags::default(),
+                peer_disguise_flags: PeerDisguiseP2pFlags {
+                    prefer_wss_http3_for_p2p: self.policy.prefer_wss_http3_for_p2p,
+                    ..Default::default()
+                },
             }]
         }
 
@@ -2065,6 +2104,7 @@ mod tests {
             Box::new(MockTcpHolePunchRpc {
                 response: self.rpc.response.clone(),
                 requests: self.rpc.requests.clone(),
+                execution_errors: self.rpc.execution_errors.clone(),
             })
         }
     }
@@ -2107,6 +2147,7 @@ mod tests {
         let rpc = Arc::new(MockTcpHolePunchRpc {
             response: rpc_response,
             requests: Arc::new(Mutex::new(Vec::new())),
+            execution_errors: Arc::new(Mutex::new(VecDeque::new())),
         });
         let data = Arc::new(TcpHolePunchConnectorData {
             host,
@@ -2141,6 +2182,204 @@ mod tests {
                 direction: PortSequenceDirection::Incremental as i32,
             }),
         }
+    }
+
+    struct PendingTransportSink;
+
+    #[async_trait]
+    impl TcpHolePunchTransportSink for PendingTransportSink {
+        type ConnectedSocket = MockPunchSocket;
+        type AcceptedSocket = MockPunchSocket;
+
+        fn supports_wss_hole_punching(&self) -> bool {
+            true
+        }
+
+        async fn add_connected_transport(
+            &self,
+            socket: MockPunchSocket,
+            _requested_url: url::Url,
+            _admission: TcpHolePunchAdmission,
+        ) -> Result<(), TcpHolePunchTransportError> {
+            std::future::pending::<()>().await;
+            drop(socket);
+            Ok(())
+        }
+
+        async fn add_accepted_transport(
+            &self,
+            _socket: MockPunchSocket,
+            _local_url: url::Url,
+        ) -> Result<(), TcpHolePunchTransportError> {
+            unreachable!("deadline tests only dial")
+        }
+    }
+
+    async fn assert_active_sockets(host: &MockHolePunchHost, expected: usize) {
+        for _ in 0..20 {
+            if host.active_sockets.load(Ordering::SeqCst) == expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(host.active_sockets.load(Ordering::SeqCst), expected);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn single_dial_deadline_cancels_pending_upgrade_and_releases_socket() {
+        let host = MockHolePunchHost::new(MockConnectMode::Succeed);
+        let task = tokio::spawn(try_connect_to_remote(
+            host.clone(),
+            Arc::new(PendingTransportSink),
+            TcpHolePunchDialOptions {
+                remote_mapped_addr: "198.51.100.1:443".parse().unwrap(),
+                local_port: MOCK_LOCAL_PORT,
+                context: SocketContext::default(),
+                admission: TcpHolePunchAdmission::Client,
+                max_attempts: 1,
+                scheme: "wss",
+            },
+        ));
+        assert_active_sockets(&host, 1).await;
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let error = task.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("window elapsed"));
+        assert_eq!(host.active_sockets.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn responder_deadline_cancels_all_pending_upgrades_and_releases_sockets() {
+        let host = MockHolePunchHost::new(MockConnectMode::Succeed);
+        let task = tokio::spawn(connect_as_symmetric_responder(
+            host.clone(),
+            Arc::new(PendingTransportSink),
+            "198.51.100.1:443".parse().unwrap(),
+            MOCK_LOCAL_PORT,
+            SocketContext::default(),
+            TcpHolePunchAdmission::Client,
+            "wss",
+        ));
+        assert_active_sockets(&host, SYMMETRIC_RESPONDER_SOCKET_COUNT).await;
+
+        tokio::time::advance(SYMMETRIC_RESPONDER_HOLD).await;
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(host.active_sockets.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spray_deadline_cancels_all_pending_upgrades_and_releases_sockets() {
+        let host = MockHolePunchHost::new(MockConnectMode::Succeed);
+        let task = tokio::spawn(spray_connect_to_predicted_ports(
+            host.clone(),
+            Arc::new(PendingTransportSink),
+            vec![
+                "198.51.100.1:443".parse().unwrap(),
+                "198.51.100.1:444".parse().unwrap(),
+                "198.51.100.1:445".parse().unwrap(),
+            ],
+            MOCK_LOCAL_PORT,
+            SocketContext::default(),
+            TcpHolePunchAdmission::Server,
+            "wss",
+        ));
+        assert_active_sockets(&host, 3).await;
+
+        tokio::time::advance(SPRAY_WINDOW).await;
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(host.active_sockets.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn strict_wss_retries_transient_execution_error_without_blacklisting() {
+        let host = MockHolePunchHost::new(MockConnectMode::Succeed);
+        let (mut data, rpc, tunnel_sink) = mock_connector_data(
+            host,
+            NatType::FullCone,
+            P2pPolicyFlags {
+                only_use_wss_http3_for_hole_punching: true,
+                ..Default::default()
+            },
+            TcpHolePunchResponse {
+                scheme: "wss".into(),
+                ..legacy_response()
+            },
+        );
+        Arc::get_mut(&mut data).unwrap().supports_wss_hole_punching = true;
+        rpc.execution_errors
+            .lock()
+            .unwrap()
+            .push_back("failed to get tcp port mapping: transient STUN error");
+
+        let error = data.do_punch_as_initiator(2).await.unwrap_err();
+        assert!(error.to_string().contains("transient STUN error"));
+        assert!(!data.blacklist.contains(2));
+        data.do_punch_as_initiator(2).await.unwrap();
+
+        let requests = rpc.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().all(|request| request.scheme == "wss"));
+        assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn preferred_wss_execution_error_preserves_raw_tcp_fallback() {
+        let host = MockHolePunchHost::new(MockConnectMode::Succeed);
+        let (mut data, rpc, _tunnel_sink) = mock_connector_data(
+            host,
+            NatType::FullCone,
+            P2pPolicyFlags {
+                prefer_wss_http3_for_p2p: true,
+                ..Default::default()
+            },
+            legacy_response(),
+        );
+        Arc::get_mut(&mut data).unwrap().supports_wss_hole_punching = true;
+        rpc.execution_errors
+            .lock()
+            .unwrap()
+            .push_back("this node does not support WSS hole punching");
+
+        data.do_punch_as_initiator(2).await.unwrap();
+
+        let requests = rpc.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].scheme, "wss");
+        assert!(requests[1].scheme.is_empty());
+        assert!(!data.blacklist.contains(2));
+    }
+
+    #[tokio::test]
+    async fn strict_wss_preserves_blacklist_for_explicit_scheme_mismatch() {
+        let host = MockHolePunchHost::new(MockConnectMode::Succeed);
+        let (mut data, _rpc, _tunnel_sink) = mock_connector_data(
+            host,
+            NatType::FullCone,
+            P2pPolicyFlags {
+                only_use_wss_http3_for_hole_punching: true,
+                ..Default::default()
+            },
+            legacy_response(),
+        );
+        Arc::get_mut(&mut data).unwrap().supports_wss_hole_punching = true;
+
+        assert!(data.do_punch_as_initiator(2).await.is_err());
+        assert!(data.blacklist.contains(2));
+    }
+
+    #[test]
+    fn invalid_rpc_service_preserves_blacklisting() {
+        let blacklist = TcpHolePunchBlacklist::new();
+        let result = handle_rpc_result::<()>(
+            Err(rpc_types::error::Error::InvalidServiceKey(
+                "TcpHolePunchRpc".into(),
+                "TcpHolePunchRpc".into(),
+            )),
+            2,
+            &blacklist,
+        );
+        assert!(result.is_err());
+        assert!(blacklist.contains(2));
     }
 
     #[test]
@@ -2261,6 +2500,7 @@ mod tests {
         host.accept_queue.lock().unwrap().push_back(MockPunchSocket(
             "0.0.0.0:12345".parse().unwrap(),
             "203.0.113.50:55555".parse().unwrap(),
+            None,
         ));
         let (data, _rpc, tunnel_sink) = mock_connector_data(
             host.clone(),
@@ -2318,6 +2558,7 @@ mod tests {
         host.accept_queue.lock().unwrap().push_back(MockPunchSocket(
             "0.0.0.0:12345".parse().unwrap(),
             "203.0.113.50:55555".parse().unwrap(),
+            None,
         ));
         let (data, rpc, _tunnel_sink) = mock_connector_data(
             host.clone(),
@@ -2404,6 +2645,7 @@ mod tests {
         host.accept_queue.lock().unwrap().push_back(MockPunchSocket(
             "0.0.0.0:12345".parse().unwrap(),
             "203.0.113.50:55555".parse().unwrap(),
+            None,
         ));
         let (data, _rpc, _tunnel_sink) = mock_connector_data(
             host.clone(),
@@ -2432,6 +2674,7 @@ mod tests {
         host.accept_queue.lock().unwrap().push_back(MockPunchSocket(
             "0.0.0.0:12345".parse().unwrap(),
             "203.0.113.50:55555".parse().unwrap(),
+            None,
         ));
         let (data, rpc, _tunnel_sink) = mock_connector_data(
             host.clone(),
@@ -2472,6 +2715,7 @@ mod tests {
         let rpc = Arc::new(MockTcpHolePunchRpc {
             response: TcpHolePunchResponse::default(),
             requests: Arc::new(Mutex::new(Vec::new())),
+            execution_errors: Arc::new(Mutex::new(VecDeque::new())),
         });
         let server = TcpHolePunchServer::new(
             host.clone(),
@@ -2604,6 +2848,7 @@ mod tests {
             let rpc = Arc::new(MockTcpHolePunchRpc {
                 response: TcpHolePunchResponse::default(),
                 requests: Arc::new(Mutex::new(Vec::new())),
+                execution_errors: Arc::new(Mutex::new(VecDeque::new())),
             });
             let server = TcpHolePunchServer::new(
                 host.clone(),

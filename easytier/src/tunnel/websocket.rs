@@ -262,7 +262,7 @@ impl<S> WebSocketPacketSink<S> {
         let padding = self.padding.as_mut().expect("padding checked before");
         let mut payload = vec![0u8; padding.size.max(2)];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut payload);
-        padding.next_at += padding.interval;
+        padding.next_at = std::time::Instant::now() + padding.interval;
         // Base64 keeps the random payload valid UTF-8 so it can be sent as a
         // WebSocket text frame; text frames are out-of-band from the binary
         // wire format of real ZCPackets, so padding can never collide with
@@ -751,6 +751,32 @@ pub mod tests {
         assert!(sink.pending.is_empty());
         assert_eq!(sink.inner.messages.len(), 1);
         assert!(sink.inner.messages[0].is_binary());
+    }
+
+    #[tokio::test]
+    async fn packet_sink_padding_skips_missed_intervals_after_idle() {
+        let interval = Duration::from_secs(60);
+        let mut sink =
+            WebSocketPacketSink::with_padding(RecordingWebSocketSink::default(), interval, 64);
+        sink.padding.as_mut().unwrap().next_at = std::time::Instant::now() - interval * 100;
+
+        for _ in 0..3 {
+            sink.send(ZCPacket::new_with_payload(b"packet"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(sink.inner.messages.len(), 4);
+        assert!(sink.inner.messages[0].is_text());
+        assert!(sink.inner.messages[1..].iter().all(Message::is_binary));
+        assert!(sink.padding.as_ref().unwrap().next_at > std::time::Instant::now());
+
+        sink.padding.as_mut().unwrap().next_at = std::time::Instant::now() - interval;
+        sink.send(ZCPacket::new_with_payload(b"next packet"))
+            .await
+            .unwrap();
+        assert_eq!(sink.inner.messages.len(), 6);
+        assert!(sink.inner.messages[4].is_text());
+        assert!(sink.inner.messages[5].is_binary());
     }
 
     #[tokio::test]

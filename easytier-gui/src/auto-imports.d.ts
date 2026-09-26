@@ -80,8 +80,10 @@ declare global {
   const prepareVpnService: typeof import('./composables/mobile_vpn')['prepareVpnService']
   const provide: typeof import('vue')['provide']
   const reactive: typeof import('vue')['reactive']
+  const readRemoteConfigs: typeof import('./composables/remote_configs')['readRemoteConfigs']
   const readonly: typeof import('vue')['readonly']
   const ref: typeof import('vue')['ref']
+  const remoteConfigKey: typeof import('./composables/remote_configs')['remoteConfigKey']
   const removeVpnPortalClient: typeof import('./composables/backend')['removeVpnPortalClient']
   const resolveComponent: typeof import('vue')['resolveComponent']
   const resolveSharedConfigDir: typeof import('./composables/backend')['resolveSharedConfigDir']
@@ -103,6 +105,7 @@ declare global {
   const shallowReactive: typeof import('vue')['shallowReactive']
   const shallowReadonly: typeof import('vue')['shallowReadonly']
   const shallowRef: typeof import('vue')['shallowRef']
+  const storeRemoteConfigs: typeof import('./composables/remote_configs')['storeRemoteConfigs']
   const storeToRefs: typeof import('pinia')['storeToRefs']
   const syncConfigsFromCore: typeof import('./composables/backend')['syncConfigsFromCore']
   const syncMobileVpnService: typeof import('./composables/mobile_vpn')['syncMobileVpnService']
@@ -217,8 +220,10 @@ declare module 'vue' {
     readonly prepareVpnService: UnwrapRef<typeof import('./composables/mobile_vpn')['prepareVpnService']>
     readonly provide: UnwrapRef<typeof import('vue')['provide']>
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
+    readonly readRemoteConfigs: UnwrapRef<typeof import('./composables/remote_configs')['readRemoteConfigs']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
+    readonly remoteConfigKey: UnwrapRef<typeof import('./composables/remote_configs')['remoteConfigKey']>
     readonly removeVpnPortalClient: UnwrapRef<typeof import('./composables/backend')['removeVpnPortalClient']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
     readonly resolveSharedConfigDir: UnwrapRef<typeof import('./composables/backend')['resolveSharedConfigDir']>
@@ -240,6 +245,7 @@ declare module 'vue' {
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>
+    readonly storeRemoteConfigs: UnwrapRef<typeof import('./composables/remote_configs')['storeRemoteConfigs']>
     readonly storeToRefs: UnwrapRef<typeof import('pinia')['storeToRefs']>
     readonly syncConfigsFromCore: UnwrapRef<typeof import('./composables/backend')['syncConfigsFromCore']>
     readonly syncMobileVpnService: UnwrapRef<typeof import('./composables/mobile_vpn')['syncMobileVpnService']>

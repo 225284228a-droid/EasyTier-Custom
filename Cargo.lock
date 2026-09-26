@@ -2714,6 +2714,7 @@ version = "2.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "dashmap",
  "easytier",
  "easytier-core",
@@ -2733,6 +2734,7 @@ dependencies = [
  "tempfile",
  "thunk-rs",
  "tokio",
+ "tracing",
  "url",
  "uuid",
  "winapi",

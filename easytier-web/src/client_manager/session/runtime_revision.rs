@@ -82,6 +82,19 @@ pub(super) async fn reconcile_network_configs_on_heartbeat(
             return;
         };
 
+        let mutation_lock = {
+            let Some(data) = session_data.upgrade() else {
+                return;
+            };
+            let data = data.read().await;
+            let Some(token) = &data.storage_token else {
+                continue;
+            };
+            storage.runtime_mutation_lock((token.user_id, token.machine_id))
+        };
+        // Keep the DB snapshot and its RPCs ordered with direct mutations;
+        // otherwise a stale enabled row can restart a just-deleted instance.
+        let _mutation = mutation_lock.lock().await;
         let mut round =
             match prepare_reconcile_round(&session_data, &storage, &mut rpc_client, req).await {
                 RoundStatus::Ready(round) => round,

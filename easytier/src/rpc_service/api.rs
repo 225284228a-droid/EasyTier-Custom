@@ -35,11 +35,29 @@ impl ApiRpcServer<RuntimeRpcListener> {
         instance_manager: Arc<NativeInstanceManager>,
         state_store: Arc<InstanceStateStore>,
     ) -> anyhow::Result<Self> {
+        Self::new_with_load_options(
+            rpc_portal,
+            rpc_portal_whitelist,
+            instance_manager,
+            state_store,
+            false,
+        )
+    }
+
+    pub fn new_with_load_options(
+        rpc_portal: Option<String>,
+        rpc_portal_whitelist: Option<Vec<IpCidr>>,
+        instance_manager: Arc<NativeInstanceManager>,
+        state_store: Arc<InstanceStateStore>,
+        disable_env_parsing: bool,
+    ) -> anyhow::Result<Self> {
         let rpc_addr = parse_rpc_portal(rpc_portal)?;
-        let mut server = Self::from_tunnel(
+        let mut server = Self::from_tunnel_with_adapters(
             runtime_rpc_listener(rpc_addr),
             instance_manager,
             state_store,
+            Arc::new(DefaultHooks),
+            Arc::new(NativeConfigFileStorage::new(disable_env_parsing)),
         );
         server.rpc_server.set_whitelist(rpc_portal_whitelist);
 
@@ -57,11 +75,41 @@ where
         instance_manager: Arc<NativeInstanceManager>,
         state_store: Arc<InstanceStateStore>,
     ) -> Self {
+        Self::from_tunnel_with_hooks(
+            tunnel,
+            instance_manager,
+            state_store,
+            Arc::new(DefaultHooks),
+        )
+    }
+
+    pub fn from_tunnel_with_hooks(
+        tunnel: T,
+        instance_manager: Arc<NativeInstanceManager>,
+        state_store: Arc<InstanceStateStore>,
+        hooks: Arc<dyn crate::web_client::WebClientHooks>,
+    ) -> Self {
+        Self::from_tunnel_with_adapters(
+            tunnel,
+            instance_manager,
+            state_store,
+            hooks,
+            Arc::new(NativeConfigFileStorage::default()),
+        )
+    }
+
+    fn from_tunnel_with_adapters(
+        tunnel: T,
+        instance_manager: Arc<NativeInstanceManager>,
+        state_store: Arc<InstanceStateStore>,
+        hooks: Arc<dyn crate::web_client::WebClientHooks>,
+        storage: Arc<dyn easytier_core::management::ConfigFileStorage>,
+    ) -> Self {
         let rpc_server = ManagementServer::new(
             tunnel,
             instance_manager,
-            Arc::new(DefaultHooks),
-            Arc::new(NativeConfigFileStorage),
+            hooks,
+            storage,
             state_store,
             Arc::new(NativeLoggerControl),
         );

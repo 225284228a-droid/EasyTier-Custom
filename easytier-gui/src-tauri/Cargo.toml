@@ -28,6 +28,7 @@ easytier = { workspace = true, default-features = true }
 easytier-core = { workspace = true, default-features = true }
 tokio = { workspace = true, default-features = true, features = ["full"] }
 anyhow.workspace = true
+tracing.workspace = true
 
 once_cell.workspace = true
 dashmap.workspace = true
@@ -65,6 +66,7 @@ thunk-rs = { workspace = true, features = [
 
 [dev-dependencies]
 tempfile.workspace = true
+bytes.workspace = true
 
 
 [features]

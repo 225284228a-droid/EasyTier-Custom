@@ -4,6 +4,7 @@ import { NetworkTypes } from "easytier-frontend-lib"
 import { Utils } from "easytier-frontend-lib";
 import { normalizeConfigSource } from './config_source'
 import { onNetworkInstanceUpdate } from './mobile_vpn'
+import { type RemoteConfigSnapshot, storeRemoteConfigs } from './remote_configs'
 
 interface StoredGuiConfig {
     config: NetworkTypes.NetworkConfig
@@ -12,6 +13,7 @@ interface StoredGuiConfig {
 
 const EVENTS = Object.freeze({
     SAVE_CONFIGS: 'save_configs',
+    SAVE_REMOTE_CONFIGS: 'save_remote_configs',
     PRE_RUN_NETWORK_INSTANCE: 'pre_run_network_instance',
     POST_RUN_NETWORK_INSTANCE: 'post_run_network_instance',
     VPN_SERVICE_STOP: 'vpn_service_stop',
@@ -105,6 +107,7 @@ async function onEventLagged(event: Event<unknown>) {
 export async function listenGlobalEvents() {
     const unlisteners = [
         await listen(EVENTS.SAVE_CONFIGS, onSaveConfigs),
+        await listen<RemoteConfigSnapshot>(EVENTS.SAVE_REMOTE_CONFIGS, event => storeRemoteConfigs(event.payload)),
         await listen(EVENTS.PRE_RUN_NETWORK_INSTANCE, onPreRunNetworkInstance),
         await listen(EVENTS.POST_RUN_NETWORK_INSTANCE, onPostRunNetworkInstance),
         await listen(EVENTS.VPN_SERVICE_STOP, onVpnServiceStop),

@@ -85,27 +85,48 @@ impl InstanceStateStore {
     /// to enabled so that pre-existing config files keep their official
     /// "scan and start everything" behavior.
     pub fn is_enabled(&self, instance_id: &uuid::Uuid) -> bool {
+        self.enabled_state(instance_id).unwrap_or(true)
+    }
+
+    pub fn enabled_state(&self, instance_id: &uuid::Uuid) -> Option<bool> {
         self.inner
             .lock()
             .unwrap()
             .instances
             .get(&instance_id.to_string())
             .map(|state| state.enabled)
-            .unwrap_or(true)
     }
 
     pub fn set_enabled(&self, instance_id: uuid::Uuid, enabled: bool) -> anyhow::Result<()> {
+        self.set_enabled_batch(&[instance_id], enabled)
+    }
+
+    pub fn set_enabled_batch(
+        &self,
+        instance_ids: &[uuid::Uuid],
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        if instance_ids.is_empty() {
+            return Ok(());
+        }
         let mut state = self.inner.lock().unwrap();
-        state
-            .instances
-            .insert(instance_id.to_string(), InstanceState { enabled });
-        self.persist(&state)
+        let mut next = state.clone();
+        for instance_id in instance_ids {
+            next.instances
+                .insert(instance_id.to_string(), InstanceState { enabled });
+        }
+        self.persist(&next)?;
+        *state = next;
+        Ok(())
     }
 
     pub fn remove(&self, instance_id: &uuid::Uuid) -> anyhow::Result<()> {
         let mut state = self.inner.lock().unwrap();
-        state.instances.remove(&instance_id.to_string());
-        self.persist(&state)
+        let mut next = state.clone();
+        next.instances.remove(&instance_id.to_string());
+        self.persist(&next)?;
+        *state = next;
+        Ok(())
     }
 
     /// All instance ids recorded as disabled (stopped) in the store.
@@ -189,5 +210,21 @@ mod tests {
         std::fs::write(dir.join(STATE_FILE_NAME), "not json").unwrap();
         let store = InstanceStateStore::new(Some(&dir));
         assert!(store.is_enabled(&uuid::Uuid::new_v4()));
+    }
+
+    #[test]
+    fn failed_persistence_does_not_change_in_memory_state() {
+        let dir = temp_dir();
+        let id = uuid::Uuid::new_v4();
+        let store = InstanceStateStore::new(Some(&dir));
+        std::fs::create_dir(dir.join(STATE_FILE_NAME)).unwrap();
+        assert!(store.set_enabled(id, false).is_err());
+        assert!(store.is_enabled(&id));
+        std::fs::remove_dir(dir.join(STATE_FILE_NAME)).unwrap();
+        store.set_enabled(id, false).unwrap();
+        std::fs::remove_file(dir.join(STATE_FILE_NAME)).unwrap();
+        std::fs::create_dir(dir.join(STATE_FILE_NAME)).unwrap();
+        assert!(store.remove(&id).is_err());
+        assert!(!store.is_enabled(&id));
     }
 }

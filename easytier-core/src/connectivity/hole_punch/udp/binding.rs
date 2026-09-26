@@ -175,6 +175,7 @@ where
             socket_context,
         ));
         let sym_punch_lock = UdpSymPunchLock::default();
+        let policy = peer_source.p2p_policy_flags();
         let client = UdpHolePunchConnector::new(
             peer_source.clone(),
             Arc::new(PeerRpcUdpHolePunchSignaling::new(peer_source.clone())),
@@ -192,9 +193,8 @@ where
                 sym_punch_lock,
                 runtime,
                 peer_source.clone(),
-                peer_source
-                    .p2p_policy_flags()
-                    .only_use_wss_http3_for_hole_punching,
+                policy.only_use_wss_http3_for_hole_punching,
+                policy.disable_wss_http3_for_p2p,
             ),
             client,
             peer_source,

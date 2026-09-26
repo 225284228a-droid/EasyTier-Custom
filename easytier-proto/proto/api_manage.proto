@@ -226,6 +226,7 @@ message ListNetworkInstanceRequest {}
 message ListNetworkInstanceResponse {
   repeated common.UUID inst_ids = 1;
   repeated common.UUID disabled_inst_ids = 2;
+  optional bool supports_persisted_config_management = 3;
 }
 
 message DeleteNetworkInstanceRequest { repeated common.UUID inst_ids = 1; }

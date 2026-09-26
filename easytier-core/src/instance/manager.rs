@@ -251,6 +251,7 @@ pub struct InstanceManager<F: InstanceFactory> {
     factory: F,
     instances: Mutex<HashMap<Uuid, Arc<F::Instance>>>,
     config_controls: DashMap<Uuid, ConfigFileControl>,
+    managed_config_controls: DashMap<Uuid, ConfigFileControl>,
     notifier: Arc<tokio::sync::Notify>,
     config_dir: Option<PathBuf>,
     daemon_guard: Arc<()>,
@@ -266,6 +267,7 @@ impl<F: InstanceFactory> InstanceManager<F> {
             factory,
             instances: Mutex::new(HashMap::new()),
             config_controls: DashMap::new(),
+            managed_config_controls: DashMap::new(),
             notifier: Arc::new(tokio::sync::Notify::new()),
             config_dir: None,
             daemon_guard: Arc::new(()),
@@ -330,6 +332,60 @@ impl<F: InstanceFactory> InstanceManager<F> {
         self.config_controls
             .get(&instance_id)
             .map(|control| control.clone())
+    }
+
+    /// Registers config-dir files independently of their running instances.
+    pub fn register_managed_config(
+        &self,
+        instance_id: Uuid,
+        control: ConfigFileControl,
+    ) -> anyhow::Result<()> {
+        let Some(path) = control.path.as_deref() else {
+            anyhow::bail!("managed config {instance_id} has no persistent file");
+        };
+        if path.parent() != self.config_dir.as_deref()
+            || path.extension() != Some(std::ffi::OsStr::new("toml"))
+        {
+            anyhow::bail!(
+                "config file {} is not a TOML file in the managed config directory",
+                path.display()
+            );
+        }
+        if self
+            .config_control(instance_id)
+            .is_some_and(|active| active.path != control.path)
+        {
+            anyhow::bail!("running instance {instance_id} uses a different config file");
+        }
+        match self.managed_config_controls.entry(instance_id) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                if entry.get().path != control.path {
+                    anyhow::bail!("multiple config files use instance id {instance_id}");
+                }
+                entry.insert(control);
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(control);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn managed_config_control(&self, instance_id: Uuid) -> Option<ConfigFileControl> {
+        self.managed_config_controls
+            .get(&instance_id)
+            .map(|entry| entry.clone())
+    }
+
+    pub fn managed_config_ids(&self) -> Vec<Uuid> {
+        self.managed_config_controls
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    pub fn unregister_managed_config(&self, instance_id: Uuid) {
+        self.managed_config_controls.remove(&instance_id);
     }
 
     pub fn mutation_lock(&self) -> Arc<tokio::sync::Mutex<()>> {

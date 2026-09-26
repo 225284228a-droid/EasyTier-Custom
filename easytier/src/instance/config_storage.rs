@@ -5,7 +5,17 @@ use atomic_write_file::{AtomicWriteFile, OpenOptions};
 use easytier_core::management::{ConfigFileControl, ConfigFilePermission, ConfigFileStorage};
 
 #[derive(Default)]
-pub(crate) struct NativeConfigFileStorage;
+pub(crate) struct NativeConfigFileStorage {
+    disable_env_parsing: bool,
+}
+
+impl NativeConfigFileStorage {
+    pub(crate) fn new(disable_env_parsing: bool) -> Self {
+        Self {
+            disable_env_parsing,
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl ConfigFileStorage for NativeConfigFileStorage {
@@ -34,11 +44,38 @@ impl ConfigFileStorage for NativeConfigFileStorage {
         }
     }
 
+    async fn load_config(
+        &self,
+        path: &Path,
+        config_dir: Option<&Path>,
+    ) -> anyhow::Result<Option<(easytier_core::config::toml::TomlConfig, ConfigFileControl)>> {
+        match crate::common::config::load_config_from_file(
+            &path.to_path_buf(),
+            config_dir.map(Path::to_path_buf).as_ref(),
+            self.disable_env_parsing,
+        )
+        .await
+        {
+            Ok(config) => Ok(Some(config)),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn write(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
         let path = path.to_owned();
         let contents = contents.to_owned();
         tokio::task::spawn_blocking(move || {
+            #[cfg(unix)]
             let mut options = OpenOptions::new();
+            #[cfg(not(unix))]
+            let options = OpenOptions::new();
             #[cfg(unix)]
             {
                 atomic_write_file::unix::OpenOptionsExt::preserve_mode(&mut options, false);
@@ -66,7 +103,7 @@ mod tests {
     async fn config_write_is_atomic_and_private() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("instance.toml");
-        let storage = NativeConfigFileStorage;
+        let storage = NativeConfigFileStorage::default();
 
         storage.write(&path, b"first").await.unwrap();
         storage.write(&path, b"second").await.unwrap();
@@ -86,7 +123,7 @@ mod tests {
     async fn missing_config_file_is_reported_as_creatable() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("not-created-yet.toml");
-        let storage = NativeConfigFileStorage;
+        let storage = NativeConfigFileStorage::default();
 
         let control = storage.inspect(&path).await;
         assert!(
@@ -101,7 +138,7 @@ mod tests {
     async fn read_only_config_file_is_reported_as_read_only() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("instance.toml");
-        let storage = NativeConfigFileStorage;
+        let storage = NativeConfigFileStorage::default();
         storage.write(&path, b"config").await.unwrap();
 
         let mut permissions = std::fs::metadata(&path).unwrap().permissions();
@@ -136,7 +173,7 @@ mod tests {
         let process = ProcessManagement::new(
             Arc::new(manager),
             Arc::new(()),
-            Arc::new(NativeConfigFileStorage),
+            Arc::new(NativeConfigFileStorage::default()),
             state_store.clone(),
         );
 
@@ -167,5 +204,83 @@ mod tests {
             .await
             .unwrap();
         assert!(path.is_file());
+    }
+
+    #[tokio::test]
+    async fn semantic_loader_preserves_env_permissions_through_enable_and_delete() {
+        use crate::instance::factory::native_instance_manager_with_config_dir;
+        use easytier_core::{
+            config::toml::ConfigLoader as _,
+            management::{InstanceStateStore, ProcessManagement},
+        };
+        use std::sync::Arc;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config_dir = directory.path().to_path_buf();
+        let id = uuid::Uuid::new_v4();
+        let path = config_dir.join(format!("{id}.toml"));
+        let original = format!(
+            "instance_id = \"{id}\"\ninstance_name = \"env-protected\"\nlisteners = []\n[network_identity]\nnetwork_name = \"env-network\"\nnetwork_secret = \"${{EASYTIER_STORAGE_TEST_SECRET:-fallback-secret}}\"\n[flags]\nno_tun = true\n"
+        );
+        std::fs::write(&path, &original).unwrap();
+        let storage = Arc::new(NativeConfigFileStorage::default());
+        assert!(!storage.inspect(&path).await.is_read_only());
+        let (config, control) = storage
+            .load_config(&path, Some(&config_dir))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(control.is_read_only());
+        assert!(!control.is_deletable());
+        assert_ne!(
+            config.get_network_identity().network_secret.unwrap(),
+            "${EASYTIER_STORAGE_TEST_SECRET:-fallback-secret}"
+        );
+        let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+            config_dir.clone(),
+        )));
+        manager.register_managed_config(id, control).unwrap();
+        let state = Arc::new(InstanceStateStore::new(Some(&config_dir)));
+        state.set_enabled(id, false).unwrap();
+        let process = ProcessManagement::new(
+            manager.clone(),
+            Arc::new(()),
+            storage.clone(),
+            state.clone(),
+        );
+        process
+            .set_network_instance_enabled(id, true)
+            .await
+            .unwrap();
+        let result = process.delete_network_instances(vec![id]).await.unwrap();
+        assert_eq!(result.remaining_instance_ids, vec![id]);
+        assert!(manager.instance(id).is_some());
+        assert!(
+            process
+                .remove_network_instance_configs(&[id])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        process
+            .set_network_instance_enabled(id, false)
+            .await
+            .unwrap();
+        assert!(
+            process
+                .remove_network_instance_configs(&[id])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!state.is_enabled(&id));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let (_, unexpanded_control) = NativeConfigFileStorage::new(true)
+            .load_config(&path, Some(&config_dir))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!unexpanded_control.is_read_only());
+        assert!(unexpanded_control.is_deletable());
     }
 }

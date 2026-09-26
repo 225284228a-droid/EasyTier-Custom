@@ -46,8 +46,8 @@ pub use logger_rpc::{
     LoggerControl, LoggerManagementRpc, UnsupportedLoggerControl, log_level_name, parse_log_level,
 };
 pub use process_rpc::{
-    ConfigFileStorage, InstanceMutationHooks, InstanceMutationResult, ProcessManagement,
-    ProcessManagementRpc, UnsupportedConfigFileStorage,
+    ActiveInstanceForStart, ConfigFileStorage, InstanceMutationHooks, InstanceMutationResult,
+    ProcessManagement, ProcessManagementRpc, UnsupportedConfigFileStorage,
 };
 #[cfg(target_os = "wasi")]
 pub(crate) use web_client::WebClientBackend;

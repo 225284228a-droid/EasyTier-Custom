@@ -346,6 +346,7 @@ where
         runtime: Arc<R>,
         inbound_gate: Arc<dyn UdpPunchInboundGate>,
         http3_required: bool,
+        http3_disabled: bool,
     ) -> Arc<Self> {
         let inner = CoreUdpHolePunchServer::new(
             runtime,
@@ -353,6 +354,7 @@ where
             transport_sink,
             sym_punch_lock,
             http3_required,
+            http3_disabled,
         );
         Arc::new(Self {
             inner,

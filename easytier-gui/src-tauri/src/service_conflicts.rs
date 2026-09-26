@@ -3,13 +3,31 @@
 
 use anyhow::{Context as _, Result};
 
-#[cfg(target_os = "windows")]
-pub fn rpc_port(portal: &str) -> Result<u16> {
+fn rpc_bind_address(portal: &str) -> Result<std::net::SocketAddr> {
     let portal = normalize_rpc_portal(portal)?;
     if let Ok(port) = portal.parse::<u16>() {
-        return Ok(port);
+        return Ok(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
     }
-    Ok(portal.parse::<std::net::SocketAddr>()?.port())
+    Ok(portal.parse()?)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn rpc_bindings_overlap(left: std::net::SocketAddr, right: std::net::SocketAddr) -> bool {
+    if left.port() != right.port() {
+        return false;
+    }
+    match (left, right) {
+        (std::net::SocketAddr::V4(left), std::net::SocketAddr::V4(right)) => {
+            left.ip() == right.ip() || left.ip().is_unspecified() || right.ip().is_unspecified()
+        }
+        (std::net::SocketAddr::V6(left), std::net::SocketAddr::V6(right)) => {
+            left.ip().is_unspecified()
+                || right.ip().is_unspecified()
+                || (left.ip() == right.ip() && left.scope_id() == right.scope_id())
+        }
+        // The core's RPC listener sets IPV6_V6ONLY.
+        _ => false,
+    }
 }
 
 pub fn normalize_rpc_portal(portal: &str) -> Result<String> {
@@ -36,12 +54,7 @@ pub fn normalize_rpc_portal(portal: &str) -> Result<String> {
 }
 
 pub fn ensure_rpc_port_free(portal: &str) -> Result<()> {
-    let portal = normalize_rpc_portal(portal)?;
-    let address = if let Ok(port) = portal.parse::<u16>() {
-        std::net::SocketAddr::from(([0, 0, 0, 0], port))
-    } else {
-        portal.parse::<std::net::SocketAddr>()?
-    };
+    let address = rpc_bind_address(portal)?;
     std::net::TcpListener::bind(address).with_context(|| {
         format!("RPC portal {address} is occupied; stop the process using it before starting the GUI service")
     })?;
@@ -139,7 +152,7 @@ mod windows {
         image_path: &str,
         work_dir: Option<&Path>,
         desired_dir: &Path,
-        desired_port: Option<u16>,
+        desired_address: Option<std::net::SocketAddr>,
     ) -> bool {
         if name.eq_ignore_ascii_case(env!("CARGO_PKG_NAME")) {
             return false;
@@ -153,8 +166,10 @@ mod windows {
         }
         let shares_dir = service_config_dir(&args, work_dir)
             .is_some_and(|dir| normalized_path(&dir) == normalized_path(desired_dir));
-        let shares_port = desired_port.is_some_and(|port| {
-            option_value(&args, "--rpc-portal").and_then(|value| rpc_port(value).ok()) == Some(port)
+        let shares_port = desired_address.is_some_and(|address| {
+            option_value(&args, "--rpc-portal")
+                .and_then(|value| rpc_bind_address(value).ok())
+                .is_some_and(|other| rpc_bindings_overlap(address, other))
         });
         shares_dir || shares_port
     }
@@ -197,7 +212,7 @@ mod windows {
         config_dir: &Path,
         portal: Option<&str>,
     ) -> Result<Vec<String>> {
-        let desired_port = portal.map(rpc_port).transpose()?;
+        let desired_address = portal.map(rpc_bind_address).transpose()?;
         let services = RegKey::predef(HKEY_LOCAL_MACHINE)
             .open_subkey_with_flags("SYSTEM\\CurrentControlSet\\Services", KEY_READ)
             .context("failed to enumerate Windows services")?;
@@ -215,7 +230,7 @@ mod windows {
                 &image_path,
                 work_dir.as_deref(),
                 config_dir,
-                desired_port,
+                desired_address,
             ) {
                 continue;
             }
@@ -266,14 +281,14 @@ mod windows {
                 "\"C:/tools/easytier-core.exe\" --config-dir \"C:/shared/config.d\" --rpc-portal 127.0.0.1:15999",
                 None,
                 target,
-                Some(15999)
+                Some("127.0.0.1:15999".parse().unwrap())
             ));
             assert!(is_conflicting(
                 "another-easytier",
                 "C:/tools/easytier-core.exe --config-dir C:/other --rpc-portal 0.0.0.0:15999",
                 None,
                 target,
-                Some(15999)
+                Some("127.0.0.1:15999".parse().unwrap())
             ));
             assert!(is_conflicting(
                 "renamed-service",
@@ -287,14 +302,35 @@ mod windows {
                 "C:/tools/other-core.exe --config-dir C:/shared/config.d --rpc-portal 127.0.0.1:15999",
                 None,
                 target,
-                Some(15999)
+                Some("127.0.0.1:15999".parse().unwrap())
             ));
             assert!(!is_conflicting(
                 "easytier-gui",
                 "C:/tools/easytier-gui.exe --config-dir C:/shared/config.d",
                 None,
                 target,
-                Some(15999)
+                Some("127.0.0.1:15999".parse().unwrap())
+            ));
+        }
+
+        #[test]
+        fn independent_rpc_addresses_do_not_retire_another_service() {
+            let image =
+                "C:/tools/easytier-core.exe --config-dir C:/other --rpc-portal 127.0.0.2:15999";
+            let address = Some("127.0.0.1:15999".parse().unwrap());
+            assert!(!is_conflicting(
+                "another-easytier",
+                image,
+                None,
+                Path::new("C:/shared/config.d"),
+                address
+            ));
+            assert!(is_conflicting(
+                "another-easytier",
+                image,
+                None,
+                Path::new("C:/other"),
+                address
             ));
         }
     }
@@ -342,5 +378,35 @@ mod tests {
         assert!(ensure_rpc_port_free(&address.to_string()).is_err());
         drop(listener);
         assert!(ensure_rpc_port_free(&address.to_string()).is_ok());
+    }
+
+    #[test]
+    fn rpc_conflicts_require_overlapping_bindings() {
+        for (left, right, expected) in [
+            ("127.0.0.1:15999", "127.0.0.1:15999", true),
+            ("127.0.0.1:15999", "127.0.0.2:15999", false),
+            ("127.0.0.1:15999", "127.0.0.1:16000", false),
+            ("0.0.0.0:15999", "127.0.0.2:15999", true),
+            ("15999", "127.0.0.2:15999", true),
+            ("[::]:15999", "[::1]:15999", true),
+            ("[::1]:15999", "[::2]:15999", false),
+            ("[::]:15999", "0.0.0.0:15999", false),
+            ("[::ffff:127.0.0.1]:15999", "127.0.0.1:15999", false),
+            ("[fe80::1%2]:15999", "[fe80::1%3]:15999", false),
+            ("[fe80::1%2]:15999", "[fe80::1%2]:15999", true),
+        ] {
+            let left = rpc_bind_address(left).unwrap();
+            let right = rpc_bind_address(right).unwrap();
+            assert_eq!(
+                rpc_bindings_overlap(left, right),
+                expected,
+                "{left} vs {right}"
+            );
+            assert_eq!(
+                rpc_bindings_overlap(right, left),
+                expected,
+                "{right} vs {left}"
+            );
+        }
     }
 }

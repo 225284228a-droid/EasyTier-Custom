@@ -92,7 +92,7 @@ pub fn native_process_management(
     NativeProcessManagement::new(
         instances,
         hooks,
-        Arc::new(easytier_core::management::UnsupportedConfigFileStorage),
+        Arc::new(super::config_storage::NativeConfigFileStorage::default()),
         state_store,
     )
 }

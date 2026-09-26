@@ -53,6 +53,22 @@ impl WebClient {
     where
         T: TunnelDialer + 'static,
     {
+        Self::new_with_load_options(connector, options, manager, hooks, state_store, false)
+    }
+
+    pub fn new_with_load_options<T>(
+        connector: T,
+        options: WebClientOptions,
+        manager: Arc<NativeInstanceManager>,
+        hooks: Option<Arc<dyn WebClientHooks>>,
+        state_store: Arc<InstanceStateStore>,
+        disable_env_parsing: bool,
+    ) -> Self
+    where
+        T: TunnelDialer + 'static,
+    {
+        #[cfg(not(feature = "management"))]
+        let _ = disable_env_parsing;
         let config = WebClientConfig {
             token: options.token,
             machine_id: options.machine_id,
@@ -68,7 +84,7 @@ impl WebClient {
             config,
             manager,
             hooks.unwrap_or_else(|| Arc::new(DefaultHooks)),
-            Arc::new(NativeConfigFileStorage),
+            Arc::new(NativeConfigFileStorage::new(disable_env_parsing)),
             state_store,
             Arc::new(NativeLoggerControl),
         );
@@ -143,6 +159,31 @@ pub async fn run_web_client(
     hooks: Option<Arc<dyn WebClientHooks>>,
     state_store: Arc<InstanceStateStore>,
 ) -> Result<WebClient> {
+    run_web_client_with_load_options(
+        config_server_url,
+        machine_id_options,
+        hostname,
+        secure_mode,
+        manager,
+        hooks,
+        state_store,
+        false,
+    )
+    .await
+}
+
+// Preserve the existing wrapper's arguments while forwarding the CLI loader policy.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_web_client_with_load_options(
+    config_server_url: &str,
+    machine_id_options: MachineIdOptions,
+    hostname: Option<String>,
+    secure_mode: bool,
+    manager: Arc<NativeInstanceManager>,
+    hooks: Option<Arc<dyn WebClientHooks>>,
+    state_store: Arc<InstanceStateStore>,
+    disable_env_parsing: bool,
+) -> Result<WebClient> {
     let machine_id = resolve_machine_id(&machine_id_options)
         .with_context(|| "failed to resolve machine id for web client")?;
     let endpoint = parse_config_server_endpoint(config_server_url)?;
@@ -158,7 +199,7 @@ pub async fn run_web_client(
     let connector =
         runtime_one_shot_manual_connector(global_ctx, &config, manager.process_runtime())?;
 
-    Ok(WebClient::new(
+    Ok(WebClient::new_with_load_options(
         ConfigServerConnector {
             url: endpoint.connect_url().clone(),
             connector,
@@ -172,6 +213,7 @@ pub async fn run_web_client(
         manager,
         hooks,
         state_store,
+        disable_env_parsing,
     ))
 }
 

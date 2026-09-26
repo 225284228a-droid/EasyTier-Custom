@@ -1595,6 +1595,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     }
 
     let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
+    // RPC mutations wait until the initial catalog and enabled state are restored.
+    let startup_lock = manager.mutation_lock();
+    let startup_guard = startup_lock.lock().await;
 
     // Shared instance enabled/disabled state store. Constructed once and
     // injected into both the rpc-portal `ManagementServer` and the
@@ -1603,11 +1606,12 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     // writes. Also used by the startup scan below.
     let instance_state_store = Arc::new(InstanceStateStore::new(cli.config_dir.as_deref()));
 
-    let _rpc_server = ApiRpcServer::new(
+    let _rpc_server = ApiRpcServer::new_with_load_options(
         cli.rpc_portal_options.rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
         manager.clone(),
         instance_state_store.clone(),
+        cli.disable_env_parsing,
     )?
     .serve()
     .await?;
@@ -1619,7 +1623,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         })?;
         let mut clients = Vec::with_capacity(config_server_urls.len());
         for config_server_url_s in config_server_urls {
-            let wc = web_client::run_web_client(
+            let wc = web_client::run_web_client_with_load_options(
                 config_server_url_s,
                 crate::common::MachineIdOptions {
                     explicit_machine_id: Some(machine_id.to_string()),
@@ -1630,6 +1634,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
                 manager.clone(),
                 None,
                 instance_state_store.clone(),
+                cli.disable_env_parsing,
             )
             .await
             .inspect(|_| {
@@ -1702,6 +1707,10 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         )
         .await?;
 
+        if source == ConfigFileSource::ConfigDir {
+            manager.register_managed_config(cfg.get_id(), control.clone())?;
+        }
+
         if source == ConfigFileSource::ConfigDir && !instance_state_store.is_enabled(&cfg.get_id())
         {
             log::info!(
@@ -1740,6 +1749,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             control.permission,
             cfg.dump_redacted()
         );
+        if source == ConfigFileSource::ConfigDir {
+            manager.register_managed_config(cfg.get_id(), control.clone())?;
+        }
         manager.run_network_instance(cfg, control)?;
     }
 
@@ -1747,10 +1759,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     // exists (e.g. the TOML was deleted by hand while the instance was
     // stopped). Without this the web console keeps reporting these ids as
     // disabled instances even though there is nothing to enable.
-    if let Some(config_dir) = cli.config_dir.as_ref() {
+    if cli.config_dir.is_some() {
         for id in instance_state_store.disabled_instance_ids() {
-            let path = config_dir.join(format!("{id}.toml"));
-            if !path.is_file()
+            if !manager.managed_config_ids().contains(&id)
                 && let Err(error) = instance_state_store.remove(&id)
             {
                 log::warn!(%error, %id, "failed to GC stale instance state entry");
@@ -1774,6 +1785,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         );
         manager.run_network_instance(cfg, ConfigFileControl::STATIC_CONFIG)?;
     }
+    drop(startup_guard);
 
     #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
