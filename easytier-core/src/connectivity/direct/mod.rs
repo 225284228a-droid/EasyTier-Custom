@@ -407,12 +407,6 @@ where
             .and_then(|route| route.feature_flag.as_ref().map(Into::into))
     }
 
-    async fn peer_disguise_flags(&self, dst_peer_id: PeerId) -> PeerDisguiseP2pFlags {
-        self.peer_disguise_flags_opt(dst_peer_id)
-            .await
-            .unwrap_or_default()
-    }
-
     async fn try_direct_connect(self: Arc<Self>, dst_peer_id: PeerId) -> anyhow::Result<()> {
         let mut backoff = BackOff::new(vec![1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000]);
         let mut attempt = 0usize;
@@ -470,6 +464,14 @@ where
         let p2p_policy = self.peer_manager.p2p_policy_flags();
         let peer_policy_opt = self.peer_disguise_flags_opt(dst_peer_id).await;
         let peer_policy = peer_policy_opt.unwrap_or_default();
+        // Negotiated disguise preference for this dial round, frozen from one
+        // route scan: `Some` when route metadata is present, `None` otherwise.
+        // Per-URL tasks and punch decisions reuse this value instead of
+        // re-scanning routes on every attempt; the group-level policy check
+        // below still refreshes it between scheme groups.
+        let use_disguise_opt = peer_policy_opt
+            .as_ref()
+            .map(|peer| p2p_policy.use_wss_http3_with_peer(peer));
         // Derive the listener filter from the same policy predicates the
         // tunnel upgrade path uses, so a disable flag vetoes disguised
         // listeners here exactly as it does during protocol negotiation
@@ -547,8 +549,15 @@ where
                 .is_some_and(|listener| listener.scheme() == current_scheme)
             {
                 let listener = available_listeners.pop().expect("listener should exist");
-                self.spawn_direct_connect_tasks(dst_peer_id, &ip_list, &listener, &mut tasks)
-                    .await;
+                self.spawn_direct_connect_tasks(
+                    dst_peer_id,
+                    &ip_list,
+                    &listener,
+                    use_disguise_opt,
+                    use_disguise_protocols,
+                    &mut tasks,
+                )
+                .await;
             }
             let _ = tasks.join_all().await;
             if self
@@ -560,11 +569,14 @@ where
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_direct_connect_tasks(
         self: &Arc<Self>,
         dst_peer_id: PeerId,
         ip_list: &GetIpListResponse,
         listener: &Url,
+        use_disguise_opt: Option<bool>,
+        use_disguise_protocols: bool,
         tasks: &mut JoinSet<anyhow::Result<()>>,
     ) {
         let Ok(mut addrs) = resolve_mapped_listener_addrs(
@@ -639,6 +651,8 @@ where
                     self.clone(),
                     dst_peer_id,
                     url.to_string(),
+                    use_disguise_opt,
+                    use_disguise_protocols,
                 ));
             }
         }
@@ -648,6 +662,8 @@ where
         self: Arc<Self>,
         dst_peer_id: PeerId,
         url: String,
+        use_disguise: Option<bool>,
+        use_disguise_protocols: bool,
     ) -> anyhow::Result<()> {
         self.listener_blacklist.cleanup();
         let key = ListenerBlacklistKey(dst_peer_id, url.clone());
@@ -659,10 +675,6 @@ where
         let mut backoff = BackOff::new(backoffs.to_vec());
         for attempt in 0..=backoffs.len() {
             let target_url = Url::parse(&url)?;
-            let use_disguise = self
-                .peer_disguise_flags_opt(dst_peer_id)
-                .await
-                .map(|flags| self.peer_manager.p2p_policy_flags().use_wss_http3_with_peer(&flags));
             let connected = || {
                 self.peer_manager.has_connection_at_least_as_preferred(
                     dst_peer_id,
@@ -673,7 +685,9 @@ where
             if connected() {
                 return Ok(());
             }
-            let result = self.connect_to_url_once(dst_peer_id, &url).await;
+            let result = self
+                .connect_to_url_once(dst_peer_id, &url, use_disguise_protocols)
+                .await;
             if result.is_ok() || connected() {
                 return Ok(());
             }
@@ -689,11 +703,17 @@ where
         unreachable!("direct URL retry loop must return")
     }
 
-    async fn connect_to_url_once(&self, dst_peer_id: PeerId, raw_url: &str) -> anyhow::Result<()> {
+    async fn connect_to_url_once(
+        &self,
+        dst_peer_id: PeerId,
+        raw_url: &str,
+        use_disguise_protocols: bool,
+    ) -> anyhow::Result<()> {
         let url = Url::parse(raw_url)?;
-        let p2p_policy = self.peer_manager.p2p_policy_flags();
-        let peer_policy = self.peer_disguise_flags(dst_peer_id).await;
-        let use_disguise_protocols = p2p_policy.use_wss_http3_with_peer(&peer_policy);
+        // The same round-level predicate that admitted disguised listeners
+        // into the candidate list decides whether http3 targets take the UDP
+        // punch path, so a URL never punches against the policy that
+        // selected it.
         let use_udp_hole_punch =
             url.scheme() == "udp" || (use_disguise_protocols && url.scheme() == "http3");
         let (peer_id, conn_id) = if use_udp_hole_punch {

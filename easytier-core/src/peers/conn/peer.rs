@@ -36,6 +36,39 @@ enum PeerConnCloseEvent {
     },
 }
 
+/// Shared revalidation for closing a redundant automatic connection in
+/// favor of `replacement`: the cleanup flag is on, the negotiated disguise
+/// preference has not drifted since the proposal, the replacement is alive
+/// and verified (its first ping answered), and the candidate is an
+/// automatic connection strictly worse than the replacement.
+fn redundant_conn_eligible(
+    conn: &PeerConn,
+    replacement: &PeerConn,
+    flags: &FlagsInConfig,
+    proposed_use_disguise: bool,
+    negotiated: Option<bool>,
+) -> bool {
+    if !flags.close_redundant_conns_when_disguised
+        || negotiated != Some(proposed_use_disguise)
+        || use_disguise_preference(flags, negotiated) != proposed_use_disguise
+    {
+        return false;
+    }
+    if replacement.is_closed()
+        || replacement.get_stats().latency_us == 0
+        || conn.conn_source() != PeerConnSource::Automatic
+    {
+        return false;
+    }
+    let Some(replacement_rank) =
+        conn_protocol_rank(replacement, &flags.default_protocol, proposed_use_disguise)
+    else {
+        return false;
+    };
+    conn_protocol_rank(conn, &flags.default_protocol, proposed_use_disguise)
+        .is_some_and(|rank| rank > replacement_rank)
+}
+
 impl PeerConnCloseEvent {
     fn removable_id(
         &self,
@@ -43,35 +76,19 @@ impl PeerConnCloseEvent {
         flags: &FlagsInConfig,
         negotiated: Option<bool>,
     ) -> Option<PeerConnId> {
-        let Self::Redundant {
-            conn_id,
-            replacement_id,
-            use_disguise,
-        } = *self
-        else {
-            let Self::Closed(id) = *self else {
-                unreachable!()
-            };
-            return Some(id);
-        };
-        if !flags.close_redundant_conns_when_disguised
-            || negotiated != Some(use_disguise)
-            || use_disguise_preference(flags, negotiated) != use_disguise
-        {
-            return None;
+        match *self {
+            Self::Closed(id) => Some(id),
+            Self::Redundant {
+                conn_id,
+                replacement_id,
+                use_disguise,
+            } => {
+                let replacement = conns.get(&replacement_id)?.value().clone();
+                let conn = conns.get(&conn_id)?.value().clone();
+                redundant_conn_eligible(&conn, &replacement, flags, use_disguise, negotiated)
+                    .then_some(conn_id)
+            }
         }
-        let replacement = conns.get(&replacement_id)?.value().clone();
-        let conn = conns.get(&conn_id)?.value().clone();
-        if replacement.is_closed()
-            || replacement.get_stats().latency_us == 0
-            || conn.conn_source() != PeerConnSource::Automatic
-        {
-            return None;
-        }
-        let replacement_rank =
-            conn_protocol_rank(&replacement, &flags.default_protocol, use_disguise)?;
-        let rank = conn_protocol_rank(&conn, &flags.default_protocol, use_disguise)?;
-        (rank > replacement_rank).then_some(conn_id)
     }
 }
 
@@ -167,19 +184,18 @@ async fn reconcile_peer_connections(
     if replacement.get_stats().latency_us == 0 {
         return;
     }
-    let Some(replacement_rank) =
-        conn_protocol_rank(&replacement, &flags.default_protocol, use_disguise)
-    else {
-        return;
-    };
+    let negotiated = negotiated_disguise.load();
     let redundant = conns
         .iter()
         .filter(|entry| {
-            let conn = entry.value();
-            !conn.is_closed()
-                && conn.conn_source() == PeerConnSource::Automatic
-                && conn_protocol_rank(conn, &flags.default_protocol, use_disguise)
-                    .is_some_and(|rank| rank > replacement_rank)
+            !entry.value().is_closed()
+                && redundant_conn_eligible(
+                    entry.value(),
+                    &replacement,
+                    flags,
+                    use_disguise,
+                    negotiated,
+                )
         })
         .map(|entry| entry.key().to_owned())
         .collect::<Vec<_>>();
@@ -503,34 +519,34 @@ impl Peer {
         self.conns.iter().any(|entry| !entry.value().is_closed())
     }
 
+    /// Records the disguise preference negotiated with this peer, derived
+    /// from route metadata that knows both endpoints' policy. A value change
+    /// invalidates the cached default connection so the next send reselects
+    /// under the new preference.
+    pub(crate) fn note_negotiated_disguise(&self, use_disguise: bool) {
+        let _update_guard = self.default_conn_update_lock.lock();
+        if self.negotiated_disguise.swap(Some(use_disguise)) != Some(use_disguise) {
+            self.default_conn.store(None);
+        }
+    }
+
     pub(crate) fn has_connection_at_least_as_preferred(
         &self,
         target_scheme: &str,
         use_disguise: Option<bool>,
     ) -> bool {
         let default_protocol = self.context.flags().default_protocol;
-        let use_disguise = match use_disguise {
-            // `Some(value)` comes from routing metadata that knows both
-            // endpoints' policy: retain it so forwarding and cleanup use the
-            // same preference as the schedulers.
-            Some(use_disguise) => {
-                {
-                    let _update_guard = self.default_conn_update_lock.lock();
-                    if self.negotiated_disguise.swap(Some(use_disguise)) != Some(use_disguise) {
-                        self.default_conn.store(None);
-                    }
-                }
-                use_disguise
-            }
-            // `None` means the route metadata is missing. Rank with the last
-            // negotiated preference and do NOT overwrite it: a metadata gap
-            // flipping the preference to false would make the next reconcile
-            // pass tear down established disguised connections.
-            None => self
-                .negotiated_disguise
+        // `None` means the route metadata is missing. Rank with the last
+        // negotiated preference and do NOT overwrite it: a metadata gap
+        // flipping the preference to false would make the next reconcile
+        // pass tear down established disguised connections. Callers that
+        // observed fresh route metadata update the preference explicitly
+        // via `note_negotiated_disguise` (see `PeerMap`).
+        let use_disguise = use_disguise.unwrap_or_else(|| {
+            self.negotiated_disguise
                 .load()
-                .unwrap_or(use_disguise_preference(&self.context.flags(), None)),
-        };
+                .unwrap_or(use_disguise_preference(&self.context.flags(), None))
+        });
         let target_rank = p2p_protocol_rank(&default_protocol, use_disguise, target_scheme);
         self.conns.iter().any(|entry| {
             let conn = entry.value();
@@ -739,6 +755,9 @@ mod tests {
         let (old_tx, mut old_rx) = create_packet_recv_chan();
         old_remote.start_recv_loop(old_tx).await;
         peer.add_peer_conn(old).await.unwrap();
+        // Route metadata negotiated the disguise preference for this peer
+        // (PeerMap notes it before querying).
+        peer.note_negotiated_disguise(use_disguise);
         assert!(!peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
 
         let (replacement, mut replacement_remote) = handshaken_connection(
@@ -928,7 +947,7 @@ mod tests {
             peer.add_peer_conn(udp).await.unwrap();
             peer.add_peer_conn(wss).await.unwrap();
             wait_until_latency_verified(&peer, &[udp_id, wss_id]).await;
-            peer.has_connection_at_least_as_preferred("udp", Some(false));
+            peer.note_negotiated_disguise(false);
             if !preference_changed {
                 peer.close_event_sender
                     .try_send(PeerConnCloseEvent::Closed(udp_id))
@@ -942,7 +961,7 @@ mod tests {
                 })
                 .unwrap();
             if preference_changed {
-                peer.has_connection_at_least_as_preferred("http3", Some(true));
+                peer.note_negotiated_disguise(true);
                 peer.close_event_sender
                     .try_send(PeerConnCloseEvent::Redundant {
                         conn_id: udp_id,
@@ -968,7 +987,7 @@ mod tests {
             }));
         let (local_tx, _local_rx) = create_packet_recv_chan();
         let peer = Peer::new(2, local_tx, context.clone());
-        peer.has_connection_at_least_as_preferred("udp", Some(false));
+        peer.note_negotiated_disguise(false);
         let mut remote_conns = Vec::new();
         let mut kept_ids = Vec::new();
         for (scheme, source, origin) in [
@@ -1049,6 +1068,9 @@ mod tests {
             wait_until_latency_verified(&peer, &[udp_id]).await;
             assert!(peer.conns.contains_key(&wss_id));
             assert!(peer.conns.contains_key(&udp_id));
+            // Route metadata negotiated use_disguise=false despite the local
+            // prefer flag; the negotiated value wins.
+            peer.note_negotiated_disguise(false);
             assert!(peer.has_connection_at_least_as_preferred("udp", Some(false)));
             assert_eq!(peer.select_conn().unwrap().get_conn_id(), udp_id);
             peer.reconcile_connections().await;
@@ -1088,7 +1110,9 @@ mod tests {
         .await;
         let http3_id = http3.get_conn_id();
         peer.add_peer_conn(http3).await.unwrap();
-        // Authoritative metadata records the negotiated disguise preference.
+        // Authoritative metadata records the negotiated disguise preference
+        // (PeerMap does this via note_negotiated_disguise before its query).
+        peer.note_negotiated_disguise(true);
         assert!(peer.has_connection_at_least_as_preferred("http3", Some(true)));
         assert_eq!(peer.negotiated_disguise.load(), Some(true));
         // Missing route metadata must not flip it back to false, otherwise

@@ -213,6 +213,10 @@ impl PeerMap {
         peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
     }
 
+    /// Whether the peer already has a connection at least as preferred as
+    /// `target_scheme`. `Some(use_disguise)` is fresh route metadata: it is
+    /// recorded on the peer (invalidating the cached default connection on
+    /// change) before the pure per-peer query ranks the connections.
     pub(crate) fn has_connection_at_least_as_preferred(
         &self,
         peer_id: PeerId,
@@ -220,6 +224,9 @@ impl PeerMap {
         use_disguise: Option<bool>,
     ) -> bool {
         self.get_peer_by_id(peer_id).is_some_and(|peer| {
+            if let Some(use_disguise) = use_disguise {
+                peer.note_negotiated_disguise(use_disguise);
+            }
             peer.has_connection_at_least_as_preferred(target_scheme, use_disguise)
         })
     }
