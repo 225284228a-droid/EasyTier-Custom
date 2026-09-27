@@ -255,6 +255,33 @@ where
     }
 }
 
+/// Responder-side scheme negotiation shared by the RPC listener-selection
+/// path and the both-easy-sym packet path: rejects what local policy
+/// forbids, then downgrades HTTP3 to raw UDP when the local transport sink
+/// cannot serve HTTP3 (strict mode rejects the downgrade instead).
+fn negotiate_inbound_scheme(
+    requested: UdpPunchScheme,
+    http3_supported: bool,
+    http3_required: bool,
+    http3_disabled: bool,
+) -> Result<UdpPunchScheme, &'static str> {
+    if http3_disabled && requested.is_http3() {
+        return Err("HTTP3 hole punching is disabled by the local P2P policy");
+    }
+    if http3_required && !requested.is_http3() {
+        return Err("raw UDP hole punching is disabled by HTTP3-only policy");
+    }
+    let actual = if requested.is_http3() && http3_supported {
+        requested
+    } else {
+        UdpPunchScheme::Udp
+    };
+    if http3_required && !actual.is_http3() {
+        return Err("HTTP3 hole punching is unsupported");
+    }
+    Ok(actual)
+}
+
 #[async_trait::async_trait]
 impl<R, T> UdpHolePunchInbound for UdpHolePunchServer<R, T>
 where
@@ -266,27 +293,13 @@ where
         request: SelectPunchListener,
     ) -> Result<SelectPunchListenerResponse, UdpHolePunchSignalError> {
         let _admission = self.admit().await?;
-        if self.http3_disabled && request.scheme.is_http3() {
-            return Err(UdpHolePunchSignalError::RemoteRejected(
-                "HTTP3 hole punching is disabled by the local P2P policy".into(),
-            ));
-        }
-        if self.http3_required && !request.scheme.is_http3() {
-            return Err(UdpHolePunchSignalError::RemoteRejected(
-                "raw UDP hole punching is disabled by HTTP3-only policy".into(),
-            ));
-        }
-        let scheme =
-            if request.scheme.is_http3() && self.common.transport_sink.supports_scheme("http3") {
-                request.scheme
-            } else {
-                UdpPunchScheme::Udp
-            };
-        if self.http3_required && !scheme.is_http3() {
-            return Err(UdpHolePunchSignalError::RemoteRejected(
-                "HTTP3 hole punching is unsupported".into(),
-            ));
-        }
+        let scheme = negotiate_inbound_scheme(
+            request.scheme,
+            self.common.transport_sink.supports_scheme("http3"),
+            self.http3_required,
+            self.http3_disabled,
+        )
+        .map_err(|message| UdpHolePunchSignalError::RemoteRejected(message.into()))?;
         let selected = self
             .common
             .select_listener(request.force_new, request.prefer_port_mapping, scheme)
@@ -881,21 +894,13 @@ where
         request: SendPunchPacketBothEasySym,
     ) -> anyhow::Result<SendPunchPacketBothEasySymResponse> {
         tracing::info!("send_punch_packet_both_easy_sym start");
-        if self.http3_disabled && request.scheme.is_http3() {
-            anyhow::bail!("HTTP3 hole punching is disabled by the local P2P policy");
-        }
-        if self.http3_required && !request.scheme.is_http3() {
-            anyhow::bail!("raw UDP hole punching is disabled by HTTP3-only policy");
-        }
-        let actual_scheme =
-            if request.scheme.is_http3() && self.common.transport_sink.supports_scheme("http3") {
-                request.scheme
-            } else {
-                UdpPunchScheme::Udp
-            };
-        if self.http3_required && !actual_scheme.is_http3() {
-            anyhow::bail!("HTTP3 hole punching is unsupported");
-        }
+        let actual_scheme = negotiate_inbound_scheme(
+            request.scheme,
+            self.common.transport_sink.supports_scheme("http3"),
+            self.http3_required,
+            self.http3_disabled,
+        )
+        .map_err(anyhow::Error::msg)?;
         let busy_resp = Ok(SendPunchPacketBothEasySymResponse {
             is_busy: true,
             base_mapped_addr: None,

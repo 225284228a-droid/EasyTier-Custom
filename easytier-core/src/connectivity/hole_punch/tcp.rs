@@ -311,6 +311,71 @@ where
         .context("TCP hole-punch connect and upgrade window elapsed")?
 }
 
+/// One TCP punch dial attempt: connect within a timeout and hand the socket
+/// to the transport sink. Shared by the plain connect loop, the symmetric
+/// responder fan-out and the predicted-port spray, which keep their own
+/// loop shells, windows and sleep ranges.
+struct TcpPunchDialer<'a, H, AcceptedSocket>
+where
+    H: VirtualTcpSocketFactory,
+    AcceptedSocket: 'static,
+{
+    host: &'a H,
+    sink: &'a dyn TcpHolePunchTransportSink<
+        ConnectedSocket = <H as VirtualTcpSocketFactory>::Socket,
+        AcceptedSocket = AcceptedSocket,
+    >,
+    admission: TcpHolePunchAdmission,
+    requested_url: &'a url::Url,
+}
+
+impl<H, AcceptedSocket> TcpPunchDialer<'_, H, AcceptedSocket>
+where
+    H: VirtualTcpSocketFactory,
+    AcceptedSocket: 'static,
+{
+    /// `Ok(true)`: connected and admitted, the caller can stop. `Ok(false)`:
+    /// connect or admission failed (logged), retry after sleeping. `Err`:
+    /// the protocol upgrade failed irrecoverably.
+    async fn attempt(
+        &self,
+        options: &TcpConnectOptions,
+        dial_timeout: Duration,
+        label: &'static str,
+        remote_addr: SocketAddr,
+    ) -> anyhow::Result<bool> {
+        let Ok(Ok(socket)) = crate::foundation::time::timeout(
+            dial_timeout,
+            self.host.connect_tcp(options.clone()),
+        )
+        .await
+        else {
+            tracing::trace!(?remote_addr, label, "tcp hole punch connect attempt failed");
+            return Ok(false);
+        };
+        match self
+            .sink
+            .add_connected_transport(socket, self.requested_url.clone(), self.admission)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!(?remote_addr, label, "tcp hole punch connected and added tunnel");
+                Ok(true)
+            }
+            Err(TcpHolePunchTransportError::Upgrade(error)) => Err(error),
+            Err(TcpHolePunchTransportError::Admission(error)) => {
+                tracing::warn!(
+                    ?remote_addr,
+                    label,
+                    ?error,
+                    "tcp hole punch tunnel admission failed"
+                );
+                Ok(false)
+            }
+        }
+    }
+}
+
 // TCP supports simultaneous connect, so both peers may dial from the mapped port.
 pub async fn try_connect_to_remote<H, AcceptedSocket>(
     host: Arc<H>,
@@ -351,48 +416,30 @@ where
     complete_punch_within(Duration::from_secs(10), async {
         let start = crate::foundation::time::Instant::now();
         let mut attempts = 0_u32;
+        let dialer = TcpPunchDialer {
+            host: host.as_ref(),
+            sink: transport_sink.as_ref(),
+            admission,
+            requested_url: &requested_url,
+        };
         while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
             attempts = attempts.wrapping_add(1);
             let bind = hole_punch_bind_options(context.clone(), bind_addr);
             let options =
                 TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
-            if let Ok(Ok(socket)) =
-                crate::foundation::time::timeout(Duration::from_secs(3), host.connect_tcp(options))
-                    .await
+            match dialer
+                .attempt(
+                    &options,
+                    Duration::from_secs(3),
+                    "server connect loop",
+                    remote_mapped_addr,
+                )
+                .await
             {
-                let admission_result = transport_sink
-                    .add_connected_transport(socket, requested_url.clone(), admission)
-                    .await;
-                match admission_result {
-                    Ok(()) => {}
-                    Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
-                    Err(TcpHolePunchTransportError::Admission(error)) => {
-                        tracing::error!(
-                            ?remote_mapped_addr,
-                            local_port,
-                            attempts,
-                            ?error,
-                            "tcp hole punch server connected and added client tunnel failed"
-                        );
-                        continue;
-                    }
-                }
-
-                tracing::info!(
-                    ?remote_mapped_addr,
-                    local_port,
-                    attempts,
-                    ?admission,
-                    "tcp hole punch server connected and added tunnel"
-                );
-                return Ok(());
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => return Err(error),
             }
-            tracing::trace!(
-                ?remote_mapped_addr,
-                local_port,
-                attempts,
-                "tcp hole punch server connect attempt failed"
-            );
             let sleep_ms = rand::thread_rng().gen_range(10..100);
             crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
         }
@@ -460,36 +507,25 @@ where
         tasks.spawn(async move {
             complete_punch_within(SYMMETRIC_RESPONDER_HOLD, async {
                 let start = crate::foundation::time::Instant::now();
+                let dialer = TcpPunchDialer {
+                    host: host.as_ref(),
+                    sink: transport_sink.as_ref(),
+                    admission,
+                    requested_url: &requested_url,
+                };
                 while start.elapsed() < SYMMETRIC_RESPONDER_HOLD {
-                    if let Ok(Ok(socket)) = crate::foundation::time::timeout(
-                        SYMMETRIC_RESPONDER_DIAL_TIMEOUT,
-                        host.connect_tcp(options.clone()),
-                    )
-                    .await
+                    match dialer
+                        .attempt(
+                            &options,
+                            SYMMETRIC_RESPONDER_DIAL_TIMEOUT,
+                            "symmetric responder fan-out",
+                            remote_mapped_addr,
+                        )
+                        .await
                     {
-                        let admission_result = transport_sink
-                            .add_connected_transport(socket, requested_url.clone(), admission)
-                            .await;
-                        match admission_result {
-                            Ok(()) => {}
-                            Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
-                            Err(TcpHolePunchTransportError::Admission(error)) => {
-                                tracing::warn!(
-                                    ?remote_mapped_addr,
-                                    port,
-                                    ?error,
-                                    "tcp hole punch symmetric responder tunnel admission failed"
-                                );
-                                continue;
-                            }
-                        }
-
-                        tracing::info!(
-                            ?remote_mapped_addr,
-                            port,
-                            "tcp hole punch symmetric responder connected and added tunnel"
-                        );
-                        return Ok(());
+                        Ok(true) => return Ok(()),
+                        Ok(false) => {}
+                        Err(error) => return Err(error),
                     }
                     let sleep_ms = rand::thread_rng().gen_range(50..150);
                     crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
@@ -561,34 +597,25 @@ where
         tasks.spawn(async move {
             complete_punch_within(SPRAY_WINDOW, async {
                 let start = crate::foundation::time::Instant::now();
+                let dialer = TcpPunchDialer {
+                    host: host.as_ref(),
+                    sink: transport_sink.as_ref(),
+                    admission,
+                    requested_url: &requested_url,
+                };
                 while start.elapsed() < SPRAY_WINDOW {
-                    if let Ok(Ok(socket)) = crate::foundation::time::timeout(
-                        SPRAY_DIAL_TIMEOUT,
-                        host.connect_tcp(options.clone()),
-                    )
-                    .await
+                    match dialer
+                        .attempt(
+                            &options,
+                            SPRAY_DIAL_TIMEOUT,
+                            "predicted-port spray",
+                            target_addr,
+                        )
+                        .await
                     {
-                        let admission_result = transport_sink
-                            .add_connected_transport(socket, requested_url.clone(), admission)
-                            .await;
-                        match admission_result {
-                            Ok(()) => {}
-                            Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
-                            Err(TcpHolePunchTransportError::Admission(error)) => {
-                                tracing::warn!(
-                                    ?target_addr,
-                                    ?error,
-                                    "tcp hole punch spray tunnel admission failed"
-                                );
-                                continue;
-                            }
-                        }
-
-                        tracing::info!(
-                            ?target_addr,
-                            "tcp hole punch spray connected and added tunnel"
-                        );
-                        return Ok(());
+                        Ok(true) => return Ok(()),
+                        Ok(false) => {}
+                        Err(error) => return Err(error),
                     }
                     let sleep_ms = rand::thread_rng().gen_range(50..150);
                     crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;

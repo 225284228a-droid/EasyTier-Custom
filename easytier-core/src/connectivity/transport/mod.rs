@@ -3,12 +3,53 @@ use std::future::Future;
 use futures::{StreamExt, stream::FuturesUnordered};
 use url::Url;
 
+use crate::connectivity::protocol::{ProtocolTransport, protocol_transport};
+use crate::socket::tcp::TcpSocketPurpose;
+
 mod tcp;
 mod udp;
 
 pub(crate) use tcp::connect_tcp;
 pub(crate) use udp::connect_udp_with;
 pub use udp::{ConnectedUdpSession, UdpSessionMode, connect_udp};
+
+/// The transport a dialer uses for a URL scheme: TCP (tagged with the
+/// dialer's socket purpose; FakeTcp always keeps its dedicated purpose),
+/// UDP (EasyTier mux or a classified protocol), or a host-created byte
+/// stream for ring/unix endpoints, which have no IP address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IpTransport {
+    Tcp(TcpSocketPurpose),
+    Udp(UdpSessionMode),
+    ByteStream,
+}
+
+impl IpTransport {
+    /// Classifies a URL's scheme into its transport. Returns `None` for
+    /// schemes no core dialer can handle; callers decide how to report them.
+    pub(crate) fn from_url(url: &Url, connect_purpose: TcpSocketPurpose) -> Option<Self> {
+        match protocol_transport(url.scheme()) {
+            Some(ProtocolTransport::Tcp) => Some(Self::Tcp(connect_purpose)),
+            Some(ProtocolTransport::FakeTcp) => Some(Self::Tcp(TcpSocketPurpose::FakeTcp)),
+            Some(ProtocolTransport::Udp(mode)) => Some(Self::Udp(mode)),
+            None if matches!(url.scheme(), "ring" | "unix") => Some(Self::ByteStream),
+            None => None,
+        }
+    }
+
+    pub(crate) fn is_udp(self) -> bool {
+        matches!(self, Self::Udp(_))
+    }
+
+    /// FakeTCP dials raw SYN packets and byte streams are host-created, so
+    /// neither can bind to a specific interface first.
+    pub(crate) fn supports_interface_bind(self) -> bool {
+        !matches!(
+            self,
+            Self::Tcp(TcpSocketPurpose::FakeTcp) | Self::ByteStream
+        )
+    }
+}
 
 /// A host-created non-IP byte stream with host-provided endpoint metadata.
 ///

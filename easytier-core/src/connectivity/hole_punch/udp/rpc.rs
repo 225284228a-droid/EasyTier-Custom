@@ -373,6 +373,24 @@ where
     pub(super) async fn stop(&self) {
         self.inner.stop().await;
     }
+
+    /// Shared inbound gate for every UDP hole-punch RPC method: the local
+    /// P2P policy decides whether the caller may punch us at all.
+    async fn gate_inbound_punch(
+        &self,
+        controller: &BaseController,
+    ) -> rpc_types::error::Result<()> {
+        if !self
+            .inbound_gate
+            .allow_inbound_punch(controller.get_caller_peer_id())
+            .await
+        {
+            return Err(
+                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 fn signal_error_to_rpc_error(error: UdpHolePunchSignalError) -> rpc_types::error::Error {
@@ -508,15 +526,7 @@ where
         controller: Self::Controller,
         input: SelectPunchListenerRequest,
     ) -> rpc_types::error::Result<SelectPunchListenerResponse> {
-        if !self
-            .inbound_gate
-            .allow_inbound_punch(controller.get_caller_peer_id())
-            .await
-        {
-            return Err(
-                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
-            );
-        }
+        self.gate_inbound_punch(&controller).await?;
         let response = UdpHolePunchInbound::select_punch_listener(
             self,
             select_listener_request_from_rpc(input),
@@ -532,15 +542,7 @@ where
         controller: Self::Controller,
         input: SendPunchPacketConeRequest,
     ) -> rpc_types::error::Result<Void> {
-        if !self
-            .inbound_gate
-            .allow_inbound_punch(controller.get_caller_peer_id())
-            .await
-        {
-            return Err(
-                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
-            );
-        }
+        self.gate_inbound_punch(&controller).await?;
         UdpHolePunchInbound::send_punch_packet_cone(self, cone_request_from_rpc(input)?)
             .await
             .map_err(signal_error_to_rpc_error)?;
@@ -553,15 +555,7 @@ where
         controller: Self::Controller,
         input: SendPunchPacketHardSymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketHardSymResponse> {
-        if !self
-            .inbound_gate
-            .allow_inbound_punch(controller.get_caller_peer_id())
-            .await
-        {
-            return Err(
-                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
-            );
-        }
+        self.gate_inbound_punch(&controller).await?;
         let response = UdpHolePunchInbound::send_punch_packet_hard_sym(
             self,
             hard_symmetric_request_from_rpc(input)?,
@@ -577,15 +571,7 @@ where
         controller: Self::Controller,
         input: SendPunchPacketEasySymRequest,
     ) -> rpc_types::error::Result<Void> {
-        if !self
-            .inbound_gate
-            .allow_inbound_punch(controller.get_caller_peer_id())
-            .await
-        {
-            return Err(
-                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
-            );
-        }
+        self.gate_inbound_punch(&controller).await?;
         UdpHolePunchInbound::send_punch_packet_easy_sym(
             self,
             easy_symmetric_request_from_rpc(input)?,
@@ -601,15 +587,7 @@ where
         controller: Self::Controller,
         input: SendPunchPacketBothEasySymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketBothEasySymResponse> {
-        if !self
-            .inbound_gate
-            .allow_inbound_punch(controller.get_caller_peer_id())
-            .await
-        {
-            return Err(
-                anyhow::anyhow!("UDP hole punching is disabled by the local P2P policy").into(),
-            );
-        }
+        self.gate_inbound_punch(&controller).await?;
         let response = UdpHolePunchInbound::send_punch_packet_both_easy_sym(
             self,
             both_easy_symmetric_request_from_rpc(input)?,

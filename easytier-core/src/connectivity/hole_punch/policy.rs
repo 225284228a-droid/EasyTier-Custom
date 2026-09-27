@@ -1,38 +1,7 @@
 use crate::config::P2pPolicyFlags;
 use crate::proto::common::PeerFeatureFlag;
 
-#[derive(Debug)]
-pub struct BackOff {
-    backoffs_ms: Vec<u64>,
-    current_idx: usize,
-}
-
-impl BackOff {
-    pub fn new(backoffs_ms: Vec<u64>) -> Self {
-        Self {
-            backoffs_ms,
-            current_idx: 0,
-        }
-    }
-
-    pub fn next_backoff(&mut self) -> u64 {
-        let backoff = self.backoffs_ms[self.current_idx];
-        self.current_idx = (self.current_idx + 1).min(self.backoffs_ms.len() - 1);
-        backoff
-    }
-
-    pub fn rollback(&mut self) {
-        self.current_idx = self.current_idx.saturating_sub(1);
-    }
-
-    pub async fn sleep_for_next_backoff(&mut self) {
-        let backoff = self.next_backoff();
-        if backoff > 0 {
-            crate::foundation::time::sleep(crate::foundation::time::Duration::from_millis(backoff))
-                .await;
-        }
-    }
-}
+pub use crate::foundation::backoff::BackOff;
 
 pub fn should_try_p2p_with_peer(
     feature_flag: Option<&PeerFeatureFlag>,
@@ -108,17 +77,6 @@ pub fn p2p_engine_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn backoff_saturates_and_can_rollback() {
-        let mut backoff = BackOff::new(vec![10, 20]);
-
-        assert_eq!(backoff.next_backoff(), 10);
-        assert_eq!(backoff.next_backoff(), 20);
-        assert_eq!(backoff.next_backoff(), 20);
-        backoff.rollback();
-        assert_eq!(backoff.next_backoff(), 10);
-    }
 
     #[test]
     fn lazy_background_p2p_requires_need_p2p() {

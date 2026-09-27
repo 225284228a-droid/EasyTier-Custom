@@ -29,6 +29,20 @@ pub(crate) fn is_public_ipv6_candidate(ip: Ipv6Addr) -> bool {
         || ip.is_multicast())
 }
 
+/// Whether one of our own running listeners already occupies `port` with
+/// the same IP transport (UDP vs TCP). Callers combine this with their own
+/// "destination is local" and protected-process-port checks before refusing
+/// to dial or proxy to the address.
+pub(crate) fn port_in_use_by_local_listener(
+    local_listeners: &[Url],
+    port: u16,
+    is_udp: bool,
+) -> bool {
+    local_listeners.iter().any(|local| {
+        local.port() == Some(port) && protocol::protocol_uses_udp(local.scheme()) == is_udp
+    })
+}
+
 /// Supplies the URLs of the instance's currently running listeners.
 ///
 /// The listener layer's running-listener registry implements this seam.
