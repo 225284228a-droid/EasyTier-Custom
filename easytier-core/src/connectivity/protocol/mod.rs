@@ -280,9 +280,11 @@ pub struct CoreServerProtocolConfig {
     pub faketcp: bool,
 }
 
-/// The transport kind each core scheme needs, used to produce the
-/// "wrong transport" error when a scheme reaches the wrong upgrade entry
-/// point on the server side.
+/// The transport kind each core scheme needs. Server upgrade entry points
+/// use it to reject schemes delivered over the wrong transport; schemes
+/// needing the SAME transport as the entry point but not built into core
+/// (e.g. wg/quic, which upgrade UDP sessions through the external upgrader)
+/// are delegated instead of rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SchemeTransport {
     Tcp,
@@ -386,9 +388,13 @@ where
             "tcp" | "faketcp" => Ok(ServerProtocolUpgrade::Tunnel(
                 upgrade_accepted_tcp(socket, local_url, self.config).await?,
             )),
+            // ws/wss also ride TCP transports and upgrade through the
+            // external upgrader; only wrong-transport schemes are rejected.
             scheme => match core_scheme_transport(scheme) {
-                Some(expected) => Err(transport_mismatch_error(scheme, expected)),
-                None => self.external(scheme)?.upgrade_tcp(socket, local_url).await,
+                Some(expected @ (SchemeTransport::Udp | SchemeTransport::ByteStream)) => {
+                    Err(transport_mismatch_error(scheme, expected))
+                }
+                _ => self.external(scheme)?.upgrade_tcp(socket, local_url).await,
             },
         }
     }
@@ -403,9 +409,13 @@ where
             "udp" => Ok(ServerProtocolUpgrade::Tunnel(upgrade_accepted_udp(
                 session, &local_url,
             )?)),
+            // wg/quic also ride UDP sessions and upgrade through the
+            // external upgrader; only wrong-transport schemes are rejected.
             scheme => match core_scheme_transport(scheme) {
-                Some(expected) => Err(transport_mismatch_error(scheme, expected)),
-                None => {
+                Some(expected @ (SchemeTransport::Tcp | SchemeTransport::ByteStream)) => {
+                    Err(transport_mismatch_error(scheme, expected))
+                }
+                _ => {
                     self.external(scheme)?
                         .upgrade_udp(session, local_url, admission)
                         .await
@@ -429,8 +439,10 @@ where
             )),
             "unix" => anyhow::bail!("unsupported server protocol upgrader: unix"),
             scheme => match core_scheme_transport(scheme) {
-                Some(expected) => Err(transport_mismatch_error(scheme, expected)),
-                None => {
+                Some(expected @ (SchemeTransport::Tcp | SchemeTransport::Udp)) => {
+                    Err(transport_mismatch_error(scheme, expected))
+                }
+                _ => {
                     self.external(scheme)?
                         .upgrade_byte_stream(socket, local_url, remote_url)
                         .await
@@ -587,7 +599,7 @@ mod tests {
     #[async_trait]
     impl ServerProtocolUpgrader<MockTcpSocket> for MockExternalUpgrader {
         fn supports_scheme(&self, scheme: &str) -> bool {
-            matches!(scheme, "external" | "ring" | "unix")
+            matches!(scheme, "external" | "ring" | "unix" | "wg")
         }
 
         async fn upgrade_tcp(
@@ -757,6 +769,56 @@ mod tests {
             tunnel.info().unwrap().local_addr.unwrap().url,
             local_url.as_str()
         );
+    }
+
+    #[tokio::test]
+    async fn core_server_udp_entry_delegates_udp_classified_schemes() {
+        let upgrader = CoreServerProtocolUpgrader::with_external(
+            CoreServerProtocolConfig::default(),
+            Arc::new(MockExternalUpgrader),
+        );
+        let session = || {
+            UdpSession::identity_standalone(
+                Arc::new(MockUdpSocket {
+                    local_addr: "127.0.0.1:1000".parse().unwrap(),
+                }),
+                "127.0.0.1:2000".parse().unwrap(),
+                UdpSessionKind::EasyTierMux,
+            )
+            .unwrap()
+        };
+
+        // wg (like quic) rides a UDP session and must reach the external
+        // upgrader instead of the wrong-transport error: the wireguard and
+        // quic engines upgrade the session themselves.
+        let delegated = upgrader
+            .upgrade_udp(session(), "wg://0.0.0.0:2000".parse().unwrap(), None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            delegated.to_string(),
+            "external server UDP protocol invoked"
+        );
+
+        let mismatched = upgrader
+            .upgrade_udp(session(), "tcp://0.0.0.0:2000".parse().unwrap(), None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            mismatched.to_string(),
+            "tcp protocol requires a TCP transport"
+        );
+
+        // Symmetrically, a TCP-scheme entry point still delegates schemes
+        // that ride TCP (e.g. ws) to the external upgrader.
+        let ws_delegated = upgrader
+            .upgrade_tcp(MockTcpSocket, "ws://0.0.0.0:2000".parse().unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert!(ws_delegated.to_string().contains("unsupported server protocol"));
     }
 
     #[tokio::test]

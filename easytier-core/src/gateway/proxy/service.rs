@@ -15,7 +15,7 @@ use crate::{
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
     connectivity::{
         direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost,
-        port_in_use_by_local_listener, protocol::protocol_uses_udp,
+        port_in_use_by_local_listener,
     },
     foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
     listener::RunningListenerRegistry,
@@ -423,6 +423,7 @@ mod tests {
         config::peers::{PeerRuntimeConfig, PeerRuntimeSnapshot},
         config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
         config::{CoreConfig, IpPrefix, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig},
+        connectivity::protocol::protocol_uses_udp,
     };
 
     use super::*;
