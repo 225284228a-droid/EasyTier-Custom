@@ -335,15 +335,6 @@ impl From<&PeerFeatureFlag> for PeerDisguiseP2pFlags {
 }
 
 impl P2pPolicyFlags {
-    pub fn wss_http3_p2p_allowed(&self) -> bool {
-        self.only_use_wss_http3_for_hole_punching
-            || (self.prefer_wss_http3_for_p2p && !self.disable_wss_http3_for_p2p)
-    }
-
-    pub fn wss_http3_p2p_preferred(&self) -> bool {
-        self.wss_http3_p2p_allowed() && !self.only_use_wss_http3_for_hole_punching
-    }
-
     pub fn use_wss_http3_with_peer(&self, peer: &PeerDisguiseP2pFlags) -> bool {
         if self.disable_wss_http3_for_p2p || peer.disable_wss_http3_for_p2p {
             return false;

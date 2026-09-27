@@ -115,7 +115,7 @@ where
     );
 
     udp_array.add_new_socket(local_socket).await?;
-    udp_array.add_intreast_tid(tid);
+    udp_array.add_interest_tid(tid);
     let punch_packet = new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
 
     send_from_local(&udp_array, &punch_packet, remote_mapped_addr).await?;
@@ -204,7 +204,6 @@ where
     stun: Arc<dyn StunInfoProvider>,
     udp_array: RwLock<Option<Arc<UdpSocketArray<R>>>>,
     try_direct_connect: AtomicBool,
-    punch_predictably: AtomicBool,
 }
 
 impl<R, S> UdpSymToConePunchClient<R, S>
@@ -219,7 +218,6 @@ where
             stun,
             udp_array: RwLock::new(None),
             try_direct_connect: AtomicBool::new(true),
-            punch_predictably: AtomicBool::new(true),
         }
     }
 
@@ -418,14 +416,14 @@ where
 
         let tid = rand::thread_rng().r#gen();
         let packet = new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
-        udp_array.add_intreast_tid(tid);
-        defer! { udp_array.remove_intreast_tid(tid); }
+        udp_array.add_interest_tid(tid);
+        defer! { udp_array.remove_interest_tid(tid); }
 
         let port_index = *last_port_idx as u32;
         let base_port_for_easy_sym = self.get_base_port_for_easy_sym(my_nat_info).await;
         udp_array.send_with_all(&packet, remote_mapped_addr).await?;
 
-        if self.punch_predictably.load(Ordering::Relaxed) && base_port_for_easy_sym.is_some() {
+        if base_port_for_easy_sym.is_some() {
             let signaling = self.signaling.clone();
             let punch_task = AbortOnDropHandle::new(tokio::spawn(
                 Self::remote_send_hole_punch_packet_predictable(
@@ -548,7 +546,7 @@ where
             .ok_or(anyhow::anyhow!("peer_is_incremental is required"))?;
 
         let tid = rand::random();
-        udp_array.add_intreast_tid(tid);
+        udp_array.add_interest_tid(tid);
 
         let remote_ret = self
             .signaling

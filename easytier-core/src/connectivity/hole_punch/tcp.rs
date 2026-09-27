@@ -13,7 +13,6 @@ use std::{
 use anyhow::Context as _;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use quanta::Instant;
 use rand::Rng as _;
 use tokio::task::JoinSet;
 use tokio_util::task::AbortOnDropHandle;
@@ -22,7 +21,7 @@ use crate::{
     config::{P2pPolicyFlags, PeerDisguiseP2pFlags, PeerId},
     connectivity::{
         hole_punch::{
-            HolePunchRpcRegistry, HolePunchTunnelSink,
+            HolePunchRpcRegistry, HolePunchTunnelSink, PEER_BLACKLIST_TIMEOUT,
             policy::{
                 BackOff, should_accept_inbound_punch, should_background_p2p_with_peer,
                 should_try_p2p_with_peer,
@@ -32,8 +31,11 @@ use crate::{
         stun::StunInfoProvider,
         transport::ConnectedTransport,
     },
-    foundation::task::{
-        ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager, reap_joinset_background,
+    foundation::{
+        expiring_set::ExpiringSet,
+        task::{
+            ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager, reap_joinset_background,
+        },
     },
     proto::{
         common::{NatType, PeerFeatureFlag},
@@ -652,7 +654,6 @@ where
     }
 }
 
-const BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
 const WSS_EXCHANGE_FAILURE_BLACKLIST_THRESHOLD: u32 = 3;
 
 /// Local ports the symmetric responder fans out toward the cone initiator.
@@ -696,36 +697,28 @@ fn fallback_listener_options(
 }
 
 struct TcpHolePunchBlacklist {
-    entries: DashMap<PeerId, Instant>,
+    entries: ExpiringSet<PeerId>,
     wss_exchange_failures: DashMap<PeerId, u32>,
 }
 
 impl TcpHolePunchBlacklist {
     fn new() -> Self {
         Self {
-            entries: DashMap::new(),
+            entries: ExpiringSet::default(),
             wss_exchange_failures: DashMap::new(),
         }
     }
 
     fn insert(&self, peer_id: PeerId) {
-        self.entries.insert(peer_id, Instant::now());
+        self.entries.insert(peer_id, PEER_BLACKLIST_TIMEOUT);
     }
 
     fn contains(&self, peer_id: PeerId) -> bool {
-        let active = self
-            .entries
-            .get(&peer_id)
-            .is_some_and(|inserted_at| inserted_at.elapsed() < BLACKLIST_TIMEOUT);
-        if !active {
-            self.entries.remove(&peer_id);
-        }
-        active
+        self.entries.contains(&peer_id)
     }
 
     fn cleanup(&self) {
-        self.entries
-            .retain(|_, inserted_at| inserted_at.elapsed() < BLACKLIST_TIMEOUT);
+        self.entries.cleanup();
     }
 
     fn record_wss_exchange_failure(&self, peer_id: PeerId) {
@@ -1487,6 +1480,10 @@ where
 {
     type CollectPeerItem = PeerId;
     type TaskRet = ();
+
+    fn task_kind(&self) -> &'static str {
+        "tcp hole punching"
+    }
 
     async fn collect_peers_need_task(&self) -> Vec<PeerId> {
         self.0.collect_peers_need_task().await

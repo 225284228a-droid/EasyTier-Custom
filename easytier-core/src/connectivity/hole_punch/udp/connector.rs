@@ -1,8 +1,5 @@
 use std::collections::HashSet;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 
 use anyhow::Error;
 use dashmap::DashMap;
@@ -15,16 +12,18 @@ use tokio::{
 use crate::{
     config::PeerId,
     connectivity::stun::StunInfoProvider,
+    foundation::expiring_set::ExpiringSet,
     foundation::task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager},
     proto::common::NatType,
 };
 
 use crate::connectivity::hole_punch::policy::BackOff;
+use crate::connectivity::hole_punch::PEER_BLACKLIST_TIMEOUT;
 
 use super::{
-    BLACKLIST_TIMEOUT_SEC, UdpBothEasySymPunchClient, UdpHolePunchClientError,
-    UdpHolePunchPeerSource, UdpHolePunchRuntime, UdpHolePunchSignaling, UdpHolePunchTransportSink,
-    UdpNatType, UdpPunchClientMethod, UdpPunchScheme, UdpPunchSocket, UdpPunchTaskInfo,
+    UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchPeerSource,
+    UdpHolePunchRuntime, UdpHolePunchSignaling, UdpHolePunchTransportSink, UdpNatType,
+    UdpPunchClientMethod, UdpPunchScheme, UdpPunchSocket, UdpPunchTaskInfo,
     UdpSymToConePunchClient, collect_udp_punch_tasks, punch_cone_to_cone,
     should_blacklist_signal_error,
 };
@@ -76,42 +75,6 @@ impl UdpSymPunchLock {
     }
 }
 
-struct UdpHolePunchBlacklist {
-    items: DashMap<PeerId, Instant>,
-}
-
-impl UdpHolePunchBlacklist {
-    fn new() -> Self {
-        Self {
-            items: DashMap::new(),
-        }
-    }
-
-    fn contains(&self, peer_id: PeerId) -> bool {
-        let Some(insert_time) = self.items.get(&peer_id) else {
-            return false;
-        };
-        let expired = insert_time.elapsed().as_secs() >= BLACKLIST_TIMEOUT_SEC;
-        drop(insert_time);
-
-        if expired {
-            self.items.remove(&peer_id);
-            false
-        } else {
-            true
-        }
-    }
-
-    fn insert(&self, peer_id: PeerId) {
-        self.items.insert(peer_id, Instant::now());
-    }
-
-    fn cleanup(&self) {
-        self.items
-            .retain(|_, insert_time| insert_time.elapsed().as_secs() < BLACKLIST_TIMEOUT_SEC);
-    }
-}
-
 struct UdpHolePunchConnectorParts<P, S, T, R>
 where
     P: UdpHolePunchPeerSource + 'static,
@@ -125,7 +88,6 @@ where
     runtime: Arc<R>,
     stun: Arc<dyn StunInfoProvider>,
     sym_punch_lock: UdpSymPunchLock,
-    try_cone_before_sym: AtomicBool,
 }
 
 pub struct UdpHolePunchConnectorData<P, S, T, R>
@@ -141,9 +103,8 @@ where
     runtime: Arc<R>,
     stun: Arc<dyn StunInfoProvider>,
     sym_punch_lock: UdpSymPunchLock,
-    blacklist: UdpHolePunchBlacklist,
+    blacklist: ExpiringSet<PeerId>,
     preferred_attempt_started: DashMap<PeerId, Instant>,
-    try_cone_before_sym: Arc<AtomicBool>,
     pub sym_to_cone_client: UdpSymToConePunchClient<R, S>,
     pub both_easy_sym_client: UdpBothEasySymPunchClient<R, S>,
 }
@@ -163,11 +124,8 @@ where
             runtime: parts.runtime.clone(),
             stun: parts.stun.clone(),
             sym_punch_lock: parts.sym_punch_lock.clone(),
-            blacklist: UdpHolePunchBlacklist::new(),
+            blacklist: ExpiringSet::default(),
             preferred_attempt_started: DashMap::new(),
-            try_cone_before_sym: Arc::new(AtomicBool::new(
-                parts.try_cone_before_sym.load(Ordering::Relaxed),
-            )),
             sym_to_cone_client: UdpSymToConePunchClient::new(
                 parts.runtime.clone(),
                 parts.signaling.clone(),
@@ -182,7 +140,7 @@ where
     }
 
     fn should_skip_blacklisted(&self, peer_id: PeerId) -> bool {
-        if self.blacklist.contains(peer_id) {
+        if self.blacklist.contains(&peer_id) {
             tracing::debug!(
                 dst_peer_id = peer_id,
                 "peer is blacklisted, skipping hole punching"
@@ -191,6 +149,26 @@ where
         } else {
             false
         }
+    }
+
+    /// Both sym-aware clients try a plain cone punch before dedicating the
+    /// sym punch lock: it is cheaper and often sufficient. Returns `true`
+    /// when the caller should break out of its retry loop (punch succeeded
+    /// or the peer got blacklisted).
+    async fn try_cone_preflight(&self, task_info: &UdpPunchTaskInfo) -> bool {
+        let ret = punch_cone_to_cone(
+            self.runtime.clone(),
+            self.signaling.clone(),
+            task_info.dst_peer_id,
+            task_info.scheme,
+            task_info.require_http3,
+        )
+        .await;
+        let ret = self.map_client_result(task_info.dst_peer_id, ret);
+        if self.handle_punch_result(task_info, ret, None, None).await {
+            return true;
+        }
+        self.should_skip_blacklisted(task_info.dst_peer_id)
     }
 
     fn map_client_result(
@@ -202,7 +180,7 @@ where
             Ok(ret) => Ok(ret),
             Err(UdpHolePunchClientError::Signaling(err)) => {
                 if should_blacklist_signal_error(&err) {
-                    self.blacklist.insert(dst_peer_id);
+                    self.blacklist.insert(dst_peer_id, PEER_BLACKLIST_TIMEOUT);
                 }
                 Err(err.into())
             }
@@ -319,22 +297,8 @@ where
                 break;
             }
 
-            if self.try_cone_before_sym.load(Ordering::Relaxed) {
-                let ret = punch_cone_to_cone(
-                    self.runtime.clone(),
-                    self.signaling.clone(),
-                    task_info.dst_peer_id,
-                    task_info.scheme,
-                    task_info.require_http3,
-                )
-                .await;
-                let ret = self.map_client_result(task_info.dst_peer_id, ret);
-                if self.handle_punch_result(&task_info, ret, None, None).await {
-                    break;
-                }
-                if self.should_skip_blacklisted(task_info.dst_peer_id) {
-                    break;
-                }
+            if self.try_cone_preflight(&task_info).await {
+                break;
             }
 
             let ret = {
@@ -375,22 +339,8 @@ where
                 break;
             }
 
-            if self.try_cone_before_sym.load(Ordering::Relaxed) {
-                let ret = punch_cone_to_cone(
-                    self.runtime.clone(),
-                    self.signaling.clone(),
-                    task_info.dst_peer_id,
-                    task_info.scheme,
-                    task_info.require_http3,
-                )
-                .await;
-                let ret = self.map_client_result(task_info.dst_peer_id, ret);
-                if self.handle_punch_result(&task_info, ret, None, None).await {
-                    break;
-                }
-                if self.should_skip_blacklisted(task_info.dst_peer_id) {
-                    break;
-                }
+            if self.try_cone_preflight(&task_info).await {
+                break;
             }
 
             let mut is_busy = false;
@@ -453,6 +403,10 @@ where
     type CollectPeerItem = UdpPunchTaskInfo;
     type TaskRet = ();
 
+    fn task_kind(&self) -> &'static str {
+        "udp hole punching"
+    }
+
     async fn collect_peers_need_task(&self) -> Vec<Self::CollectPeerItem> {
         let data = &self.0;
         let my_nat_type = data.stun.get_stun_info().udp_nat_type;
@@ -499,7 +453,7 @@ where
             policy,
             data.transport_sink.supports_scheme("http3"),
             candidates,
-            |peer_id| data.blacklist.contains(peer_id),
+            |peer_id| data.blacklist.contains(&peer_id),
         )
         .into_iter()
         .flat_map(|task| {
@@ -587,7 +541,6 @@ where
             runtime,
             stun,
             sym_punch_lock,
-            try_cone_before_sym: AtomicBool::new(true),
         });
         let data = UdpHolePunchConnectorData::new(parts);
         Self {

@@ -925,7 +925,7 @@ where
             self.common.runtime.socket_context(),
         );
         udp_array.start().await?;
-        udp_array.add_intreast_tid(transaction_id);
+        udp_array.add_interest_tid(transaction_id);
 
         let punch_packet =
             new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();

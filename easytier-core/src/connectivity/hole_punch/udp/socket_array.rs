@@ -173,17 +173,9 @@ where
         self.interest_tids.insert(tid);
     }
 
-    pub fn add_intreast_tid(&self, tid: u32) {
-        self.add_interest_tid(tid);
-    }
-
     pub fn remove_interest_tid(&self, tid: u32) {
         self.interest_tids.remove(&tid);
         self.tid_to_socket.remove(&tid);
-    }
-
-    pub fn remove_intreast_tid(&self, tid: u32) {
-        self.remove_interest_tid(tid);
     }
 }
 

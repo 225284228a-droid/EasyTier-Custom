@@ -1536,32 +1536,14 @@ impl PeerManagerCore {
         route.withdraw_self_conn_info().await
     }
 
-    pub fn mark_recent_traffic(&self, dst_peer_id: PeerId) {
-        let flags = self.context.flags();
-        self.recent_traffic
-            .mark(dst_peer_id, flags.disable_p2p, flags.lazy_p2p, |peer_id| {
-                self.has_directly_connected_conn(peer_id)
-            });
-    }
-
     pub fn has_recent_traffic(&self, peer_id: PeerId, now: Instant) -> bool {
         self.recent_traffic.has(peer_id, now, |peer_id| {
             self.has_directly_connected_conn(peer_id)
         })
     }
 
-    pub fn clear_recent_traffic(&self, peer_id: PeerId) {
-        self.recent_traffic.clear(peer_id);
-    }
-
     pub fn p2p_demand_notify(&self) -> Arc<ExternalTaskSignal> {
         self.recent_traffic.p2p_demand_notify()
-    }
-
-    pub fn gc_recent_traffic(&self) {
-        self.recent_traffic.gc(Instant::now(), |peer_id| {
-            self.has_directly_connected_conn(peer_id)
-        });
     }
 
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
@@ -1570,17 +1552,6 @@ impl PeerManagerCore {
         } else {
             self.foreign_network_client.get_peer_map().has_peer(peer_id)
         }
-    }
-
-    pub fn has_disguised_conn(&self, peer_id: PeerId) -> bool {
-        self.peers
-            .get_peer_by_id(peer_id)
-            .or_else(|| {
-                self.foreign_network_client
-                    .get_peer_map()
-                    .get_peer_by_id(peer_id)
-            })
-            .is_some_and(|peer| peer.has_disguised_conn())
     }
 
     pub(crate) fn has_connection_at_least_as_preferred(
@@ -1656,21 +1627,6 @@ impl PeerManagerCore {
         self.peer_connection_admission
             .add_tunnel_as_server(tunnel, is_directly_connected)
             .await
-    }
-
-    /// Accepts an inbound connection and records that the remote peer dialed
-    /// us. Inbound connections are never treated as redundant automatic P2P
-    /// transports because dropping them only makes the remote side reconnect.
-    pub async fn add_tunnel_as_server_with_source(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-        conn_source: PeerConnSource,
-    ) -> Result<(), Error> {
-        self.peer_connection_admission
-            .add_tunnel_as_server_with_source(tunnel, is_directly_connected, conn_source)
-            .await
-            .map(|_| ())
     }
 
     pub(crate) async fn add_attached_ring_tunnel_as_server(
@@ -2144,21 +2100,6 @@ impl PeerConnectionAdmission {
         )
         .await
         .map(|_| ())
-    }
-
-    pub async fn add_tunnel_as_server_with_source(
-        &self,
-        tunnel: Box<dyn Tunnel>,
-        is_directly_connected: bool,
-        conn_source: PeerConnSource,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        self.add_tunnel_as_server_with_origin(
-            tunnel,
-            is_directly_connected,
-            PeerConnectionOrigin::Network,
-            conn_source,
-        )
-        .await
     }
 
     async fn add_tunnel_as_server_with_origin(

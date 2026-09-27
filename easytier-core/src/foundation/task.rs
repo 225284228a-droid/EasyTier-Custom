@@ -73,6 +73,13 @@ pub trait PeerTaskLauncher: Send + Sync + Clone + 'static {
         item: Self::CollectPeerItem,
     ) -> JoinHandle<Result<Self::TaskRet, Error>>;
 
+    /// Short name of the task kind, used in failure logs. Per-peer tasks are
+    /// shared by several engines (direct connector, hole punching, ...), so
+    /// the message text itself stays generic.
+    fn task_kind(&self) -> &'static str {
+        "peer task"
+    }
+
     async fn all_task_done(&self) {}
 
     fn loop_interval_ms(&self) -> u64 {
@@ -173,15 +180,17 @@ where
                         Ok(Err(task_ret)) => {
                             tracing::error!(
                                 target: "easytier_core::peers::peer_task",
+                                task_kind = launcher.task_kind(),
                                 ?task_ret,
-                                "hole punching task failed"
+                                "per-peer task failed"
                             );
                         }
                         Err(e) => {
                             tracing::error!(
                                 target: "easytier_core::peers::peer_task",
+                                task_kind = launcher.task_kind(),
                                 ?e,
-                                "hole punching task aborted"
+                                "per-peer task aborted"
                             );
                         }
                     }

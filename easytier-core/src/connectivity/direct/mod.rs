@@ -347,6 +347,10 @@ where
     type CollectPeerItem = PeerId;
     type TaskRet = ();
 
+    fn task_kind(&self) -> &'static str {
+        "direct connect"
+    }
+
     async fn collect_peers_need_task(&self) -> Vec<PeerId> {
         let data = &self.0;
         data.peer_blacklist.cleanup();

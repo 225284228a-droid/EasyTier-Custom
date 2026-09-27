@@ -298,17 +298,6 @@ where
         }
         self.sockets.preferred_ipv6_source(ip, context).await
     }
-
-    async fn preferred_foreign_ipv6_source(
-        &self,
-        ip: Ipv6Addr,
-        context: SocketContext,
-    ) -> Option<PreferredIpv6Source> {
-        if !valid_public_ipv6_candidate(ip) {
-            return None;
-        }
-        self.sockets.preferred_ipv6_source(ip, context).await
-    }
 }
 
 fn valid_public_ipv6_candidate(ip: Ipv6Addr) -> bool {

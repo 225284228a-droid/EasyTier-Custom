@@ -232,6 +232,11 @@ fn configure_runtime_core_host_adapters(
     }
     adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
     adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory));
+    // Two separately constructed but currently identical upgraders: the
+    // `server_protocol` slot serves new inbound connections, while
+    // `server_protocol_for_connected` serves upgrades of already-connected
+    // tunnels. Keep them as separate Arcs so the two roles can diverge later
+    // without touching every call site.
     adapters.server_protocol = Some(runtime_server_protocol_upgrader(global_ctx.clone()));
     adapters.server_protocol_for_connected =
         Some(runtime_server_protocol_upgrader(global_ctx.clone()));

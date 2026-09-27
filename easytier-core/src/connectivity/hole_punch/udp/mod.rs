@@ -13,7 +13,7 @@ pub(crate) use binding::{CoreUdpHolePunchService, UdpHolePunchProtocols};
 pub(crate) use client::{
     UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpSymToConePunchClient, punch_cone_to_cone,
 };
-pub(crate) use common::{BLACKLIST_TIMEOUT_SEC, UdpNatType, UdpPunchClientMethod};
+pub(crate) use common::{UdpNatType, UdpPunchClientMethod};
 pub(crate) use connector::{UdpHolePunchConnector, UdpSymPunchLock};
 pub(crate) use punch_listener::{
     MAX_PUBLIC_UDP_HOLE_PUNCH_LISTENERS, ReusableUdpPunchListener, can_reuse_port_mapping_listener,

@@ -1,7 +1,5 @@
 use crate::{config::PeerId, proto::common::NatType};
 
-pub const BLACKLIST_TIMEOUT_SEC: u64 = 3600;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UdpPunchClientMethod {
     None,

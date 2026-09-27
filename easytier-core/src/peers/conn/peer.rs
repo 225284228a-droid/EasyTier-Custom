@@ -88,23 +88,13 @@ fn preferred_conn_sort_key(
     (unverified, protocol_rank, latency)
 }
 
+#[cfg(test)]
 fn disguised_tunnel_scheme(tunnel_type: &str) -> Option<&'static str> {
     match tunnel_type.rsplit('-').next() {
         Some("wss") => Some("wss"),
         Some("http3") => Some("http3"),
         _ => None,
     }
-}
-
-/// The disguised transport of a connection, if it uses one. Tunnel types may
-/// carry a resolution prefix (`http-txt-wss`), so only the last segment counts.
-fn conn_disguised_scheme(conn: &PeerConn) -> Option<&'static str> {
-    let tunnel_type = conn.get_conn_info().tunnel.as_ref()?.tunnel_type.clone();
-    disguised_tunnel_scheme(&tunnel_type)
-}
-
-fn conn_is_disguised(conn: &PeerConn) -> bool {
-    conn_disguised_scheme(conn).is_some()
 }
 
 fn use_disguise_preference(flags: &FlagsInConfig, negotiated: Option<bool>) -> bool {
@@ -511,12 +501,6 @@ impl Peer {
 
     pub fn has_live_conns(&self) -> bool {
         self.conns.iter().any(|entry| !entry.value().is_closed())
-    }
-
-    pub fn has_disguised_conn(&self) -> bool {
-        self.conns
-            .iter()
-            .any(|entry| !entry.value().is_closed() && conn_is_disguised(entry.value()))
     }
 
     pub(crate) fn has_connection_at_least_as_preferred(

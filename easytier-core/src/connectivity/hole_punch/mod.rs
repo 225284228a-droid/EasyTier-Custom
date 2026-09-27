@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 
 use crate::proto::rpc_types::{controller::BaseController, handler::Handler};
@@ -8,6 +10,11 @@ pub(crate) mod policy;
 pub mod port_mapping;
 pub(crate) mod tcp;
 pub(crate) mod udp;
+
+/// How long a peer stays blacklisted after a signaling failure that rules out
+/// further hole-punch attempts (e.g. an invalid service key). Shared by the
+/// TCP and UDP engines.
+pub(crate) const PEER_BLACKLIST_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// Registration seam for hole-punch RPC services.
 ///
