@@ -280,6 +280,34 @@ pub struct CoreServerProtocolConfig {
     pub faketcp: bool,
 }
 
+/// The transport kind each core scheme needs, used to produce the
+/// "wrong transport" error when a scheme reaches the wrong upgrade entry
+/// point on the server side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemeTransport {
+    Tcp,
+    Udp,
+    ByteStream,
+}
+
+fn core_scheme_transport(scheme: &str) -> Option<SchemeTransport> {
+    match scheme {
+        "tcp" | "faketcp" => Some(SchemeTransport::Tcp),
+        "udp" | "wg" | "quic" => Some(SchemeTransport::Udp),
+        "ring" | "unix" => Some(SchemeTransport::ByteStream),
+        _ => None,
+    }
+}
+
+fn transport_mismatch_error(scheme: &str, expected: SchemeTransport) -> anyhow::Error {
+    let expected = match expected {
+        SchemeTransport::Tcp => "a TCP transport",
+        SchemeTransport::Udp => "a UDP session",
+        SchemeTransport::ByteStream => "a byte stream",
+    };
+    anyhow::anyhow!("{scheme} protocol requires {expected}")
+}
+
 /// Owns portable server protocol dispatch and delegates only protocol engines
 /// that are not available in core.
 pub struct CoreServerProtocolUpgrader<TcpSocket> {
@@ -358,13 +386,10 @@ where
             "tcp" | "faketcp" => Ok(ServerProtocolUpgrade::Tunnel(
                 upgrade_accepted_tcp(socket, local_url, self.config).await?,
             )),
-            "udp" | "wg" | "quic" => {
-                anyhow::bail!("{} protocol requires a UDP session", local_url.scheme())
-            }
-            "ring" | "unix" => {
-                anyhow::bail!("{} protocol requires a byte stream", local_url.scheme())
-            }
-            scheme => self.external(scheme)?.upgrade_tcp(socket, local_url).await,
+            scheme => match core_scheme_transport(scheme) {
+                Some(expected) => Err(transport_mismatch_error(scheme, expected)),
+                None => self.external(scheme)?.upgrade_tcp(socket, local_url).await,
+            },
         }
     }
 
@@ -378,17 +403,14 @@ where
             "udp" => Ok(ServerProtocolUpgrade::Tunnel(upgrade_accepted_udp(
                 session, &local_url,
             )?)),
-            "tcp" | "faketcp" => {
-                anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
-            }
-            "ring" | "unix" => {
-                anyhow::bail!("{} protocol requires a byte stream", local_url.scheme())
-            }
-            scheme => {
-                self.external(scheme)?
-                    .upgrade_udp(session, local_url, admission)
-                    .await
-            }
+            scheme => match core_scheme_transport(scheme) {
+                Some(expected) => Err(transport_mismatch_error(scheme, expected)),
+                None => {
+                    self.external(scheme)?
+                        .upgrade_udp(session, local_url, admission)
+                        .await
+                }
+            },
         }
     }
 
@@ -405,18 +427,15 @@ where
             "unix" if self.config.unix => Ok(ServerProtocolUpgrade::Tunnel(
                 raw::upgrade_accepted_byte_stream(socket, local_url, remote_url)?,
             )),
-            "tcp" | "faketcp" => {
-                anyhow::bail!("{} protocol requires a TCP transport", local_url.scheme())
-            }
-            "udp" | "wg" | "quic" => {
-                anyhow::bail!("{} protocol requires a UDP session", local_url.scheme())
-            }
             "unix" => anyhow::bail!("unsupported server protocol upgrader: unix"),
-            scheme => {
-                self.external(scheme)?
-                    .upgrade_byte_stream(socket, local_url, remote_url)
-                    .await
-            }
+            scheme => match core_scheme_transport(scheme) {
+                Some(expected) => Err(transport_mismatch_error(scheme, expected)),
+                None => {
+                    self.external(scheme)?
+                        .upgrade_byte_stream(socket, local_url, remote_url)
+                        .await
+                }
+            },
         }
     }
 }

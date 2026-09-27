@@ -1,3 +1,4 @@
+use crate::config::P2pPolicyFlags;
 use crate::proto::common::PeerFeatureFlag;
 
 #[derive(Debug)]
@@ -70,6 +71,38 @@ pub fn should_background_p2p_with_peer(
 /// strictness from the disabled node's point of view.
 pub fn should_accept_inbound_punch(local_disable_p2p: bool, caller_need_p2p: bool) -> bool {
     !local_disable_p2p || caller_need_p2p
+}
+
+/// Shared per-peer admission gate for the automatic P2P engines (direct
+/// connector, TCP and UDP hole punching). A peer qualifies when background
+/// P2P is allowed unconditionally, or when on-demand P2P is allowed and the
+/// peer either has recent traffic or still lacks an acceptable direct
+/// connection (`already_connected` = a connection satisfying the engine's
+/// transport policy exists).
+pub fn p2p_engine_gate(
+    feature_flag: Option<&PeerFeatureFlag>,
+    allow_public_server: bool,
+    policy: &P2pPolicyFlags,
+    has_recent_traffic: bool,
+    has_direct_connection: bool,
+    already_connected: bool,
+) -> bool {
+    let static_allowed = should_background_p2p_with_peer(
+        feature_flag,
+        allow_public_server,
+        policy.lazy_p2p,
+        policy.disable_p2p,
+        policy.need_p2p,
+    );
+    let dynamic_allowed = should_try_p2p_with_peer(
+        feature_flag,
+        allow_public_server,
+        policy.disable_p2p,
+        policy.need_p2p,
+    );
+    static_allowed
+        || (dynamic_allowed
+            && (has_recent_traffic || (has_direct_connection && !already_connected)))
 }
 
 #[cfg(test)]
@@ -229,5 +262,23 @@ mod tests {
         // still serves peers that explicitly declare need_p2p.
         assert!(!should_accept_inbound_punch(true, false));
         assert!(should_accept_inbound_punch(true, true));
+    }
+
+    #[test]
+    fn engine_gate_admits_background_or_on_demand_peers() {
+        let mut policy = P2pPolicyFlags::default();
+        // Without lazy P2P the background allowance admits unconditionally,
+        // even when a policy-satisfying connection already exists (the
+        // caller decides what to do with that combination).
+        assert!(p2p_engine_gate(None, false, &policy, false, false, true));
+
+        // lazy_p2p removes the background allowance...
+        policy.lazy_p2p = true;
+        assert!(!p2p_engine_gate(None, false, &policy, false, false, true));
+        // ...but on-demand P2P still admits recent traffic, and a peer with
+        // a direct connection only while the policy is not satisfied yet.
+        assert!(p2p_engine_gate(None, false, &policy, true, false, true));
+        assert!(p2p_engine_gate(None, false, &policy, false, true, false));
+        assert!(!p2p_engine_gate(None, false, &policy, false, true, true));
     }
 }

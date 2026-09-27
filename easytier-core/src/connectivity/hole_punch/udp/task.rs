@@ -4,7 +4,7 @@ use crate::{
 };
 
 use super::{
-    super::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
+    super::policy::p2p_engine_gate,
     UdpNatType, UdpPunchScheme,
 };
 
@@ -62,21 +62,14 @@ where
             } else {
                 candidate.udp_satisfied
             };
-            let static_allowed = should_background_p2p_with_peer(
+            if !p2p_engine_gate(
                 candidate.feature_flag.as_ref(),
                 false,
-                policy.lazy_p2p,
-                policy.disable_p2p,
-                policy.need_p2p,
-            );
-            let dynamic_allowed = should_try_p2p_with_peer(
-                candidate.feature_flag.as_ref(),
-                false,
-                policy.disable_p2p,
-                policy.need_p2p,
-            ) && (candidate.has_recent_traffic
-                || (candidate.has_direct_connection && !already_connected));
-            if !static_allowed && !dynamic_allowed {
+                &policy,
+                candidate.has_recent_traffic,
+                candidate.has_direct_connection,
+                already_connected,
+            ) {
                 return None;
             }
 

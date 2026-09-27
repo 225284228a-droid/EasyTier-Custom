@@ -20,13 +20,10 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::{
     config::{P2pPolicyFlags, PeerDisguiseP2pFlags, PeerId},
     connectivity::{
-        hole_punch::{
-            HolePunchRpcRegistry, HolePunchTunnelSink, PEER_BLACKLIST_TIMEOUT,
-            policy::{
-                BackOff, should_accept_inbound_punch, should_background_p2p_with_peer,
-                should_try_p2p_with_peer,
+            hole_punch::{
+                HolePunchRpcRegistry, HolePunchTunnelSink, PEER_BLACKLIST_TIMEOUT,
+                policy::{BackOff, p2p_engine_gate, should_accept_inbound_punch},
             },
-        },
         protocol::{ClientProtocolUpgrader, ServerProtocolUpgrade, ServerProtocolUpgrader},
         stun::StunInfoProvider,
         transport::ConnectedTransport,
@@ -1402,21 +1399,14 @@ where
             } else {
                 candidate.tcp_satisfied
             };
-            let static_allowed = should_background_p2p_with_peer(
+            if !p2p_engine_gate(
                 candidate.feature_flag.as_ref(),
                 false,
-                policy.lazy_p2p,
-                policy.disable_p2p,
-                policy.need_p2p,
-            );
-            let dynamic_allowed = should_try_p2p_with_peer(
-                candidate.feature_flag.as_ref(),
-                false,
-                policy.disable_p2p,
-                policy.need_p2p,
-            ) && (candidate.has_recent_traffic
-                || (candidate.has_direct_connection && !already_connected));
-            if !static_allowed && !dynamic_allowed {
+                &policy,
+                candidate.has_recent_traffic,
+                candidate.has_direct_connection,
+                already_connected,
+            ) {
                 continue;
             }
 

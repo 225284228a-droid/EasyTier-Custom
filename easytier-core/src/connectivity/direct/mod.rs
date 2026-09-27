@@ -15,7 +15,8 @@ use url::{Host, Url};
 
 use crate::{
     config::{PeerDisguiseP2pFlags, PeerId, p2p_protocol_rank, preferred_disguised_scheme},
-    connectivity::hole_punch::policy::{should_background_p2p_with_peer, should_try_p2p_with_peer},
+    connectivity::hole_punch::policy::p2p_engine_gate,
+    connectivity::is_public_ipv6_candidate,
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
         LocalListenerUrls, NoLocalListeners,
@@ -116,18 +117,6 @@ impl DirectTransport {
     fn supports_interface_bind(self) -> bool {
         !matches!(self, Self::Tcp(TcpSocketPurpose::FakeTcp))
     }
-}
-
-/// Priority of one candidate listener for an automatic P2P connect attempt.
-/// Disguised transports win while they are in use; among them the one matching
-/// the configured P2P transport preference (udp -> http3, tcp -> wss) wins.
-/// Raw transports fall back to the configured default protocol, then UDP.
-fn direct_listener_sort_key(
-    scheme: &str,
-    default_protocol: &str,
-    use_disguise_protocols: bool,
-) -> u8 {
-    u8::MAX - p2p_protocol_rank(default_protocol, use_disguise_protocols, scheme)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,21 +302,16 @@ struct DirectConnectorLauncher<H>(Arc<DirectConnectorData<H>>)
 where
     H: DirectConnectorHost;
 
+/// A peer is collected for a direct-connect attempt unless it is ourselves,
+/// blacklisted, already satisfies the negotiated transport policy, or is
+/// excluded by the shared P2P engine gate.
 fn should_collect_direct_peer(
     is_local_peer: bool,
     blacklisted: bool,
-    static_allowed: bool,
-    dynamic_p2p_allowed: bool,
-    has_recent_traffic: bool,
-    has_direct_connection: bool,
     connection_satisfies_policy: bool,
+    p2p_allowed: bool,
 ) -> bool {
-    !is_local_peer
-        && !blacklisted
-        && !connection_satisfies_policy
-        && (static_allowed
-            || (dynamic_p2p_allowed
-                && (has_recent_traffic || (has_direct_connection && !connection_satisfies_policy))))
+    !is_local_peer && !blacklisted && !connection_satisfies_policy && p2p_allowed
 }
 
 impl<H> Clone for DirectConnectorLauncher<H>
@@ -365,26 +349,20 @@ where
             .filter(|route| {
                 let peer_flags: Option<PeerDisguiseP2pFlags> =
                     route.feature_flag.as_ref().map(Into::into);
-                let static_allowed = should_background_p2p_with_peer(
-                    route.feature_flag.as_ref(),
-                    data.options.allow_public_server,
-                    policy.lazy_p2p,
-                    policy.disable_p2p,
-                    policy.need_p2p,
-                );
+                let satisfied =
+                    data.connection_satisfies_policy(route.peer_id, peer_flags.as_ref());
                 should_collect_direct_peer(
                     route.peer_id == my_peer_id,
                     data.peer_blacklist.contains(&route.peer_id),
-                    static_allowed,
-                    should_try_p2p_with_peer(
+                    satisfied,
+                    p2p_engine_gate(
                         route.feature_flag.as_ref(),
                         data.options.allow_public_server,
-                        policy.disable_p2p,
-                        policy.need_p2p,
+                        &policy,
+                        data.peer_manager.has_recent_traffic(route.peer_id, now),
+                        data.peer_manager.has_directly_connected_conn(route.peer_id),
+                        satisfied,
                     ),
-                    data.peer_manager.has_recent_traffic(route.peer_id, now),
-                    data.peer_manager.has_directly_connected_conn(route.peer_id),
-                    data.connection_satisfies_policy(route.peer_id, peer_flags.as_ref()),
                 )
             })
             .map(|route| route.peer_id)
@@ -565,11 +543,13 @@ where
             anyhow::bail!("peer {dst_peer_id} has no valid listener");
         }
 
+        // Try listeners in protocol preference order: a lower p2p_protocol_rank
+        // is preferred (disguised transports first, then the default protocol).
         available_listeners.sort_by_key(|listener| {
-            direct_listener_sort_key(
-                listener.scheme(),
+            p2p_protocol_rank(
                 &self.options.default_protocol,
                 use_disguise_protocols,
+                listener.scheme(),
             )
         });
         let mut seen = HashSet::new();
@@ -902,13 +882,7 @@ where
             .remote_send_udp_hole_punch_packet(dst_peer_id, vec![connector_addr], None, url)
             .await;
         let remote_addr = resolve_literal_url(url, IpVersion::V4)?;
-        let connected = udp::connect_with_socket(
-            self.host.clone(),
-            socket,
-            remote_addr,
-            url.scheme() == "http3",
-        )
-        .await?;
+        let connected = udp::connect_with_socket(self.host.clone(), socket, remote_addr, url).await?;
         let tunnel = self
             .protocol
             .upgrade_client(ConnectedTransport::Udp(connected), url.clone())
@@ -951,13 +925,7 @@ where
                 .await;
         }
         let remote_addr = resolve_literal_url(url, IpVersion::V6)?;
-        let connected = udp::connect_with_socket(
-            self.host.clone(),
-            socket,
-            remote_addr,
-            url.scheme() == "http3",
-        )
-        .await?;
+        let connected = udp::connect_with_socket(self.host.clone(), socket, remote_addr, url).await?;
         let tunnel = self
             .protocol
             .upgrade_client(ConnectedTransport::Udp(connected), url.clone())
@@ -1000,12 +968,7 @@ where
 
     async fn is_usable_public_ipv6(&self, ip: &Ipv6Addr) -> bool {
         !self.peer_manager.is_easytier_managed_ipv6(ip).await
-            && (self.options.testing
-                || (!ip.is_loopback()
-                    && !ip.is_unspecified()
-                    && !ip.is_unique_local()
-                    && !ip.is_unicast_link_local()
-                    && !ip.is_multicast()))
+            && (self.options.testing || is_public_ipv6_candidate(*ip))
     }
 
     async fn remote_send_udp_hole_punch_packet(
@@ -1411,6 +1374,7 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::P2pPolicyFlags;
 
     #[test]
     fn http3_aliases_preserve_mapped_ports_and_disappear_without_ready_udp() {
@@ -1484,36 +1448,32 @@ mod tests {
     #[test]
     fn p2p_transport_preference_orders_disguised_listeners() {
         // "udp" prefers HTTP3 over WSS, and both disguised transports win over
-        // the raw ones.
+        // the raw ones. Lower rank means tried earlier.
         assert!(
-            direct_listener_sort_key("http3", "udp", true)
-                > direct_listener_sort_key("wss", "udp", true)
+            p2p_protocol_rank("udp", true, "http3")
+                < p2p_protocol_rank("udp", true, "wss")
         );
         assert!(
-            direct_listener_sort_key("wss", "udp", true)
-                > direct_listener_sort_key("udp", "udp", true)
+            p2p_protocol_rank("udp", true, "wss") < p2p_protocol_rank("udp", true, "udp")
         );
         // "tcp" prefers WSS over HTTP3.
         assert!(
-            direct_listener_sort_key("wss", "tcp", true)
-                > direct_listener_sort_key("http3", "tcp", true)
+            p2p_protocol_rank("tcp", true, "wss") < p2p_protocol_rank("tcp", true, "http3")
         );
         // Raw transports keep following the configured preference.
         assert!(
-            direct_listener_sort_key("udp", "udp", false)
-                > direct_listener_sort_key("tcp", "udp", false)
+            p2p_protocol_rank("udp", false, "udp") < p2p_protocol_rank("udp", false, "tcp")
         );
         assert!(
-            direct_listener_sort_key("tcp", "tcp", false)
-                > direct_listener_sort_key("udp", "tcp", false)
+            p2p_protocol_rank("tcp", false, "tcp") < p2p_protocol_rank("tcp", false, "udp")
         );
     }
 
     #[test]
     fn unknown_p2p_transport_preference_keeps_disguised_listeners_equal() {
         assert_eq!(
-            direct_listener_sort_key("wss", "wg", true),
-            direct_listener_sort_key("http3", "wg", true)
+            p2p_protocol_rank("wg", true, "wss"),
+            p2p_protocol_rank("wg", true, "http3")
         );
     }
 
@@ -1556,23 +1516,34 @@ mod tests {
 
     #[test]
     fn disguise_preference_retries_with_an_existing_raw_direct_connection() {
-        assert!(should_collect_direct_peer(
-            false, false, false, true, false, true, false
-        ));
-        assert!(!should_collect_direct_peer(
-            false, false, false, true, false, true, true
-        ));
-        assert!(!should_collect_direct_peer(
-            false, false, false, true, false, false, false
-        ));
-        assert!(should_collect_direct_peer(
-            false, false, false, true, true, false, false
-        ));
-        assert!(!should_collect_direct_peer(
-            true, false, true, true, true, true, false
-        ));
-        assert!(!should_collect_direct_peer(
-            false, true, true, true, true, true, false
-        ));
+        // lazy_p2p keeps the background (static) allowance off, so only the
+        // on-demand branch of the shared engine gate can admit the peer.
+        let policy = P2pPolicyFlags {
+            lazy_p2p: true,
+            ..Default::default()
+        };
+        let allowed = |has_recent_traffic: bool,
+                       has_direct_connection: bool,
+                       satisfied: bool| {
+            should_collect_direct_peer(
+                false,
+                false,
+                satisfied,
+                p2p_engine_gate(
+                    None,
+                    false,
+                    &policy,
+                    has_recent_traffic,
+                    has_direct_connection,
+                    satisfied,
+                ),
+            )
+        };
+        assert!(allowed(false, true, false));
+        assert!(!allowed(false, true, true));
+        assert!(!allowed(false, false, false));
+        assert!(allowed(true, false, false));
+        assert!(!should_collect_direct_peer(true, false, false, true));
+        assert!(!should_collect_direct_peer(false, true, false, true));
     }
 }

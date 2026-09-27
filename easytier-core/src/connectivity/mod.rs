@@ -1,6 +1,7 @@
 //! Portable connection orchestration.
 
 use std::fmt::Debug;
+use std::net::Ipv6Addr;
 
 use url::Url;
 
@@ -15,6 +16,18 @@ pub mod manual;
 pub mod protocol;
 pub mod stun;
 pub mod transport;
+
+/// Whether an IPv6 address is a usable public dialing/listening candidate:
+/// it excludes loopback, unspecified, unique-local, link-local and multicast
+/// ranges. Callers layer their own extra conditions (managed addresses,
+/// testing overrides) on top of this base predicate.
+pub(crate) fn is_public_ipv6_candidate(ip: Ipv6Addr) -> bool {
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || ip.is_multicast())
+}
 
 /// Supplies the URLs of the instance's currently running listeners.
 ///

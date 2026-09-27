@@ -1547,11 +1547,7 @@ impl PeerManagerCore {
     }
 
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
-        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
-            peer.has_directly_connected_conn()
-        } else {
-            self.foreign_network_client.get_peer_map().has_peer(peer_id)
-        }
+        has_directly_connected_conn(&self.peers, &self.foreign_network_client, peer_id)
     }
 
     pub(crate) fn has_connection_at_least_as_preferred(
@@ -1955,6 +1951,22 @@ pub(crate) async fn close_peer_conn(
         .await;
     tracing::info!("close_peer_conn in foreign network manager done: {:?}", ret);
     ret
+}
+
+/// Whether the peer has a non-hole-punched direct connection, either in the
+/// local peer map or (for managed foreign peers) in the foreign network
+/// client's map. Shared by the recent-traffic tracker, the outbound packet
+/// router and the `PeerManagerCore` facade.
+pub(crate) fn has_directly_connected_conn(
+    peers: &PeerMap,
+    foreign_network_client: &ForeignNetworkClient,
+    peer_id: PeerId,
+) -> bool {
+    if let Some(peer) = peers.get_peer_by_id(peer_id) {
+        peer.has_directly_connected_conn()
+    } else {
+        foreign_network_client.get_peer_map().has_peer(peer_id)
+    }
 }
 
 pub(crate) struct PeerConnectionAdmission {
@@ -2410,11 +2422,7 @@ impl PeerMaintenanceTasks {
         tasks.lock().await.spawn(async move {
             loop {
                 recent_traffic.gc(Instant::now(), |peer_id| {
-                    if let Some(peer) = peers.get_peer_by_id(peer_id) {
-                        peer.has_directly_connected_conn()
-                    } else {
-                        foreign_network_client.get_peer_map().has_peer(peer_id)
-                    }
+                    has_directly_connected_conn(&peers, &foreign_network_client, peer_id)
                 });
                 crate::foundation::time::sleep(std::time::Duration::from_secs(30)).await;
             }
@@ -2577,11 +2585,7 @@ impl PeerOutboundPacketRouter {
     }
 
     fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
-        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
-            peer.has_directly_connected_conn()
-        } else {
-            self.foreign_network_client.get_peer_map().has_peer(peer_id)
-        }
+        has_directly_connected_conn(&self.peers, &self.foreign_network_client, peer_id)
     }
 
     fn mark_recent_traffic_with_policy(
