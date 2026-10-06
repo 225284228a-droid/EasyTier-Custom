@@ -3,8 +3,10 @@ import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } fr
 import { useI18n } from 'vue-i18n'
 import { Utils } from 'easytier-frontend-lib'
 import ApiClient from '../modules/api'
-import { buildTopology, collectTopologySnapshotsWithRetry, TopologySnapshotCache } from '../modules/networkTopology'
+import { buildTopology, collectTopologySnapshotsWithRetry, isTopologyAuthError, TopologySnapshotCache } from '../modules/networkTopology'
 import { TrafficTracker } from '../modules/topologyTraffic'
+import { TopologyAvailability } from '../modules/topologyAvailability'
+import { PersistentTopologyArchive } from '../modules/dashboardPersistence'
 
 const NetworkTopologyGlobe = defineAsyncComponent(() => import('./NetworkTopologyGlobe.vue'))
 const props = defineProps<{ api?: ApiClient }>()
@@ -16,13 +18,51 @@ const topology = ref(buildTopology([], []))
 const trafficTracker = new TrafficTracker()
 const snapshotCache = new TopologySnapshotCache()
 const onlineDeviceCount = computed(() => machines.value.length)
+const persistenceKey = computed(() => props.api?.persistenceScope ?? '')
+const availability = new TopologyAvailability(performance.now())
+let archive: PersistentTopologyArchive | undefined
+let authorizedDevices: Utils.DeviceInfo[] = []
 let mounted = false
 let timer: ReturnType<typeof setTimeout> | undefined
+let warningTimer: ReturnType<typeof setTimeout> | undefined
 let expiryTimer: ReturnType<typeof setTimeout> | undefined
 let expiryDeadline: number | undefined
 let lastFreshMachines = new Set<string>()
 let generation = 0
 let requestController: AbortController | undefined
+
+function updateWarning() {
+  clearTimeout(warningTimer)
+  const time = performance.now()
+  error.value = availability.listUnavailable(time) ? t('web.dashboard.load_failed')
+    : availability.incomplete(time) ? t('web.dashboard.partial_failure') : ''
+  const deadline = availability.nextDeadline(time)
+  if (mounted && deadline !== undefined)
+    warningTimer = setTimeout(updateWarning, Math.max(1, Math.ceil(deadline - time)))
+}
+
+function bufferedTopology(time: number, sampleTraffic: boolean) {
+  const cached = snapshotCache.read(time, lastFreshMachines)
+  const liveMachines = new Set(cached.snapshots.map(snapshot => snapshot.device.machine_id))
+  const fallback = archive?.read(authorizedDevices)
+    .filter(snapshot => !liveMachines.has(snapshot.device.machine_id)) ?? []
+  const nextTopology = buildTopology(cached.devices, [...cached.snapshots, ...fallback],
+    sampleTraffic ? trafficTracker : undefined, time)
+  if (!sampleTraffic)
+    trafficTracker.applyCachedRates(nextTopology.links, time)
+  machines.value = cached.devices
+  topology.value = nextTopology
+}
+
+function clearPrivateData() {
+  archive?.clear()
+  authorizedDevices = []
+  lastFreshMachines.clear()
+  snapshotCache.clear()
+  trafficTracker.clear()
+  machines.value = []
+  topology.value = buildTopology([], [])
+}
 
 function clearExpiryTimer() {
   clearTimeout(expiryTimer)
@@ -45,11 +85,7 @@ function scheduleExpiry() {
     if (!mounted || expiryGeneration !== generation)
       return
     const time = performance.now()
-    const cached = snapshotCache.read(time, lastFreshMachines)
-    const nextTopology = buildTopology(cached.devices, cached.snapshots)
-    trafficTracker.applyCachedRates(nextTopology.links, time)
-    machines.value = cached.devices
-    topology.value = nextTopology
+    bufferedTopology(time, false)
     scheduleExpiry()
   }, Math.max(1, Math.ceil(deadline - performance.now())))
 }
@@ -59,29 +95,41 @@ async function loadTopology() {
     return
   const api = props.api
   const requestGeneration = generation
-  const isCurrent = () => mounted && requestGeneration === generation && api === props.api
   const controller = new AbortController()
+  const isCurrent = () => mounted && requestGeneration === generation && api === props.api
+    && !controller.signal.aborted
   requestController = controller
   const requestOptions = { timeout: 8_000, signal: controller.signal }
   clearTimeout(timer)
   loading.value = true
   try {
     let devices: Utils.DeviceInfo[] = []
-    let listFailed = false
     try {
       devices = (await api.list_machines(requestOptions)).map(Utils.buildDeviceInfo)
       if (!isCurrent())
         return
       snapshotCache.updateDevices(devices, performance.now())
+      authorizedDevices = devices
+      availability.updateDevices(devices, performance.now())
+      archive?.update(devices, [])
+      bufferedTopology(performance.now(), false)
+      updateWarning()
     } catch (cause) {
       if (!isCurrent())
         return
-      listFailed = true
+      if (isTopologyAuthError(cause)) {
+        clearPrivateData()
+        availability.clear(performance.now())
+        updateWarning()
+        controller.abort()
+        return
+      }
+      availability.failListing()
+      updateWarning()
       console.warn('Failed to list topology machines', cause)
     }
     const pending = devices.filter(device => device.running_network_count > 0)
     const freshMachines = new Set<string>()
-    let failed = false
     // Bound concurrent remote RPC calls, and collect all networks per machine.
     await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
       while (pending.length && isCurrent()) {
@@ -94,17 +142,28 @@ async function loadTopology() {
           )
           if (isCurrent()) {
             const collectedAt = performance.now()
-            snapshotCache.updateSnapshots(
+            const accepted = snapshotCache.updateSnapshots(
               device,
               snapshots.map(snapshot => ({ ...snapshot, collectedAt })),
               collectedAt,
             )
-            freshMachines.add(device.machine_id)
+            if (accepted) {
+              freshMachines.add(device.machine_id)
+              availability.report(device.machine_id, collectedAt)
+              archive?.update(authorizedDevices, snapshots)
+              updateWarning()
+            }
           }
         } catch (cause) {
           if (!isCurrent())
             return
-          failed = true
+          if (isTopologyAuthError(cause)) {
+            clearPrivateData()
+            availability.clear(performance.now())
+            updateWarning()
+            controller.abort()
+            return
+          }
           console.warn(`Failed to collect topology for ${device.hostname}`, cause)
         }
       }
@@ -112,18 +171,16 @@ async function loadTopology() {
     if (isCurrent()) {
       const time = performance.now()
       lastFreshMachines = new Set(freshMachines)
-      const cached = snapshotCache.read(time, freshMachines)
-      machines.value = cached.devices
-      topology.value = buildTopology(cached.devices, cached.snapshots, trafficTracker, time)
-      error.value = listFailed
-        ? t('web.dashboard.load_failed')
-        : failed || cached.snapshots.some(snapshot => snapshot.stale) ? t('web.dashboard.partial_failure') : ''
+      bufferedTopology(time, true)
+      updateWarning()
       scheduleExpiry()
     }
   } catch (cause) {
     console.error('Failed to load dashboard topology', cause)
-    if (isCurrent())
-      error.value = t('web.dashboard.load_failed')
+    if (isCurrent()) {
+      availability.failListing()
+      updateWarning()
+    }
   } finally {
     if (requestController === controller)
       requestController = undefined
@@ -137,7 +194,11 @@ watch(() => props.api, () => {
   generation++
   requestController?.abort()
   clearTimeout(timer)
+  clearTimeout(warningTimer)
   clearExpiryTimer()
+  availability.clear(performance.now())
+  authorizedDevices = []
+  archive = persistenceKey.value ? new PersistentTopologyArchive(persistenceKey.value) : undefined
   lastFreshMachines.clear()
   snapshotCache.clear()
   trafficTracker.clear()
@@ -150,6 +211,7 @@ watch(() => props.api, () => {
 
 onMounted(() => {
   mounted = true
+  archive = persistenceKey.value ? new PersistentTopologyArchive(persistenceKey.value) : undefined
   void loadTopology()
 })
 onUnmounted(() => {
@@ -157,10 +219,12 @@ onUnmounted(() => {
   generation++
   requestController?.abort()
   clearTimeout(timer)
+  clearTimeout(warningTimer)
   clearExpiryTimer()
   lastFreshMachines.clear()
   snapshotCache.clear()
   trafficTracker.clear()
+  authorizedDevices = []
 })
 </script>
 
@@ -173,6 +237,7 @@ onUnmounted(() => {
     </div>
     <p v-if="error" role="status" class="dashboard-error">{{ error }}</p>
     <NetworkTopologyGlobe :nodes="topology.nodes" :links="topology.links" :loading="loading"
+      :persistence-key="persistenceKey"
       @refresh="loadTopology" />
   </div>
 </template>

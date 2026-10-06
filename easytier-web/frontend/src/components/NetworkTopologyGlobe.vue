@@ -6,12 +6,19 @@ import { geoEquirectangular, geoPath } from 'd3-geo'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { locateNode, worldGeography, type LocatedNode } from '../modules/globeGeography'
+import { spherePosition as position, sphericalArc } from '../modules/globeBoundaryGeometry'
+import { flowTravelSeconds } from '../modules/globeFlow'
+import { createFlowLabel } from '../modules/globeFlowLabel'
+import { loadGlobeMapDetail } from '../modules/globeMapDetail'
+import { buildCloudPointPositions } from '../modules/globePointCloud'
+import { readGlobePreferences, saveGlobePreferences } from '../modules/dashboardPersistence'
 import type { TopologyLink, TopologyNode } from '../modules/networkTopology'
 
 const props = defineProps<{
   nodes: TopologyNode[]
   links: TopologyLink[]
   loading?: boolean
+  persistenceKey?: string
 }>()
 const emit = defineEmits<{ refresh: [] }>()
 const { t } = useI18n()
@@ -36,18 +43,38 @@ let controls: OrbitControls | undefined
 let resizeObserver: ResizeObserver | undefined
 let topologyGroup: THREE.Group | undefined
 let globeSurface: THREE.Mesh | undefined
-let boundaryGroup: THREE.Group | undefined
 let boundaryMaterial: THREE.LineBasicMaterial | undefined
-let cloudLevels: { group: THREE.Group, maxDistance: number }[] = []
+const cloudLevels: { group?: THREE.Group, maxDistance: number, count: number, angularStep: number }[] = [
+  { maxDistance: Number.POSITIVE_INFINITY, count: 24_000, angularStep: 0.045 },
+  { maxDistance: 2.45, count: 96_000, angularStep: 0.012 },
+  { maxDistance: 1.55, count: 288_000, angularStep: 0.003 },
+]
+const boundaryLevels: (THREE.LineSegments | undefined)[] = []
+const detailRequests: (Promise<void> | undefined)[] = []
+const detailRetryAt: number[] = []
+let disposed = false
+let restoringView = false
+let viewSaveTimer: ReturnType<typeof setTimeout> | undefined
+let lastViewSavedAt = 0
+let lastViewDistance = 0
 let activeCloudLevel = -1
+let activeBoundaryLevel = -1
 let frame = 0
 let lastFrame = 0
 let interacting = false
 let interactionStart: { x: number, y: number } | undefined
 let dragged = false
 let markerMeshes: THREE.Mesh[] = []
-let flows: { mesh: THREE.Mesh, curve: THREE.CatmullRomCurve3, offset: number, reverse: boolean }[] = []
+let flows: {
+  key: string
+  mesh: THREE.Mesh
+  curve: THREE.CatmullRomCurve3
+  progress: number
+  travelSeconds: number
+  reverse: boolean
+}[] = []
 interface GlobeLabel {
+  kind: 'node' | 'traffic'
   element: HTMLDivElement
   leader: HTMLDivElement
   anchors: THREE.Vector3[]
@@ -62,22 +89,14 @@ const labelDirection = new THREE.Vector3()
 const labelIntersection = new THREE.Vector3()
 const labelRay = new THREE.Ray()
 const globeOccluder = new THREE.Sphere(new THREE.Vector3(), 0.994)
+const NODE_LABEL_MAX_DISTANCE = 2.8
+const TRAFFIC_LABEL_MAX_DISTANCE = 1.7
 const controlsConfig = {
   rotateSpeed: 0.26,
   zoomSpeed: 0.78,
   minDistance: 1.25,
   maxDistance: 6.5,
   autoRotateSpeed: 0.21,
-}
-
-function position(latitude: number, longitude: number, radius = 1) {
-  const lat = THREE.MathUtils.degToRad(latitude)
-  const lon = THREE.MathUtils.degToRad(longitude)
-  return new THREE.Vector3(
-    radius * Math.cos(lat) * Math.sin(lon),
-    radius * Math.sin(lat),
-    radius * Math.cos(lat) * Math.cos(lon),
-  )
 }
 
 function disposeGroup(group: THREE.Object3D) {
@@ -91,33 +110,12 @@ function disposeGroup(group: THREE.Object3D) {
   })
 }
 
-function sphericalArc(start: THREE.Vector3, end: THREE.Vector3, radius: number) {
-  const from = start.clone().normalize()
-  const to = end.clone().normalize()
-  const angle = from.angleTo(to)
-  if (angle < 0.0001)
-    return [from.multiplyScalar(radius)]
-  let axis = new THREE.Vector3().crossVectors(from, to)
-  if (axis.lengthSq() < 0.00001)
-    axis = new THREE.Vector3(0, 1, 0)
-  else
-    axis.normalize()
-  const segments = Math.max(1, Math.ceil(angle / 0.045))
-  return Array.from({ length: segments + 1 }, (_, index) =>
-    from.clone().applyAxisAngle(axis, angle * index / segments).multiplyScalar(radius))
-}
-
-function buildCountryBoundaries() {
-  const features = (worldGeography as unknown as {
+function buildCountryBoundaries(geography: typeof worldGeography, angularStep: number) {
+  const features = (geography as unknown as {
     features?: { geometry?: { type?: string, coordinates?: unknown } }[]
   }).features ?? []
-  boundaryGroup = new THREE.Group()
-  boundaryMaterial = new THREE.LineBasicMaterial({
-    color: 0x9bb7b5,
-    transparent: true,
-    opacity: 0.38,
-    depthWrite: false,
-  })
+  const points: number[] = []
+  let sourceVertices = 0
   for (const feature of features) {
     const geometry = feature.geometry
     if (!geometry?.coordinates)
@@ -139,7 +137,7 @@ function buildCountryBoundaries() {
           && Number.isFinite(coordinate[1]))
         if (coordinates.length < 2)
           continue
-        const points: number[] = []
+        sourceVertices += coordinates.length
         for (let index = 0; index < coordinates.length - 1; index++) {
           const [sourceLongitude, sourceLatitude] = coordinates[index]
           const [targetLongitude, targetLatitude] = coordinates[index + 1]
@@ -147,41 +145,35 @@ function buildCountryBoundaries() {
             position(sourceLatitude, sourceLongitude),
             position(targetLatitude, targetLongitude),
             1.003,
+            angularStep,
           )
-          for (const point of index === 0 ? arc : arc.slice(1))
-            points.push(point.x, point.y, point.z)
+          for (let segment = 0; segment < arc.length - 1; segment++) {
+            const from = arc[segment]
+            const to = arc[segment + 1]
+            points.push(from.x, from.y, from.z, to.x, to.y, to.z)
+          }
         }
-        if (points.length < 6)
-          continue
-        const lineGeometry = new THREE.BufferGeometry()
-        lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
-        boundaryGroup.add(new THREE.Line(lineGeometry, boundaryMaterial))
       }
     }
   }
-  scene.add(boundaryGroup)
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+  const lines = new THREE.LineSegments(geometry, boundaryMaterial)
+  lines.userData.sourceVertices = sourceVertices
+  lines.userData.angularStep = angularStep
+  return lines
 }
 
 function buildPointCloud(
   map: HTMLCanvasElement,
   pixels: Uint8ClampedArray,
   count: number,
-  oceanStride: number,
 ) {
-  const land: number[] = []
-  const ocean: number[] = []
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
-  for (let i = 0; i < count; i++) {
-    const lat = Math.asin(1 - 2 * (i + 0.5) / count) * 180 / Math.PI
-    const lon = ((i * goldenAngle * 180 / Math.PI) % 360) - 180
+  const { land, ocean } = buildCloudPointPositions(count, (lat, lon) => {
     const x = Math.min(map.width - 1, Math.floor((lon + 180) / 360 * map.width))
     const y = Math.min(map.height - 1, Math.floor((90 - lat) / 180 * map.height))
-    const isLand = pixels[(y * map.width + x) * 4 + 3] > 100
-    if (!isLand && i % oceanStride !== 0)
-      continue
-    const point = position(lat, lon)
-    ;(isLand ? land : ocean).push(point.x, point.y, point.z)
-  }
+    return pixels[(y * map.width + x) * 4 + 3] > 100
+  })
   const group = new THREE.Group()
   for (const [points, color, size] of [
     [land, 0x67d9b6, count > 100_000 ? 0.0035 : count > 30_000 ? 0.006 : 0.011],
@@ -198,7 +190,7 @@ function buildPointCloud(
   return group
 }
 
-function buildCloud() {
+function buildGeographyLevel(level: number, geography: typeof worldGeography) {
   const map = document.createElement('canvas')
   map.width = 2048
   map.height = 1024
@@ -209,28 +201,49 @@ function buildCloud() {
     .translate([map.width / 2, map.height / 2])
   context.fillStyle = '#ffffff'
   context.beginPath()
-  geoPath(projection, context)(worldGeography)
+  geoPath(projection, context)(geography)
   context.fill()
   const pixels = context.getImageData(0, 0, map.width, map.height).data
-  const lowDetail = buildPointCloud(map, pixels, 24_000, 4)
-  const highDetail = buildPointCloud(map, pixels, 96_000, 3)
-  const closeDetail = buildPointCloud(map, pixels, 288_000, 3)
-  lowDetail.visible = true
-  highDetail.visible = false
-  closeDetail.visible = false
-  cloudLevels = [
-    { group: lowDetail, maxDistance: Number.POSITIVE_INFINITY },
-    { group: highDetail, maxDistance: 2.45 },
-    { group: closeDetail, maxDistance: 1.55 },
-  ]
-  activeCloudLevel = 0
-  scene.add(lowDetail, highDetail, closeDetail)
+  const config = cloudLevels[level]
+  const cloud = buildPointCloud(map, pixels, config.count)
+  cloud.visible = false
+  config.group = cloud
+  const boundaries = buildCountryBoundaries(geography, config.angularStep)
+  boundaries.visible = false
+  boundaryLevels[level] = boundaries
+  scene.add(cloud, boundaries)
+}
+
+function requestGeographyLevel(level: 1 | 2) {
+  if (cloudLevels[level].group || detailRequests[level] || performance.now() < (detailRetryAt[level] ?? 0))
+    return
+  detailRequests[level] = loadGlobeMapDetail(level)
+    .then(geography => {
+      if (!disposed)
+        buildGeographyLevel(level, geography)
+    })
+    .catch(error => {
+      detailRetryAt[level] = performance.now() + 30_000
+      console.warn('Failed to load globe geography detail', error)
+    })
+    .finally(() => {
+      detailRequests[level] = undefined
+    })
+}
+
+function buildCloud() {
+  boundaryMaterial = new THREE.LineBasicMaterial({
+    color: 0x9bb7b5,
+    transparent: true,
+    opacity: 0.38,
+    depthWrite: false,
+  })
+  buildGeographyLevel(0, worldGeography)
   globeSurface = new THREE.Mesh(
     new THREE.SphereGeometry(0.994, 64, 32),
     new THREE.MeshBasicMaterial({ color: 0x10191d }),
   )
   scene.add(globeSurface)
-  buildCountryBoundaries()
 }
 
 function updateCloudDetail() {
@@ -244,18 +257,37 @@ function updateCloudDetail() {
     0.025,
     0.6,
   )
-  const nextLevel = distance <= cloudLevels[2]?.maxDistance ? 2
-    : distance <= cloudLevels[1]?.maxDistance ? 1 : 0
+  const requestedLevel = distance <= cloudLevels[2].maxDistance ? 2
+    : distance <= cloudLevels[1].maxDistance ? 1 : 0
+  if (distance <= NODE_LABEL_MAX_DISTANCE)
+    requestGeographyLevel(1)
+  if (distance <= 1.9)
+    requestGeographyLevel(2)
+  let nextLevel = requestedLevel
+  while (nextLevel > 0 && !cloudLevels[nextLevel].group)
+    nextLevel--
   if (nextLevel !== activeCloudLevel) {
     cloudLevels.forEach(({ group }, index) => {
-      group.visible = index === nextLevel
+      if (group)
+        group.visible = index === nextLevel
     })
     activeCloudLevel = nextLevel
+  }
+  if (nextLevel !== activeBoundaryLevel) {
+    boundaryLevels.forEach((lines, index) => {
+      if (lines)
+        lines.visible = index === nextLevel
+    })
+    activeBoundaryLevel = nextLevel
   }
   if (renderer) {
     renderer.domElement.dataset.globeRotateSpeed = String(controls.rotateSpeed)
     renderer.domElement.dataset.globeDistance = String(distance)
     renderer.domElement.dataset.globeCloudLevel = String(nextLevel)
+    renderer.domElement.dataset.globeBoundaryLevel = String(nextLevel)
+    renderer.domElement.dataset.globeBoundaryScale = ['110m', '50m', '10m'][nextLevel]
+    renderer.domElement.dataset.globeBoundarySourceVertices = String(boundaryLevels[nextLevel]?.userData.sourceVertices ?? 0)
+    renderer.domElement.dataset.globeBoundaryAngularStep = String(cloudLevels[nextLevel].angularStep)
     renderer.domElement.dataset.globeAzimuth = String(controls.getAzimuthalAngle())
   }
   if (boundaryMaterial) {
@@ -274,36 +306,30 @@ function scaleMarker(mesh: THREE.Mesh, radius: number, pixels: number) {
   mesh.scale.setScalar(Math.max(0.001, unitsPerPixel * pixels / radius))
 }
 
-function formatLiveRate(value: number | undefined) {
-  if (value === undefined || !Number.isFinite(value))
-    return '--'
-  const units = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s', 'Tbit/s']
-  let unit = 0
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000
-    unit++
-  }
-  return `${value.toFixed(value < 10 && unit ? 2 : value < 100 && unit ? 1 : 0)} ${units[unit]}`
-}
-
 function flowDensity(rate: number | undefined, stale?: boolean) {
   if (stale || rate === undefined || !Number.isFinite(rate) || rate <= 0)
     return 0
   return THREE.MathUtils.clamp(1 + Math.floor(Math.log10(Math.max(1, rate / 1000)) * 2), 1, 16)
 }
 
-function addLabel(text: string, kind: 'node' | 'traffic', anchors: THREE.Vector3[], priority: number, stale?: boolean) {
+function addLabel(content: string | HTMLElement, kind: 'node' | 'traffic', anchors: THREE.Vector3[], priority: number, stale?: boolean) {
   if (!labelLayer.value)
     return
   const element = document.createElement('div')
   element.className = `globe-${kind}-label${stale ? ' is-stale' : ''}`
-  element.textContent = text
+  if (typeof content === 'string') {
+    element.textContent = content
+  } else {
+    element.append(content)
+    element.setAttribute('role', 'img')
+    element.setAttribute('aria-label', content.getAttribute('aria-label') ?? '')
+  }
   element.style.display = 'none'
   const leader = document.createElement('div')
   leader.className = 'globe-label-leader'
   leader.style.display = 'none'
   labelLayer.value.append(leader, element)
-  labels.push({ element, leader, anchors, priority })
+  labels.push({ kind, element, leader, anchors, priority })
 }
 
 function projectedAnchor(point: THREE.Vector3, width: number, height: number) {
@@ -325,17 +351,23 @@ function projectedAnchor(point: THREE.Vector3, width: number, height: number) {
 function updateLabels() {
   if (!renderer || !controls || !labelLayer.value)
     return
-  const close = camera.position.distanceTo(controls.target) <= 2.45
+  const distance = camera.position.distanceTo(controls.target)
+  const nodesVisible = distance <= NODE_LABEL_MAX_DISTANCE
+  const trafficVisible = distance <= TRAFFIC_LABEL_MAX_DISTANCE
   const { clientWidth: width, clientHeight: height } = renderer.domElement
-  labelLayer.value.dataset.detailVisible = String(close)
+  labelLayer.value.dataset.detailVisible = String(nodesVisible)
+  labelLayer.value.dataset.nodeLabelsVisible = String(nodesVisible)
+  labelLayer.value.dataset.trafficLabelsVisible = String(trafficVisible)
   const occupied: { x: number, y: number, width: number, height: number }[] = []
   for (const label of labels) {
     label.element.style.display = 'none'
     label.leader.style.display = 'none'
   }
-  if (!close)
+  if (!nodesVisible)
     return
   for (const label of [...labels].sort((left, right) => right.priority - left.priority)) {
+    if (label.kind === 'traffic' && !trafficVisible)
+      continue
     const anchor = label.anchors.map(point => projectedAnchor(point, width, height)).find(Boolean)
     if (!anchor)
       continue
@@ -392,7 +424,10 @@ function moveInteraction(event: PointerEvent) {
 }
 
 function endInteraction() {
+  const wasInteracting = interacting
   interacting = false
+  if (wasInteracting)
+    saveView()
 }
 
 function linkCurve(source: THREE.Vector3, target: THREE.Vector3) {
@@ -431,6 +466,7 @@ function linkCurve(source: THREE.Vector3, target: THREE.Vector3) {
 function rebuildTopology() {
   if (!renderer)
     return
+  const previousProgress = new Map(flows.map(flow => [flow.key, flow.progress]))
   if (topologyGroup) {
     scene.remove(topologyGroup)
     disposeGroup(topologyGroup)
@@ -469,21 +505,26 @@ function rebuildTopology() {
     ))
     for (const [reverse, rate] of [[false, link.txBps], [true, link.rxBps]] as const) {
       const count = flowDensity(rate, link.stale)
+      const travelSeconds = flowTravelSeconds(link.latencyMs)
       for (let particle = 0; particle < count; particle++) {
         const mesh = new THREE.Mesh(
           new THREE.SphereGeometry(0.009, 8, 6),
           new THREE.MeshBasicMaterial({ color: reverse ? 0xdaf1ff : 0xffffff }),
         )
-        flows.push({ mesh, curve, offset: index * 0.23 + particle / count + (reverse ? 0.37 : 0), reverse })
+        const key = JSON.stringify([link.source, link.target, reverse, particle])
+        const progress = previousProgress.get(key)
+          ?? (index * 0.23 + particle / count + (reverse ? 0.37 : 0)) % 1
+        flows.push({ key, mesh, curve, progress, travelSeconds, reverse })
         topologyGroup.add(mesh)
       }
     }
-    const shortName = (name: string) => [...name].length > 6
-      ? `${[...name].slice(0, 2).join('')}...${[...name].slice(-2).join('')}` : name
-    const from = shortName(source.label)
-    const to = shortName(target.label)
     addLabel(
-      `${from} → ${to}  ${formatLiveRate(link.txBps)}\n${to} → ${from}  ${formatLiveRate(link.rxBps)}`,
+      createFlowLabel({
+        sourceLabel: source.label,
+        targetLabel: target.label,
+        txBps: link.txBps,
+        rxBps: link.rxBps,
+      }),
       'traffic',
       [0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9, 0.05, 0.95, 0.02, 0.98].map(progress => curve.getPoint(progress)),
       link.source === selectedId.value || link.target === selectedId.value ? 5 : 1,
@@ -498,17 +539,66 @@ function rebuildTopology() {
 function selectNode(id: string) {
   selectedId.value = id
   const node = locatedNodes.value.find(node => node.id === id)
-  if (!node || !camera || !controls)
+  if (!node || !camera || !controls) {
+    saveView()
     return
+  }
   const distance = camera.position.distanceTo(controls.target)
   camera.position.copy(position(node.latitude, node.longitude, distance))
   controls.update()
+  saveView()
 }
 
-function resetView() {
+function resetView(persist = true) {
   camera?.position.copy(position(20, 100, 3.3))
   controls?.target.set(0, 0, 0)
   controls?.update()
+  if (persist)
+    saveView()
+}
+
+function saveView() {
+  if (!camera || !controls || disposed || restoringView)
+    return
+  clearTimeout(viewSaveTimer)
+  saveGlobePreferences(props.persistenceKey ?? 'default', {
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    rotating: rotating.value,
+    selectedId: selectedId.value,
+  })
+  lastViewSavedAt = performance.now()
+}
+
+function restoreView() {
+  if (!camera || !controls)
+    return
+  clearTimeout(viewSaveTimer)
+  restoringView = true
+  try {
+    resetView(false)
+    const saved = readGlobePreferences(props.persistenceKey ?? 'default')
+    rotating.value = saved?.rotating ?? true
+    selectedId.value = saved?.selectedId ?? ''
+    if (saved)
+      camera.position.fromArray(saved.position)
+    controls.autoRotate = rotating.value && !interacting
+    controls.update()
+    lastViewDistance = camera.position.distanceTo(controls.target)
+    lastViewSavedAt = performance.now()
+  } finally {
+    restoringView = false
+  }
+}
+
+function scheduleZoomSave() {
+  if (!camera || !controls || restoringView)
+    return
+  const distance = camera.position.distanceTo(controls.target)
+  if (Math.abs(distance - lastViewDistance) <= 1e-6)
+    return
+  lastViewDistance = distance
+  clearTimeout(viewSaveTimer)
+  viewSaveTimer = setTimeout(saveView, 350)
 }
 
 function pickNode(event: MouseEvent) {
@@ -534,8 +624,8 @@ function animate(now: number) {
     for (const mesh of markerMeshes)
       scaleMarker(mesh, mesh.userData.radius, mesh.userData.nodeId === selectedId.value ? 7 : 5)
     for (const flow of flows) {
-      const progress = (now / 5000 + flow.offset) % 1
-      flow.mesh.position.copy(flow.curve.getPointAt(flow.reverse ? 1 - progress : progress))
+      flow.progress = (flow.progress + deltaSeconds / flow.travelSeconds) % 1
+      flow.mesh.position.copy(flow.curve.getPointAt(flow.reverse ? 1 - flow.progress : flow.progress))
       scaleMarker(flow.mesh, 0.009, 2)
     }
     renderer.domElement.dataset.globeInvalidFlows = String(
@@ -544,6 +634,8 @@ function animate(now: number) {
     )
     renderer.render(scene, camera)
     updateLabels()
+    if (rotating.value && now - lastViewSavedAt >= 5_000)
+      saveView()
     lastFrame = now
   }
   frame = requestAnimationFrame(animate)
@@ -578,7 +670,9 @@ onMounted(() => {
     renderer.domElement.addEventListener('pointermove', moveInteraction)
     window.addEventListener('pointerup', endInteraction)
     window.addEventListener('pointercancel', endInteraction)
-    resetView()
+    window.addEventListener('pagehide', saveView)
+    restoreView()
+    controls.addEventListener('change', scheduleZoomSave)
     buildCloud()
     rebuildTopology()
     resizeObserver = new ResizeObserver(() => {
@@ -601,15 +695,22 @@ onMounted(() => {
 })
 
 watch([locatedNodes, () => props.links, selectedId], rebuildTopology)
+watch(() => props.persistenceKey, restoreView)
+watch(rotating, saveView)
 
 onUnmounted(() => {
+  saveView()
+  disposed = true
+  clearTimeout(viewSaveTimer)
   cancelAnimationFrame(frame)
   resizeObserver?.disconnect()
+  controls?.removeEventListener('change', scheduleZoomSave)
   controls?.dispose()
   renderer?.domElement.removeEventListener('pointerdown', beginInteraction)
   renderer?.domElement.removeEventListener('pointermove', moveInteraction)
   window.removeEventListener('pointerup', endInteraction)
   window.removeEventListener('pointercancel', endInteraction)
+  window.removeEventListener('pagehide', saveView)
   renderer?.domElement.removeEventListener('click', pickNode)
   if (scene)
     disposeGroup(scene)
@@ -630,7 +731,7 @@ onUnmounted(() => {
           :aria-label="t(rotating ? 'web.dashboard.pause' : 'web.dashboard.rotate')"
           v-tooltip="t(rotating ? 'web.dashboard.pause' : 'web.dashboard.rotate')" @click="rotating = !rotating" />
         <Button icon="pi pi-compass" text severity="secondary" :aria-label="t('web.dashboard.reset')"
-          v-tooltip="t('web.dashboard.reset')" @click="resetView" />
+          v-tooltip="t('web.dashboard.reset')" @click="resetView()" />
         <Button icon="pi pi-refresh" text severity="secondary" :loading="loading"
           :aria-label="t('web.dashboard.refresh')" v-tooltip="t('web.dashboard.refresh')" @click="emit('refresh')" />
       </div>
@@ -688,6 +789,13 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
   font-size: 11px; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis;
 }
 .globe-labels :deep(.globe-node-label) { max-width: 174px; color: #ffda88; font-weight: 600; }
+.globe-labels :deep(.globe-traffic-label) { width: 226px; max-width: 226px; white-space: normal; }
+.globe-labels :deep(.globe-flow-cross) { display: grid; gap: 2px; }
+.globe-labels :deep(.traffic-endpoints) { display: grid; grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr); gap: 4px; align-items: center; }
+.globe-labels :deep(.globe-flow-stat) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 10px; line-height: 14px; color: #c7e2e9; }
+.globe-labels :deep(.globe-flow-name) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: auto; }
+.globe-labels :deep(.globe-flow-source) { text-align: right; }
+.globe-labels :deep(.globe-flow-directions) { text-align: center; font-size: 13px; color: #edf7f5; }
 .globe-labels :deep(.is-stale) { opacity: 0.55; }
 .globe-labels :deep(.globe-label-leader) { position: absolute; height: 1px; background: rgba(187, 215, 213, 0.4); transform-origin: left center; }
 .globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: #c6d9db; padding: 24px; text-align: center; }

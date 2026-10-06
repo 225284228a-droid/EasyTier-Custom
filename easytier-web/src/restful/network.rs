@@ -128,6 +128,7 @@ struct ListMachineJsonResp {
 pub struct NetworkApi;
 
 impl NetworkApi {
+    #[cfg(test)]
     fn usable_node_ip(ip: &std::net::IpAddr) -> bool {
         crate::geolocation::usable_node_ip(ip)
     }
@@ -146,22 +147,36 @@ impl NetworkApi {
             return;
         };
 
-        for detail in info.map.values_mut() {
+        let mut details: Vec<_> = info.map.iter_mut().collect();
+        details.sort_by(|(left_id, left), (right_id, right)| {
+            let ipv6 = |detail: &easytier::proto::api::manage::NetworkInstanceRunningInfo| {
+                detail
+                    .my_node_info
+                    .as_ref()
+                    .and_then(Self::node_public_ip)
+                    .is_none_or(|ip| ip.is_ipv6())
+            };
+            ipv6(left)
+                .cmp(&ipv6(right))
+                .then_with(|| left_id.cmp(right_id))
+        });
+        let mut primary_cached = false;
+        for (_, detail) in details {
             if !detail.running {
                 continue;
             }
             let Some(node) = detail.my_node_info.as_ref() else {
                 continue;
             };
-            let Some(ip) = Self::node_public_ip(node) else {
+            let Some((ip, location)) = client_mgr.resolve_node_location(node).await else {
                 continue;
             };
-            let Some(location) = client_mgr.resolve_ip_location(ip).await else {
-                continue;
-            };
-            client_mgr
-                .cache_network_location(user_id, machine_id, ip.to_string(), location.clone())
-                .await;
+            if !primary_cached {
+                client_mgr
+                    .cache_network_location(user_id, machine_id, node, location.clone())
+                    .await;
+                primary_cached = true;
+            }
             detail.node_location = Some(NodeLocation {
                 public_ip: ip.to_string(),
                 country: location.country,
@@ -676,6 +691,100 @@ mod tests {
             NetworkApi::node_public_ip(&node),
             Some("203.0.113.10".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn node_public_ip_displays_ipv4_even_when_stun_lists_ipv6_first() {
+        let mut node = MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec!["2001:4860:4860::8888".into(), "::ffff:8.8.8.8".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let expected = Some("8.8.8.8".parse().unwrap());
+        assert_eq!(NetworkApi::node_public_ip(&node), expected);
+        node.stun_info.as_mut().unwrap().public_ip.reverse();
+        assert_eq!(NetworkApi::node_public_ip(&node), expected);
+        node.stun_info
+            .as_mut()
+            .unwrap()
+            .public_ip
+            .retain(|ip| ip.contains("2001:"));
+        node.ips = Some(easytier::proto::peer_rpc::GetIpListResponse {
+            public_ipv4: Some(std::net::Ipv4Addr::new(8, 8, 8, 8).into()),
+            ..Default::default()
+        });
+        assert_eq!(NetworkApi::node_public_ip(&node), expected);
+    }
+
+    #[tokio::test]
+    async fn network_annotation_keeps_ipv4_display_when_same_node_ipv6_supplies_city() {
+        use easytier::proto::api::manage::{
+            NetworkInstanceRunningInfo, NetworkInstanceRunningInfoMap,
+        };
+        use std::sync::Arc;
+
+        let cache = crate::geolocation::CityGeoCache::test_memory(crate::geolocation::Options {
+            offline: true,
+            ..Default::default()
+        })
+        .await;
+        cache
+            .test_seed(
+                "2001:4860:4860::8888".parse().unwrap(),
+                &crate::geolocation::CityLocation {
+                    country: "New Zealand".into(),
+                    city: "Auckland".into(),
+                    region: None,
+                    latitude: -36.85,
+                    longitude: 174.76,
+                    accuracy_radius_km: None,
+                },
+                chrono::Utc::now().timestamp(),
+            )
+            .await;
+        let mut manager = ClientManager::new(
+            crate::db::Db::memory_db().await,
+            None,
+            crate::client_manager::HeartbeatPolicy::default(),
+            Arc::new(crate::FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        manager.set_city_geo_cache(cache);
+        let node = MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec!["2001:4860:4860::8888".into(), "1.1.1.1".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut response = CollectNetworkInfoResponse {
+            info: Some(NetworkInstanceRunningInfoMap {
+                map: [(
+                    "instance".to_string(),
+                    NetworkInstanceRunningInfo {
+                        running: true,
+                        my_node_info: Some(node),
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }),
+        };
+        NetworkApi::annotate_network_locations(&manager, 0, uuid::Uuid::new_v4(), &mut response)
+            .await;
+        let location = response.info.as_ref().unwrap().map["instance"]
+            .node_location
+            .as_ref()
+            .unwrap();
+        assert_eq!(location.public_ip, "1.1.1.1");
+        assert_eq!(location.city, "Auckland");
+        assert_eq!(location.latitude, Some(-36.85));
+        assert_eq!(location.longitude, Some(174.76));
     }
 
     #[test]

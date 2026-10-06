@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     fmt::Debug,
+    net::IpAddr,
     str::FromStr as _,
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
@@ -143,6 +144,7 @@ pub struct SessionData {
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
     network_location: Option<(String, Location)>,
+    network_location_ips: Vec<IpAddr>,
     network_location_checked_at: Option<Instant>,
     network_location_verified_at: Option<Instant>,
     heartbeat_count: std::sync::atomic::AtomicU32,
@@ -178,6 +180,7 @@ impl SessionData {
             req: None,
             location,
             network_location: None,
+            network_location_ips: Vec::new(),
             network_location_checked_at: None,
             network_location_verified_at: None,
             heartbeat_count: std::sync::atomic::AtomicU32::new(0),
@@ -228,6 +231,11 @@ impl SessionData {
         self.network_location.as_ref()
     }
 
+    pub(super) fn verified_network_location_ips(&self, now: Instant) -> Option<&[IpAddr]> {
+        self.verified_network_location(now)?;
+        Some(&self.network_location_ips)
+    }
+
     pub fn has_running_network(&self) -> bool {
         self.auth_state.is_authorized()
             && self
@@ -246,6 +254,11 @@ impl SessionData {
         location: Location,
         verified_at: Instant,
     ) {
+        self.network_location_ips = public_ip
+            .parse::<IpAddr>()
+            .ok()
+            .map(|ip| vec![ip.to_canonical()])
+            .unwrap_or_default();
         self.network_location = Some((public_ip, location));
         self.network_location_checked_at = Some(verified_at);
         self.network_location_verified_at = Some(verified_at);
@@ -253,18 +266,33 @@ impl SessionData {
 
     pub fn clear_network_location(&mut self) {
         self.network_location = None;
+        self.network_location_ips.clear();
         self.network_location_verified_at = None;
+    }
+
+    pub(super) fn set_node_network_location_at(
+        &mut self,
+        ips: Vec<IpAddr>,
+        location: Location,
+        verified_at: Instant,
+    ) {
+        let Some(ip) = ips.first() else {
+            self.clear_network_location();
+            return;
+        };
+        self.set_network_location_at(ip.to_string(), location, verified_at);
+        self.network_location_ips = ips;
     }
 
     pub(super) fn apply_network_location_snapshot(
         &mut self,
-        primary: Option<(String, Location)>,
+        primary: Option<(Vec<IpAddr>, Location)>,
         verified_at: Instant,
     ) {
         if self.has_running_network()
-            && let Some((ip, location)) = primary
+            && let Some((ips, location)) = primary
         {
-            self.set_network_location_at(ip, location, verified_at);
+            self.set_node_network_location_at(ips, location, verified_at);
         } else {
             self.clear_network_location();
         }
@@ -1375,10 +1403,46 @@ mod tests {
             assert_eq!(data.network_location_checked_at, attempted_at);
         }
         data.apply_network_location_snapshot(
-            Some(("8.8.8.8".into(), test_network_location())),
+            Some((vec!["8.8.8.8".parse().unwrap()], test_network_location())),
             Instant::now(),
         );
         assert!(data.network_location().is_none());
+    }
+
+    #[tokio::test]
+    async fn same_node_address_candidates_share_verification_grace_and_are_cleared_together() {
+        let mut data = failure_state_test_data().await;
+        data.auth_state = SessionAuthState::Authorized;
+        data.req = Some(HeartbeatRequest {
+            running_network_instances: vec![uuid::Uuid::new_v4().into()],
+            ..Default::default()
+        });
+        let verified = Instant::now();
+        let ips = vec![
+            "1.1.1.1".parse::<IpAddr>().unwrap(),
+            "2001:4860:4860::8888".parse().unwrap(),
+        ];
+        data.apply_network_location_snapshot(
+            Some((ips.clone(), test_network_location())),
+            verified,
+        );
+        assert_eq!(data.network_location().unwrap().0, "1.1.1.1");
+        assert_eq!(
+            data.verified_network_location_ips(verified),
+            Some(ips.as_slice())
+        );
+        assert!(data.claim_network_location_refresh(verified + Duration::from_secs(60)));
+        assert_eq!(
+            data.verified_network_location_ips(verified + Duration::from_secs(180)),
+            Some(ips.as_slice())
+        );
+        assert_eq!(
+            data.verified_network_location_ips(verified + Duration::from_secs(181)),
+            None
+        );
+        data.clear_network_location();
+        assert!(data.network_location_ips.is_empty());
+        assert_eq!(data.verified_network_location_ips(verified), None);
     }
 
     #[tokio::test]

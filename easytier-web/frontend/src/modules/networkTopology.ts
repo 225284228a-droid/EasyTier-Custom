@@ -36,6 +36,8 @@ export interface TopologyLink {
   txBps?: number
   /** Estimated bits per second from target to source. */
   rxBps?: number
+  /** Mean of valid fresh open-channel RTT measurements, in milliseconds. */
+  latencyMs?: number
 }
 
 export interface NetworkSnapshot {
@@ -63,6 +65,17 @@ function cleanText(value: unknown): string | undefined {
     return undefined
   const text = value.trim()
   return text.length ? text : undefined
+}
+
+function latencyMs(value: unknown): number | undefined {
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!/^\d{1,16}$/.test(text))
+      return undefined
+    value = Number(text)
+  }
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value / 1000 : undefined
 }
 
 function networkNameFrom(snapshot: NetworkSnapshot): string | undefined {
@@ -211,6 +224,7 @@ export function buildTopology(
   const networkIdentities = new Set<string>()
   const namesByInstance = new Map<string, Set<string>>()
   const trafficObservations: TrafficObservation[] = []
+  const latencyReports = new Map<string, Map<string, number>>()
   for (const snapshot of snapshots) {
     const instanceId = cleanText(snapshot.instanceId)
     const name = networkNameFrom(snapshot)
@@ -283,6 +297,15 @@ export function buildTopology(
         protocols,
         stale: (existing ? existing.stale && snapshot.stale : snapshot.stale) || undefined,
       })
+      if (!snapshot.stale) {
+        const reports = latencyReports.get(key) ?? new Map<string, number>()
+        openConns.forEach((conn, index) => {
+          const measured = latencyMs(conn.stats?.latency_us)
+          if (measured !== undefined)
+            reports.set(JSON.stringify([source, target, cleanText(conn.conn_id) ?? index]), measured)
+        })
+        latencyReports.set(key, reports)
+      }
       if (trafficTracker && !snapshot.stale) {
         for (const conn of openConns) {
           trafficObservations.push({
@@ -306,6 +329,13 @@ export function buildTopology(
     nodes: [...nodes.values()],
     links: [...links.values()],
     networkIdentities: [...networkIdentities].sort(),
+  }
+  for (const [key, link] of links) {
+    const reports = latencyReports.get(key)
+    if (reports?.size) {
+      // Divide before adding so a large channel count cannot overflow a sum.
+      link.latencyMs = [...reports.values()].reduce((mean, measured) => mean + measured / reports.size, 0)
+    }
   }
   trafficTracker?.update(topology.links, trafficObservations, sampleTime)
   return topology

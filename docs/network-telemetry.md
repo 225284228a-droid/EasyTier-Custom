@@ -37,9 +37,16 @@ The dashboard polls about every two seconds after a completed collection.
 It limits each request to eight seconds, retries transient per-machine failures
 twice, and buffers the last good machines/snapshots for up to 60 seconds.
 An independent expiry timer keeps this limit during long collection batches.
-Confirmed stopped instances are
-removed immediately. Cached data is marked stale and is never sampled as
+Confirmed stopped instances are removed immediately. Cached data is marked stale and is never sampled as
 new traffic; switching servers clears both snapshot and counter caches.
+An incomplete-data warning appears only after a running machine has not
+successfully reported for a continuous minute, and clears on recovery.
+Camera orientation, zoom, selected node and automatic rotation are stored in
+a scoped 180-day preference cookie. A separate browser-local archive keeps
+minimal last-known node/link metadata for seven days, never credentials,
+configuration, byte counters or real-time rates. Archived nodes are restored
+only after a successful authorized machine listing, filtered by currently
+running instances, and marked stale; they never generate traffic particles.
 Real-time bit/s is derived from cumulative connection byte counters.
 Two endpoint reports do not double-count the same link; concurrent tunnels
 are aggregated. Missing/reset counters do not create invented rates.
@@ -49,6 +56,9 @@ config-server connection address. Device lists reuse the session's resolved
 node-location cache, with background refresh attempts limited to once per
 minute per session and four concurrent requests. Opening the device list
 directly also warms this cache without blocking its response.
+IPv4 is preferred for display when available, regardless of STUN list order.
+City lookup first uses the node's IPv4 and falls back to its IPv6 if needed;
+using an IPv6 city result does not change the IPv4 address displayed.
 GeoIP coordinates are preferred. Country-only results use an explicitly
 approximate country location derived from the embedded Natural Earth map.
 Unknown locations remain in the node list instead of receiving invented
@@ -60,13 +70,22 @@ The embedded DB-IP Country Lite database remains the offline fallback.
 
 The Three.js globe loads on demand, pauses automatic rotation during direct
 manipulation and has no post-drag inertia. Zoom selects 24k/96k/288k point-cloud
-levels, with country/coastline boundaries becoming clearer up close. Its
+levels with equal-area land/ocean point distributions. Country/coastline
+boundaries switch between real 110m/50m/10m source detail and increasingly
+fine spherical subdivisions on zoom. Higher-detail assets load on demand. Its
 viewport uses a desktop golden-ratio layout and releases rendering resources
 when the dashboard closes.
 The node panel matches the map height and scrolls internally. At close zoom,
-decluttered labels show node names and both measured traffic directions.
+decluttered labels show node names earlier (camera distance <= 2.8), and
+both measured traffic directions only at close zoom (distance <= 1.7).
+Traffic labels use a cross layout: endpoint names flank the bidirectional
+arrow, with the corresponding directional rates above and below the arrow.
+No latency value is displayed in this label.
 Flow particles move in both directions, with logarithmically scaled density
-based on each direction's measured traffic. Zero/unknown/stale directions
+based on each direction's measured traffic. Travel time follows the mean
+valid RTT of fresh open channels, with a logarithmic 0.35-8 second display
+range; a missing RTT uses a conservative five-second animation fallback.
+This is a visual timing scale, not individual-packet tracing. Zero/unknown/stale directions
 do not show fabricated moving particles. Attribution is in the About dialog.
 
 ## Verification

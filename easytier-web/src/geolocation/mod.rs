@@ -210,31 +210,48 @@ fn online_lookup_ip(ip: &IpAddr) -> bool {
 }
 
 pub(crate) fn node_public_ip(node: &MyNodeInfo) -> Option<IpAddr> {
-    node.stun_info
+    node_public_ips(node).into_iter().next()
+}
+
+pub(crate) fn node_public_ips(node: &MyNodeInfo) -> Vec<IpAddr> {
+    let stun: BTreeSet<_> = node
+        .stun_info
         .as_ref()
-        .and_then(|stun| {
-            stun.public_ip
-                .iter()
-                .filter_map(|value| value.parse::<IpAddr>().ok())
-                .find(usable_node_ip)
-        })
-        .or_else(|| {
-            node.ips
-                .as_ref()
-                .and_then(|ips| ips.public_ipv4)
-                .map(std::net::Ipv4Addr::from)
-                .map(IpAddr::V4)
-                .filter(usable_node_ip)
-        })
-        .or_else(|| {
-            node.ips
-                .as_ref()
-                .and_then(|ips| ips.public_ipv6)
-                .map(std::net::Ipv6Addr::from)
-                .map(IpAddr::V6)
-                .filter(usable_node_ip)
-        })
+        .into_iter()
+        .flat_map(|stun| &stun.public_ip)
+        .filter_map(|value| value.parse::<IpAddr>().ok())
         .map(|ip| ip.to_canonical())
+        .filter(usable_node_ip)
+        .collect();
+    let mut declared = BTreeSet::new();
+    if let Some(ips) = &node.ips {
+        for ip in [
+            ips.public_ipv4
+                .map(std::net::Ipv4Addr::from)
+                .map(IpAddr::V4),
+            ips.public_ipv6
+                .map(std::net::Ipv6Addr::from)
+                .map(IpAddr::V6),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|ip| ip.to_canonical())
+        .filter(usable_node_ip)
+        {
+            declared.insert(ip);
+        }
+    }
+    // Keep STUN authoritative within each family, but never let a reported
+    // IPv6 address hide an available IPv4 address.
+    [false, true]
+        .into_iter()
+        .filter_map(|ipv6| {
+            stun.iter()
+                .find(|ip| ip.is_ipv6() == ipv6)
+                .or_else(|| declared.iter().find(|ip| ip.is_ipv6() == ipv6))
+                .copied()
+        })
+        .collect()
 }
 
 fn ensure_separate_database(path: &std::path::Path, primary_db: &str) -> Result<()> {
@@ -295,6 +312,14 @@ impl CityGeoCache {
     #[cfg(test)]
     pub(crate) async fn test_close(&self) {
         self.store.test_pool().close().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_due_ips(&self) -> Vec<IpAddr> {
+        self.store
+            .due(now(), now() - ACTIVE_WINDOW_SECONDS, 64)
+            .await
+            .unwrap()
     }
 
     fn usable_cached(city: CachedCity, at: i64) -> Option<CachedCity> {
@@ -630,6 +655,75 @@ mod tests {
             longitude: 174.76,
             accuracy_radius_km: Some(10.0),
         }
+    }
+
+    #[test]
+    fn node_addresses_are_ipv4_first_and_independent_of_stun_order() {
+        let mut node = MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec![
+                    "2001:4860:4860::8888".into(),
+                    "8.8.8.8".into(),
+                    "1.1.1.1".into(),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let expected = vec![
+            "1.1.1.1".parse().unwrap(),
+            "2001:4860:4860::8888".parse().unwrap(),
+        ];
+        assert_eq!(node_public_ips(&node), expected);
+        assert_eq!(node_public_ip(&node), expected.first().copied());
+        node.stun_info.as_mut().unwrap().public_ip.reverse();
+        assert_eq!(node_public_ips(&node), expected);
+    }
+
+    #[test]
+    fn declared_ipv4_is_not_hidden_by_stun_ipv6() {
+        let node = MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec!["2001:4860:4860::8888".into()],
+                ..Default::default()
+            }),
+            ips: Some(easytier::proto::peer_rpc::GetIpListResponse {
+                public_ipv4: Some(std::net::Ipv4Addr::new(8, 8, 8, 8).into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            node_public_ips(&node),
+            vec![
+                "8.8.8.8".parse::<IpAddr>().unwrap(),
+                "2001:4860:4860::8888".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mapped_addresses_are_canonical_ipv4_candidates() {
+        let node = MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec![
+                    "2001:4860:4860::8888".into(),
+                    "::ffff:8.8.8.8".into(),
+                    "8.8.8.8".into(),
+                    "::ffff:10.0.0.1".into(),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            node_public_ips(&node),
+            vec![
+                "8.8.8.8".parse::<IpAddr>().unwrap(),
+                "2001:4860:4860::8888".parse().unwrap(),
+            ]
+        );
+        assert_eq!(node_public_ip(&node), Some("8.8.8.8".parse().unwrap()));
     }
 
     #[test]

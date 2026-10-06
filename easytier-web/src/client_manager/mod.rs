@@ -18,7 +18,7 @@ use easytier::common::config::{ConfigSource, config_source_from_rpc, config_sour
 use easytier::proto::{
     api::manage::{
         CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
-        GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest,
+        GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest, MyNodeInfo,
         RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
         SaveNetworkInstanceConfigRequest, SetNetworkInstanceEnabledRequest, WebClientService,
     },
@@ -39,7 +39,7 @@ use storage::{Storage, StorageToken};
 use uuid::Uuid;
 
 use crate::FeatureFlags;
-use crate::geolocation::{CityGeoCache, node_public_ip};
+use crate::geolocation::{CityGeoCache, node_public_ips};
 use crate::webhook::{ManagedNetworkConfig, SharedWebhookConfig};
 use tokio::task::JoinSet;
 
@@ -222,17 +222,18 @@ impl ClientManager {
                     if !session.is_running() {
                         continue;
                     }
-                    let active_ip = {
+                    let active_ips = {
                         let data = session.data();
                         let mut data = data.write().await;
                         if !data.has_running_network() {
                             data.clear_network_location();
                             continue;
                         }
-                        data.verified_network_location(std::time::Instant::now())
-                            .and_then(|(ip, _)| ip.parse().ok())
+                        data.verified_network_location_ips(std::time::Instant::now())
+                            .map(|ips| ips.to_vec())
+                            .unwrap_or_default()
                     };
-                    if let Some(ip) = active_ip {
+                    for ip in active_ips {
                         cache.observe(ip).await;
                     }
                     if jobs.len() >= 4 {
@@ -535,20 +536,105 @@ impl ClientManager {
         Self::resolve_location(ip, self.city_geo_cache.as_ref(), self.geoip_db.clone()).await
     }
 
+    pub async fn resolve_node_location(
+        &self,
+        node: &MyNodeInfo,
+    ) -> Option<(std::net::IpAddr, Location)> {
+        let ips = node_public_ips(node);
+        let public_ip = *ips.first()?;
+        let location = Self::resolve_node_ips(
+            &ips,
+            self.city_geo_cache.as_ref(),
+            self.geoip_db.clone(),
+            true,
+        )
+        .await?;
+        Some((public_ip, location))
+    }
+
     async fn resolve_location(
         ip: std::net::IpAddr,
         cache: Option<&Arc<CityGeoCache>>,
         offline_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
     ) -> Option<Location> {
-        if let Some(cache) = cache
-            && let Some(city) = cache.observe(ip).await
-        {
-            return Some(city.location.into_location());
+        Self::node_candidate_location(ip, cache, offline_db, true).await
+    }
+
+    async fn node_candidate_location(
+        ip: std::net::IpAddr,
+        cache: Option<&Arc<CityGeoCache>>,
+        offline_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+        observe: bool,
+    ) -> Option<Location> {
+        if let Some(cache) = cache {
+            let city = if observe {
+                cache.observe(ip).await
+            } else {
+                cache.peek(ip).await
+            };
+            if let Some(city) = city {
+                return Some(city.location.into_location());
+            }
         }
         Self::lookup_ip(ip, offline_db)
     }
 
-    fn snapshot_public_ips(response: &CollectNetworkInfoResponse) -> Option<Vec<std::net::IpAddr>> {
+    fn city_level_location(location: &Location) -> bool {
+        location
+            .city
+            .as_deref()
+            .is_some_and(|city| !city.trim().is_empty())
+            && location
+                .latitude
+                .is_some_and(|value| value.is_finite() && value.abs() <= 90.0)
+            && location
+                .longitude
+                .is_some_and(|value| value.is_finite() && value.abs() <= 180.0)
+    }
+
+    fn choose_node_location(first: Option<Location>, second: Option<Location>) -> Option<Location> {
+        if first.as_ref().is_some_and(Self::city_level_location) {
+            return first;
+        }
+        if second.as_ref().is_some_and(Self::city_level_location) {
+            return second;
+        }
+        let known_country = |location: &Location| {
+            !location.country.trim().is_empty()
+                && location.country != "海外"
+                && !location.country.eq_ignore_ascii_case("unknown")
+        };
+        if first.as_ref().is_some_and(known_country) {
+            return first;
+        }
+        if second.as_ref().is_some_and(known_country) {
+            return second;
+        }
+        first.or(second)
+    }
+
+    async fn resolve_node_ips(
+        ips: &[std::net::IpAddr],
+        cache: Option<&Arc<CityGeoCache>>,
+        offline_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+        observe: bool,
+    ) -> Option<Location> {
+        let first = *ips.first()?;
+        if let Some(second) = ips.get(1) {
+            // Observe both families even on an IPv4 hit, so the background
+            // worker can recover through the same node's alternate family.
+            let (first, second) = tokio::join!(
+                Self::node_candidate_location(first, cache, offline_db.clone(), observe),
+                Self::node_candidate_location(*second, cache, offline_db, observe),
+            );
+            return Self::choose_node_location(first, second);
+        }
+        Self::node_candidate_location(first, cache, offline_db, observe).await
+    }
+
+    fn snapshot_public_ips(
+        response: &CollectNetworkInfoResponse,
+    ) -> Option<Vec<Vec<std::net::IpAddr>>> {
         let info = response.info.as_ref()?;
         if info.map.is_empty() {
             return None;
@@ -558,17 +644,17 @@ impl ClientManager {
             .iter()
             .filter(|(_, detail)| detail.running)
             .filter_map(|(instance, detail)| {
-                Some((instance, node_public_ip(detail.my_node_info.as_ref()?)?))
+                let ips = node_public_ips(detail.my_node_info.as_ref()?);
+                (!ips.is_empty()).then_some((instance, ips))
             })
             .collect();
-        addresses.sort_by(|(left, _), (right, _)| left.cmp(right));
-        let mut ips = Vec::new();
-        for (_, ip) in addresses {
-            if !ips.contains(&ip) {
-                ips.push(ip);
-            }
-        }
-        Some(ips)
+        addresses.sort_by(|(left, left_ips), (right, right_ips)| {
+            left_ips[0]
+                .is_ipv6()
+                .cmp(&right_ips[0].is_ipv6())
+                .then_with(|| left.cmp(right))
+        });
+        Some(addresses.into_iter().map(|(_, ips)| ips).collect())
     }
 
     async fn apply_network_location_snapshot(
@@ -592,10 +678,11 @@ impl ClientManager {
         };
         let verified_at = std::time::Instant::now();
         let mut primary = None;
-        for ip in ips {
-            let location = Self::resolve_location(ip, Some(cache), offline_db.clone()).await;
+        for ips in ips {
+            let location =
+                Self::resolve_node_ips(&ips, Some(cache), offline_db.clone(), true).await;
             if primary.is_none() {
-                primary = location.map(|location| (ip.to_string(), location));
+                primary = location.map(|location| (ips, location));
             }
         }
         let data = session.data();
@@ -603,16 +690,13 @@ impl ClientManager {
         data.apply_network_location_snapshot(primary, verified_at);
     }
 
+    #[cfg(test)]
     async fn cached_location(
         ip: std::net::IpAddr,
         cache: &Arc<CityGeoCache>,
         offline_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
     ) -> Option<Location> {
-        cache
-            .peek(ip)
-            .await
-            .map(|city| city.location.into_location())
-            .or_else(|| Self::lookup_ip(ip, offline_db))
+        Self::node_candidate_location(ip, Some(cache), offline_db, false).await
     }
 
     pub async fn cached_network_location(
@@ -621,14 +705,16 @@ impl ClientManager {
     ) -> Option<(String, Location)> {
         let session = self.client_sessions.get(client_url)?.clone();
         if let Some(cache) = &self.city_geo_cache {
-            let cached = session
-                .data()
-                .read()
-                .await
-                .verified_network_location(std::time::Instant::now())
-                .cloned()?;
-            let ip = cached.0.parse().ok()?;
-            let location = Self::cached_location(ip, cache, self.geoip_db.clone()).await?;
+            let (cached, ips) = {
+                let data = session.data();
+                let data = data.read().await;
+                let verified_at = std::time::Instant::now();
+                let cached = data.verified_network_location(verified_at).cloned()?;
+                let ips = data.verified_network_location_ips(verified_at)?.to_vec();
+                (cached, ips)
+            };
+            let location =
+                Self::resolve_node_ips(&ips, Some(cache), self.geoip_db.clone(), false).await?;
             return Some((cached.0, location));
         }
         session.data().read().await.network_location().cloned()
@@ -638,14 +724,18 @@ impl ClientManager {
         &self,
         user_id: UserIdInDb,
         machine_id: uuid::Uuid,
-        public_ip: String,
+        node: &MyNodeInfo,
         location: Location,
     ) {
         if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
             let data = session.data();
             let mut data = data.write().await;
             if data.has_running_network() {
-                data.set_network_location(public_ip, location);
+                data.set_node_network_location_at(
+                    node_public_ips(node),
+                    location,
+                    std::time::Instant::now(),
+                );
             }
         }
     }
@@ -1459,6 +1549,167 @@ mod tests {
         assert_eq!(failed.country, expected.country);
         assert_eq!(failed.latitude, expected.latitude);
         assert_eq!(failed.longitude, expected.longitude);
+    }
+
+    fn dual_stack_geo_node() -> easytier::proto::api::manage::MyNodeInfo {
+        easytier::proto::api::manage::MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec!["2001:4860:4860::8888".into(), "1.1.1.1".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    async fn dual_stack_geo_manager() -> (ClientManager, Arc<crate::geolocation::CityGeoCache>) {
+        let cache = crate::geolocation::CityGeoCache::test_memory(crate::geolocation::Options {
+            offline: true,
+            ..Default::default()
+        })
+        .await;
+        let mut manager = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
+        );
+        manager.city_geo_cache = Some(cache.clone());
+        (manager, cache)
+    }
+
+    fn geo_city(name: &str, latitude: f64) -> crate::geolocation::CityLocation {
+        crate::geolocation::CityLocation {
+            country: "New Zealand".to_string(),
+            city: name.to_string(),
+            region: None,
+            latitude,
+            longitude: 174.76,
+            accuracy_radius_km: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_city_fallback_keeps_ipv4_display_and_ipv4_city_wins_when_available() {
+        let (manager, cache) = dual_stack_geo_manager().await;
+        let node = dual_stack_geo_node();
+        let v4 = "1.1.1.1".parse().unwrap();
+        let v6 = "2001:4860:4860::8888".parse().unwrap();
+        cache
+            .test_seed(
+                v6,
+                &geo_city("IPv6 City", -36.85),
+                chrono::Utc::now().timestamp(),
+            )
+            .await;
+        let (display, fallback) = manager.resolve_node_location(&node).await.unwrap();
+        assert_eq!(display, v4);
+        assert_eq!(fallback.city.as_deref(), Some("IPv6 City"));
+        assert_eq!(fallback.latitude, Some(-36.85));
+        cache
+            .test_seed(
+                v4,
+                &geo_city("IPv4 City", -41.29),
+                chrono::Utc::now().timestamp(),
+            )
+            .await;
+        let (display, preferred) = manager.resolve_node_location(&node).await.unwrap();
+        assert_eq!(display, v4);
+        assert_eq!(preferred.city.as_deref(), Some("IPv4 City"));
+        assert_eq!(preferred.latitude, Some(-41.29));
+        let cached = ClientManager::resolve_node_ips(
+            &crate::geolocation::node_public_ips(&node),
+            Some(&cache),
+            manager.geoip_db.clone(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cached.city.as_deref(), Some("IPv4 City"));
+    }
+
+    #[tokio::test]
+    async fn every_verified_node_family_is_queued_without_cross_node_fallback() {
+        let (manager, cache) = dual_stack_geo_manager().await;
+        let node = dual_stack_geo_node();
+        manager.resolve_node_location(&node).await.unwrap();
+        let mut queued = cache.test_due_ips().await;
+        queued.sort();
+        let mut expected = crate::geolocation::node_public_ips(&node);
+        expected.sort();
+        assert_eq!(queued, expected);
+        cache
+            .test_seed(
+                "2001:4860:4860::8888".parse().unwrap(),
+                &geo_city("Other Node City", -36.85),
+                chrono::Utc::now().timestamp(),
+            )
+            .await;
+        let unrelated = easytier::proto::api::manage::MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec!["9.9.9.9".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (display, location) = manager.resolve_node_location(&unrelated).await.unwrap();
+        assert_eq!(display, "9.9.9.9".parse::<std::net::IpAddr>().unwrap());
+        assert_ne!(location.city.as_deref(), Some("Other Node City"));
+        assert!(location.latitude.is_none());
+        assert!(location.longitude.is_none());
+    }
+
+    #[test]
+    fn snapshot_keeps_candidates_grouped_by_node_and_ipv4_nodes_first() {
+        use easytier::proto::api::manage::{
+            CollectNetworkInfoResponse, NetworkInstanceRunningInfo, NetworkInstanceRunningInfoMap,
+        };
+        let v6_only = easytier::proto::api::manage::MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec!["2001:4860:4860::8844".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let response = CollectNetworkInfoResponse {
+            info: Some(NetworkInstanceRunningInfoMap {
+                map: [
+                    (
+                        "a".to_string(),
+                        NetworkInstanceRunningInfo {
+                            running: true,
+                            my_node_info: Some(v6_only),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        "z".to_string(),
+                        NetworkInstanceRunningInfo {
+                            running: true,
+                            my_node_info: Some(dual_stack_geo_node()),
+                            ..Default::default()
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            }),
+        };
+        let groups = ClientManager::snapshot_public_ips(&response).unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0],
+            vec![
+                "1.1.1.1".parse::<std::net::IpAddr>().unwrap(),
+                "2001:4860:4860::8888".parse().unwrap(),
+            ]
+        );
+        assert_eq!(
+            groups[1],
+            vec!["2001:4860:4860::8844".parse::<std::net::IpAddr>().unwrap()]
+        );
     }
 
     #[test]

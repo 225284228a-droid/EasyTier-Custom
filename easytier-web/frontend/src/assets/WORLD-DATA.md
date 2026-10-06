@@ -27,7 +27,31 @@ node easytier-web/frontend/scripts/generate-globe-labels.mjs
 
 The generator downloads and parses the upstream GeoJSON in memory,
 retains only the label fields, and writes the JSON sorted by code.
-The source geometry is not stored in the repository.
+The label generator does not write source geometry.
+
+`world-boundaries-50m.json` and `world-boundaries-10m.json` retain the genuine
+Natural Earth 1:50m and 1:10m country polygon geometry for the globe's zoom
+detail levels. The boundary and land/ocean mask sources therefore gain
+real coastal detail instead of subdividing the 1:110m outlines. These
+larger assets are loaded only as the camera approaches their zoom levels;
+the last ready lower-resolution level remains visible while they load.
+Each level caches its point cloud and one combined boundary line mesh.
+Country metadata and approximate location lookup still use the existing
+country-label data above.
+
+Sources (the same pinned revision as the label generator):
+https://github.com/nvkelso/natural-earth-vector/blob/9380cca83db5f9aef52d5e762765100745f84b27/geojson/ne_50m_admin_0_countries.geojson
+https://github.com/nvkelso/natural-earth-vector/blob/9380cca83db5f9aef52d5e762765100745f84b27/geojson/ne_10m_admin_0_countries.geojson
+
+Regenerate the detail geometry from the repository root:
+
+```sh
+node easytier-web/frontend/scripts/generate-globe-boundaries.mjs
+```
+
+The generator validates polygon geometry, removes unused feature
+properties, and rounds positions to six decimal places without removing
+any source vertices.
 
 Natural Earth data is public domain: https://www.naturalearthdata.com/about/terms-of-use/
 

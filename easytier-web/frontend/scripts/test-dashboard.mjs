@@ -52,6 +52,7 @@ const snapshot = (index) => ({
     conns: [{
       conn_id: uuidString(peer + 101), is_closed: false, tunnel: { tunnel_type: 'udp' },
       stats: {
+        latency_us: String((index + 1) * 10_000),
         tx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
           * (index < peer ? 2_500_000 : 25_000))),
         rx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
@@ -92,12 +93,17 @@ try {
     }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
   })
-  await page.addInitScript(() => localStorage.setItem('lang', 'en'))
+  await page.addInitScript(() => {
+    if (location.protocol === 'http:' || location.protocol === 'https:')
+      localStorage.setItem('lang', 'en')
+  })
   const dashboardUrl = `${baseUrl}/#/h/${btoa(baseUrl)}`
   for (const [name, viewport] of [
     ['desktop', { width: 1440, height: 1000 }],
     ['mobile', { width: 390, height: 844 }],
   ]) {
+    await page.goto('about:blank')
+    await page.context().clearCookies()
     await page.setViewportSize(viewport)
     await page.goto(dashboardUrl)
     await page.reload()
@@ -146,6 +152,7 @@ try {
       > Number(await canvas.getAttribute('data-globe-reverse-particles')),
       `${name}: flow particle density must follow directional measured traffic`)
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
+    const lowBoundaryVertices = Number(await canvas.getAttribute('data-globe-boundary-source-vertices'))
     await assert.doesNotReject(() => page.locator('.node-detail').waitFor())
     assert.match(await page.locator('.node-detail').innerText(), /-36\.80/)
     assert.ok(await page.locator('.node-list').evaluate(element => element.clientHeight) > 40,
@@ -179,20 +186,53 @@ try {
       `${name}: globe continued spinning after a manual drag`)
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    for (let i = 0; i < 15 && Number(await canvas.getAttribute('data-globe-distance')) > 2.75; i++) {
+      await page.mouse.wheel(0, -150)
+      await page.waitForTimeout(50)
+    }
+    assert.ok(Number(await canvas.getAttribute('data-globe-distance')) > 1.7,
+      `${name}: intermediate zoom unexpectedly skipped the name-only phase`)
+    assert.ok(await page.locator('.globe-node-label').evaluateAll(elements =>
+      elements.some(element => getComputedStyle(element).display !== 'none')),
+    `${name}: node names must become visible before traffic labels`)
+    assert.ok(await page.locator('.globe-traffic-label').evaluateAll(elements =>
+      elements.every(element => getComputedStyle(element).display === 'none')),
+    `${name}: traffic labels became visible too early`)
     await page.mouse.wheel(0, -2500)
-    await page.waitForTimeout(300)
+    await page.waitForFunction(() =>
+      document.querySelector('.globe-stage canvas')?.getAttribute('data-globe-cloud-level') === '2',
+    undefined, { timeout: 30_000 })
     assert.equal(await canvas.getAttribute('data-globe-cloud-level'), '2',
       `${name}: close zoom did not select the dense point cloud`)
+    assert.equal(await canvas.getAttribute('data-globe-boundary-scale'), '10m',
+      `${name}: close zoom did not select actual high-resolution boundary data`)
+    assert.ok(Number(await canvas.getAttribute('data-globe-boundary-source-vertices')) > lowBoundaryVertices * 5,
+      `${name}: zoom detail only subdivided old low-resolution boundaries`)
     const stageBounds = await page.locator('.globe-stage').boundingBox()
     assert.ok(stageBounds.x + stageBounds.width <= viewport.width + 1,
       `${name}: globe stage exceeds the viewport`)
-    assert.ok(await page.locator('.globe-node-label').evaluateAll(elements =>
-      elements.some(element => getComputedStyle(element).display !== 'none')),
-    `${name}: close zoom should display node names`)
+    await page.waitForFunction(() => [...document.querySelectorAll('.globe-node-label')]
+      .some(element => getComputedStyle(element).display !== 'none'))
+    await page.waitForFunction(() => [...document.querySelectorAll('.globe-traffic-label')]
+      .some(element => getComputedStyle(element).display !== 'none' && element.textContent.includes('bit/s')))
     assert.ok(await page.locator('.globe-traffic-label').evaluateAll(elements =>
-      elements.some(element => getComputedStyle(element).display !== 'none' && element.textContent.includes('bit/s'))),
-    `${name}: close zoom should display measured bidirectional traffic`)
+      elements.some(element => getComputedStyle(element).display !== 'none'
+        && !element.textContent.includes('RTT') && element.querySelector('.traffic-endpoints'))),
+    `${name}: traffic labels must use the cross layout with rates only`)
     await page.screenshot({ path: join(output, `${name}-close.png`), fullPage: true })
+    const savedDistance = Number(await canvas.getAttribute('data-globe-distance'))
+    const savedAzimuth = Number(await canvas.getAttribute('data-globe-azimuth'))
+    await page.waitForTimeout(600)
+    await page.reload()
+    await page.locator('.globe-stage canvas').waitFor()
+    await page.locator('.node-row').first().waitFor()
+    await page.waitForTimeout(600)
+    assert.ok(Math.abs(Number(await canvas.getAttribute('data-globe-distance')) - savedDistance) < 0.02,
+      `${name}: zoom did not survive page reload`)
+    assert.ok(Math.abs(Number(await canvas.getAttribute('data-globe-azimuth')) - savedAzimuth) < 0.02,
+      `${name}: camera orientation did not survive page reload`)
+    assert.equal(await page.getByRole('button', { name: 'Auto Rotate', exact: true }).count(), 1,
+    `${name}: rotation switch did not survive page reload`)
     await page.getByRole('button', { name: 'Reset View', exact: true }).click()
     await page.waitForTimeout(100)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)
@@ -203,7 +243,8 @@ try {
   jitter = true
   await page.waitForTimeout(5000)
   assert.equal(await page.locator('.node-row').count(), 4, 'Transient collection errors removed buffered nodes')
-  assert.match(await page.locator('.dashboard-error').innerText(), /unavailable/i)
+  assert.equal(await page.locator('.dashboard-error').count(), 0,
+    'Short collection errors must not display an incomplete-data warning')
   assert.ok(await page.locator('.node-row.stale').count() > 0, 'Buffered nodes must be marked stale')
   jitter = false
   await page.waitForTimeout(5000)

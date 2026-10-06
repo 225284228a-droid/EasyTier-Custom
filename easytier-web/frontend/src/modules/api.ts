@@ -64,8 +64,10 @@ export type ReadRequestOptions = Pick<AxiosRequestConfig, 'timeout' | 'signal'>;
 export class ApiClient {
     private client: AxiosInstance;
     private authFailedCb: Function | undefined;
+    public readonly persistenceScope: string;
 
     constructor(baseUrl: string, authFailedCb: Function | undefined = undefined) {
+        this.persistenceScope = baseUrl.replace(/\/+$/, '');
         this.client = axios.create({
             baseURL: baseUrl.replace(/\/+$/, '') + '/api/v1',
             withCredentials: true, // 如果需要支持跨域携带cookie
