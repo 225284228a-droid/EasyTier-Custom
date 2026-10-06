@@ -378,6 +378,17 @@ export interface NetworkInstanceRunningInfo {
   peer_route_pairs: PeerRoutePair[]
   running: boolean
   error_msg?: string
+  node_location?: NodeLocation
+  network_name?: string
+}
+
+export interface NodeLocation {
+  public_ip: string
+  country: string
+  city: string
+  region: string
+  latitude?: number
+  longitude?: number
 }
 
 export interface Ipv4Addr {
@@ -458,6 +469,7 @@ export interface PeerConnInfo {
   my_peer_id: number
   is_client: boolean
   peer_id: number
+  network_name?: string
   features: string[]
   tunnel?: TunnelInfo
   stats?: PeerConnStats

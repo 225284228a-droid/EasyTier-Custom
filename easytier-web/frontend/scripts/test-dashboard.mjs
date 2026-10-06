@@ -18,6 +18,7 @@ const locations = [
   { country: 'Singapore', latitude: 1.3, longitude: 103.8 },
   { country: 'Unknown' },
 ]
+let colocated = false
 const machineItems = locations.map((location, index) => ({
   client_url: `tcp://198.51.100.${index + 1}:11010`,
   location,
@@ -29,7 +30,16 @@ const machineItems = locations.map((location, index) => ({
 }))
 const snapshot = (index) => ({
   running: true,
+  network_name: 'qa-mesh',
   my_node_info: { peer_id: index + 1 },
+  node_location: {
+    public_ip: `203.0.113.${index + 1}`,
+    country: locations[index].country,
+    city: '',
+    region: '',
+    latitude: colocated ? 31.2 : locations[index].latitude,
+    longitude: colocated ? 121.5 : locations[index].longitude,
+  },
   routes: [0, 1, 2].filter(peer => peer !== index).map(peer => ({
     peer_id: peer + 1, inst_id: uuidString(peer + 11), cost: 1,
   })),
@@ -69,9 +79,12 @@ try {
   ]) {
     await page.setViewportSize(viewport)
     await page.goto(dashboardUrl)
+    await page.reload()
     const canvas = page.locator('.globe-stage canvas')
     await canvas.waitFor()
     await page.locator('.node-row').first().waitFor()
+    const summaries = await page.locator('.dashboard-summary strong').allTextContents()
+    assert.deepEqual(summaries, ['4', '1', '6'], `${name}: machines sharing a mesh must count as one network`)
     const globeControls = await canvas.evaluate((element) => ({
       rotateSpeed: Number(element.dataset.globeRotateSpeed),
       zoomSpeed: Number(element.dataset.globeZoomSpeed),
@@ -86,8 +99,8 @@ try {
       `${name}: wheel/pinch zoom should not use an aggressive default speed`)
     assert.ok(globeControls.minDistance < 1.7 && globeControls.maxDistance > 5,
       `${name}: globe zoom range should expose a closer high-detail view`)
-    assert.equal(globeControls.cloudLevels, '24000,72000',
-      `${name}: globe should advertise low/high detail cloud levels`)
+    assert.equal(globeControls.cloudLevels, '24000,96000,288000',
+      `${name}: globe should advertise adaptive point cloud levels`)
     const expectedAspect = name === 'desktop' ? '1.618' : '1.18'
     assert.match(globeControls.aspectRatio, new RegExp(expectedAspect),
       `${name}: globe stage should keep its responsive aspect ratio`)
@@ -106,13 +119,50 @@ try {
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
     await assert.doesNotReject(() => page.locator('.node-detail').waitFor())
     assert.match(await page.locator('.node-detail').innerText(), /-36\.80/)
+    assert.ok(await page.locator('.node-list').evaluate(element => element.clientHeight) > 40,
+      `${name}: node details collapsed the node list`)
+    await page.getByRole('button', { name: 'Pause Rotation', exact: true }).click()
+    const box = await canvas.boundingBox()
+    const azimuthBefore = await canvas.getAttribute('data-globe-azimuth')
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width / 2 + 24, box.y + box.height / 2, { steps: 5 })
+    await page.mouse.up()
+    await page.waitForTimeout(100)
+    const azimuthAfter = await canvas.getAttribute('data-globe-azimuth')
+    const angularChange = Math.abs(Math.atan2(
+      Math.sin(Number(azimuthAfter) - Number(azimuthBefore)),
+      Math.cos(Number(azimuthAfter) - Number(azimuthBefore)),
+    ))
+    assert.ok(angularChange > 0.015 && angularChange < 0.18, `${name}: a small drag caused excessive rotation`)
+    await page.waitForTimeout(300)
+    assert.equal(await canvas.getAttribute('data-globe-azimuth'), azimuthAfter,
+      `${name}: globe continued spinning after a manual drag`)
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.wheel(0, -2500)
+    await page.waitForTimeout(300)
+    assert.equal(await canvas.getAttribute('data-globe-cloud-level'), '2',
+      `${name}: close zoom did not select the dense point cloud`)
+    const stageBounds = await page.locator('.globe-stage').boundingBox()
+    assert.ok(stageBounds.x + stageBounds.width <= viewport.width + 1,
+      `${name}: globe stage exceeds the viewport`)
+    await page.screenshot({ path: join(output, `${name}-close.png`), fullPage: true })
+    await page.getByRole('button', { name: 'Reset View', exact: true }).click()
+    await page.waitForTimeout(100)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)
     assert.equal(overflow, false, `${name}: horizontal overflow`)
     await page.screenshot({ path: join(output, `${name}.png`), fullPage: true })
-    console.log(`${name}: ${landPixels} continent pixels; animation, selection and layout passed`)
+    console.log(`${name}: ${landPixels} continent pixels; rotation, zoom LOD, counts, selection and layout passed`)
   }
+  colocated = true
+  await page.reload()
+  await page.locator('.node-row').first().waitFor()
+  await page.waitForTimeout(800)
+  assert.equal(await page.locator('.globe-stage canvas').getAttribute('data-globe-invalid-flows'), '0',
+    'Colocated nodes generated invalid connection flow coordinates')
   empty = true
   await page.goto(dashboardUrl)
+  await page.reload()
   await page.locator('.node-empty').waitFor()
   assert.equal(await page.locator('.node-row').count(), 0)
   assert.deepEqual(errors, [])

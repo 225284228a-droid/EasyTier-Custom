@@ -13,6 +13,7 @@ const snapshots = ref<NetworkSnapshot[]>([])
 const loading = ref(false)
 const error = ref('')
 const topology = computed(() => buildTopology(machines.value, snapshots.value))
+const onlineDeviceCount = computed(() => machines.value.length)
 let mounted = false
 let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -72,8 +73,8 @@ onUnmounted(() => {
 <template>
   <div class="dashboard">
     <div class="dashboard-summary">
-      <div><span>{{ t('web.dashboard.devices') }}</span><strong>{{ machines.length }}</strong></div>
-      <div><span>{{ t('web.dashboard.networks') }}</span><strong>{{ snapshots.length }}</strong></div>
+      <div><span>{{ t('web.dashboard.devices') }}</span><strong>{{ onlineDeviceCount }}</strong></div>
+      <div><span>{{ t('web.dashboard.networks') }}</span><strong>{{ topology.networkIdentities.length }}</strong></div>
       <div><span>{{ t('web.dashboard.connections') }}</span><strong>{{ topology.links.length }}</strong></div>
     </div>
     <p v-if="error" role="status" class="dashboard-error">{{ error }}</p>

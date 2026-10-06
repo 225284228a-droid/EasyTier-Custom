@@ -86,7 +86,7 @@ export interface Location {
 
 export interface DeviceInfo {
     hostname: string;
-    public_ip: string;
+    public_ip: string | undefined;
     running_network_count: number;
     report_time: string;
     easytier_version: string;
@@ -99,7 +99,10 @@ export function buildDeviceInfo(device: any): DeviceInfo {
     const runningInstances = device.info?.running_network_instances ?? [];
     let dev_info: DeviceInfo = {
         hostname: device.info?.hostname,
-        public_ip: device.client_url,
+        // `client_url` is the config-server transport endpoint and can be a
+        // CDN/FRP address. The API now supplies the address learned by the
+        // connected EasyTier network as `public_ip`.
+        public_ip: device.public_ip,
         running_network_instances: runningInstances.map((instance: any) => UuidToStr(instance)),
         running_network_count: runningInstances.length,
         report_time: device.info?.report_time,

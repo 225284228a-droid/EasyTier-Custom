@@ -41,16 +41,19 @@ let activeCloudLevel = -1
 let frame = 0
 let lastFrame = 0
 let interacting = false
+let interactionStart: { x: number, y: number } | undefined
+let dragged = false
 let markerMeshes: THREE.Mesh[] = []
 let flows: { mesh: THREE.Mesh, curve: THREE.CatmullRomCurve3, offset: number }[] = []
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
+const markerViewPosition = new THREE.Vector3()
 const controlsConfig = {
-  rotateSpeed: 0.42,
+  rotateSpeed: 0.26,
   zoomSpeed: 0.78,
   minDistance: 1.25,
   maxDistance: 6.5,
-  autoRotateSpeed: 0.35,
+  autoRotateSpeed: 0.21,
 }
 
 function position(latitude: number, longitude: number, radius = 1) {
@@ -167,8 +170,8 @@ function buildPointCloud(
   }
   const group = new THREE.Group()
   for (const [points, color, size] of [
-    [land, 0x67d9b6, count > 30_000 ? 0.008 : 0.011],
-    [ocean, 0x465f65, count > 30_000 ? 0.0045 : 0.006],
+    [land, 0x67d9b6, count > 100_000 ? 0.0035 : count > 30_000 ? 0.006 : 0.011],
+    [ocean, 0x465f65, count > 100_000 ? 0.002 : count > 30_000 ? 0.0035 : 0.006],
   ] as const) {
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
@@ -183,8 +186,8 @@ function buildPointCloud(
 
 function buildCloud() {
   const map = document.createElement('canvas')
-  map.width = 1024
-  map.height = 512
+  map.width = 2048
+  map.height = 1024
   const context = map.getContext('2d')
   if (!context)
     return
@@ -196,15 +199,18 @@ function buildCloud() {
   context.fill()
   const pixels = context.getImageData(0, 0, map.width, map.height).data
   const lowDetail = buildPointCloud(map, pixels, 24_000, 4)
-  const highDetail = buildPointCloud(map, pixels, 72_000, 3)
+  const highDetail = buildPointCloud(map, pixels, 96_000, 3)
+  const closeDetail = buildPointCloud(map, pixels, 288_000, 3)
   lowDetail.visible = true
   highDetail.visible = false
+  closeDetail.visible = false
   cloudLevels = [
     { group: lowDetail, maxDistance: Number.POSITIVE_INFINITY },
     { group: highDetail, maxDistance: 2.45 },
+    { group: closeDetail, maxDistance: 1.55 },
   ]
   activeCloudLevel = 0
-  scene.add(lowDetail, highDetail)
+  scene.add(lowDetail, highDetail, closeDetail)
   globeSurface = new THREE.Mesh(
     new THREE.SphereGeometry(0.994, 64, 32),
     new THREE.MeshBasicMaterial({ color: 0x10191d }),
@@ -217,12 +223,26 @@ function updateCloudDetail() {
   if (!camera || !controls)
     return
   const distance = camera.position.distanceTo(controls.target)
-  const nextLevel = distance <= cloudLevels[1]?.maxDistance ? 1 : 0
+  // Match the projected front-surface displacement to pointer pixels, even
+  // when zoomed in, instead of applying a fixed angular drag multiplier.
+  controls.rotateSpeed = THREE.MathUtils.clamp(
+    (distance - 1) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.PI,
+    0.025,
+    0.6,
+  )
+  const nextLevel = distance <= cloudLevels[2]?.maxDistance ? 2
+    : distance <= cloudLevels[1]?.maxDistance ? 1 : 0
   if (nextLevel !== activeCloudLevel) {
     cloudLevels.forEach(({ group }, index) => {
       group.visible = index === nextLevel
     })
     activeCloudLevel = nextLevel
+  }
+  if (renderer) {
+    renderer.domElement.dataset.globeRotateSpeed = String(controls.rotateSpeed)
+    renderer.domElement.dataset.globeDistance = String(distance)
+    renderer.domElement.dataset.globeCloudLevel = String(nextLevel)
+    renderer.domElement.dataset.globeAzimuth = String(controls.getAzimuthalAngle())
   }
   if (boundaryMaterial) {
     const zoom = THREE.MathUtils.clamp((5 - distance) / 3.75, 0, 1)
@@ -230,8 +250,28 @@ function updateCloudDetail() {
   }
 }
 
-function beginInteraction() {
+function scaleMarker(mesh: THREE.Mesh, radius: number, pixels: number) {
+  if (!renderer)
+    return
+  markerViewPosition.copy(mesh.position).applyMatrix4(camera.matrixWorldInverse)
+  const unitsPerPixel = -markerViewPosition.z
+    * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))
+    / Math.max(1, renderer.domElement.clientHeight)
+  mesh.scale.setScalar(Math.max(0.001, unitsPerPixel * pixels / radius))
+}
+
+function beginInteraction(event: PointerEvent) {
   interacting = true
+  interactionStart = { x: event.clientX, y: event.clientY }
+  dragged = false
+  if (controls)
+    controls.autoRotate = false
+}
+
+function moveInteraction(event: PointerEvent) {
+  if (interacting && interactionStart
+    && Math.hypot(event.clientX - interactionStart.x, event.clientY - interactionStart.y) > 4)
+    dragged = true
 }
 
 function endInteraction() {
@@ -240,6 +280,23 @@ function endInteraction() {
 
 function linkCurve(source: THREE.Vector3, target: THREE.Vector3) {
   const angle = source.angleTo(target)
+  if (angle < 0.0001) {
+    // Country-only locations can coincide. Use a visible loop rather than
+    // a zero-length curve, whose arc-length sampling produces NaN positions.
+    const normal = source.clone().normalize()
+    const tangent = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0, 1, 0))
+    if (tangent.lengthSq() < 0.00001)
+      tangent.set(1, 0, 0)
+    tangent.normalize()
+    const side = new THREE.Vector3().crossVectors(normal, tangent).normalize()
+    const points = Array.from({ length: 49 }, (_, i) => {
+      const phase = i / 48 * Math.PI * 2
+      return normal.clone().multiplyScalar(1.018 + Math.sin(phase / 2) * 0.04)
+        .addScaledVector(tangent, Math.sin(phase) * 0.04)
+        .addScaledVector(side, (1 - Math.cos(phase)) * 0.025)
+    })
+    return new THREE.CatmullRomCurve3(points)
+  }
   let axis = new THREE.Vector3().crossVectors(source, target)
   if (axis.lengthSq() < 0.00001)
     axis = new THREE.Vector3().crossVectors(source, new THREE.Vector3(0, 1, 0))
@@ -272,6 +329,7 @@ function rebuildTopology() {
     )
     mesh.position.copy(position(node.latitude, node.longitude, 1.018))
     mesh.userData.nodeId = node.id
+    mesh.userData.radius = node.id === selectedId.value ? 0.025 : 0.018
     markerMeshes.push(mesh)
     topologyGroup.add(mesh)
   }
@@ -311,7 +369,7 @@ function resetView() {
 }
 
 function pickNode(event: MouseEvent) {
-  if (!renderer)
+  if (!renderer || dragged)
     return
   const bounds = renderer.domElement.getBoundingClientRect()
   pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1,
@@ -330,8 +388,16 @@ function animate(now: number) {
     const deltaSeconds = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 1 / 30
     controls.update(deltaSeconds)
     updateCloudDetail()
-    for (const flow of flows)
+    for (const mesh of markerMeshes)
+      scaleMarker(mesh, mesh.userData.radius, mesh.userData.nodeId === selectedId.value ? 7 : 5)
+    for (const flow of flows) {
       flow.mesh.position.copy(flow.curve.getPointAt((now / 5000 + flow.offset) % 1))
+      scaleMarker(flow.mesh, 0.009, 2)
+    }
+    renderer.domElement.dataset.globeInvalidFlows = String(
+      flows.filter(flow => ![flow.mesh.position.x, flow.mesh.position.y, flow.mesh.position.z]
+        .every(Number.isFinite)).length,
+    )
     renderer.render(scene, camera)
     lastFrame = now
   }
@@ -361,9 +427,10 @@ onMounted(() => {
     renderer.domElement.dataset.globeZoomSpeed = String(controlsConfig.zoomSpeed)
     renderer.domElement.dataset.globeMinDistance = String(controlsConfig.minDistance)
     renderer.domElement.dataset.globeMaxDistance = String(controlsConfig.maxDistance)
-    renderer.domElement.dataset.globeCloudLevels = '24000,72000'
+    renderer.domElement.dataset.globeCloudLevels = '24000,96000,288000'
     renderer.domElement.dataset.globePauseOnInteraction = 'true'
     renderer.domElement.addEventListener('pointerdown', beginInteraction)
+    renderer.domElement.addEventListener('pointermove', moveInteraction)
     window.addEventListener('pointerup', endInteraction)
     window.addEventListener('pointercancel', endInteraction)
     resetView()
@@ -394,6 +461,7 @@ onUnmounted(() => {
   resizeObserver?.disconnect()
   controls?.dispose()
   renderer?.domElement.removeEventListener('pointerdown', beginInteraction)
+  renderer?.domElement.removeEventListener('pointermove', moveInteraction)
   window.removeEventListener('pointerup', endInteraction)
   window.removeEventListener('pointercancel', endInteraction)
   renderer?.domElement.removeEventListener('click', pickNode)
@@ -444,6 +512,8 @@ onUnmounted(() => {
         </div>
         <div v-if="selectedNode" class="node-detail">
           <strong>{{ selectedNode.label }}</strong>
+          <span>Peer ID: {{ selectedNode.peerId }}</span>
+          <span v-if="selectedNode.publicIp">{{ selectedNode.publicIp }}</span>
           <span v-if="selectedLocation">{{ selectedLocation.latitude.toFixed(2) }},
             {{ selectedLocation.longitude.toFixed(2) }}</span>
           <span v-if="selectedLocation?.approximate">{{ t('web.dashboard.approximate') }}</span>
@@ -461,14 +531,14 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .topology-counts { font-size: 12px; color: var(--p-text-muted-color); }
 .topology-tools { display: flex; flex-shrink: 0; }
 .topology-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; }
-.globe-stage { position: relative; aspect-ratio: 1.618 / 1; min-height: 360px; max-height: 560px; min-width: 0; background: #10191d; overflow: hidden; }
+.globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: #10191d; overflow: hidden; }
 .globe-stage :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }
 .globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: #c6d9db; padding: 24px; text-align: center; }
 .globe-legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 16px; color: #d5e0df; font-size: 12px; pointer-events: none; }
 .globe-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .managed-dot, .peer-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: #ffcf67; }
 .peer-dot { background: #e99fc4; }
-.node-panel { display: flex; flex-direction: column; min-width: 0; height: 440px; border-left: 1px solid var(--p-content-border-color); }
+.node-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--p-content-border-color); }
 .node-list { flex: 1; min-height: 0; overflow: auto; }
 .node-row { display: grid; grid-template-columns: 8px minmax(0, 1fr); width: 100%; align-items: center; gap: 4px 8px; border: 0; border-bottom: 1px solid var(--p-content-border-color); padding: 12px; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
 .node-row:hover, .node-row.selected { background: var(--p-content-hover-background); }
@@ -479,7 +549,8 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 @media (max-width: 900px) {
   .topology-body { grid-template-columns: minmax(0, 1fr); }
   .globe-stage { aspect-ratio: 1.4 / 1; min-height: 320px; max-height: none; }
-  .node-panel { height: 200px; border-left: 0; border-top: 1px solid var(--p-content-border-color); }
+  .node-panel { height: auto; border-left: 0; border-top: 1px solid var(--p-content-border-color); }
+  .node-list { flex: none; max-height: 224px; }
 }
 @media (max-width: 480px) {
   .globe-stage { aspect-ratio: 1.18 / 1; min-height: 300px; }

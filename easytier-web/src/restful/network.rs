@@ -13,7 +13,7 @@ use easytier_core::management::remote_client::{
 };
 use sea_orm::DbErr;
 
-use crate::client_manager::session::Location;
+use crate::client_manager::{ClientManager, session::Location};
 use crate::db::UserIdInDb;
 
 use super::users::AuthSession;
@@ -113,6 +113,9 @@ struct PatchManagedNetworkConfigsJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListMachineItem {
     client_url: Option<url::Url>,
+    /// Address reported by the connected EasyTier network, not the
+    /// config-server transport endpoint (which may be a CDN/FRP proxy).
+    public_ip: Option<String>,
     info: Option<HeartbeatRequest>,
     location: Option<Location>,
 }
@@ -125,6 +128,93 @@ struct ListMachineJsonResp {
 pub struct NetworkApi;
 
 impl NetworkApi {
+    fn usable_node_ip(ip: &std::net::IpAddr) -> bool {
+        match ip {
+            std::net::IpAddr::V4(ip) => {
+                let octets = ip.octets();
+                !ip.is_unspecified()
+                    && !ip.is_loopback()
+                    && !ip.is_private()
+                    && !ip.is_link_local()
+                    && !ip.is_multicast()
+                    && !ip.is_broadcast()
+                    && octets[0] != 0
+                    && octets[0] < 240
+                    && !(octets[0] == 100 && (64..128).contains(&octets[1]))
+            }
+            std::net::IpAddr::V6(ip) => {
+                !ip.is_unspecified()
+                    && !ip.is_loopback()
+                    && !ip.is_unique_local()
+                    && !ip.is_unicast_link_local()
+                    && !ip.is_multicast()
+            }
+        }
+    }
+
+    fn node_public_ip(node: &MyNodeInfo) -> Option<std::net::IpAddr> {
+        // STUN is observed by the running mesh, whereas a web-console
+        // transport endpoint may belong to a CDN/FRP proxy.
+        node.stun_info
+            .as_ref()
+            .and_then(|stun| {
+                stun.public_ip
+                    .iter()
+                    .filter_map(|value| value.parse::<std::net::IpAddr>().ok())
+                    .find(Self::usable_node_ip)
+            })
+            .or_else(|| {
+                node.ips
+                    .as_ref()
+                    .and_then(|ips| ips.public_ipv4)
+                    .map(std::net::Ipv4Addr::from)
+                    .map(std::net::IpAddr::V4)
+                    .filter(Self::usable_node_ip)
+            })
+            .or_else(|| {
+                node.ips
+                    .as_ref()
+                    .and_then(|ips| ips.public_ipv6)
+                    .map(std::net::Ipv6Addr::from)
+                    .map(std::net::IpAddr::V6)
+                    .filter(Self::usable_node_ip)
+            })
+    }
+
+    async fn annotate_network_locations(
+        client_mgr: &ClientManager,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        response: &mut CollectNetworkInfoResponse,
+    ) {
+        let Some(info) = response.info.as_mut() else {
+            return;
+        };
+
+        for detail in info.map.values_mut() {
+            let Some(node) = detail.my_node_info.as_ref() else {
+                continue;
+            };
+            let Some(ip) = Self::node_public_ip(node) else {
+                continue;
+            };
+            let Some(location) = client_mgr.lookup_ip_location(ip) else {
+                continue;
+            };
+            client_mgr
+                .cache_network_location(user_id, machine_id, ip.to_string(), location.clone())
+                .await;
+            detail.node_location = Some(NodeLocation {
+                public_ip: ip.to_string(),
+                country: location.country,
+                city: location.city.unwrap_or_default(),
+                region: location.region.unwrap_or_default(),
+                latitude: location.latitude,
+                longitude: location.longitude,
+            });
+        }
+    }
+
     fn convert_managed_config_error(error: anyhow::Error) -> HttpHandleError {
         let (status, code, current_config_revision) =
             match error.downcast_ref::<crate::client_manager::ManagedConfigError>() {
@@ -212,14 +302,22 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
-        Ok(client_mgr
+        let mut response: CollectNetworkInfoResponse = client_mgr
             .handle_collect_network_info(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 Some(vec![inst_id]),
             )
             .await
             .map_err(convert_error)?
-            .into())
+            .into();
+        Self::annotate_network_locations(
+            &client_mgr,
+            Self::get_user_id(&auth_session)?,
+            machine_id,
+            &mut response,
+        )
+        .await;
+        Ok(Json(response))
     }
 
     async fn handle_collect_network_info(
@@ -228,14 +326,22 @@ impl NetworkApi {
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<CollectNetworkInfoJsonReq>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
-        Ok(client_mgr
+        let mut response: CollectNetworkInfoResponse = client_mgr
             .handle_collect_network_info(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 payload.inst_ids,
             )
             .await
             .map_err(convert_error)?
-            .into())
+            .into();
+        Self::annotate_network_locations(
+            &client_mgr,
+            Self::get_user_id(&auth_session)?,
+            machine_id,
+            &mut response,
+        )
+        .await;
+        Ok(Json(response))
     }
 
     async fn handle_list_network_instance_ids(
@@ -281,9 +387,41 @@ impl NetworkApi {
         for item in client_urls.iter() {
             let client_url = item.clone();
             let session = client_mgr.get_heartbeat_requests(&client_url).await;
-            let location = client_mgr.get_machine_location(&client_url).await;
+            if let Some(info) = &session
+                && !info.running_network_instances.is_empty()
+                && let Some(machine_id) = info.machine_id.map(uuid::Uuid::from)
+                && let Some(permit) = client_mgr
+                    .begin_network_location_refresh(user_id, machine_id)
+                    .await
+            {
+                let manager = client_mgr.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Ok(Ok(mut response)) = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        manager.handle_collect_network_info((user_id, machine_id), None),
+                    )
+                    .await
+                    {
+                        Self::annotate_network_locations(
+                            &manager,
+                            user_id,
+                            machine_id,
+                            &mut response,
+                        )
+                        .await;
+                    }
+                });
+            }
+            let cached_location = client_mgr.cached_network_location(&client_url).await;
+            let (public_ip, location) = cached_location
+                .map(|(ip, location)| (Some(ip), Some(location)))
+                .unwrap_or_default();
             machines.push(ListMachineItem {
                 client_url: Some(client_url),
+                // Location refreshes are bounded and cached; the transport
+                // URL is never used as the node address.
+                public_ip,
                 info: session,
                 location,
             });
@@ -496,11 +634,13 @@ impl NetworkApi {
         Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
         Json(payload): Json<CollectNetworkInfoJsonReq>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
-        Ok(client_mgr
+        let mut response = client_mgr
             .handle_collect_network_info((user_id, machine_id), payload.inst_ids)
             .await
             .map_err(convert_error)?
-            .into())
+            .into();
+        Self::annotate_network_locations(&client_mgr, user_id, machine_id, &mut response).await;
+        Ok(Json(response))
     }
 
     pub fn build_route_internal() -> Router<AppStateInner> {
@@ -560,6 +700,72 @@ impl NetworkApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_public_ip_prefers_network_stun_address() {
+        let node = MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec!["203.0.113.10".to_string()],
+                ..Default::default()
+            }),
+            ips: Some(easytier::proto::peer_rpc::GetIpListResponse {
+                public_ipv4: Some(std::net::Ipv4Addr::new(198, 51, 100, 20).into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            NetworkApi::node_public_ip(&node),
+            Some("203.0.113.10".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn node_public_ip_ignores_unusable_stun_addresses() {
+        let node = MyNodeInfo {
+            stun_info: Some(easytier::proto::common::StunInfo {
+                public_ip: vec![
+                    "proxy.example.com".to_string(),
+                    "0.0.0.0".to_string(),
+                    "127.0.0.1".to_string(),
+                    "10.0.0.1".to_string(),
+                    "100.64.0.1".to_string(),
+                    "fd00::1".to_string(),
+                ],
+                ..Default::default()
+            }),
+            ips: Some(easytier::proto::peer_rpc::GetIpListResponse {
+                public_ipv4: Some(std::net::Ipv4Addr::new(198, 51, 100, 20).into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            NetworkApi::node_public_ip(&node),
+            Some("198.51.100.20".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn node_public_ip_rejects_default_or_loopback_node_addresses() {
+        let empty = MyNodeInfo {
+            ips: Some(easytier::proto::peer_rpc::GetIpListResponse {
+                public_ipv4: Some(std::net::Ipv4Addr::UNSPECIFIED.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(NetworkApi::node_public_ip(&empty), None);
+
+        let local = MyNodeInfo {
+            ips: Some(easytier::proto::peer_rpc::GetIpListResponse {
+                public_ipv4: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(NetworkApi::node_public_ip(&local), None);
+    }
 
     #[test]
     fn revision_conflict_response_exposes_machine_readable_current_revision() {

@@ -174,6 +174,15 @@ message MyNodeInfo {
   uint32 peer_id = 8;
 }
 
+message NodeLocation {
+  string public_ip = 1;
+  string country = 2;
+  string city = 3;
+  string region = 4;
+  optional double latitude = 5;
+  optional double longitude = 6;
+}
+
 message NetworkInstanceRunningInfo {
   string dev_name = 1;
   MyNodeInfo my_node_info = 2;
@@ -184,6 +193,8 @@ message NetworkInstanceRunningInfo {
   bool running = 7;
   optional string error_msg = 8;
   peer_rpc.RouteForeignNetworkSummary foreign_network_summary = 9;
+  NodeLocation node_location = 10;
+  string network_name = 11;
 }
 
 message NetworkInstanceRunningInfoMap {

@@ -13,6 +13,8 @@ const BANDWIDTH_BUCKET_COUNT: usize =
 const BANDWIDTH_MIN_BYTES: u64 = 4_096;
 const BANDWIDTH_MIN_PACKETS: u32 = 4;
 const BANDWIDTH_MIN_SPAN: Duration = Duration::from_millis(100);
+const BANDWIDTH_FALLBACK_MIN_BYTES: u64 = 1_024;
+const BANDWIDTH_ESTIMATE_TTL: Duration = Duration::from_secs(300);
 
 pub struct WindowLatency {
     latency_us_window: Vec<AtomicU32>,
@@ -156,8 +158,10 @@ impl Throughput {
     ///
     /// This passive capacity hint is based on observed payload traffic, not
     /// an active speed test or an acknowledgement-derived delivery rate.
-    /// Sparse or very short transfers provide insufficient evidence and
-    /// return zero; it does not measure unused headroom.
+    /// Sparse transfers use the average over observed payload samples, with
+    /// a minimum 200 ms span. Sampling retains usable estimates for five
+    /// minutes, independently of whether statistics are being queried.
+    /// It does not measure unused headroom.
     pub fn estimated_tx_bps(&self) -> u64 {
         self.bandwidth
             .lock()
@@ -177,6 +181,9 @@ impl Throughput {
 struct BandwidthWindow {
     started_at: Instant,
     buckets: [BandwidthBucket; BANDWIDTH_BUCKET_COUNT],
+    aggregate_sequence: Option<u64>,
+    tx: DirectionBandwidth,
+    rx: DirectionBandwidth,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -192,6 +199,65 @@ struct DirectionSample {
     packets: u32,
     first_at: Option<Instant>,
     last_at: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct DirectionBandwidth {
+    aggregate: DirectionSample,
+    recent_peak: Option<(u64, Instant)>,
+    retained_peak: Option<(u64, Instant)>,
+    retained_sparse: Option<(u64, Instant)>,
+}
+
+impl DirectionBandwidth {
+    fn reset_recent(&mut self) {
+        self.aggregate = DirectionSample::default();
+        self.recent_peak = None;
+    }
+
+    fn merge_peak(&mut self, sample: &DirectionSample) {
+        let rate = sample.estimate();
+        let Some(observed_at) = sample.last_at.filter(|_| rate > 0) else {
+            return;
+        };
+        if self
+            .recent_peak
+            .is_none_or(|(peak, at)| rate > peak || (rate == peak && observed_at > at))
+        {
+            self.recent_peak = Some((rate, observed_at));
+        }
+    }
+
+    fn aggregate_with(&mut self, sample: &DirectionSample) {
+        self.aggregate.aggregate_with(sample);
+        self.merge_peak(sample);
+    }
+
+    fn record(&mut self, now: Instant, bytes: u64, bucket: &DirectionSample) {
+        if bytes == 0 {
+            return;
+        }
+        self.aggregate.record(now, bytes);
+        self.merge_peak(bucket);
+        if let Some(peak) = self.recent_peak {
+            self.retained_peak = Some(peak);
+        }
+        let rate = self.aggregate.aggregate_estimate();
+        if let Some(observed_at) = self.aggregate.last_at.filter(|_| rate > 0) {
+            self.retained_sparse = Some((rate, observed_at));
+        }
+    }
+
+    fn retained_estimate(&self, now: Instant) -> u64 {
+        [self.retained_peak, self.retained_sparse]
+            .into_iter()
+            .flatten()
+            .find(|(_, observed_at)| {
+                now.saturating_duration_since(*observed_at) < BANDWIDTH_ESTIMATE_TTL
+            })
+            .map(|(rate, _)| rate)
+            .unwrap_or_default()
+    }
 }
 
 impl DirectionSample {
@@ -219,6 +285,31 @@ impl DirectionSample {
         ((u128::from(self.bytes) * 8 * 1_000_000_000) / BANDWIDTH_BUCKET.as_nanos())
             .min(u128::from(u64::MAX)) as u64
     }
+
+    fn aggregate_with(&mut self, other: &Self) {
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.packets = self.packets.saturating_add(other.packets);
+        self.first_at = match (self.first_at, other.first_at) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        self.last_at = match (self.last_at, other.last_at) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (left, right) => left.or(right),
+        };
+    }
+
+    fn aggregate_estimate(&self) -> u64 {
+        let (Some(first), Some(last)) = (self.first_at, self.last_at) else {
+            return 0;
+        };
+        if self.bytes < BANDWIDTH_FALLBACK_MIN_BYTES || self.packets == 0 {
+            return 0;
+        }
+        let elapsed = last.saturating_duration_since(first).max(BANDWIDTH_BUCKET);
+        ((u128::from(self.bytes) * 8 * 1_000_000_000) / elapsed.as_nanos())
+            .min(u128::from(u64::MAX)) as u64
+    }
 }
 
 impl Default for BandwidthWindow {
@@ -232,6 +323,9 @@ impl BandwidthWindow {
         Self {
             started_at,
             buckets: [BandwidthBucket::default(); BANDWIDTH_BUCKET_COUNT],
+            aggregate_sequence: None,
+            tx: DirectionBandwidth::default(),
+            rx: DirectionBandwidth::default(),
         }
     }
 
@@ -242,6 +336,18 @@ impl BandwidthWindow {
 
     fn record(&mut self, now: Instant, tx_bytes: u64, rx_bytes: u64) {
         let sequence = self.sequence(now);
+        if self.aggregate_sequence != Some(sequence) {
+            // Rebuild only when the bucket changes; packet updates stay O(1).
+            self.tx.reset_recent();
+            self.rx.reset_recent();
+            for bucket in &self.buckets {
+                if Self::is_recent(bucket, sequence) {
+                    self.tx.aggregate_with(&bucket.tx);
+                    self.rx.aggregate_with(&bucket.rx);
+                }
+            }
+            self.aggregate_sequence = Some(sequence);
+        }
         let bucket = &mut self.buckets[sequence as usize % BANDWIDTH_BUCKET_COUNT];
         if bucket.sequence != Some(sequence) {
             *bucket = BandwidthBucket {
@@ -251,21 +357,20 @@ impl BandwidthWindow {
         }
         bucket.tx.record(now, tx_bytes);
         bucket.rx.record(now, rx_bytes);
+        self.tx.record(now, tx_bytes, &bucket.tx);
+        self.rx.record(now, rx_bytes, &bucket.rx);
+    }
+
+    fn is_recent(bucket: &BandwidthBucket, sequence: u64) -> bool {
+        bucket.sequence.is_some_and(|recorded| {
+            recorded <= sequence && sequence - recorded < BANDWIDTH_BUCKET_COUNT as u64
+        })
     }
 
     fn estimate(&self, now: Instant, tx: bool) -> u64 {
-        let sequence = self.sequence(now);
-        self.buckets
-            .iter()
-            .filter(|bucket| {
-                bucket.sequence.is_some_and(|recorded| {
-                    recorded <= sequence && sequence - recorded < BANDWIDTH_BUCKET_COUNT as u64
-                })
-            })
-            .map(|bucket| if tx { &bucket.tx } else { &bucket.rx })
-            .map(DirectionSample::estimate)
-            .max()
-            .unwrap_or_default()
+        // Sampling retains both confidence levels, so querying cannot create
+        // or prolong an estimate and later sparse traffic is not discarded.
+        (if tx { &self.tx } else { &self.rx }).retained_estimate(now)
     }
 }
 
@@ -324,8 +429,15 @@ mod tests {
             window.estimate(start + Duration::from_secs(9), true),
             320_000
         );
-        assert_eq!(window.estimate(start + BANDWIDTH_WINDOW, true), 0);
-        assert_eq!(window.estimate(start + BANDWIDTH_WINDOW, false), 0);
+        assert_eq!(window.estimate(start + BANDWIDTH_WINDOW, true), 320_000);
+        assert_eq!(
+            window.estimate(start + BANDWIDTH_ESTIMATE_TTL + BANDWIDTH_BUCKET, true),
+            0
+        );
+        assert_eq!(
+            window.estimate(start + BANDWIDTH_ESTIMATE_TTL + BANDWIDTH_BUCKET, false),
+            0
+        );
     }
 
     #[test]
@@ -335,7 +447,7 @@ mod tests {
         record_transfer(&mut window, start, 2_000, 0);
         window.record(start, 0, 100_000);
         assert_eq!(window.estimate(start + BANDWIDTH_BUCKET, true), 320_000);
-        assert_eq!(window.estimate(start + BANDWIDTH_BUCKET, false), 0);
+        assert!(window.estimate(start + BANDWIDTH_BUCKET, false) > 0);
 
         record_transfer(&mut window, start + BANDWIDTH_BUCKET, 0, 3_000);
         assert_eq!(
@@ -349,10 +461,118 @@ mod tests {
         let start = Instant::now();
         let mut window = BandwidthWindow::new(start);
         for offset_ms in [0, 10, 20, 30] {
-            window.record(start + Duration::from_millis(offset_ms), 50_000, 500);
+            window.record(start + Duration::from_millis(offset_ms), 128, 128);
         }
         assert_eq!(window.estimate(start + BANDWIDTH_BUCKET, true), 0);
         assert_eq!(window.estimate(start + BANDWIDTH_BUCKET, false), 0);
+    }
+
+    #[test]
+    fn bandwidth_window_reports_recent_sparse_business_average() {
+        let start = Instant::now();
+        let mut window = BandwidthWindow::new(start);
+        window.record(start, 1_024, 2_048);
+        assert_eq!(
+            window.estimate(start + Duration::from_secs(1), true),
+            40_960
+        );
+        assert_eq!(
+            window.estimate(start + Duration::from_secs(1), false),
+            81_920
+        );
+        assert_eq!(
+            window.estimate(start + Duration::from_secs(30), true),
+            40_960
+        );
+        assert_eq!(window.estimate(start + BANDWIDTH_ESTIMATE_TTL, true), 0);
+    }
+
+    #[test]
+    fn bandwidth_window_retains_samples_before_first_query() {
+        let start = Instant::now();
+        let mut window = BandwidthWindow::new(start);
+        record_transfer(&mut window, start, 2_000, 0);
+        window.record(start, 0, 1_024);
+
+        assert_eq!(
+            window.estimate(start + Duration::from_secs(30), true),
+            320_000
+        );
+        assert_eq!(
+            window.estimate(start + Duration::from_secs(30), false),
+            40_960
+        );
+    }
+
+    #[test]
+    fn bandwidth_window_updates_sparse_samples_and_their_expiry() {
+        let start = Instant::now();
+        let mut window = BandwidthWindow::new(start);
+        window.record(start, 1_024, 0);
+        assert_eq!(
+            window.estimate(start + Duration::from_secs(1), true),
+            40_960
+        );
+
+        let latest = start + Duration::from_secs(60);
+        window.record(latest, 2_048, 0);
+        assert_eq!(
+            window.estimate(latest + Duration::from_secs(1), true),
+            81_920
+        );
+        assert_eq!(
+            window.estimate(start + BANDWIDTH_ESTIMATE_TTL, true),
+            81_920
+        );
+        assert_eq!(window.estimate(latest + BANDWIDTH_ESTIMATE_TTL, true), 0);
+    }
+
+    #[test]
+    fn bandwidth_window_aggregates_sparse_payloads_across_buckets() {
+        let start = Instant::now();
+        let mut window = BandwidthWindow::new(start);
+        window.record(start, 512, 0);
+        window.record(start + Duration::from_secs(1), 512, 0);
+        assert_eq!(window.estimate(start + Duration::from_secs(1), true), 8_192);
+
+        window.record(start + Duration::from_secs(2), 512, 0);
+        assert_eq!(
+            window.estimate(start + Duration::from_secs(30), true),
+            6_144
+        );
+        assert_eq!(window.estimate(start + Duration::from_secs(30), false), 0);
+    }
+
+    #[test]
+    fn bandwidth_window_other_direction_does_not_extend_estimate() {
+        let start = Instant::now();
+        let mut window = BandwidthWindow::new(start);
+        window.record(start, 1_024, 0);
+        window.record(start + Duration::from_secs(290), 0, 1_024);
+        assert_eq!(window.estimate(start + BANDWIDTH_ESTIMATE_TTL, true), 0);
+        assert_eq!(
+            window.estimate(start + BANDWIDTH_ESTIMATE_TTL, false),
+            40_960
+        );
+    }
+
+    #[test]
+    fn bandwidth_window_keeps_later_sparse_sample_after_peak_expires() {
+        let start = Instant::now();
+        let mut window = BandwidthWindow::new(start);
+        record_transfer(&mut window, start, 2_000, 0);
+        let latest = start + Duration::from_secs(290);
+        window.record(latest, 1_024, 0);
+
+        assert_eq!(
+            window.estimate(start + BANDWIDTH_ESTIMATE_TTL, true),
+            320_000
+        );
+        assert_eq!(
+            window.estimate(start + BANDWIDTH_ESTIMATE_TTL + BANDWIDTH_BUCKET, true),
+            40_960
+        );
+        assert_eq!(window.estimate(latest + BANDWIDTH_ESTIMATE_TTL, true), 0);
     }
 
     #[test]

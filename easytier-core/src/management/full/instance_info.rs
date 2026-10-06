@@ -55,6 +55,17 @@ where
         .toml_config()
         .map(|config| config.get_flags().dev_name)
         .unwrap_or_default();
+    let network_name = instance
+        .toml_config()
+        .map(|config| config.get_network_identity().network_name)
+        .or_else(|| {
+            peers
+                .iter()
+                .flat_map(|peer| &peer.conns)
+                .find(|conn| !conn.network_name.is_empty())
+                .map(|conn| conn.network_name.clone())
+        })
+        .unwrap_or_default();
 
     Ok(NetworkInstanceRunningInfo {
         dev_name,
@@ -76,5 +87,8 @@ where
         running,
         error_msg: instance.latest_error(),
         foreign_network_summary: Some(instance.foreign_network_route_summary().await),
+        // GeoIP is resolved by the web server from this node's observed IP.
+        node_location: None,
+        network_name,
     })
 }

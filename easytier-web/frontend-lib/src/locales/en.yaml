@@ -414,6 +414,7 @@ web:
     sort_direction_desc: Currently descending, click to switch to ascending
     hostname: Hostname
     public_ip: Public IP
+    unknown_ip: Unknown IP
     networks: Network Count
     last_report: Last Seen
     version: Version

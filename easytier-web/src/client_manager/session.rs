@@ -33,6 +33,7 @@ mod webhook_validation;
 const WEBHOOK_VALIDATION_HEARTBEAT_INTERVAL: u32 = 10;
 const CONNECTED_WEBHOOK_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(100), Duration::from_millis(500)];
+const NETWORK_LOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
@@ -140,6 +141,8 @@ pub struct SessionData {
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
+    network_location: Option<(String, Location)>,
+    network_location_checked_at: Option<Instant>,
     heartbeat_count: std::sync::atomic::AtomicU32,
     session_identity: Option<HeartbeatIdentity>,
     auth_state: SessionAuthState,
@@ -172,6 +175,8 @@ impl SessionData {
             notifier: tx,
             req: None,
             location,
+            network_location: None,
+            network_location_checked_at: None,
             heartbeat_count: std::sync::atomic::AtomicU32::new(0),
             session_identity: None,
             auth_state: SessionAuthState::Init,
@@ -203,6 +208,26 @@ impl SessionData {
 
     pub fn location(&self) -> Option<&Location> {
         self.location.as_ref()
+    }
+
+    pub fn network_location(&self) -> Option<&(String, Location)> {
+        self.network_location.as_ref()
+    }
+
+    pub fn set_network_location(&mut self, public_ip: String, location: Location) {
+        self.network_location = Some((public_ip, location));
+        self.network_location_checked_at = Some(Instant::now());
+    }
+
+    pub fn claim_network_location_refresh(&mut self, now: Instant) -> bool {
+        if self.network_location_checked_at.is_some_and(|last| {
+            now.saturating_duration_since(last) < NETWORK_LOCATION_REFRESH_INTERVAL
+        }) {
+            return false;
+        }
+        // Record attempts too, so unavailable nodes cannot cause RPC storms.
+        self.network_location_checked_at = Some(now);
+        true
     }
 
     fn managed_runtime(&self) -> MutexGuard<'_, ManagedRuntimeState> {
@@ -1195,6 +1220,27 @@ mod tests {
                 None, None, None, None, None,
             )),
         )
+    }
+
+    #[tokio::test]
+    async fn network_location_refresh_is_throttled_without_a_cached_result() {
+        let mut data = failure_state_test_data().await;
+        let now = Instant::now();
+        assert!(data.claim_network_location_refresh(now));
+        assert!(!data.claim_network_location_refresh(now + Duration::from_secs(59)));
+        assert!(data.claim_network_location_refresh(now + Duration::from_secs(60)));
+        data.set_network_location(
+            "8.8.8.8".to_string(),
+            Location {
+                country: "United States".to_string(),
+                city: None,
+                region: None,
+                latitude: None,
+                longitude: None,
+            },
+        );
+        assert_eq!(data.network_location().unwrap().0, "8.8.8.8");
+        assert!(!data.claim_network_location_refresh(Instant::now()));
     }
 
     #[tokio::test]

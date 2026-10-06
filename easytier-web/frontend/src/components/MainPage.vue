@@ -176,6 +176,11 @@ onUnmounted(() => {
                 </RouterView>
             </div>
         </div>
+        <footer class="geoip-attribution">
+            IP geolocation by <a href="https://db-ip.com/" target="_blank" rel="noopener noreferrer">DB-IP</a>
+            (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank"
+                rel="noopener noreferrer">CC BY 4.0</a>)
+        </footer>
     </div>
 </template>
 
@@ -183,5 +188,13 @@ onUnmounted(() => {
 .sidebar-button {
     text-align: left;
     justify-content: left;
+}
+.geoip-attribution {
+    margin-top: 12px;
+    color: var(--p-text-muted-color);
+    font-size: 11px;
+}
+.geoip-attribution a {
+    text-decoration: underline;
 }
 </style>

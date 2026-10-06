@@ -414,6 +414,7 @@ web:
     sort_direction_desc: 当前降序，点击切换为升序
     hostname: 主机名
     public_ip: 公网IP
+    unknown_ip: 未知IP
     networks: 网络数量
     last_report: 最后在线
     version: 版本

@@ -108,7 +108,7 @@ impl HeartbeatPolicy {
 
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
-#[include = "geoip2-cn.mmdb"]
+#[include = "dbip-country-lite-2026-10.mmdb"]
 struct GeoipDb;
 
 fn load_geoip_db(geoip_db: Option<String>) -> Option<maxminddb::Reader<Vec<u8>>> {
@@ -124,7 +124,7 @@ fn load_geoip_db(geoip_db: Option<String>) -> Option<maxminddb::Reader<Vec<u8>>>
             }
         }
     } else {
-        let db = GeoipDb::get("geoip2-cn.mmdb").unwrap();
+        let db = GeoipDb::get("dbip-country-lite-2026-10.mmdb").unwrap();
         let reader = maxminddb::Reader::from_source(db.data.to_vec()).ok()?;
         tracing::info!("Successfully loaded GeoIP2 database from embedded file");
         Some(reader)
@@ -145,6 +145,7 @@ pub struct ClientManager {
     webhook_config: SharedWebhookConfig,
 
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+    network_location_refresh_slots: Arc<tokio::sync::Semaphore>,
     heartbeat_policy: HeartbeatPolicy,
 }
 
@@ -188,6 +189,7 @@ impl ClientManager {
             webhook_config,
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
+            network_location_refresh_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             heartbeat_policy,
         }
     }
@@ -444,6 +446,57 @@ impl ClientManager {
         s.data().read().await.location().cloned()
     }
 
+    pub fn lookup_ip_location(&self, ip: std::net::IpAddr) -> Option<Location> {
+        Self::lookup_ip(ip, self.geoip_db.clone())
+    }
+
+    pub async fn cached_network_location(
+        &self,
+        client_url: &url::Url,
+    ) -> Option<(String, Location)> {
+        let session = self.client_sessions.get(client_url)?.clone();
+        session.data().read().await.network_location().cloned()
+    }
+
+    pub async fn cache_network_location(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+        public_ip: String,
+        location: Location,
+    ) {
+        if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
+            session
+                .data()
+                .write()
+                .await
+                .set_network_location(public_ip, location);
+        }
+    }
+
+    pub async fn begin_network_location_refresh(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let permit = self
+            .network_location_refresh_slots
+            .clone()
+            .try_acquire_owned()
+            .ok()?;
+        let session = self.get_session_by_machine_id(user_id, &machine_id)?;
+        if session
+            .data()
+            .write()
+            .await
+            .claim_network_location_refresh(std::time::Instant::now())
+        {
+            Some(permit)
+        } else {
+            None
+        }
+    }
+
     fn db(&self) -> &Db {
         self.storage.db()
     }
@@ -459,7 +512,13 @@ impl ClientManager {
             tracing::debug!("Failed to parse host as IP address: {}", host);
             return None;
         };
+        Self::lookup_ip(ip, geoip_db)
+    }
 
+    fn lookup_ip(
+        ip: std::net::IpAddr,
+        geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+    ) -> Option<Location> {
         // Skip lookup for private/special IPs
         let is_private = match ip {
             std::net::IpAddr::V4(ipv4) => {
@@ -491,6 +550,7 @@ impl ClientManager {
                         .names
                         .simplified_chinese
                         .or(city.country.names.english)
+                        .or(city.country.iso_code)
                         .unwrap_or("海外")
                         .to_string();
                     let city_name = city
@@ -1086,6 +1146,36 @@ mod tests {
     };
 
     const MANAGED_CONFIG_TOKEN: &str = "managed-config-token";
+
+    #[test]
+    fn embedded_geoip_location_covers_global_ipv4_and_ipv6() {
+        let db = Arc::new(super::load_geoip_db(None));
+        let mut countries = std::collections::HashSet::new();
+        for ip in ["223.5.5.5", "8.8.8.8", "2001:4860:4860::8888"] {
+            let ip = ip.parse().unwrap();
+            let country = db
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .lookup(ip)
+                .unwrap()
+                .decode::<maxminddb::geoip2::Country>()
+                .unwrap()
+                .unwrap();
+            let code = country.country.iso_code.unwrap();
+            assert_eq!(code.len(), 2);
+            assert!(code.bytes().all(|value| value.is_ascii_uppercase()));
+            countries.insert(code.to_string());
+            let location = ClientManager::lookup_ip(ip, db.clone()).unwrap();
+            assert_ne!(location.country, "海外");
+            assert!(location.latitude.is_none());
+            assert!(location.longitude.is_none());
+        }
+        // Anycast locations vary between database releases. Require genuine
+        // global coverage instead of pinning their geography to ownership.
+        assert!(countries.contains("CN"));
+        assert!(countries.len() >= 2);
+    }
 
     #[test]
     fn heartbeat_policy_validates_server_configuration() {

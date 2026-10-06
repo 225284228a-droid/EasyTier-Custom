@@ -1,18 +1,21 @@
 import type { GeoPermissibleObjects } from 'd3-geo'
 import world from '../assets/world-countries.json'
+import countryLabels from '../assets/world-country-labels.json'
 import type { TopologyNode } from './networkTopology'
 
 export const worldGeography = world as unknown as GeoPermissibleObjects
-const countryNames = new Map<string, (typeof world.features)[number]>()
-for (const feature of world.features) {
-  const { en, zh, iso } = feature.properties
-  countryNames.set(en, feature)
-  countryNames.set(zh, feature)
+const countryNames = new Map<string, { latitude: number, longitude: number }>()
+for (const reference of [...countryLabels, ...world.features.map(feature => feature.properties)]) {
+  const { en, zh, iso } = reference
+  countryNames.set(en, reference)
+  countryNames.set(zh, reference)
+  if (/^[A-Z]{2}$/.test(iso))
+    countryNames.set(iso, reference)
   if (/^[A-Z]{2}$/.test(iso) && typeof Intl.DisplayNames === 'function') {
     for (const locale of ['en', 'zh']) {
       const name = new Intl.DisplayNames([locale], { type: 'region' }).of(iso)
       if (name)
-        countryNames.set(name, feature)
+        countryNames.set(name, reference)
     }
   }
 }
@@ -34,8 +37,8 @@ export function locateNode(node: TopologyNode): LocatedNode | undefined {
     return undefined
   return {
     ...node,
-    latitude: country.properties.latitude,
-    longitude: country.properties.longitude,
+    latitude: country.latitude,
+    longitude: country.longitude,
     approximate: true,
   }
 }

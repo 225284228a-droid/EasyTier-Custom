@@ -24,7 +24,7 @@ defineProps<{
     </div>
     <div class="detail-item public-ip">
       <div class="detail-label">{{ t('web.device.public_ip') }}</div>
-      <div class="detail-value">{{ device.public_ip }}</div>
+      <div class="detail-value">{{ device.public_ip || t('web.device.unknown_ip') }}</div>
     </div>
     <div class="detail-item running-networks">
       <div class="detail-label">{{ t('web.device.networks') }}</div>
