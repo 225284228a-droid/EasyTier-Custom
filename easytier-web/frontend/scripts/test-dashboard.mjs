@@ -18,7 +18,11 @@ const locations = [
   { country: 'Singapore', latitude: 1.3, longitude: 103.8 },
   { country: 'Unknown' },
 ]
+const trafficStarted = Date.now()
+let jitter = false
 let colocated = false
+let hangNext = false
+let hungRoute
 const machineItems = locations.map((location, index) => ({
   client_url: `tcp://198.51.100.${index + 1}:11010`,
   location,
@@ -35,7 +39,7 @@ const snapshot = (index) => ({
   node_location: {
     public_ip: `203.0.113.${index + 1}`,
     country: locations[index].country,
-    city: '',
+    city: ['Shanghai', 'Auckland', 'Singapore', ''][index],
     region: '',
     latitude: colocated ? 31.2 : locations[index].latitude,
     longitude: colocated ? 121.5 : locations[index].longitude,
@@ -45,7 +49,15 @@ const snapshot = (index) => ({
   })),
   peers: [0, 1, 2].filter(peer => peer !== index).map(peer => ({
     peer_id: peer + 1,
-    conns: [{ conn_id: uuidString(peer + 101), is_closed: false, tunnel: { tunnel_type: 'udp' } }],
+    conns: [{
+      conn_id: uuidString(peer + 101), is_closed: false, tunnel: { tunnel_type: 'udp' },
+      stats: {
+        tx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
+          * (index < peer ? 2_500_000 : 25_000))),
+        rx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
+          * (index < peer ? 25_000 : 2_500_000))),
+      },
+    }],
   })),
 })
 
@@ -67,6 +79,15 @@ try {
     } else if (pathname.endsWith('/networks/info')) {
       assert.equal(route.request().method(), 'POST')
       const id = Number.parseInt(pathname.match(/machines\/([^/]+)/)[1].replaceAll('-', ''), 16)
+      if (hangNext && id === 2) {
+        hangNext = false
+        hungRoute = route
+        return
+      }
+      if (jitter && id === 2) {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"temporary"}' })
+        return
+      }
       body = { info: { map: { [uuidString(id + 10)]: snapshot(id - 1) } } }
     }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
@@ -116,11 +137,29 @@ try {
     assert.ok(landPixels > 400, `${name}: globe has no visible continent point cloud`)
     await page.waitForTimeout(1200)
     assert.notDeepEqual(await canvas.screenshot(), first, `${name}: animation is static`)
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('.globe-stage canvas')
+      return Number(canvas?.getAttribute('data-globe-forward-particles')) > 0
+        && Number(canvas?.getAttribute('data-globe-reverse-particles')) > 0
+    })
+    assert.ok(Number(await canvas.getAttribute('data-globe-forward-particles'))
+      > Number(await canvas.getAttribute('data-globe-reverse-particles')),
+      `${name}: flow particle density must follow directional measured traffic`)
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
     await assert.doesNotReject(() => page.locator('.node-detail').waitFor())
     assert.match(await page.locator('.node-detail').innerText(), /-36\.80/)
     assert.ok(await page.locator('.node-list').evaluate(element => element.clientHeight) > 40,
       `${name}: node details collapsed the node list`)
+    const panelHeight = await page.locator('.node-panel').evaluate(element => element.clientHeight)
+    const mapHeight = await page.locator('.globe-stage').evaluate(element => element.clientHeight)
+    assert.ok(Math.abs(panelHeight - mapHeight) <= 2,
+      `${name}: node panel must match the map height`)
+    if (name === 'mobile') {
+      assert.ok(await page.locator('.node-list').evaluate(element => element.scrollHeight > element.clientHeight),
+        'mobile: long node lists must scroll inside the fixed-height panel')
+    }
+    assert.equal(await page.locator('footer.geoip-attribution').count(), 0,
+      `${name}: geolocation source notice should not remain on the dashboard`)
     await page.getByRole('button', { name: 'Pause Rotation', exact: true }).click()
     const box = await canvas.boundingBox()
     const azimuthBefore = await canvas.getAttribute('data-globe-azimuth')
@@ -138,6 +177,7 @@ try {
     await page.waitForTimeout(300)
     assert.equal(await canvas.getAttribute('data-globe-azimuth'), azimuthAfter,
       `${name}: globe continued spinning after a manual drag`)
+    await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
     await page.mouse.wheel(0, -2500)
     await page.waitForTimeout(300)
@@ -146,6 +186,12 @@ try {
     const stageBounds = await page.locator('.globe-stage').boundingBox()
     assert.ok(stageBounds.x + stageBounds.width <= viewport.width + 1,
       `${name}: globe stage exceeds the viewport`)
+    assert.ok(await page.locator('.globe-node-label').evaluateAll(elements =>
+      elements.some(element => getComputedStyle(element).display !== 'none')),
+    `${name}: close zoom should display node names`)
+    assert.ok(await page.locator('.globe-traffic-label').evaluateAll(elements =>
+      elements.some(element => getComputedStyle(element).display !== 'none' && element.textContent.includes('bit/s'))),
+    `${name}: close zoom should display measured bidirectional traffic`)
     await page.screenshot({ path: join(output, `${name}-close.png`), fullPage: true })
     await page.getByRole('button', { name: 'Reset View', exact: true }).click()
     await page.waitForTimeout(100)
@@ -154,10 +200,29 @@ try {
     await page.screenshot({ path: join(output, `${name}.png`), fullPage: true })
     console.log(`${name}: ${landPixels} continent pixels; rotation, zoom LOD, counts, selection and layout passed`)
   }
+  jitter = true
+  await page.waitForTimeout(5000)
+  assert.equal(await page.locator('.node-row').count(), 4, 'Transient collection errors removed buffered nodes')
+  assert.match(await page.locator('.dashboard-error').innerText(), /unavailable/i)
+  assert.ok(await page.locator('.node-row.stale').count() > 0, 'Buffered nodes must be marked stale')
+  jitter = false
+  await page.waitForTimeout(5000)
+  assert.equal(await page.locator('.node-row.stale').count(), 0, 'Recovered node data remained stale')
+  const recoveredRequest = page.waitForResponse(response =>
+    response.url().includes(`/machines/${uuidString(2)}/networks/info`) && response.status() === 200,
+  { timeout: 15_000 })
+  hangNext = true
+  await page.waitForTimeout(2500)
+  assert.ok(hungRoute, 'The hanging-request fixture did not run')
+  assert.equal(await page.locator('.node-row').count(), 4, 'An in-flight request removed buffered nodes')
+  await recoveredRequest
+  await page.waitForTimeout(300)
+  assert.equal(await page.locator('.node-row.stale').count(), 0, 'A timed-out request did not recover through retry')
+  await hungRoute.abort()
   colocated = true
   await page.reload()
   await page.locator('.node-row').first().waitFor()
-  await page.waitForTimeout(800)
+  await page.waitForTimeout(3500)
   assert.equal(await page.locator('.globe-stage canvas').getAttribute('data-globe-invalid-flows'), '0',
     'Colocated nodes generated invalid connection flow coordinates')
   empty = true

@@ -33,6 +33,9 @@ musl_gcc
 easytier-panic.log
 
 # web
+geoip-cache.db
+geoip-cache.db-wal
+geoip-cache.db-shm
 node_modules
 easytier-web/frontend-lib/src/generated/
 easytier-web/config-generator/dist/

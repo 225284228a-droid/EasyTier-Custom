@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { buildTopology } from '../../frontend/src/modules/networkTopology'
+import { describe, expect, it, vi } from 'vitest'
+import { buildTopology, collectTopologySnapshotsWithRetry, TopologySnapshotCache } from '../../frontend/src/modules/networkTopology'
+import { TrafficTracker } from '../../frontend/src/modules/topologyTraffic'
 import { locateNode } from '../../frontend/src/modules/globeGeography'
 
 const device = (id: string, instances: string[]) => ({
@@ -68,6 +69,126 @@ describe('dashboard topology', () => {
     expect(topology.links[0].protocols).toEqual(['udp'])
     expect(topology.networkIdentities).toEqual(['name:mesh'])
     expect(topology.nodes.find(node => node.peerId === 2)?.machineId).toBe('b')
+  })
+
+  it('keeps source and target stable when snapshot order changes and samples both directions', () => {
+    const a = device('a', ['instance-a'])
+    const b = device('b', ['instance-b'])
+    const tracker = new TrafficTracker()
+    const aPeer = peer(2)
+    const bPeer = peer(1)
+    const aSnapshot = snapshot(a, 'instance-a', 1, [], [aPeer])
+    const bSnapshot = snapshot(b, 'instance-b', 2, [], [bPeer])
+    Object.assign(aPeer.conns[0], { stats: { tx_bytes: 100, rx_bytes: 200 } })
+    Object.assign(bPeer.conns[0], { stats: { tx_bytes: 200, rx_bytes: 100 } })
+    const first = buildTopology([a, b], [aSnapshot, bSnapshot], tracker, 1_000)
+    expect(first.links[0].txBps).toBeUndefined()
+    Object.assign(aPeer.conns[0], { stats: { tx_bytes: 150, rx_bytes: 300 } })
+    Object.assign(bPeer.conns[0], { stats: { tx_bytes: 300, rx_bytes: 150 } })
+    const second = buildTopology([a, b], [bSnapshot, aSnapshot], tracker, 2_000)
+    expect(second.links[0]).toMatchObject({
+      source: first.links[0].source,
+      target: first.links[0].target,
+      txBps: 400,
+      rxBps: 800,
+    })
+  })
+
+  it('samples each machine at RPC completion instead of diluting rates with a slow batch', () => {
+    const a = device('a', ['mesh'])
+    const b = device('b', ['mesh'])
+    const tracker = new TrafficTracker()
+    const aPeer = peer(2)
+    const bPeer = peer(4)
+    const aSnapshot = { ...snapshot(a, 'mesh', 1, [], [aPeer]), collectedAt: 1_000 }
+    const bSnapshot = { ...snapshot(b, 'mesh', 3, [], [bPeer]), collectedAt: 10_000 }
+    Object.assign(aPeer.conns[0], { stats: { tx_bytes: 100, rx_bytes: 200 } })
+    Object.assign(bPeer.conns[0], { stats: { tx_bytes: 200, rx_bytes: 400 } })
+    buildTopology([a, b], [aSnapshot, bSnapshot], tracker, 15_000)
+    aSnapshot.collectedAt = 2_000
+    bSnapshot.collectedAt = 20_000
+    Object.assign(aPeer.conns[0], { stats: { tx_bytes: 200, rx_bytes: 400 } })
+    Object.assign(bPeer.conns[0], { stats: { tx_bytes: 500, rx_bytes: 900 } })
+    const topology = buildTopology([a, b], [aSnapshot, bSnapshot], tracker, 30_000)
+    expect(topology.links.find(link => link.source.endsWith(':peer:1'))).toMatchObject({
+      txBps: 800,
+      rxBps: 1600,
+    })
+    expect(topology.links.find(link => link.source.endsWith(':peer:3'))).toMatchObject({
+      txBps: 240,
+      rxBps: 400,
+    })
+  })
+
+  it('aggregates open UDP and WSS counters but excludes closed channels', () => {
+    const a = device('a', ['mesh'])
+    const tracker = new TrafficTracker()
+    const currentPeer = peer(2)
+    currentPeer.conns.push({ ...currentPeer.conns[0], conn_id: 'wss', tunnel: { tunnel_type: 'wss' } })
+    currentPeer.conns.push({ ...currentPeer.conns[0], conn_id: 'closed', is_closed: true })
+    for (const conn of currentPeer.conns)
+      Object.assign(conn, { stats: { tx_bytes: 100, rx_bytes: 200 } })
+    const current = snapshot(a, 'mesh', 1, [], [currentPeer])
+    buildTopology([a], [current], tracker, 1_000)
+    for (const conn of currentPeer.conns)
+      Object.assign(conn, { stats: { tx_bytes: 125, rx_bytes: 250 } })
+    expect(buildTopology([a], [current], tracker, 2_000).links[0]).toMatchObject({
+      protocols: ['udp', 'wss'],
+      txBps: 400,
+      rxBps: 800,
+    })
+  })
+
+  it('treats omitted protobuf JSON counters in an existing stats object as zero', () => {
+    const a = device('a', ['mesh'])
+    const tracker = new TrafficTracker()
+    const currentPeer = peer(2)
+    Object.assign(currentPeer.conns[0], { stats: {} })
+    const current = snapshot(a, 'mesh', 1, [], [currentPeer])
+    const first = buildTopology([a], [current], tracker, 1_000)
+    expect(first.links[0].txBps).toBeUndefined()
+    expect(first.links[0].rxBps).toBeUndefined()
+    expect(buildTopology([a], [current], tracker, 2_000).links[0]).toMatchObject({
+      txBps: 0,
+      rxBps: 0,
+    })
+  })
+
+  it('does not convert cached snapshots into new zero-rate samples', () => {
+    const a = device('a', ['mesh'])
+    const tracker = new TrafficTracker()
+    const currentPeer = peer(2)
+    const current = snapshot(a, 'mesh', 1, [], [currentPeer])
+    Object.assign(currentPeer.conns[0], { stats: { tx_bytes: 100, rx_bytes: 200 } })
+    buildTopology([a], [current], tracker, 1_000)
+    Object.assign(currentPeer.conns[0], { stats: { tx_bytes: 150, rx_bytes: 300 } })
+    buildTopology([a], [current], tracker, 2_000)
+    const cached = buildTopology([a], [{ ...current, stale: true }], tracker, 4_000)
+    expect(cached.links[0]).toMatchObject({ stale: true, txBps: 400, rxBps: 800 })
+    expect(cached.nodes.find(node => node.peerId === 1)?.stale).toBe(true)
+    expect(buildTopology([a], [current], tracker, 5_000).links[0]).toMatchObject({
+      txBps: 0,
+      rxBps: 0,
+    })
+  })
+
+  it('uses a fresh endpoint report even when the other endpoint is cached', () => {
+    const a = device('a', ['mesh'])
+    const b = device('b', ['mesh'])
+    const tracker = new TrafficTracker()
+    const aPeer = peer(2)
+    const bPeer = peer(1)
+    const aSnapshot = { ...snapshot(a, 'mesh', 1, [], [aPeer]), stale: true }
+    const bSnapshot = snapshot(b, 'mesh', 2, [], [bPeer])
+    Object.assign(aPeer.conns[0], { stats: { tx_bytes: 1_000, rx_bytes: 2_000 } })
+    Object.assign(bPeer.conns[0], { stats: { tx_bytes: 100, rx_bytes: 200 } })
+    buildTopology([a, b], [aSnapshot, bSnapshot], tracker, 1_000)
+    Object.assign(bPeer.conns[0], { stats: { tx_bytes: 150, rx_bytes: 300 } })
+    const topology = buildTopology([a, b], [aSnapshot, bSnapshot], tracker, 2_000)
+    expect(topology.links[0]).toMatchObject({ txBps: 800, rxBps: 400 })
+    expect(topology.links[0].stale).toBeUndefined()
+    expect(topology.nodes.find(node => node.peerId === 1)?.stale).toBe(true)
+    expect(topology.nodes.find(node => node.peerId === 2)?.stale).toBeUndefined()
   })
 
   it('does not turn relay routes or closed connections into direct links', () => {
@@ -198,5 +319,147 @@ describe('dashboard topology', () => {
       expect(location?.latitude).toBeCloseTo(latitude, 5)
       expect(location?.longitude).toBeCloseTo(longitude, 5)
     }
+  })
+})
+
+describe('dashboard snapshot cache and retry', () => {
+  const runningDevice = (id = 'a', instances = ['mesh']) => ({
+    ...device(id, instances),
+    running_network_count: instances.length,
+  })
+
+  it('reports the earliest device or snapshot expiry and advances only after expired data is read', () => {
+    const cache = new TopologySnapshotCache()
+    const a = runningDevice('a')
+    const b = runningDevice('b')
+    expect(cache.nextExpiry()).toBeUndefined()
+    cache.updateDevices([a], 0)
+    cache.updateSnapshots(a, [snapshot(a, 'mesh', 1, [], [])], 2_000)
+    expect(cache.nextExpiry()).toBe(60_000)
+    cache.updateDevices([a], 10_000)
+    cache.updateDevices([b], 1_000)
+    expect(cache.nextExpiry()).toBe(61_000)
+    cache.read(61_000)
+    expect(cache.nextExpiry()).toBe(62_000)
+    cache.read(62_000)
+    expect(cache.nextExpiry()).toBe(70_000)
+    cache.read(70_000)
+    expect(cache.nextExpiry()).toBeUndefined()
+    cache.updateDevices([a], 80_000)
+    cache.clear()
+    expect(cache.nextExpiry()).toBeUndefined()
+  })
+
+  it('retains missing machines and failed snapshots as stale for no more than sixty seconds', () => {
+    const cache = new TopologySnapshotCache()
+    const a = runningDevice()
+    const current = snapshot(a, 'mesh', 1, [], [peer(2)])
+    cache.updateDevices([a], 0)
+    cache.updateSnapshots(a, [current], 0)
+    expect(cache.read(1_000, new Set(['a'])).snapshots[0].stale).toBeUndefined()
+    cache.updateDevices([], 2_000)
+    const stale = cache.read(59_999)
+    expect(stale.devices).toHaveLength(1)
+    expect(stale.snapshots[0].stale).toBe(true)
+    expect(cache.read(60_000)).toEqual({ devices: [], snapshots: [] })
+  })
+
+  it('does not extend the snapshot lifetime merely because machine heartbeats succeed', () => {
+    const cache = new TopologySnapshotCache()
+    const a = runningDevice()
+    cache.updateDevices([a], 0)
+    cache.updateSnapshots(a, [snapshot(a, 'mesh', 1, [], [peer(2)])], 0)
+    cache.updateDevices([a], 59_000)
+    expect(cache.read(60_000).devices).toHaveLength(1)
+    expect(cache.read(60_000).snapshots).toHaveLength(0)
+  })
+
+  it('keeps the previous snapshot when heartbeat says running but collection is empty', () => {
+    const cache = new TopologySnapshotCache()
+    const a = runningDevice()
+    cache.updateDevices([a], 0)
+    cache.updateSnapshots(a, [snapshot(a, 'mesh', 1, [], [peer(2)])], 0)
+    expect(cache.updateSnapshots(a, [], 2_000)).toBe(false)
+    expect(cache.read(2_000).snapshots).toHaveLength(1)
+  })
+
+  it('removes confirmed stopped instances and ignores returned instances absent from the heartbeat', () => {
+    const cache = new TopologySnapshotCache()
+    const a = runningDevice('a', ['alpha', 'beta'])
+    cache.updateDevices([a], 0)
+    cache.updateSnapshots(a, [
+      snapshot(a, 'alpha', 1, [], []),
+      snapshot(a, 'beta', 2, [], []),
+    ], 0)
+    const onlyBeta = runningDevice('a', ['beta'])
+    cache.updateDevices([onlyBeta], 1_000)
+    expect(cache.read(1_000).snapshots.map(item => item.instanceId)).toEqual(['beta'])
+    expect(cache.updateSnapshots(onlyBeta, [snapshot(a, 'alpha', 1, [], [])], 2_000)).toBe(false)
+    expect(cache.read(2_000).snapshots.map(item => item.instanceId)).toEqual(['beta'])
+    cache.updateDevices([runningDevice('a', [])], 3_000)
+    expect(cache.read(3_000).snapshots).toHaveLength(0)
+  })
+
+  it('keeps caches scoped by machine ID and clears them for a server switch', () => {
+    const cache = new TopologySnapshotCache()
+    const a = runningDevice('a')
+    const b = runningDevice('b')
+    cache.updateDevices([a, b], 0)
+    cache.updateSnapshots(a, [snapshot(a, 'mesh', 1, [], [])], 0)
+    cache.updateSnapshots(b, [snapshot(b, 'mesh', 2, [], [])], 0)
+    expect(cache.read(1_000, new Set(['b'])).snapshots.map(item => item.stale)).toEqual([true, undefined])
+    cache.clear()
+    expect(cache.read(2_000)).toEqual({ devices: [], snapshots: [] })
+  })
+
+  it('retries transient collection failures twice with bounded backoff', async () => {
+    const a = runningDevice()
+    const collect = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValue({ mesh: detail([], [peer(2)], 1, 'mesh') })
+    const wait = vi.fn().mockResolvedValue(undefined)
+    expect(await collectTopologySnapshotsWithRetry(a, collect, () => true, wait)).toHaveLength(1)
+    expect(collect).toHaveBeenCalledTimes(3)
+    expect(wait.mock.calls.map(call => call[0])).toEqual([200, 500])
+  })
+
+  it('treats empty running information as transient and caps retries at three attempts', async () => {
+    const collect = vi.fn().mockResolvedValue({})
+    const wait = vi.fn().mockResolvedValue(undefined)
+    await expect(collectTopologySnapshotsWithRetry(runningDevice(), collect, () => true, wait))
+      .rejects.toThrow('temporarily empty')
+    expect(collect).toHaveBeenCalledTimes(3)
+    expect(wait.mock.calls.map(call => call[0])).toEqual([200, 500])
+  })
+
+  it.each([401, 403])('does not retry authorization status %s', async (status) => {
+    const error = { response: { status } }
+    const collect = vi.fn().mockRejectedValue(error)
+    const wait = vi.fn().mockResolvedValue(undefined)
+    await expect(collectTopologySnapshotsWithRetry(runningDevice(), collect, () => true, wait)).rejects.toBe(error)
+    expect(collect).toHaveBeenCalledTimes(1)
+    expect(wait).not.toHaveBeenCalled()
+  })
+
+  it('rejects old in-flight collection results after a server switch', async () => {
+    let current = true
+    let finish!: (value: any) => void
+    const collect = vi.fn(() => new Promise<Record<string, any>>(resolve => { finish = resolve }))
+    const wait = vi.fn().mockResolvedValue(undefined)
+    const pending = collectTopologySnapshotsWithRetry(runningDevice(), collect, () => current, wait)
+    current = false
+    finish({ mesh: detail([], [], 1, 'mesh') })
+    await expect(pending).rejects.toThrow('superseded')
+    expect(wait).not.toHaveBeenCalled()
+  })
+
+  it('does not start another retry once a server switch occurred during backoff', async () => {
+    let current = true
+    const collect = vi.fn().mockRejectedValue(new Error('temporary'))
+    const wait = vi.fn(async () => { current = false })
+    await expect(collectTopologySnapshotsWithRetry(runningDevice(), collect, () => current, wait))
+      .rejects.toThrow('superseded')
+    expect(collect).toHaveBeenCalledTimes(1)
   })
 })

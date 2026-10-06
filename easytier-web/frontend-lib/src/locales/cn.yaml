@@ -362,6 +362,7 @@ web:
     login: 返回登录
   
   main:
+    about: 关于 EasyTier
     dashboard: 仪表盘
     device_list: 设备列表
     device_management: 设备管理
@@ -387,6 +388,7 @@ web:
     no_nodes: 暂无在线节点
     unmapped: '{count} 个节点位置未知'
     approximate: 国家近似位置
+    retrying: 正在重试
     webgl_unavailable: 无法启动 3D 地球仪
     partial_failure: 部分设备的连接信息暂时不可用
     load_failed: 拓扑加载失败

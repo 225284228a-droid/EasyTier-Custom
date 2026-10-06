@@ -10,8 +10,10 @@ IP to Country Lite database by [DB-IP](https://db-ip.com/).
 
 It provides country-level IPv4/IPv6 geolocation, not city coordinates. The
 dashboard uses explicitly approximate Natural Earth country reference points
-when no city-level location is available. The web console footer attributes
-DB-IP. No node IP addresses are sent to DB-IP or another geolocation service.
+when no city-level location is available. The web console About dialog
+attributes DB-IP. The offline database never sends IPs to DB-IP; the optional
+online city cache sends node IPs to GeoJS/IPWho.is, as described in
+`docs/city-geolocation.md`.
 
 The web server embeds this offline database by default. `--geoip-db` overrides
 it with an operator-provided MaxMind-format database. When distributing the

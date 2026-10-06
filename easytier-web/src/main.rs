@@ -26,6 +26,7 @@ use mimalloc::MiMalloc;
 
 mod client_manager;
 mod db;
+mod geolocation;
 mod migrator;
 mod restful;
 mod webhook;
@@ -121,6 +122,9 @@ struct Cli {
         help = t!("cli.geoip_db").to_string(),
     )]
     geoip_db: Option<String>,
+
+    #[command(flatten)]
+    geolocation: geolocation::Options,
 
     #[arg(
         long,
@@ -473,7 +477,14 @@ async fn main() {
     }
 
     // let db = db::Db::new(":memory:").await.unwrap();
-    let db = db::Db::new(cli.db).await.unwrap();
+    let db = db::Db::new(&cli.db).await.unwrap();
+    let city_geo_cache = match geolocation::CityGeoCache::open(cli.geolocation, &cli.db).await {
+        Ok(cache) => Some(cache),
+        Err(error) => {
+            tracing::warn!(%error, "city geolocation cache unavailable; using offline GeoIP only");
+            None
+        }
+    };
     let feature_flags = Arc::new(cli.feature_flags);
     let webhook_config = Arc::new(webhook::WebhookConfig::new(
         cli.webhook.webhook_url,
@@ -532,6 +543,9 @@ async fn main() {
         feature_flags.clone(),
         webhook_config.clone(),
     );
+    if let Some(cache) = city_geo_cache {
+        mgr.set_city_geo_cache(cache);
+    }
     let mut bound_urls = Vec::new();
     for (url, listener) in create_config_server_listeners(&listener_urls).await {
         match mgr.add_listener(listener).await {

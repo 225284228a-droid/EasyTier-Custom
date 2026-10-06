@@ -17,7 +17,8 @@ use dashmap::DashMap;
 use easytier::common::config::{ConfigSource, config_source_from_rpc, config_source_to_rpc};
 use easytier::proto::{
     api::manage::{
-        DeleteNetworkInstanceRequest, GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest,
+        CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
+        GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest,
         RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
         SaveNetworkInstanceConfigRequest, SetNetworkInstanceEnabledRequest, WebClientService,
     },
@@ -38,6 +39,7 @@ use storage::{Storage, StorageToken};
 use uuid::Uuid;
 
 use crate::FeatureFlags;
+use crate::geolocation::{CityGeoCache, node_public_ip};
 use crate::webhook::{ManagedNetworkConfig, SharedWebhookConfig};
 use tokio::task::JoinSet;
 
@@ -145,6 +147,7 @@ pub struct ClientManager {
     webhook_config: SharedWebhookConfig,
 
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+    city_geo_cache: Option<Arc<CityGeoCache>>,
     network_location_refresh_slots: Arc<tokio::sync::Semaphore>,
     heartbeat_policy: HeartbeatPolicy,
 }
@@ -189,9 +192,87 @@ impl ClientManager {
             webhook_config,
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
+            city_geo_cache: None,
             network_location_refresh_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             heartbeat_policy,
         }
+    }
+
+    pub fn set_city_geo_cache(&mut self, cache: Arc<CityGeoCache>) {
+        tracing::info!(
+            online = cache.online_enabled(),
+            "city geolocation enabled; online mode sends only mesh-reported public IPs to GeoJS/IPWho.is"
+        );
+        self.city_geo_cache = Some(cache.clone());
+        self.tasks.spawn(cache.clone().run());
+        let sessions = self.client_sessions.clone();
+        let slots = self.network_location_refresh_slots.clone();
+        let offline_db = self.geoip_db.clone();
+        self.tasks.spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let connected: Vec<_> = sessions
+                    .iter()
+                    .map(|session| session.value().clone())
+                    .collect();
+                let mut jobs = JoinSet::new();
+                for session in connected {
+                    if !session.is_running() {
+                        continue;
+                    }
+                    let active_ip = {
+                        let data = session.data();
+                        let mut data = data.write().await;
+                        if !data.has_running_network() {
+                            data.clear_network_location();
+                            continue;
+                        }
+                        data.verified_network_location(std::time::Instant::now())
+                            .and_then(|(ip, _)| ip.parse().ok())
+                    };
+                    if let Some(ip) = active_ip {
+                        cache.observe(ip).await;
+                    }
+                    if jobs.len() >= 4 {
+                        let _ = jobs.join_next().await;
+                    }
+                    let cache = cache.clone();
+                    let slots = slots.clone();
+                    let offline_db = offline_db.clone();
+                    jobs.spawn(async move {
+                        let Ok(_permit) = slots.acquire_owned().await else {
+                            return;
+                        };
+                        if !session
+                            .data()
+                            .write()
+                            .await
+                            .claim_network_location_refresh(std::time::Instant::now())
+                        {
+                            return;
+                        }
+                        let Ok(Ok(response)) = tokio::time::timeout(
+                            Duration::from_secs(5),
+                            session.scoped_rpc_client().collect_network_info(
+                                BaseController::default(),
+                                CollectNetworkInfoRequest::default(),
+                            ),
+                        )
+                        .await
+                        else {
+                            return;
+                        };
+                        Self::apply_network_location_snapshot(
+                            &session, &response, &cache, offline_db,
+                        )
+                        .await;
+                    });
+                }
+                while jobs.join_next().await.is_some() {}
+            }
+        });
     }
 
     pub async fn add_listener<L: SocketListener<Accepted = Box<dyn Tunnel>> + 'static>(
@@ -450,11 +531,106 @@ impl ClientManager {
         Self::lookup_ip(ip, self.geoip_db.clone())
     }
 
+    pub async fn resolve_ip_location(&self, ip: std::net::IpAddr) -> Option<Location> {
+        Self::resolve_location(ip, self.city_geo_cache.as_ref(), self.geoip_db.clone()).await
+    }
+
+    async fn resolve_location(
+        ip: std::net::IpAddr,
+        cache: Option<&Arc<CityGeoCache>>,
+        offline_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+    ) -> Option<Location> {
+        if let Some(cache) = cache
+            && let Some(city) = cache.observe(ip).await
+        {
+            return Some(city.location.into_location());
+        }
+        Self::lookup_ip(ip, offline_db)
+    }
+
+    fn snapshot_public_ips(response: &CollectNetworkInfoResponse) -> Option<Vec<std::net::IpAddr>> {
+        let info = response.info.as_ref()?;
+        if info.map.is_empty() {
+            return None;
+        }
+        let mut addresses: Vec<_> = info
+            .map
+            .iter()
+            .filter(|(_, detail)| detail.running)
+            .filter_map(|(instance, detail)| {
+                Some((instance, node_public_ip(detail.my_node_info.as_ref()?)?))
+            })
+            .collect();
+        addresses.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let mut ips = Vec::new();
+        for (_, ip) in addresses {
+            if !ips.contains(&ip) {
+                ips.push(ip);
+            }
+        }
+        Some(ips)
+    }
+
+    async fn apply_network_location_snapshot(
+        session: &Arc<Session>,
+        response: &CollectNetworkInfoResponse,
+        cache: &Arc<CityGeoCache>,
+        offline_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+    ) {
+        {
+            let data = session.data();
+            let mut data = data.write().await;
+            if !data.has_running_network() {
+                data.clear_network_location();
+                return;
+            }
+        }
+        // An empty metadata response can be transient while heartbeats still
+        // report running networks. It never extends the verification grace.
+        let Some(ips) = Self::snapshot_public_ips(response) else {
+            return;
+        };
+        let verified_at = std::time::Instant::now();
+        let mut primary = None;
+        for ip in ips {
+            let location = Self::resolve_location(ip, Some(cache), offline_db.clone()).await;
+            if primary.is_none() {
+                primary = location.map(|location| (ip.to_string(), location));
+            }
+        }
+        let data = session.data();
+        let mut data = data.write().await;
+        data.apply_network_location_snapshot(primary, verified_at);
+    }
+
+    async fn cached_location(
+        ip: std::net::IpAddr,
+        cache: &Arc<CityGeoCache>,
+        offline_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
+    ) -> Option<Location> {
+        cache
+            .peek(ip)
+            .await
+            .map(|city| city.location.into_location())
+            .or_else(|| Self::lookup_ip(ip, offline_db))
+    }
+
     pub async fn cached_network_location(
         &self,
         client_url: &url::Url,
     ) -> Option<(String, Location)> {
         let session = self.client_sessions.get(client_url)?.clone();
+        if let Some(cache) = &self.city_geo_cache {
+            let cached = session
+                .data()
+                .read()
+                .await
+                .verified_network_location(std::time::Instant::now())
+                .cloned()?;
+            let ip = cached.0.parse().ok()?;
+            let location = Self::cached_location(ip, cache, self.geoip_db.clone()).await?;
+            return Some((cached.0, location));
+        }
         session.data().read().await.network_location().cloned()
     }
 
@@ -466,11 +642,11 @@ impl ClientManager {
         location: Location,
     ) {
         if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) {
-            session
-                .data()
-                .write()
-                .await
-                .set_network_location(public_ip, location);
+            let data = session.data();
+            let mut data = data.write().await;
+            if data.has_running_network() {
+                data.set_network_location(public_ip, location);
+            }
         }
     }
 
@@ -640,6 +816,42 @@ impl
         sea_orm::DbErr,
     > {
         self
+    }
+
+    async fn handle_collect_network_info(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_ids: Option<Vec<uuid::Uuid>>,
+    ) -> Result<CollectNetworkInfoResponse, RemoteClientError<sea_orm::DbErr>> {
+        let full_snapshot = inst_ids.as_ref().is_none_or(Vec::is_empty);
+        let client = self
+            .get_rpc_client(identify)
+            .ok_or(RemoteClientError::ClientNotFound)?;
+        let response = client
+            .collect_network_info(
+                BaseController::default(),
+                CollectNetworkInfoRequest {
+                    inst_ids: inst_ids
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                },
+            )
+            .await?;
+        if full_snapshot
+            && let Some(cache) = &self.city_geo_cache
+            && let Some(session) = self.get_session_by_machine_id(identify.0, &identify.1)
+        {
+            Self::apply_network_location_snapshot(
+                &session,
+                &response,
+                cache,
+                self.geoip_db.clone(),
+            )
+            .await;
+        }
+        Ok(response)
     }
 
     async fn handle_list_network_instance_ids(
@@ -1175,6 +1387,78 @@ mod tests {
         // global coverage instead of pinning their geography to ownership.
         assert!(countries.contains("CN"));
         assert!(countries.len() >= 2);
+    }
+
+    #[test]
+    fn full_snapshot_distinguishes_transient_empty_metadata_from_missing_ips() {
+        use easytier::proto::api::manage::{
+            CollectNetworkInfoResponse, MyNodeInfo, NetworkInstanceRunningInfo,
+            NetworkInstanceRunningInfoMap,
+        };
+        let mut response = CollectNetworkInfoResponse::default();
+        assert_eq!(ClientManager::snapshot_public_ips(&response), None);
+        response.info = Some(NetworkInstanceRunningInfoMap::default());
+        assert_eq!(ClientManager::snapshot_public_ips(&response), None);
+        response.info.as_mut().unwrap().map.insert(
+            "instance".to_string(),
+            NetworkInstanceRunningInfo {
+                running: true,
+                my_node_info: Some(MyNodeInfo::default()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(ClientManager::snapshot_public_ips(&response), Some(vec![]));
+        response
+            .info
+            .as_mut()
+            .unwrap()
+            .map
+            .get_mut("instance")
+            .unwrap()
+            .running = false;
+        assert_eq!(ClientManager::snapshot_public_ips(&response), Some(vec![]));
+    }
+
+    #[tokio::test]
+    async fn stale_or_failed_city_reads_fall_back_to_offline_coordinates() {
+        let offline = Arc::new(super::load_geoip_db(None));
+        let cache = crate::geolocation::CityGeoCache::test_memory(crate::geolocation::Options {
+            offline: true,
+            ..Default::default()
+        })
+        .await;
+        let ip = "1.1.1.1".parse().unwrap();
+        let city = crate::geolocation::CityLocation {
+            country: "New Zealand".to_string(),
+            city: "Auckland".to_string(),
+            region: None,
+            latitude: -36.85,
+            longitude: 174.76,
+            accuracy_radius_km: None,
+        };
+        let at = chrono::Utc::now().timestamp();
+        cache.test_seed(ip, &city, at).await;
+        let fresh = ClientManager::cached_location(ip, &cache, offline.clone())
+            .await
+            .unwrap();
+        assert_eq!(fresh.city.as_deref(), Some("Auckland"));
+        assert_eq!(fresh.latitude, Some(-36.85));
+        cache.test_seed(ip, &city, at - 8 * 86_400).await;
+        let expected = ClientManager::lookup_ip(ip, offline.clone()).unwrap();
+        let stale = ClientManager::cached_location(ip, &cache, offline.clone())
+            .await
+            .unwrap();
+        assert_eq!(stale.country, expected.country);
+        assert_eq!(stale.city, expected.city);
+        assert_eq!(stale.latitude, expected.latitude);
+        assert_eq!(stale.longitude, expected.longitude);
+        cache.test_close().await;
+        let failed = ClientManager::cached_location(ip, &cache, offline)
+            .await
+            .unwrap();
+        assert_eq!(failed.country, expected.country);
+        assert_eq!(failed.latitude, expected.latitude);
+        assert_eq!(failed.longitude, expected.longitude);
     }
 
     #[test]

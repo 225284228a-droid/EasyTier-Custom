@@ -34,6 +34,7 @@ const WEBHOOK_VALIDATION_HEARTBEAT_INTERVAL: u32 = 10;
 const CONNECTED_WEBHOOK_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(100), Duration::from_millis(500)];
 const NETWORK_LOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const NETWORK_LOCATION_VERIFIED_GRACE: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
@@ -143,6 +144,7 @@ pub struct SessionData {
     location: Option<Location>,
     network_location: Option<(String, Location)>,
     network_location_checked_at: Option<Instant>,
+    network_location_verified_at: Option<Instant>,
     heartbeat_count: std::sync::atomic::AtomicU32,
     session_identity: Option<HeartbeatIdentity>,
     auth_state: SessionAuthState,
@@ -177,6 +179,7 @@ impl SessionData {
             location,
             network_location: None,
             network_location_checked_at: None,
+            network_location_verified_at: None,
             heartbeat_count: std::sync::atomic::AtomicU32::new(0),
             session_identity: None,
             auth_state: SessionAuthState::Init,
@@ -214,12 +217,63 @@ impl SessionData {
         self.network_location.as_ref()
     }
 
+    pub fn verified_network_location(&self, now: Instant) -> Option<&(String, Location)> {
+        if !self.has_running_network()
+            || !self.network_location_verified_at.is_some_and(|verified| {
+                now.saturating_duration_since(verified) <= NETWORK_LOCATION_VERIFIED_GRACE
+            })
+        {
+            return None;
+        }
+        self.network_location.as_ref()
+    }
+
+    pub fn has_running_network(&self) -> bool {
+        self.auth_state.is_authorized()
+            && self
+                .req
+                .as_ref()
+                .is_some_and(|req| !req.running_network_instances.is_empty())
+    }
+
     pub fn set_network_location(&mut self, public_ip: String, location: Location) {
+        self.set_network_location_at(public_ip, location, Instant::now());
+    }
+
+    pub(super) fn set_network_location_at(
+        &mut self,
+        public_ip: String,
+        location: Location,
+        verified_at: Instant,
+    ) {
         self.network_location = Some((public_ip, location));
-        self.network_location_checked_at = Some(Instant::now());
+        self.network_location_checked_at = Some(verified_at);
+        self.network_location_verified_at = Some(verified_at);
+    }
+
+    pub fn clear_network_location(&mut self) {
+        self.network_location = None;
+        self.network_location_verified_at = None;
+    }
+
+    pub(super) fn apply_network_location_snapshot(
+        &mut self,
+        primary: Option<(String, Location)>,
+        verified_at: Instant,
+    ) {
+        if self.has_running_network()
+            && let Some((ip, location)) = primary
+        {
+            self.set_network_location_at(ip, location, verified_at);
+        } else {
+            self.clear_network_location();
+        }
     }
 
     pub fn claim_network_location_refresh(&mut self, now: Instant) -> bool {
+        if !self.has_running_network() {
+            return false;
+        }
         if self.network_location_checked_at.is_some_and(|last| {
             now.saturating_duration_since(last) < NETWORK_LOCATION_REFRESH_INTERVAL
         }) {
@@ -574,6 +628,9 @@ impl SessionRpcService {
         data: &mut SessionData,
         req: HeartbeatRequest,
     ) -> HeartbeatRequest {
+        if req.running_network_instances.is_empty() {
+            data.clear_network_location();
+        }
         data.req = Some(req);
         data.req
             .clone()
@@ -1225,6 +1282,11 @@ mod tests {
     #[tokio::test]
     async fn network_location_refresh_is_throttled_without_a_cached_result() {
         let mut data = failure_state_test_data().await;
+        data.auth_state = SessionAuthState::Authorized;
+        data.req = Some(HeartbeatRequest {
+            running_network_instances: vec![uuid::Uuid::new_v4().into()],
+            ..Default::default()
+        });
         let now = Instant::now();
         assert!(data.claim_network_location_refresh(now));
         assert!(!data.claim_network_location_refresh(now + Duration::from_secs(59)));
@@ -1241,6 +1303,82 @@ mod tests {
         );
         assert_eq!(data.network_location().unwrap().0, "8.8.8.8");
         assert!(!data.claim_network_location_refresh(Instant::now()));
+    }
+
+    fn test_network_location() -> Location {
+        Location {
+            country: "United States".to_string(),
+            city: Some("Example".to_string()),
+            region: None,
+            latitude: Some(1.0),
+            longitude: Some(2.0),
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_attempts_and_reads_never_extend_ip_verification() {
+        let mut data = failure_state_test_data().await;
+        data.auth_state = SessionAuthState::Authorized;
+        data.req = Some(HeartbeatRequest {
+            running_network_instances: vec![uuid::Uuid::new_v4().into()],
+            ..Default::default()
+        });
+        let verified = Instant::now();
+        data.set_network_location_at("8.8.8.8".into(), test_network_location(), verified);
+        assert!(!data.claim_network_location_refresh(verified + Duration::from_secs(59)));
+        assert!(data.claim_network_location_refresh(verified + Duration::from_secs(60)));
+        assert!(data.claim_network_location_refresh(verified + Duration::from_secs(120)));
+        assert!(
+            data.verified_network_location(verified + Duration::from_secs(180))
+                .is_some()
+        );
+        assert!(
+            data.verified_network_location(verified + Duration::from_secs(181))
+                .is_none()
+        );
+        assert_eq!(data.network_location_verified_at, Some(verified));
+        assert!(data.network_location().is_some());
+    }
+
+    #[tokio::test]
+    async fn empty_ip_snapshot_and_stopped_heartbeat_clear_cached_location() {
+        let mut data = failure_state_test_data().await;
+        data.auth_state = SessionAuthState::Authorized;
+        data.req = Some(HeartbeatRequest {
+            running_network_instances: vec![uuid::Uuid::new_v4().into()],
+            ..Default::default()
+        });
+        data.set_network_location("8.8.8.8".into(), test_network_location());
+        data.apply_network_location_snapshot(None, Instant::now());
+        assert!(data.network_location().is_none());
+        assert!(data.network_location_verified_at.is_none());
+        data.set_network_location("8.8.8.8".into(), test_network_location());
+        SessionRpcService::store_latest_heartbeat_req(&mut data, HeartbeatRequest::default());
+        assert!(data.network_location().is_none());
+        assert!(!data.claim_network_location_refresh(Instant::now() + Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn unauthorized_sessions_cannot_supply_or_refresh_network_locations() {
+        let mut data = failure_state_test_data().await;
+        data.req = Some(HeartbeatRequest {
+            running_network_instances: vec![uuid::Uuid::new_v4().into()],
+            ..Default::default()
+        });
+        data.set_network_location("8.8.8.8".into(), test_network_location());
+        for state in [SessionAuthState::Init, SessionAuthState::Invalid] {
+            data.auth_state = state;
+            assert!(!data.has_running_network());
+            assert!(data.verified_network_location(Instant::now()).is_none());
+            let attempted_at = data.network_location_checked_at;
+            assert!(!data.claim_network_location_refresh(Instant::now() + Duration::from_secs(60)));
+            assert_eq!(data.network_location_checked_at, attempted_at);
+        }
+        data.apply_network_location_snapshot(
+            Some(("8.8.8.8".into(), test_network_location())),
+            Instant::now(),
+        );
+        assert!(data.network_location().is_none());
     }
 
     #[tokio::test]

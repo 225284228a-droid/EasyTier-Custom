@@ -362,6 +362,7 @@ web:
     login: Back to Login
   
   main:
+    about: About EasyTier
     dashboard: Dashboard
     device_list: Device List
     device_management: Device Management
@@ -387,6 +388,7 @@ web:
     no_nodes: No online nodes
     unmapped: '{count} nodes without a location'
     approximate: Approximate country location
+    retrying: Retrying
     webgl_unavailable: Unable to start the 3D globe
     partial_failure: Connection information is unavailable for some devices
     load_failed: Failed to load topology

@@ -129,56 +129,11 @@ pub struct NetworkApi;
 
 impl NetworkApi {
     fn usable_node_ip(ip: &std::net::IpAddr) -> bool {
-        match ip {
-            std::net::IpAddr::V4(ip) => {
-                let octets = ip.octets();
-                !ip.is_unspecified()
-                    && !ip.is_loopback()
-                    && !ip.is_private()
-                    && !ip.is_link_local()
-                    && !ip.is_multicast()
-                    && !ip.is_broadcast()
-                    && octets[0] != 0
-                    && octets[0] < 240
-                    && !(octets[0] == 100 && (64..128).contains(&octets[1]))
-            }
-            std::net::IpAddr::V6(ip) => {
-                !ip.is_unspecified()
-                    && !ip.is_loopback()
-                    && !ip.is_unique_local()
-                    && !ip.is_unicast_link_local()
-                    && !ip.is_multicast()
-            }
-        }
+        crate::geolocation::usable_node_ip(ip)
     }
 
     fn node_public_ip(node: &MyNodeInfo) -> Option<std::net::IpAddr> {
-        // STUN is observed by the running mesh, whereas a web-console
-        // transport endpoint may belong to a CDN/FRP proxy.
-        node.stun_info
-            .as_ref()
-            .and_then(|stun| {
-                stun.public_ip
-                    .iter()
-                    .filter_map(|value| value.parse::<std::net::IpAddr>().ok())
-                    .find(Self::usable_node_ip)
-            })
-            .or_else(|| {
-                node.ips
-                    .as_ref()
-                    .and_then(|ips| ips.public_ipv4)
-                    .map(std::net::Ipv4Addr::from)
-                    .map(std::net::IpAddr::V4)
-                    .filter(Self::usable_node_ip)
-            })
-            .or_else(|| {
-                node.ips
-                    .as_ref()
-                    .and_then(|ips| ips.public_ipv6)
-                    .map(std::net::Ipv6Addr::from)
-                    .map(std::net::IpAddr::V6)
-                    .filter(Self::usable_node_ip)
-            })
+        crate::geolocation::node_public_ip(node)
     }
 
     async fn annotate_network_locations(
@@ -192,13 +147,16 @@ impl NetworkApi {
         };
 
         for detail in info.map.values_mut() {
+            if !detail.running {
+                continue;
+            }
             let Some(node) = detail.my_node_info.as_ref() else {
                 continue;
             };
             let Some(ip) = Self::node_public_ip(node) else {
                 continue;
             };
-            let Some(location) = client_mgr.lookup_ip_location(ip) else {
+            let Some(location) = client_mgr.resolve_ip_location(ip).await else {
                 continue;
             };
             client_mgr

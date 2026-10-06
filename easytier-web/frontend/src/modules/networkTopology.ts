@@ -1,5 +1,7 @@
 import { Utils } from 'easytier-frontend-lib'
 import type { NetworkTypes } from 'easytier-frontend-lib'
+import type { TrafficObservation, TrafficTracker } from './topologyTraffic'
+import { TOPOLOGY_CACHE_TTL_MS } from './topologyTraffic'
 
 /**
  * A topology node is a peer in a running EasyTier network. A machine can
@@ -20,18 +22,29 @@ export interface TopologyNode {
   publicIp?: string
   managed: boolean
   machineId?: string
+  /** This node only has a cached observation in the current refresh. */
+  stale?: boolean
 }
 
 export interface TopologyLink {
   source: string
   target: string
   protocols: string[]
+  /** Neither endpoint freshly observed this connection in the current refresh. */
+  stale?: boolean
+  /** Estimated bits per second from source to target. */
+  txBps?: number
+  /** Estimated bits per second from target to source. */
+  rxBps?: number
 }
 
 export interface NetworkSnapshot {
   device: Utils.DeviceInfo
   instanceId: string
   detail: NetworkTypes.NetworkInstanceRunningInfo
+  stale?: boolean
+  /** Monotonic time when this machine's successful RPC completed. */
+  collectedAt?: number
 }
 
 export interface Topology {
@@ -150,6 +163,7 @@ function snapshotNode(snapshot: NetworkSnapshot, network: string, peerId: number
     publicIp: snapshot.detail.node_location?.public_ip ?? ipv4(info?.ips?.public_ipv4),
     managed: true,
     machineId: snapshot.device.machine_id,
+    stale: snapshot.stale || undefined,
   }
 }
 
@@ -163,26 +177,40 @@ function routeForPeer(snapshot: NetworkSnapshot, peerId: number): NetworkTypes.R
 function mergeNode(existing: TopologyNode | undefined, incoming: TopologyNode): TopologyNode {
   if (!existing)
     return incoming
+  const preferIncoming = incoming.managed && (!existing.managed || (!!existing.stale && !incoming.stale))
+    || (!existing.managed && !incoming.managed && !!existing.stale && !incoming.stale)
+  const primary = preferIncoming ? incoming : existing
+  const secondary = preferIncoming ? existing : incoming
+  const stale = existing.managed === incoming.managed
+    ? existing.stale && incoming.stale
+    : primary.stale
   return {
-    ...existing,
+    ...primary,
     // A node observed from a managed snapshot is authoritative over a route
     // placeholder. Keep the first non-empty runtime metadata otherwise.
-    label: existing.managed ? existing.label : incoming.label,
-    country: existing.country ?? incoming.country,
-    latitude: existing.latitude ?? incoming.latitude,
-    longitude: existing.longitude ?? incoming.longitude,
-    nodeLocation: existing.nodeLocation ?? incoming.nodeLocation,
-    publicIp: existing.publicIp ?? incoming.publicIp,
+    label: primary.label,
+    country: primary.country ?? secondary.country,
+    latitude: primary.latitude ?? secondary.latitude,
+    longitude: primary.longitude ?? secondary.longitude,
+    nodeLocation: primary.nodeLocation ?? secondary.nodeLocation,
+    publicIp: primary.publicIp ?? secondary.publicIp,
     managed: existing.managed || incoming.managed,
-    machineId: existing.machineId ?? incoming.machineId,
+    machineId: primary.machineId ?? secondary.machineId,
+    stale: stale || undefined,
   }
 }
 
-export function buildTopology(devices: Utils.DeviceInfo[], snapshots: NetworkSnapshot[]): Topology {
+export function buildTopology(
+  devices: Utils.DeviceInfo[],
+  snapshots: NetworkSnapshot[],
+  trafficTracker?: TrafficTracker,
+  sampleTime = Date.now(),
+): Topology {
   const nodes = new Map<string, TopologyNode>()
   const links = new Map<string, TopologyLink>()
   const networkIdentities = new Set<string>()
   const namesByInstance = new Map<string, Set<string>>()
+  const trafficObservations: TrafficObservation[] = []
   for (const snapshot of snapshots) {
     const instanceId = cleanText(snapshot.instanceId)
     const name = networkNameFrom(snapshot)
@@ -236,10 +264,12 @@ export function buildTopology(devices: Utils.DeviceInfo[], snapshots: NetworkSna
         networkIdentity: identity.network,
         peerId,
         managed: false,
+        stale: snapshot.stale || undefined,
       }
       nodes.set(target, mergeNode(nodes.get(target), placeholder))
 
-      const key = [source, target].sort().join('|')
+      const [canonicalSource, canonicalTarget] = [source, target].sort()
+      const key = JSON.stringify([canonicalSource, canonicalTarget])
       const existing = links.get(key)
       const protocols = [...new Set([
         ...(existing?.protocols ?? []),
@@ -247,7 +277,24 @@ export function buildTopology(devices: Utils.DeviceInfo[], snapshots: NetworkSna
           .map(conn => cleanText(conn.tunnel?.tunnel_type))
           .filter((value): value is string => !!value),
       ])].sort()
-      links.set(key, { source, target, protocols })
+      links.set(key, {
+        source: canonicalSource,
+        target: canonicalTarget,
+        protocols,
+        stale: (existing ? existing.stale && snapshot.stale : snapshot.stale) || undefined,
+      })
+      if (trafficTracker && !snapshot.stale) {
+        for (const conn of openConns) {
+          trafficObservations.push({
+            source,
+            target,
+            connId: conn.conn_id,
+            txBytes: conn.stats ? (conn.stats.tx_bytes ?? 0) : undefined,
+            rxBytes: conn.stats ? (conn.stats.rx_bytes ?? 0) : undefined,
+            sampleTime: snapshot.collectedAt,
+          })
+        }
+      }
     }
   }
 
@@ -255,9 +302,130 @@ export function buildTopology(devices: Utils.DeviceInfo[], snapshots: NetworkSna
   // topology nodes come from runtime peer identities, never from console
   // client URLs or their CDN/FRP addresses.
   void devices
-  return {
+  const topology = {
     nodes: [...nodes.values()],
     links: [...links.values()],
     networkIdentities: [...networkIdentities].sort(),
+  }
+  trafficTracker?.update(topology.links, trafficObservations, sampleTime)
+  return topology
+}
+
+interface CachedDevice {
+  device: Utils.DeviceInfo
+  seenAt: number
+}
+
+interface CachedSnapshots {
+  snapshots: NetworkSnapshot[]
+  updatedAt: number
+}
+
+/** Retains successful observations briefly while respecting confirmed instance stops. */
+export class TopologySnapshotCache {
+  private devices = new Map<string, CachedDevice>()
+  private snapshots = new Map<string, CachedSnapshots>()
+
+  clear() {
+    this.devices.clear()
+    this.snapshots.clear()
+  }
+
+  nextExpiry(): number | undefined {
+    let next: number | undefined
+    for (const [machineId, cached] of this.devices) {
+      const deviceExpiry = cached.seenAt + TOPOLOGY_CACHE_TTL_MS
+      next = next === undefined ? deviceExpiry : Math.min(next, deviceExpiry)
+      const saved = this.snapshots.get(machineId)
+      if (saved?.snapshots.length)
+        next = Math.min(next, saved.updatedAt + TOPOLOGY_CACHE_TTL_MS)
+    }
+    return next
+  }
+
+  updateDevices(devices: Utils.DeviceInfo[], time: number) {
+    for (const device of devices) {
+      this.devices.set(device.machine_id, { device, seenAt: time })
+      if (device.running_network_count === 0) {
+        this.snapshots.delete(device.machine_id)
+      } else if (device.running_network_instances) {
+        const running = new Set(device.running_network_instances)
+        const cached = this.snapshots.get(device.machine_id)
+        if (cached)
+          cached.snapshots = cached.snapshots.filter(snapshot => running.has(snapshot.instanceId))
+      }
+    }
+  }
+
+  updateSnapshots(device: Utils.DeviceInfo, snapshots: NetworkSnapshot[], time: number): boolean {
+    const running = device.running_network_instances ? new Set(device.running_network_instances) : undefined
+    const accepted = snapshots.filter(snapshot => snapshot.detail.running && (!running || running.has(snapshot.instanceId)))
+    if (device.running_network_count > 0 && accepted.length === 0)
+      return false
+    this.snapshots.set(device.machine_id, {
+      snapshots: accepted,
+      updatedAt: time,
+    })
+    return true
+  }
+
+  read(time: number, freshMachines: ReadonlySet<string> = new Set()): {
+    devices: Utils.DeviceInfo[]
+    snapshots: NetworkSnapshot[]
+  } {
+    const snapshots: NetworkSnapshot[] = []
+    for (const [machineId, cached] of this.devices) {
+      if (time - cached.seenAt >= TOPOLOGY_CACHE_TTL_MS) {
+        this.devices.delete(machineId)
+        this.snapshots.delete(machineId)
+        continue
+      }
+      const saved = this.snapshots.get(machineId)
+      if (!saved)
+        continue
+      if (time - saved.updatedAt >= TOPOLOGY_CACHE_TTL_MS) {
+        this.snapshots.delete(machineId)
+        continue
+      }
+      snapshots.push(...saved.snapshots.map(snapshot => ({
+        ...snapshot,
+        device: cached.device,
+        stale: !freshMachines.has(machineId) || undefined,
+      })))
+    }
+    return { devices: [...this.devices.values()].map(cached => cached.device), snapshots }
+  }
+}
+
+export function isTopologyAuthError(error: unknown): boolean {
+  const status = (error as { response?: { status?: number } } | undefined)?.response?.status
+  return status === 401 || status === 403
+}
+
+export async function collectTopologySnapshotsWithRetry(
+  device: Utils.DeviceInfo,
+  collect: () => Promise<Record<string, NetworkTypes.NetworkInstanceRunningInfo | undefined>>,
+  isCurrent: () => boolean = () => true,
+  wait: (milliseconds: number) => Promise<void> = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+): Promise<NetworkSnapshot[]> {
+  const delays = [200, 500]
+  for (let attempt = 0; ; attempt++) {
+    if (!isCurrent())
+      throw new Error('Topology request was superseded')
+    try {
+      const infos = await collect()
+      if (!isCurrent())
+        throw new Error('Topology request was superseded')
+      const running = device.running_network_instances ? new Set(device.running_network_instances) : undefined
+      const snapshots = Object.entries(infos).flatMap(([instanceId, detail]) =>
+        detail?.running && (!running || running.has(instanceId)) ? [{ device, instanceId, detail }] : [])
+      if (device.running_network_count > 0 && !snapshots.length)
+        throw new Error('Running network information is temporarily empty')
+      return snapshots
+    } catch (error) {
+      if (!isCurrent() || isTopologyAuthError(error) || attempt >= delays.length)
+        throw error
+      await wait(delays[attempt])
+    }
   }
 }

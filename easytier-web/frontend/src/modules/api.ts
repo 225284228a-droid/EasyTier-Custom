@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig, type AxiosRequestConfig } from 'axios';
 import { type Api, NetworkTypes, Utils } from 'easytier-frontend-lib';
 import { Md5 } from 'ts-md5';
 
@@ -58,6 +58,8 @@ export interface ParseConfigResponse {
     config?: NetworkTypes.NetworkConfig;
     error?: string;
 }
+
+export type ReadRequestOptions = Pick<AxiosRequestConfig, 'timeout' | 'signal'>;
 
 export class ApiClient {
     private client: AxiosInstance;
@@ -164,8 +166,8 @@ export class ApiClient {
         return response;
     }
 
-    public async list_machines(): Promise<Array<any>> {
-        const response = await this.client.get<any, Record<string, Array<any>>>('/machines');
+    public async list_machines(options?: ReadRequestOptions): Promise<Array<any>> {
+        const response = await this.client.get<any, Record<string, Array<any>>>('/machines', options);
         return response.machines;
     }
 
@@ -174,10 +176,11 @@ export class ApiClient {
         return response;
     }
 
-    public async collect_machine_network_info(machine_id: string) {
+    public async collect_machine_network_info(machine_id: string, options?: ReadRequestOptions) {
         const response = await this.client.post<any, Api.CollectNetworkInfoResponse>(
             `/machines/${machine_id}/networks/info`,
             {},
+            options,
         );
         return response.info?.map ?? {};
     }

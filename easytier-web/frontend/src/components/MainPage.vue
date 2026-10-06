@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { I18nUtils } from 'easytier-frontend-lib'
 import { computed, onMounted, ref, onUnmounted, nextTick } from 'vue';
-import { Button, TieredMenu } from 'primevue';
+import { Button, Dialog, TieredMenu } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
@@ -25,7 +25,13 @@ const api = computed<ApiClient | undefined>(() => {
 const dialog = useDialog();
 
 const userMenu = ref();
+const showCredits = ref(false);
 const userMenuItems = ref([
+    {
+        label: t('web.main.about'),
+        icon: 'pi pi-info-circle',
+        command: () => { showCredits.value = true; },
+    },
     {
         label: t('web.main.change_password'),
         icon: 'pi pi-key',
@@ -176,12 +182,20 @@ onUnmounted(() => {
                 </RouterView>
             </div>
         </div>
-        <footer class="geoip-attribution">
+    </div>
+    <Dialog v-model:visible="showCredits" :header="t('web.main.about')" modal
+        :style="{ width: '28rem', maxWidth: 'calc(100vw - 32px)' }">
+        <div class="geoip-attribution">
             IP geolocation by <a href="https://db-ip.com/" target="_blank" rel="noopener noreferrer">DB-IP</a>
             (<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank"
                 rel="noopener noreferrer">CC BY 4.0</a>)
-        </footer>
-    </div>
+        </div>
+        <div class="geoip-attribution">
+            <a href="https://www.geojs.io/" target="_blank" rel="noopener noreferrer">GeoJS</a>,
+            <a href="https://www.maxmind.com/" target="_blank" rel="noopener noreferrer">MaxMind GeoLite</a>,
+            <a href="https://ipwhois.io/" target="_blank" rel="noopener noreferrer">IPWho.is</a>
+        </div>
+    </Dialog>
 </template>
 
 <style scoped>
@@ -190,7 +204,7 @@ onUnmounted(() => {
     justify-content: left;
 }
 .geoip-attribution {
-    margin-top: 12px;
+    margin-bottom: 12px;
     color: var(--p-text-muted-color);
     font-size: 11px;
 }
