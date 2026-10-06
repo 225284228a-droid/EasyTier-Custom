@@ -40,6 +40,7 @@ let cloudLevels: { group: THREE.Group, maxDistance: number }[] = []
 let activeCloudLevel = -1
 let frame = 0
 let lastFrame = 0
+let interacting = false
 let markerMeshes: THREE.Mesh[] = []
 let flows: { mesh: THREE.Mesh, curve: THREE.CatmullRomCurve3, offset: number }[] = []
 const raycaster = new THREE.Raycaster()
@@ -229,6 +230,14 @@ function updateCloudDetail() {
   }
 }
 
+function beginInteraction() {
+  interacting = true
+}
+
+function endInteraction() {
+  interacting = false
+}
+
 function linkCurve(source: THREE.Vector3, target: THREE.Vector3) {
   const angle = source.angleTo(target)
   let axis = new THREE.Vector3().crossVectors(source, target)
@@ -317,7 +326,7 @@ function animate(now: number) {
   if (!renderer || !controls)
     return
   if (now - lastFrame >= 1000 / 30) {
-    controls.autoRotate = rotating.value
+    controls.autoRotate = rotating.value && !interacting
     const deltaSeconds = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 1 / 30
     controls.update(deltaSeconds)
     updateCloudDetail()
@@ -353,6 +362,10 @@ onMounted(() => {
     renderer.domElement.dataset.globeMinDistance = String(controlsConfig.minDistance)
     renderer.domElement.dataset.globeMaxDistance = String(controlsConfig.maxDistance)
     renderer.domElement.dataset.globeCloudLevels = '24000,72000'
+    renderer.domElement.dataset.globePauseOnInteraction = 'true'
+    renderer.domElement.addEventListener('pointerdown', beginInteraction)
+    window.addEventListener('pointerup', endInteraction)
+    window.addEventListener('pointercancel', endInteraction)
     resetView()
     buildCloud()
     rebuildTopology()
@@ -380,6 +393,9 @@ onUnmounted(() => {
   cancelAnimationFrame(frame)
   resizeObserver?.disconnect()
   controls?.dispose()
+  renderer?.domElement.removeEventListener('pointerdown', beginInteraction)
+  window.removeEventListener('pointerup', endInteraction)
+  window.removeEventListener('pointercancel', endInteraction)
   renderer?.domElement.removeEventListener('click', pickNode)
   if (scene)
     disposeGroup(scene)
