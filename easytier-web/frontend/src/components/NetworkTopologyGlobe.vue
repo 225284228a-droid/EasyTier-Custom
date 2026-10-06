@@ -34,12 +34,23 @@ let controls: OrbitControls | undefined
 let resizeObserver: ResizeObserver | undefined
 let topologyGroup: THREE.Group | undefined
 let globeSurface: THREE.Mesh | undefined
+let boundaryGroup: THREE.Group | undefined
+let boundaryMaterial: THREE.LineBasicMaterial | undefined
+let cloudLevels: { group: THREE.Group, maxDistance: number }[] = []
+let activeCloudLevel = -1
 let frame = 0
 let lastFrame = 0
 let markerMeshes: THREE.Mesh[] = []
 let flows: { mesh: THREE.Mesh, curve: THREE.CatmullRomCurve3, offset: number }[] = []
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
+const controlsConfig = {
+  rotateSpeed: 0.42,
+  zoomSpeed: 0.78,
+  minDistance: 1.25,
+  maxDistance: 6.5,
+  autoRotateSpeed: 0.35,
+}
 
 function position(latitude: number, longitude: number, radius = 1) {
   const lat = THREE.MathUtils.degToRad(latitude)
@@ -62,6 +73,113 @@ function disposeGroup(group: THREE.Object3D) {
   })
 }
 
+function sphericalArc(start: THREE.Vector3, end: THREE.Vector3, radius: number) {
+  const from = start.clone().normalize()
+  const to = end.clone().normalize()
+  const angle = from.angleTo(to)
+  if (angle < 0.0001)
+    return [from.multiplyScalar(radius)]
+  let axis = new THREE.Vector3().crossVectors(from, to)
+  if (axis.lengthSq() < 0.00001)
+    axis = new THREE.Vector3(0, 1, 0)
+  else
+    axis.normalize()
+  const segments = Math.max(1, Math.ceil(angle / 0.045))
+  return Array.from({ length: segments + 1 }, (_, index) =>
+    from.clone().applyAxisAngle(axis, angle * index / segments).multiplyScalar(radius))
+}
+
+function buildCountryBoundaries() {
+  const features = (worldGeography as unknown as {
+    features?: { geometry?: { type?: string, coordinates?: unknown } }[]
+  }).features ?? []
+  boundaryGroup = new THREE.Group()
+  boundaryMaterial = new THREE.LineBasicMaterial({
+    color: 0x9bb7b5,
+    transparent: true,
+    opacity: 0.38,
+    depthWrite: false,
+  })
+  for (const feature of features) {
+    const geometry = feature.geometry
+    if (!geometry?.coordinates)
+      continue
+    const polygons = geometry.type === 'Polygon'
+      ? [geometry.coordinates]
+      : geometry.type === 'MultiPolygon' ? geometry.coordinates : []
+    for (const polygon of polygons as unknown[]) {
+      if (!Array.isArray(polygon))
+        continue
+      for (const ring of polygon as unknown[]) {
+        if (!Array.isArray(ring))
+          continue
+        const coordinates = ring.filter((coordinate): coordinate is [number, number] =>
+          Array.isArray(coordinate)
+          && typeof coordinate[0] === 'number'
+          && typeof coordinate[1] === 'number'
+          && Number.isFinite(coordinate[0])
+          && Number.isFinite(coordinate[1]))
+        if (coordinates.length < 2)
+          continue
+        const points: number[] = []
+        for (let index = 0; index < coordinates.length - 1; index++) {
+          const [sourceLongitude, sourceLatitude] = coordinates[index]
+          const [targetLongitude, targetLatitude] = coordinates[index + 1]
+          const arc = sphericalArc(
+            position(sourceLatitude, sourceLongitude),
+            position(targetLatitude, targetLongitude),
+            1.003,
+          )
+          for (const point of index === 0 ? arc : arc.slice(1))
+            points.push(point.x, point.y, point.z)
+        }
+        if (points.length < 6)
+          continue
+        const lineGeometry = new THREE.BufferGeometry()
+        lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+        boundaryGroup.add(new THREE.Line(lineGeometry, boundaryMaterial))
+      }
+    }
+  }
+  scene.add(boundaryGroup)
+}
+
+function buildPointCloud(
+  map: HTMLCanvasElement,
+  pixels: Uint8ClampedArray,
+  count: number,
+  oceanStride: number,
+) {
+  const land: number[] = []
+  const ocean: number[] = []
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
+  for (let i = 0; i < count; i++) {
+    const lat = Math.asin(1 - 2 * (i + 0.5) / count) * 180 / Math.PI
+    const lon = ((i * goldenAngle * 180 / Math.PI) % 360) - 180
+    const x = Math.min(map.width - 1, Math.floor((lon + 180) / 360 * map.width))
+    const y = Math.min(map.height - 1, Math.floor((90 - lat) / 180 * map.height))
+    const isLand = pixels[(y * map.width + x) * 4 + 3] > 100
+    if (!isLand && i % oceanStride !== 0)
+      continue
+    const point = position(lat, lon)
+    ;(isLand ? land : ocean).push(point.x, point.y, point.z)
+  }
+  const group = new THREE.Group()
+  for (const [points, color, size] of [
+    [land, 0x67d9b6, count > 30_000 ? 0.008 : 0.011],
+    [ocean, 0x465f65, count > 30_000 ? 0.0045 : 0.006],
+  ] as const) {
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+    group.add(new THREE.Points(geometry, new THREE.PointsMaterial({
+      color,
+      size,
+      sizeAttenuation: true,
+    })))
+  }
+  return group
+}
+
 function buildCloud() {
   const map = document.createElement('canvas')
   map.width = 1024
@@ -76,34 +194,39 @@ function buildCloud() {
   geoPath(projection, context)(worldGeography)
   context.fill()
   const pixels = context.getImageData(0, 0, map.width, map.height).data
-  const land: number[] = []
-  const ocean: number[] = []
-  const count = 24_000
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
-  for (let i = 0; i < count; i++) {
-    const lat = Math.asin(1 - 2 * (i + 0.5) / count) * 180 / Math.PI
-    const lon = ((i * goldenAngle * 180 / Math.PI) % 360) - 180
-    const x = Math.min(map.width - 1, Math.floor((lon + 180) / 360 * map.width))
-    const y = Math.min(map.height - 1, Math.floor((90 - lat) / 180 * map.height))
-    const isLand = pixels[(y * map.width + x) * 4 + 3] > 100
-    if (!isLand && i % 4 !== 0)
-      continue
-    const point = position(lat, lon)
-    ;(isLand ? land : ocean).push(point.x, point.y, point.z)
-  }
-  for (const [points, color, size] of [
-    [land, 0x67d9b6, 0.011],
-    [ocean, 0x465f65, 0.006],
-  ] as const) {
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
-    scene.add(new THREE.Points(geometry, new THREE.PointsMaterial({ color, size })))
-  }
+  const lowDetail = buildPointCloud(map, pixels, 24_000, 4)
+  const highDetail = buildPointCloud(map, pixels, 72_000, 3)
+  lowDetail.visible = true
+  highDetail.visible = false
+  cloudLevels = [
+    { group: lowDetail, maxDistance: Number.POSITIVE_INFINITY },
+    { group: highDetail, maxDistance: 2.45 },
+  ]
+  activeCloudLevel = 0
+  scene.add(lowDetail, highDetail)
   globeSurface = new THREE.Mesh(
     new THREE.SphereGeometry(0.994, 64, 32),
     new THREE.MeshBasicMaterial({ color: 0x10191d }),
   )
   scene.add(globeSurface)
+  buildCountryBoundaries()
+}
+
+function updateCloudDetail() {
+  if (!camera || !controls)
+    return
+  const distance = camera.position.distanceTo(controls.target)
+  const nextLevel = distance <= cloudLevels[1]?.maxDistance ? 1 : 0
+  if (nextLevel !== activeCloudLevel) {
+    cloudLevels.forEach(({ group }, index) => {
+      group.visible = index === nextLevel
+    })
+    activeCloudLevel = nextLevel
+  }
+  if (boundaryMaterial) {
+    const zoom = THREE.MathUtils.clamp((5 - distance) / 3.75, 0, 1)
+    boundaryMaterial.opacity = THREE.MathUtils.lerp(0.35, 0.72, zoom)
+  }
 }
 
 function linkCurve(source: THREE.Vector3, target: THREE.Vector3) {
@@ -195,7 +318,9 @@ function animate(now: number) {
     return
   if (now - lastFrame >= 1000 / 30) {
     controls.autoRotate = rotating.value
-    controls.update()
+    const deltaSeconds = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 1 / 30
+    controls.update(deltaSeconds)
+    updateCloudDetail()
     for (const flow of flows)
       flow.mesh.position.copy(flow.curve.getPointAt((now / 5000 + flow.offset) % 1))
     renderer.render(scene, camera)
@@ -217,10 +342,17 @@ onMounted(() => {
     stage.value.appendChild(renderer.domElement)
     controls = new OrbitControls(camera, renderer.domElement)
     controls.enablePan = false
-    controls.enableDamping = true
-    controls.minDistance = 1.7
-    controls.maxDistance = 5
-    controls.autoRotateSpeed = 0.35
+    controls.enableDamping = false
+    controls.rotateSpeed = controlsConfig.rotateSpeed
+    controls.zoomSpeed = controlsConfig.zoomSpeed
+    controls.minDistance = controlsConfig.minDistance
+    controls.maxDistance = controlsConfig.maxDistance
+    controls.autoRotateSpeed = controlsConfig.autoRotateSpeed
+    renderer.domElement.dataset.globeRotateSpeed = String(controlsConfig.rotateSpeed)
+    renderer.domElement.dataset.globeZoomSpeed = String(controlsConfig.zoomSpeed)
+    renderer.domElement.dataset.globeMinDistance = String(controlsConfig.minDistance)
+    renderer.domElement.dataset.globeMaxDistance = String(controlsConfig.maxDistance)
+    renderer.domElement.dataset.globeCloudLevels = '24000,72000'
     resetView()
     buildCloud()
     rebuildTopology()
@@ -313,7 +445,7 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .topology-counts { font-size: 12px; color: var(--p-text-muted-color); }
 .topology-tools { display: flex; flex-shrink: 0; }
 .topology-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; }
-.globe-stage { position: relative; height: 440px; min-width: 0; background: #10191d; overflow: hidden; }
+.globe-stage { position: relative; aspect-ratio: 1.618 / 1; min-height: 360px; max-height: 560px; min-width: 0; background: #10191d; overflow: hidden; }
 .globe-stage :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }
 .globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: #c6d9db; padding: 24px; text-align: center; }
 .globe-legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 16px; color: #d5e0df; font-size: 12px; pointer-events: none; }
@@ -330,11 +462,11 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .node-empty, .unmapped-count { padding: 12px; font-size: 12px; color: var(--p-text-muted-color); }
 @media (max-width: 900px) {
   .topology-body { grid-template-columns: minmax(0, 1fr); }
-  .globe-stage { height: 360px; }
+  .globe-stage { aspect-ratio: 1.4 / 1; min-height: 320px; max-height: none; }
   .node-panel { height: 200px; border-left: 0; border-top: 1px solid var(--p-content-border-color); }
 }
 @media (max-width: 480px) {
-  .globe-stage { height: 300px; }
+  .globe-stage { aspect-ratio: 1.18 / 1; min-height: 300px; }
   .topology-header { flex-wrap: wrap; }
 }
 </style>

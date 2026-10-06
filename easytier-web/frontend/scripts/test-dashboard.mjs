@@ -72,6 +72,25 @@ try {
     const canvas = page.locator('.globe-stage canvas')
     await canvas.waitFor()
     await page.locator('.node-row').first().waitFor()
+    const globeControls = await canvas.evaluate((element) => ({
+      rotateSpeed: Number(element.dataset.globeRotateSpeed),
+      zoomSpeed: Number(element.dataset.globeZoomSpeed),
+      minDistance: Number(element.dataset.globeMinDistance),
+      maxDistance: Number(element.dataset.globeMaxDistance),
+      cloudLevels: element.dataset.globeCloudLevels,
+      aspectRatio: getComputedStyle(element.parentElement).aspectRatio,
+    }))
+    assert.ok(globeControls.rotateSpeed > 0 && globeControls.rotateSpeed < 0.6,
+      `${name}: drag rotation should use a reduced, predictable sensitivity`)
+    assert.ok(globeControls.zoomSpeed > 0 && globeControls.zoomSpeed < 1,
+      `${name}: wheel/pinch zoom should not use an aggressive default speed`)
+    assert.ok(globeControls.minDistance < 1.7 && globeControls.maxDistance > 5,
+      `${name}: globe zoom range should expose a closer high-detail view`)
+    assert.equal(globeControls.cloudLevels, '24000,72000',
+      `${name}: globe should advertise low/high detail cloud levels`)
+    const expectedAspect = name === 'desktop' ? '1.618' : '1.18'
+    assert.match(globeControls.aspectRatio, new RegExp(expectedAspect),
+      `${name}: globe stage should keep its responsive aspect ratio`)
     await page.waitForTimeout(800)
     const first = await canvas.screenshot()
     const image = PNG.sync.read(first)
