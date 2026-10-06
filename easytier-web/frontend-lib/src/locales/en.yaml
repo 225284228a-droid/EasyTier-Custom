@@ -141,6 +141,7 @@ hostname: Hostname
 latency: Latency
 upload_bytes: Upload
 download_bytes: Download
+estimated_bandwidth: Estimated Available Bandwidth
 loss_rate: Loss Rate
 nat_type: NAT Type
 
@@ -369,6 +370,26 @@ web:
     logout: Logout
     language: Language
     change_password: Change Password
+
+  dashboard:
+    topology: Node Connections
+    devices: Online Devices
+    networks: Running Networks
+    connections: Connections
+    node_count: '{count} nodes'
+    link_count: '{count} links'
+    managed: Managed
+    peer: External
+    pause: Pause Rotation
+    rotate: Auto Rotate
+    reset: Reset View
+    refresh: Refresh Topology
+    no_nodes: No online nodes
+    unmapped: '{count} nodes without a location'
+    approximate: Approximate country location
+    webgl_unavailable: Unable to start the 3D globe
+    partial_failure: Connection information is unavailable for some devices
+    load_failed: Failed to load topology
 
   device:
     list: Device List

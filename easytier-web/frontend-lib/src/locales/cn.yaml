@@ -142,6 +142,7 @@ sni_placeholder: 例如：www.cloudflare.com
 latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载
+estimated_bandwidth: 预计可用带宽
 loss_rate: 丢包率
 nat_type: NAT 类型
 
@@ -369,6 +370,26 @@ web:
     logout: 退出登录
     language: 语言
     change_password: 修改密码
+
+  dashboard:
+    topology: 节点连接拓扑
+    devices: 在线设备
+    networks: 运行网络
+    connections: 连接链路
+    node_count: '{count} 个节点'
+    link_count: '{count} 条链路'
+    managed: 已管理节点
+    peer: 外部节点
+    pause: 暂停旋转
+    rotate: 自动旋转
+    reset: 重置视角
+    refresh: 刷新拓扑
+    no_nodes: 暂无在线节点
+    unmapped: '{count} 个节点位置未知'
+    approximate: 国家近似位置
+    webgl_unavailable: 无法启动 3D 地球仪
+    partial_failure: 部分设备的连接信息暂时不可用
+    load_failed: 拓扑加载失败
 
   device:
     list: 设备列表

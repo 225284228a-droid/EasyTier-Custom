@@ -540,7 +540,7 @@ impl NetworkApi {
             )
             .route(
                 "/api/v1/machines/{machine-id}/networks/info",
-                get(Self::handle_collect_network_info),
+                get(Self::handle_collect_network_info).post(Self::handle_collect_network_info),
             )
             .route(
                 "/api/v1/machines/{machine-id}/networks/info/{inst-id}",

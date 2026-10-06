@@ -13,6 +13,11 @@ message PeerConnStats {
   uint64 tx_packets = 4;
 
   uint64 latency_us = 5;
+
+  // Passive bandwidth estimates from peak business-data rates in recent
+  // short tunnel transmission windows, in bits per second. Zero means unknown.
+  uint64 estimated_rx_bps = 6;
+  uint64 estimated_tx_bps = 7;
 }
 
 message PeerConnInfo {

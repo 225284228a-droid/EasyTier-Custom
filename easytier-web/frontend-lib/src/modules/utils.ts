@@ -80,6 +80,8 @@ export interface Location {
     country: string | undefined;
     city: string | undefined;
     region: string | undefined;
+    latitude?: number | undefined;
+    longitude?: number | undefined;
 }
 
 export interface DeviceInfo {

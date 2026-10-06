@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { latencyMs, lossRate } from '../src/modules/statusDisplay'
+import { estimatedBandwidth, latencyMs, lossRate } from '../src/modules/statusDisplay'
 import { ipv4ToString, ipv6ToString } from '../src/modules/utils'
 
 function peerRoutePair(conns: any[]) {
@@ -80,5 +80,34 @@ describe('status display helpers', () => {
 
     expect(latencyMs(peerRoutePairWithDefaultConn(conns, defaultConnId))).toBe('9ms')
     expect(lossRate(peerRoutePairWithDefaultConn(conns, defaultConnId))).toBe('50%')
+  })
+
+  it('formats passive bandwidth estimates and prefers the default connection', () => {
+    const defaultConnId = '00000001-0002-0003-0004-000000000005'
+    const conns = [
+      {
+        conn_id: 'fallback',
+        stats: { estimated_tx_bps: 12_500, estimated_rx_bps: 2_000_000 },
+      },
+      {
+        conn_id: defaultConnId,
+        stats: { estimated_tx_bps: 1_250_000, estimated_rx_bps: 8_000 },
+      },
+    ]
+
+    expect(estimatedBandwidth(peerRoutePairWithDefaultConn(conns, defaultConnId))).toEqual({
+      upload: '1.25 Mbit/s',
+      download: '8.00 kbit/s',
+    })
+  })
+
+  it('shows unavailable bandwidth when a peer has no estimate', () => {
+    expect(estimatedBandwidth(peerRoutePair([]))).toEqual({
+      upload: '--',
+      download: '--',
+    })
+    expect(estimatedBandwidth(peerRoutePair([{
+      stats: { estimated_tx_bps: 0, estimated_rx_bps: '0' },
+    }]))).toEqual({ upload: '--', download: '--' })
   })
 })

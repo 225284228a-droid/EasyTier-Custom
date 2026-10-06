@@ -454,6 +454,7 @@ export interface PeerInfo {
 
 export interface PeerConnInfo {
   conn_id: string
+  is_closed?: boolean
   my_peer_id: number
   is_client: boolean
   peer_id: number
@@ -484,6 +485,8 @@ export interface PeerConnStats {
   rx_packets: number | string
   tx_packets: number | string
   latency_us: number | string
+  estimated_rx_bps?: number | string
+  estimated_tx_bps?: number | string
 }
 
 export interface CommonUuid {

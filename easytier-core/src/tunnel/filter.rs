@@ -7,7 +7,8 @@ use auto_impl::auto_impl;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
 use crate::{
-    packet::ZCPacket,
+    packet::{PacketType, ZCPacket},
+    peers::traffic_metrics::{TrafficKind, data_packet_payload_len, traffic_kind},
     proto::common::TunnelInfo,
     tunnel::{
         SinkError, SinkItem, StreamItem, Tunnel, ZCPacketSink, ZCPacketStream, stats::Throughput,
@@ -310,4 +311,51 @@ impl StatsRecorderTunnelFilter {
     pub fn get_throughput(&self) -> Arc<Throughput> {
         self.throughput.clone()
     }
+}
+
+pub struct BandwidthRecorderTunnelFilter {
+    throughput: Arc<Throughput>,
+}
+
+impl BandwidthRecorderTunnelFilter {
+    pub fn new(throughput: Arc<Throughput>) -> Self {
+        Self { throughput }
+    }
+
+    fn business_payload_len(packet: &ZCPacket) -> Option<u64> {
+        let header = packet.peer_manager_header()?;
+        if header.packet_type == PacketType::ForeignNetworkPacket as u8 {
+            // Unlike limiter accounting, bandwidth sampling needs positive
+            // evidence that the encapsulated packet contains business data.
+            if header.is_encrypted() {
+                return None;
+            }
+            let (inner, payload_len) = packet.foreign_network_inner_packet_info()?;
+            return (traffic_kind(inner.packet_type) == TrafficKind::Data)
+                .then_some(payload_len as u64);
+        }
+        data_packet_payload_len(packet)
+    }
+}
+
+impl TunnelFilter for BandwidthRecorderTunnelFilter {
+    type FilterOutput = ();
+
+    fn before_send(&self, data: SinkItem) -> Option<SinkItem> {
+        if let Some(bytes) = Self::business_payload_len(&data) {
+            self.throughput.record_tx_data_bytes(bytes);
+        }
+        Some(data)
+    }
+
+    fn after_received(&self, data: StreamItem) -> Option<StreamItem> {
+        if let Ok(packet) = &data
+            && let Some(bytes) = Self::business_payload_len(packet)
+        {
+            self.throughput.record_rx_data_bytes(bytes);
+        }
+        Some(data)
+    }
+
+    fn filter_output(&self) {}
 }

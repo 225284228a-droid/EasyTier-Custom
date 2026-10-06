@@ -39,6 +39,12 @@ pub struct Location {
     pub country: String,
     pub city: Option<String>,
     pub region: Option<String>,
+    /// GeoIP coordinates in decimal degrees when the database provides them.
+    ///
+    /// These are optional to preserve the existing API shape for private,
+    /// special, or otherwise unresolved addresses.
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -174,6 +174,14 @@ export class ApiClient {
         return response;
     }
 
+    public async collect_machine_network_info(machine_id: string) {
+        const response = await this.client.post<any, Api.CollectNetworkInfoResponse>(
+            `/machines/${machine_id}/networks/info`,
+            {},
+        );
+        return response.info?.map ?? {};
+    }
+
     public captcha_url() {
         return this.client.defaults.baseURL + '/auth/captcha';
     }

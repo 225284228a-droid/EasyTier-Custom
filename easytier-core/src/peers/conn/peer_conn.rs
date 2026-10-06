@@ -54,7 +54,10 @@ use crate::{
     },
     tunnel::{
         Tunnel, TunnelError, ZCPacketStream,
-        filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelFilterChain, TunnelWithFilter},
+        filter::{
+            BandwidthRecorderTunnelFilter, StatsRecorderTunnelFilter, TunnelFilter,
+            TunnelFilterChain, TunnelWithFilter,
+        },
         mpsc::{MpscTunnel, MpscTunnelSender},
         stats::{Throughput, WindowLatency},
     },
@@ -363,8 +366,12 @@ impl PeerConn {
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
+        let bandwidth_filter = BandwidthRecorderTunnelFilter::new(throughput.clone());
         let liveness = PeerConnLiveness::new();
-        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter)
+        // Business samples are inside session authentication; wire counters
+        // remain outside encryption and retain the full tunnel byte totals.
+        let filter_chain = TunnelFilterChain::new(bandwidth_filter, session_filter.clone())
+            .chain(peer_conn_tunnel_filter)
             .chain(liveness.clone());
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
         let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
@@ -1471,6 +1478,8 @@ impl PeerConn {
 
             tx_packets: self.throughput.tx_packets(),
             rx_packets: self.throughput.rx_packets(),
+            estimated_rx_bps: self.throughput.estimated_rx_bps(),
+            estimated_tx_bps: self.throughput.estimated_tx_bps(),
         }
     }
 

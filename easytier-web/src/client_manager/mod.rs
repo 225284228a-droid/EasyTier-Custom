@@ -474,6 +474,8 @@ impl ClientManager {
                 country: "本地网络".to_string(),
                 city: None,
                 region: None,
+                latitude: None,
+                longitude: None,
             };
             return Some(location);
         }
@@ -514,12 +516,16 @@ impl ClientManager {
                         country,
                         city: city_name,
                         region,
+                        latitude: city.location.latitude,
+                        longitude: city.location.longitude,
                     }
                 }
                 Ok(None) => Location {
                     country: "海外".to_string(),
                     city: None,
                     region: None,
+                    latitude: None,
+                    longitude: None,
                 },
                 Err(err) => {
                     tracing::debug!("GeoIP lookup failed for {}: {}", ip, err);
@@ -527,6 +533,8 @@ impl ClientManager {
                         country: "海外".to_string(),
                         city: None,
                         region: None,
+                        latitude: None,
+                        longitude: None,
                     }
                 }
             }
@@ -539,6 +547,8 @@ impl ClientManager {
                 country: "海外".to_string(),
                 city: None,
                 region: None,
+                latitude: None,
+                longitude: None,
             }
         };
 

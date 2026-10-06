@@ -5,7 +5,7 @@ import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { latencyMs, lossRate, numericValue, peerConns } from '../modules/statusDisplay';
+import { estimatedBandwidth, latencyMs, lossRate, numericValue, peerConns } from '../modules/statusDisplay';
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 
@@ -552,6 +552,14 @@ function showEventLogs() {
             <Column :field="latencyMs" :header="t('latency')" />
             <Column :field="txBytes" :header="t('upload_bytes')" />
             <Column :field="rxBytes" :header="t('download_bytes')" />
+            <Column :header="t('estimated_bandwidth')">
+              <template #body="slotProps">
+                <div class="whitespace-nowrap text-xs leading-5">
+                  <div>{{ t('upload') }}: {{ estimatedBandwidth(slotProps.data).upload }}</div>
+                  <div>{{ t('download') }}: {{ estimatedBandwidth(slotProps.data).download }}</div>
+                </div>
+              </template>
+            </Column>
             <Column :field="lossRate" :header="t('loss_rate')" />
             <Column :field="natType" :header="t('nat_type')" />
             <Column :header="t('status.version')">

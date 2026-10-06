@@ -80,3 +80,40 @@ export function lossRate(info: PeerRoutePair) {
 
   return ''
 }
+
+function formatBitRate(bitsPerSecond: number): string {
+  if (!Number.isFinite(bitsPerSecond) || bitsPerSecond < 0)
+    return '--'
+
+  const units = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s', 'Tbit/s']
+  let value = bitsPerSecond
+  let unit = 0
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000
+    unit += 1
+  }
+
+  const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2
+  return `${value.toFixed(precision)} ${units[unit]}`
+}
+
+function connectionBandwidth(conn: ReturnType<typeof peerConns>[number], direction: 'tx' | 'rx') {
+  const value = numericValue(direction === 'tx' ? conn.stats?.estimated_tx_bps : conn.stats?.estimated_rx_bps)
+  return value !== undefined && value > 0 ? value : undefined
+}
+
+export function estimatedBandwidth(info: PeerRoutePair): { upload: string, download: string } {
+  let upload: number | undefined
+  let download: number | undefined
+  for (const conn of defaultConnFirst(info)) {
+    upload ??= connectionBandwidth(conn, 'tx')
+    download ??= connectionBandwidth(conn, 'rx')
+    if (upload !== undefined && download !== undefined)
+      break
+  }
+
+  return {
+    upload: upload === undefined ? '--' : formatBitRate(upload),
+    download: download === undefined ? '--' : formatBitRate(download),
+  }
+}
