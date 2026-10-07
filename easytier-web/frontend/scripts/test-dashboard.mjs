@@ -24,6 +24,7 @@ let colocated = false
 let hangNext = false
 let hungRoute
 let trafficScale = 1
+let collectionDelay = 0
 const machineItems = locations.map((location, index) => ({
   client_url: `tcp://198.51.100.${index + 1}:11010`,
   location,
@@ -78,6 +79,7 @@ async function assertLocalLabelLayout(page, name) {
           width: rect.width, height: rect.height,
           stageWidth: stage.width, stageHeight: stage.height,
           leaderLength: Number.parseFloat(label.previousElementSibling.style.width),
+          leaderThickness: Number.parseFloat(getComputedStyle(label.previousElementSibling).height),
         }
       })
   })
@@ -85,6 +87,8 @@ async function assertLocalLabelLayout(page, name) {
   layout.forEach((label, index) => {
     assert.ok(label.leaderLength <= (label.traffic ? 48 : 32) + 0.1,
       `${name}: a label connector stretched away from its link`)
+    if (label.traffic)
+      assert.ok(label.leaderThickness >= 2, `${name}: traffic connector is too thin`)
     assert.ok(label.x >= 4.9 && label.y >= 4.9
       && label.x + label.width <= label.stageWidth - 4.9
       && label.y + label.height <= label.stageHeight - 33.9, `${name}: label exceeds stage bounds`)
@@ -125,6 +129,8 @@ try {
         await route.fulfill({ status: 503, contentType: 'application/json', body: '{"message":"temporary"}' })
         return
       }
+      if (collectionDelay)
+        await new Promise(resolve => setTimeout(resolve, collectionDelay))
       body = { info: { map: { [uuidString(id + 10)]: snapshot(id - 1) } } }
     }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
@@ -146,6 +152,12 @@ try {
     const canvas = page.locator('.globe-stage canvas')
     await canvas.waitFor()
     await page.locator('.node-row').first().waitFor()
+    const defaultLongitude = 114.17 * Math.PI / 180
+    await page.waitForFunction(() => document.querySelector('.globe-stage canvas')?.hasAttribute('data-globe-azimuth'))
+    const initialAzimuth = Number(await canvas.getAttribute('data-globe-azimuth'))
+    assert.ok(Math.abs(Math.atan2(Math.sin(initialAzimuth - defaultLongitude),
+      Math.cos(initialAzimuth - defaultLongitude))) < 0.08,
+    `${name}: default globe view is not centered near Hong Kong`)
     const summaries = await page.locator('.dashboard-summary strong').allTextContents()
     assert.deepEqual(summaries, ['4', '1', '6'], `${name}: machines sharing a mesh must count as one network`)
     const globeControls = await canvas.evaluate((element) => ({
@@ -241,7 +253,17 @@ try {
         movingWhitePixels++
     }
     assert.ok(movingWhitePixels > 2, `${name}: particle pixels did not move on the paused globe`)
+    const beforeCancellation = await canvas.getAttribute('data-globe-azimuth')
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
+    assert.equal(await page.locator('.node-row.selected').count(), 0,
+      `${name}: clicking the selected node did not cancel selection`)
+    assert.equal(await page.locator('.node-detail').count(), 0,
+      `${name}: canceled selection left the detail panel visible`)
+    assert.equal(await page.locator('.node-row').filter({ hasText: 'Auckland' }).getAttribute('aria-pressed'), 'false')
+    assert.equal(await canvas.getAttribute('data-globe-azimuth'), beforeCancellation,
+      `${name}: canceling a node unexpectedly moved the camera`)
+    await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
+    assert.equal(await page.locator('.node-row').filter({ hasText: 'Auckland' }).getAttribute('aria-pressed'), 'true')
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
     for (let i = 0; i < 15 && Number(await canvas.getAttribute('data-globe-distance')) > 2.75; i++) {
       await page.mouse.wheel(0, -150)
@@ -274,8 +296,58 @@ try {
       .some(element => getComputedStyle(element).display !== 'none' && element.textContent.includes('bit/s')))
     assert.ok(await page.locator('.globe-traffic-label').evaluateAll(elements =>
       elements.some(element => getComputedStyle(element).display !== 'none'
-        && !element.textContent.includes('RTT') && element.querySelector('.traffic-endpoints'))),
-    `${name}: traffic labels must use the cross layout with rates only`)
+        && element.querySelector('.traffic-endpoints')
+        && element.querySelector('.globe-flow-latency-value')?.textContent.match(/^RTT [\d.]+ ms$/)
+        && [...element.querySelectorAll('.globe-flow-stat')].every(stat => !stat.textContent.includes('RTT')))),
+    `${name}: traffic labels must keep directional rates separate from the RTT footer`)
+    await assertLocalLabelLayout(page, name)
+    const continuity = await page.locator('.globe-labels').evaluateHandle(layer => {
+      const tracked = [...layer.querySelectorAll('.globe-traffic-label')]
+        .filter(element => getComputedStyle(element).display !== 'none')
+        .map(element => ({
+          element, leader: element.previousElementSibling,
+          rate: element.querySelector('.globe-flow-source-stat'),
+        }))
+      const state = { frames: 0, hiddenFrames: 0, replacedFrames: 0, frame: 0 }
+      const sample = () => {
+        state.frames++
+        if (tracked.some(({ element, leader, rate }) => !element.isConnected
+          || element.previousElementSibling !== leader
+          || element.querySelector('.globe-flow-source-stat') !== rate))
+          state.replacedFrames++
+        if (tracked.some(({ element }) => getComputedStyle(element).display === 'none'))
+          state.hiddenFrames++
+        state.frame = requestAnimationFrame(sample)
+      }
+      state.frame = requestAnimationFrame(sample)
+      return state
+    })
+    collectionDelay = 400
+    const refreshButton = page.getByRole('button', { name: 'Refresh Topology', exact: true })
+    const automaticResponse = page.waitForResponse(response =>
+      response.url().includes('/networks/info') && response.status() === 200)
+    await page.waitForRequest(request => request.url().includes('/networks/info'))
+    assert.equal(await refreshButton.locator('[data-pc-section="loadingicon"]').count(), 0,
+      `${name}: automatic polling activated the manual refresh spinner`)
+    await automaticResponse
+    await page.waitForTimeout(700)
+    const manualResponse = page.waitForResponse(response =>
+      response.url().includes('/networks/info') && response.status() === 200)
+    await refreshButton.click()
+    await refreshButton.locator('[data-pc-section="loadingicon"]').waitFor()
+    await manualResponse
+    await page.waitForTimeout(700)
+    assert.equal(await refreshButton.locator('[data-pc-section="loadingicon"]').count(), 0,
+      `${name}: manual refresh spinner did not stop`)
+    const continuityResult = await continuity.evaluate(state => {
+      cancelAnimationFrame(state.frame)
+      return { frames: state.frames, hiddenFrames: state.hiddenFrames, replacedFrames: state.replacedFrames }
+    })
+    await continuity.dispose()
+    collectionDelay = 0
+    assert.ok(continuityResult.frames > 2, `${name}: label continuity was not sampled across rendered frames`)
+    assert.equal(continuityResult.replacedFrames, 0, `${name}: polling recreated traffic labels or their contents`)
+    assert.equal(continuityResult.hiddenFrames, 0, `${name}: polling briefly hid visible traffic labels`)
     await assertLocalLabelLayout(page, name)
     await page.screenshot({ path: join(output, `${name}-close.png`), fullPage: true })
     const savedDistance = Number(await canvas.getAttribute('data-globe-distance'))
@@ -291,12 +363,25 @@ try {
       `${name}: camera orientation did not survive page reload`)
     assert.equal(await page.getByRole('button', { name: 'Auto Rotate', exact: true }).count(), 1,
     `${name}: rotation switch did not survive page reload`)
+    assert.equal(await page.locator('.node-row').filter({ hasText: 'Auckland' }).getAttribute('aria-pressed'), 'true',
+      `${name}: selected node did not survive page reload`)
     await page.getByRole('button', { name: 'Reset View', exact: true }).click()
-    await page.waitForTimeout(100)
+    await page.waitForFunction(longitude =>
+      Math.abs(Number(document.querySelector('.globe-stage canvas')?.getAttribute('data-globe-azimuth')) - longitude) < 1e-8,
+    defaultLongitude)
+    assert.ok(Math.abs(Number(await canvas.getAttribute('data-globe-azimuth')) - defaultLongitude) < 1e-8,
+      `${name}: reset view did not center on Hong Kong`)
+    await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
+    await page.reload()
+    await page.locator('.node-row').first().waitFor()
+    await page.locator('.globe-stage canvas').waitFor()
+    assert.equal(await page.locator('.node-row.selected').count(), 0,
+      `${name}: canceled selection returned after page reload`)
+    assert.equal(await page.locator('.node-detail').count(), 0)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1)
     assert.equal(overflow, false, `${name}: horizontal overflow`)
     await page.screenshot({ path: join(output, `${name}.png`), fullPage: true })
-    console.log(`${name}: ${landPixels} continent pixels; rotation, zoom LOD, counts, selection and layout passed`)
+    console.log(`${name}: ${landPixels} continent pixels; Hong Kong view, selection toggle, silent polling, continuous RTT labels, rotation, zoom LOD and layout passed`)
   }
   jitter = true
   await page.waitForTimeout(5000)

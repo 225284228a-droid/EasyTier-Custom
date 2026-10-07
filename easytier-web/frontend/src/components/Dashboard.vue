@@ -13,6 +13,7 @@ const props = defineProps<{ api?: ApiClient }>()
 const { t } = useI18n()
 const machines = ref<Utils.DeviceInfo[]>([])
 const loading = ref(false)
+const manualRefreshing = ref(false)
 const error = ref('')
 const topology = ref(buildTopology([], []))
 const trafficTracker = new TrafficTracker()
@@ -90,9 +91,14 @@ function scheduleExpiry() {
   }, Math.max(1, Math.ceil(deadline - performance.now())))
 }
 
-async function loadTopology() {
-  if (!props.api || loading.value)
+async function loadTopology(manual = false) {
+  if (!props.api)
     return
+  if (loading.value) {
+    if (manual)
+      manualRefreshing.value = true
+    return
+  }
   const api = props.api
   const requestGeneration = generation
   const controller = new AbortController()
@@ -102,6 +108,7 @@ async function loadTopology() {
   const requestOptions = { timeout: 8_000, signal: controller.signal }
   clearTimeout(timer)
   loading.value = true
+  manualRefreshing.value = manual
   try {
     let devices: Utils.DeviceInfo[] = []
     try {
@@ -185,6 +192,7 @@ async function loadTopology() {
     if (requestController === controller)
       requestController = undefined
     loading.value = false
+    manualRefreshing.value = false
     if (mounted && props.api)
       timer = setTimeout(loadTopology, requestGeneration === generation ? 2_000 : 0)
   }
@@ -236,9 +244,9 @@ onUnmounted(() => {
       <div><span>{{ t('web.dashboard.connections') }}</span><strong>{{ topology.links.length }}</strong></div>
     </div>
     <p v-if="error" role="status" class="dashboard-error">{{ error }}</p>
-    <NetworkTopologyGlobe :nodes="topology.nodes" :links="topology.links" :loading="loading"
+    <NetworkTopologyGlobe :nodes="topology.nodes" :links="topology.links" :loading="manualRefreshing"
       :persistence-key="persistenceKey"
-      @refresh="loadTopology" />
+      @refresh="loadTopology(true)" />
   </div>
 </template>
 

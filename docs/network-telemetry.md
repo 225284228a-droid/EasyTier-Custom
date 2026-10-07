@@ -75,12 +75,22 @@ boundaries switch between real 110m/50m/10m source detail and increasingly
 fine spherical subdivisions on zoom. Higher-detail assets load on demand. Its
 viewport uses a desktop golden-ratio layout and releases rendering resources
 when the dashboard closes.
+The default and reset view center near Hong Kong (22.3 N, 114.17 E);
+saved camera preferences take precedence on reopening. Clicking the selected
+node again clears its highlight/detail panel without moving the camera,
+and the cleared selection is persisted too.
 The node panel matches the map height and scrolls internally. At close zoom,
 decluttered labels show node names earlier (camera distance <= 2.8), and
 both measured traffic directions only at close zoom (distance <= 1.7).
 Traffic labels use a cross layout: endpoint names flank the bidirectional
 arrow, with the corresponding directional rates above and below the arrow.
-No latency value is displayed in this label.
+A compact footer shows the mean measured round-trip latency (RTT), separate
+from the directional rates; missing measurements remain unknown.
+Automatic collection leaves the refresh control idle; only a requested manual
+refresh shows its loading state. Labels and their connectors retain their DOM
+identity, dimensions and previous attachment during polling, with names/rates/RTT
+updated in place. Only departed nodes and links remove their labels.
+Traffic connectors are two pixels wide with higher contrast.
 Labels try multiple visible anchors along their own link and both sides of
 its projected tangent, with at most a 48-pixel traffic connector (32 pixels
 for node names). They avoid other labels, node markers and existing label

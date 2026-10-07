@@ -94,4 +94,40 @@ describe('dashboard persistent display and warning grace', () => {
     const reopened = await dashboard(client)
     expect(reopened.findComponent(globe).props('nodes')).toEqual([])
   })
+
+  it('keeps initial collection and automatic polling silent, including pending requests', async () => {
+    let finish!: (value: typeof info) => void
+    const client = api()
+    client.collect_machine_network_info.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = await dashboard(client)
+    expect(wrapper.findComponent(globe).props('loading')).toBe(false)
+    finish(info)
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(client.collect_machine_network_info).toHaveBeenCalledTimes(2)
+    expect(wrapper.findComponent(globe).props('loading')).toBe(false)
+    expect(wrapper.findComponent(globe).props('nodes')).toHaveLength(1)
+    wrapper.findComponent(globe).vm.$emit('refresh')
+    await flushPromises()
+    expect(wrapper.findComponent(globe).props('loading')).toBe(true)
+    expect(client.collect_machine_network_info).toHaveBeenCalledTimes(2)
+    finish(info)
+    await flushPromises()
+    expect(wrapper.findComponent(globe).props('loading')).toBe(false)
+  })
+
+  it('shows a loading state only for a requested manual refresh and clears it on completion', async () => {
+    const client = api()
+    const wrapper = await dashboard(client)
+    let finish!: (value: typeof info) => void
+    client.collect_machine_network_info.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    wrapper.findComponent(globe).vm.$emit('refresh')
+    await flushPromises()
+    expect(client.collect_machine_network_info).toHaveBeenCalledTimes(2)
+    expect(wrapper.findComponent(globe).props('loading')).toBe(true)
+    finish(info)
+    await flushPromises()
+    expect(wrapper.findComponent(globe).props('loading')).toBe(false)
+  })
 })

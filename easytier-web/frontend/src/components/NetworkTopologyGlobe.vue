@@ -8,7 +8,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { locateNode, worldGeography, type LocatedNode } from '../modules/globeGeography'
 import { spherePosition as position, sphericalArc } from '../modules/globeBoundaryGeometry'
 import { FlowEmitter, flowEmissionsPerSecond, flowTravelSeconds, MAX_FLOW_PARTICLES } from '../modules/globeFlow'
-import { createFlowLabel } from '../modules/globeFlowLabel'
+import { createFlowLabel, updateFlowLabel, type FlowLabelInput } from '../modules/globeFlowLabel'
 import { arrangeGlobeLabels, type LabelChoice, type LayoutLabel } from '../modules/globeLabelLayout'
 import { loadGlobeMapDetail } from '../modules/globeMapDetail'
 import { buildCloudPointPositions } from '../modules/globePointCloud'
@@ -85,7 +85,7 @@ interface GlobeLabel {
   choice?: LabelChoice
   size?: { width: number, height: number }
 }
-let labels: GlobeLabel[] = []
+const labels = new Map<string, GlobeLabel>()
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
 const markerViewPosition = new THREE.Vector3()
@@ -316,25 +316,39 @@ function scaleMarker(mesh: THREE.Object3D, radius: number, pixels: number) {
   mesh.scale.setScalar(Math.max(0.001, unitsPerPixel * pixels / radius))
 }
 
-function addLabel(id: string, content: string | HTMLElement, kind: 'node' | 'traffic', anchors: GlobeLabel['anchors'], priority: number, stale?: boolean) {
+function addLabel(id: string, content: string | FlowLabelInput, kind: 'node' | 'traffic', anchors: GlobeLabel['anchors'], priority: number, stale?: boolean) {
   if (!labelLayer.value)
     return
-  const element = document.createElement('div')
-  element.className = `globe-${kind}-label${stale ? ' is-stale' : ''}`
-  element.dataset.labelId = id
-  if (typeof content === 'string') {
-    element.textContent = content
-  } else {
-    element.append(content)
-    element.setAttribute('role', 'img')
-    element.setAttribute('aria-label', content.getAttribute('aria-label') ?? '')
+  let label = labels.get(id)
+  if (!label) {
+    const element = document.createElement('div')
+    element.dataset.labelId = id
+    element.style.display = 'none'
+    const leader = document.createElement('div')
+    leader.className = `globe-label-leader globe-${kind}-leader`
+    leader.style.display = 'none'
+    labelLayer.value.append(leader, element)
+    label = { id, kind, element, leader, anchors, priority }
+    labels.set(id, label)
   }
-  element.style.display = 'none'
-  const leader = document.createElement('div')
-  leader.className = 'globe-label-leader'
-  leader.style.display = 'none'
-  labelLayer.value.append(leader, element)
-  labels.push({ id, kind, element, leader, anchors, priority })
+  const { element } = label
+  element.className = `globe-${kind}-label${stale ? ' is-stale' : ''}`
+  label.anchors = anchors
+  label.priority = priority
+  if (typeof content === 'string') {
+    if (element.textContent !== content) {
+      element.textContent = content
+      label.size = undefined
+    }
+  } else {
+    const cross = element.firstElementChild as HTMLDivElement | null
+    if (cross)
+      updateFlowLabel(cross, content)
+    else
+      element.append(createFlowLabel(content))
+    element.setAttribute('role', 'img')
+    element.setAttribute('aria-label', element.firstElementChild!.getAttribute('aria-label') ?? '')
+  }
 }
 
 function projectedAnchor(point: THREE.Vector3, width: number, height: number) {
@@ -363,16 +377,9 @@ function updateLabels() {
   labelLayer.value.dataset.detailVisible = String(nodesVisible)
   labelLayer.value.dataset.nodeLabelsVisible = String(nodesVisible)
   labelLayer.value.dataset.trafficLabelsVisible = String(trafficVisible)
-  for (const label of labels) {
-    label.element.style.display = 'none'
-    label.leader.style.display = 'none'
-  }
-  if (!nodesVisible)
-    return
   const pending: LayoutLabel[] = []
-  const byId = new Map(labels.map(label => [label.id, label]))
-  for (const label of labels) {
-    if (label.kind === 'traffic' && !trafficVisible)
+  for (const label of labels.values()) {
+    if (!nodesVisible || (label.kind === 'traffic' && !trafficVisible))
       continue
     const anchors = label.anchors.flatMap(({ point, tangentPoints }, index) => {
       const anchor = projectedAnchor(point, width, height)
@@ -392,9 +399,10 @@ function updateLabels() {
     if (!anchors.length)
       continue
     if (!label.size) {
+      const previousDisplay = label.element.style.display
       label.element.style.display = 'block'
       label.size = { width: label.element.offsetWidth, height: label.element.offsetHeight }
-      label.element.style.display = 'none'
+      label.element.style.display = previousDisplay
     }
     pending.push({
       id: label.id, kind: label.kind, anchors, priority: label.priority,
@@ -405,8 +413,10 @@ function updateLabels() {
     const anchor = projectedAnchor(mesh.position, width, height)
     return anchor ? [{ x: anchor.x - 7, y: anchor.y - 7, width: 14, height: 14 }] : []
   })
+  const visibleIds = new Set<string>()
   for (const placement of arrangeGlobeLabels(pending, width, height, markers)) {
-    const label = byId.get(placement.id)!
+    const label = labels.get(placement.id)!
+    visibleIds.add(placement.id)
     label.choice = placement.choice
     label.element.style.display = 'block'
     label.element.style.left = `${placement.x}px`
@@ -418,6 +428,12 @@ function updateLabels() {
     label.leader.style.transform = `rotate(${Math.atan2(
       placement.leaderEnd.y - placement.anchor.y, placement.leaderEnd.x - placement.anchor.x,
     )}rad)`
+  }
+  for (const label of labels.values()) {
+    if (!visibleIds.has(label.id)) {
+      label.element.style.display = 'none'
+      label.leader.style.display = 'none'
+    }
   }
 }
 
@@ -479,7 +495,7 @@ function rebuildTopology() {
   if (!renderer)
     return
   const previousEmitters = new Map(flows.map(flow => [flow.key, flow.emitter]))
-  const previousChoices = new Map(labels.map(label => [label.id, label.choice]))
+  const activeLabelIds = new Set<string>()
   if (topologyGroup) {
     scene.remove(topologyGroup)
     disposeGroup(topologyGroup)
@@ -487,8 +503,6 @@ function rebuildTopology() {
   topologyGroup = new THREE.Group()
   markerMeshes = []
   flows = []
-  labels = []
-  labelLayer.value?.replaceChildren()
   const nodeMap = new Map<string, LocatedNode>(locatedNodes.value.map(node => [node.id, node]))
   for (const node of nodeMap.values()) {
     const mesh = new THREE.Mesh(
@@ -504,7 +518,9 @@ function rebuildTopology() {
     mesh.userData.radius = node.id === selectedId.value ? 0.025 : 0.018
     markerMeshes.push(mesh)
     topologyGroup.add(mesh)
-    addLabel(`node:${node.id}`, node.label, 'node', [{ point: mesh.position.clone() }],
+    const labelId = `node:${node.id}`
+    activeLabelIds.add(labelId)
+    addLabel(labelId, node.label, 'node', [{ point: mesh.position.clone() }],
       node.id === selectedId.value ? 10 : 6, node.stale)
   }
   for (const [index, link] of props.links.entries()) {
@@ -535,14 +551,17 @@ function rebuildTopology() {
       flows.push({ key, mesh, curve, emitter, emissionsPerSecond, travelSeconds, reverse })
       topologyGroup.add(mesh)
     }
+    const labelId = `traffic:${JSON.stringify([link.source, link.target])}`
+    activeLabelIds.add(labelId)
     addLabel(
-      `traffic:${JSON.stringify([link.source, link.target])}`,
-      createFlowLabel({
+      labelId,
+      {
         sourceLabel: source.label,
         targetLabel: target.label,
         txBps: link.txBps,
         rxBps: link.rxBps,
-      }),
+        latencyMs: link.latencyMs,
+      },
       'traffic',
       [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9, 0.05, 0.95, 0.02, 0.98].map(progress => ({
         point: curve.getPoint(progress),
@@ -552,7 +571,13 @@ function rebuildTopology() {
       link.stale,
     )
   }
-  labels.forEach(label => { label.choice = previousChoices.get(label.id) })
+  for (const [id, label] of labels) {
+    if (!activeLabelIds.has(id)) {
+      label.element.remove()
+      label.leader.remove()
+      labels.delete(id)
+    }
+  }
   scene.add(topologyGroup)
   renderer.domElement.dataset.globeForwardEmissionRate = String(
     flows.filter(flow => !flow.reverse).reduce((total, flow) => total + flow.emissionsPerSecond, 0),
@@ -569,6 +594,11 @@ function rebuildTopology() {
 }
 
 function selectNode(id: string) {
+  if (selectedId.value === id) {
+    selectedId.value = ''
+    saveView()
+    return
+  }
   selectedId.value = id
   const node = locatedNodes.value.find(node => node.id === id)
   if (!node || !camera || !controls) {
@@ -582,7 +612,7 @@ function selectNode(id: string) {
 }
 
 function resetView(persist = true) {
-  camera?.position.copy(position(20, 100, 3.3))
+  camera?.position.copy(position(22.3, 114.17, 3.3))
   controls?.target.set(0, 0, 0)
   controls?.update()
   if (persist)
@@ -800,7 +830,8 @@ onUnmounted(() => {
         </div>
         <div class="node-list">
           <button v-for="node in nodes" :key="node.id" type="button" class="node-row"
-            :class="{ selected: selectedId === node.id, stale: node.stale }" @click="selectNode(node.id)">
+            :class="{ selected: selectedId === node.id, stale: node.stale }"
+            :aria-pressed="selectedId === node.id" @click="selectNode(node.id)">
             <i :class="node.managed ? 'managed-dot' : 'peer-dot'" />
             <span class="node-name" :title="node.label">{{ node.label }}</span>
             <span class="node-country">{{ [node.nodeLocation?.city, node.country].filter(Boolean).join(', ') || t('web.device.unknown_location') }}</span>
@@ -844,8 +875,11 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .globe-labels :deep(.globe-flow-name) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: auto; }
 .globe-labels :deep(.globe-flow-source) { text-align: right; }
 .globe-labels :deep(.globe-flow-directions) { text-align: center; font-size: 13px; color: #edf7f5; }
+.globe-labels :deep(.globe-flow-latency) { display: flex; justify-content: center; align-items: center; gap: 4px; padding-top: 2px; border-top: 1px solid rgba(164, 188, 192, 0.18); color: #a4bcc0; font-size: 10px; line-height: 13px; }
+.globe-labels :deep(.globe-flow-latency .pi) { font-size: 10px; }
 .globe-labels :deep(.is-stale) { opacity: 0.55; }
 .globe-labels :deep(.globe-label-leader) { position: absolute; height: 1px; background: rgba(187, 215, 213, 0.4); transform-origin: left center; }
+.globe-labels :deep(.globe-traffic-leader) { height: 2px; margin-top: -1px; background: rgba(187, 215, 213, 0.82); }
 .globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: #c6d9db; padding: 24px; text-align: center; }
 .globe-legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 16px; color: #d5e0df; font-size: 12px; pointer-events: none; }
 .globe-legend span { display: inline-flex; align-items: center; gap: 6px; }
