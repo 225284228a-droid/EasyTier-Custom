@@ -52,7 +52,8 @@ const snapshot = (index) => ({
     conns: [{
       conn_id: uuidString(peer + 101), is_closed: false, tunnel: { tunnel_type: 'udp' },
       stats: {
-        latency_us: String((index + 1) * 10_000),
+        latency_us: String(index === 0 || peer === 0
+          ? (index === 1 || peer === 1 ? 5_000 : 50_000) : 150_000),
         tx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
           * (index < peer ? 2_500_000 : 25_000))),
         rx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
@@ -148,9 +149,17 @@ try {
       return Number(canvas?.getAttribute('data-globe-forward-particles')) > 0
         && Number(canvas?.getAttribute('data-globe-reverse-particles')) > 0
     })
-    assert.ok(Number(await canvas.getAttribute('data-globe-forward-particles'))
-      > Number(await canvas.getAttribute('data-globe-reverse-particles')),
-      `${name}: flow particle density must follow directional measured traffic`)
+    assert.ok(Number(await canvas.getAttribute('data-globe-forward-emission-rate'))
+      > Number(await canvas.getAttribute('data-globe-reverse-emission-rate')) * 90,
+      `${name}: emission frequency must preserve measured throughput ratios`)
+    const timings = JSON.parse(await canvas.getAttribute('data-globe-flow-timings'))
+      .filter(flow => JSON.parse(flow.key)[2] === false)
+      .sort((left, right) => left.travelSeconds - right.travelSeconds)
+    assert.equal(timings.length, 3)
+    assert.ok(Math.abs(timings[0].emissionsPerSecond - timings[2].emissionsPerSecond) < 0.1,
+      `${name}: equal throughput must emit equally despite different RTTs`)
+    assert.ok(Math.abs(timings[1].travelSeconds / timings[0].travelSeconds - 10) < 0.01,
+      `${name}: low-latency travel-time differences were compressed`)
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
     const lowBoundaryVertices = Number(await canvas.getAttribute('data-globe-boundary-source-vertices'))
     await assert.doesNotReject(() => page.locator('.node-detail').waitFor())
@@ -184,6 +193,17 @@ try {
     await page.waitForTimeout(300)
     assert.equal(await canvas.getAttribute('data-globe-azimuth'), azimuthAfter,
       `${name}: globe continued spinning after a manual drag`)
+    const motionBefore = PNG.sync.read(await canvas.screenshot())
+    await page.waitForTimeout(200)
+    const motionAfter = PNG.sync.read(await canvas.screenshot())
+    let movingWhitePixels = 0
+    for (let i = 0; i < motionBefore.data.length; i += 4) {
+      const before = motionBefore.data[i] > 230 && motionBefore.data[i + 1] > 230 && motionBefore.data[i + 2] > 230
+      const after = motionAfter.data[i] > 230 && motionAfter.data[i + 1] > 230 && motionAfter.data[i + 2] > 230
+      if (before !== after)
+        movingWhitePixels++
+    }
+    assert.ok(movingWhitePixels > 2, `${name}: particle pixels did not move on the paused globe`)
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
     for (let i = 0; i < 15 && Number(await canvas.getAttribute('data-globe-distance')) > 2.75; i++) {

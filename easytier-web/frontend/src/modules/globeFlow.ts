@@ -1,6 +1,72 @@
-/** RTT changes travel speed, while byte-counter rates independently set density. */
+const MIN_TRAVEL_SECONDS = 0.08
+const MAX_TRAVEL_SECONDS = 6
+const MIN_BITS_PER_PARTICLE = 64_000
+export const MAX_FLOW_EMISSIONS_PER_SECOND = 24
+export const MAX_FLOW_PARTICLES = Math.ceil(MAX_FLOW_EMISSIONS_PER_SECOND * MAX_TRAVEL_SECONDS) + 1
+
+/** Expand RTT twentyfold for display, preserving ratios inside the readable limits. */
 export function flowTravelSeconds(latencyMs: number | undefined): number {
   if (latencyMs === undefined || !Number.isFinite(latencyMs) || latencyMs <= 0)
     return 5
-  return Math.min(8, Math.max(0.35, 0.35 + Math.log10(Math.max(1, latencyMs)) * 2.4))
+  return Math.min(MAX_TRAVEL_SECONDS, Math.max(MIN_TRAVEL_SECONDS, latencyMs * 0.02))
+}
+
+/** All visible directions share one payload unit, so their emission-rate ratios agree. */
+export function flowBitsPerParticle(rates: (number | undefined)[]): number {
+  const peak = rates.reduce<number>((maximum, rate) =>
+    rate !== undefined && Number.isFinite(rate) && rate > maximum ? rate : maximum, 0)
+  return Math.max(MIN_BITS_PER_PARTICLE, peak / MAX_FLOW_EMISSIONS_PER_SECOND)
+}
+
+export function flowEmissionsPerSecond(rate: number | undefined, bitsPerParticle: number, stale = false): number {
+  if (stale || rate === undefined || !Number.isFinite(rate) || rate <= 0
+    || !Number.isFinite(bitsPerParticle) || bitsPerParticle <= 0)
+    return 0
+  return Math.min(MAX_FLOW_EMISSIONS_PER_SECOND, rate / bitsPerParticle)
+}
+
+/** One-shot particles: throughput schedules births; RTT only advances their journey. */
+export class FlowEmitter {
+  readonly progress: number[] = []
+  emittedCount = 0
+  private credit: number
+
+  constructor(phase = 0) {
+    this.credit = Number.isFinite(phase) ? Math.min(1 - Number.EPSILON, Math.max(0, phase)) : 0
+  }
+
+  advance(seconds: number, emissionsPerSecond: number, travelSeconds: number) {
+    if (!Number.isFinite(emissionsPerSecond) || emissionsPerSecond <= 0) {
+      this.progress.length = 0
+      this.credit = 0
+      return
+    }
+    if (!Number.isFinite(seconds) || seconds <= 0)
+      return
+    const frequency = Math.min(MAX_FLOW_EMISSIONS_PER_SECOND, emissionsPerSecond)
+    const duration = Number.isFinite(travelSeconds) && travelSeconds > 0
+      ? Math.min(MAX_TRAVEL_SECONDS, Math.max(MIN_TRAVEL_SECONDS, travelSeconds)) : 5
+    const increment = seconds / duration
+    let kept = 0
+    for (const progress of this.progress) {
+      const advanced = progress + increment
+      if (advanced < 1 - 1e-9)
+        this.progress[kept++] = advanced
+    }
+    this.progress.length = kept
+
+    const previousCredit = this.credit
+    const accumulated = previousCredit + seconds * frequency
+    const emitted = Math.floor(accumulated + 1e-9)
+    this.credit = Math.max(0, accumulated - emitted)
+    this.emittedCount += emitted
+    // A resumed tab may span many births. Only materialize particles still in transit.
+    const first = Math.max(0, emitted - Math.ceil(duration * frequency) - 1)
+    for (let index = first; index < emitted; index++) {
+      const bornAt = (index + 1 - previousCredit) / frequency
+      const progress = Math.max(0, (seconds - bornAt) / duration)
+      if (progress < 1 - 1e-9 && this.progress.length < MAX_FLOW_PARTICLES)
+        this.progress.push(progress)
+    }
+  }
 }

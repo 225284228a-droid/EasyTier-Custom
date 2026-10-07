@@ -7,7 +7,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { locateNode, worldGeography, type LocatedNode } from '../modules/globeGeography'
 import { spherePosition as position, sphericalArc } from '../modules/globeBoundaryGeometry'
-import { flowTravelSeconds } from '../modules/globeFlow'
+import { FlowEmitter, flowBitsPerParticle, flowEmissionsPerSecond, flowTravelSeconds, MAX_FLOW_PARTICLES } from '../modules/globeFlow'
 import { createFlowLabel } from '../modules/globeFlowLabel'
 import { loadGlobeMapDetail } from '../modules/globeMapDetail'
 import { buildCloudPointPositions } from '../modules/globePointCloud'
@@ -67,9 +67,10 @@ let dragged = false
 let markerMeshes: THREE.Mesh[] = []
 let flows: {
   key: string
-  mesh: THREE.Mesh
+  mesh: THREE.InstancedMesh
   curve: THREE.CatmullRomCurve3
-  progress: number
+  emitter: FlowEmitter
+  emissionsPerSecond: number
   travelSeconds: number
   reverse: boolean
 }[] = []
@@ -84,6 +85,7 @@ let labels: GlobeLabel[] = []
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
 const markerViewPosition = new THREE.Vector3()
+const flowMarker = new THREE.Object3D()
 const labelProjection = new THREE.Vector3()
 const labelDirection = new THREE.Vector3()
 const labelIntersection = new THREE.Vector3()
@@ -107,6 +109,8 @@ function disposeGroup(group: THREE.Object3D) {
       renderable.material.forEach(material => material.dispose())
     else
       renderable.material?.dispose()
+    if (object instanceof THREE.InstancedMesh)
+      object.dispose()
   })
 }
 
@@ -296,7 +300,7 @@ function updateCloudDetail() {
   }
 }
 
-function scaleMarker(mesh: THREE.Mesh, radius: number, pixels: number) {
+function scaleMarker(mesh: THREE.Object3D, radius: number, pixels: number) {
   if (!renderer)
     return
   markerViewPosition.copy(mesh.position).applyMatrix4(camera.matrixWorldInverse)
@@ -304,12 +308,6 @@ function scaleMarker(mesh: THREE.Mesh, radius: number, pixels: number) {
     * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))
     / Math.max(1, renderer.domElement.clientHeight)
   mesh.scale.setScalar(Math.max(0.001, unitsPerPixel * pixels / radius))
-}
-
-function flowDensity(rate: number | undefined, stale?: boolean) {
-  if (stale || rate === undefined || !Number.isFinite(rate) || rate <= 0)
-    return 0
-  return THREE.MathUtils.clamp(1 + Math.floor(Math.log10(Math.max(1, rate / 1000)) * 2), 1, 16)
 }
 
 function addLabel(content: string | HTMLElement, kind: 'node' | 'traffic', anchors: THREE.Vector3[], priority: number, stale?: boolean) {
@@ -466,7 +464,7 @@ function linkCurve(source: THREE.Vector3, target: THREE.Vector3) {
 function rebuildTopology() {
   if (!renderer)
     return
-  const previousProgress = new Map(flows.map(flow => [flow.key, flow.progress]))
+  const previousEmitters = new Map(flows.map(flow => [flow.key, flow.emitter]))
   if (topologyGroup) {
     scene.remove(topologyGroup)
     disposeGroup(topologyGroup)
@@ -477,6 +475,9 @@ function rebuildTopology() {
   labels = []
   labelLayer.value?.replaceChildren()
   const nodeMap = new Map<string, LocatedNode>(locatedNodes.value.map(node => [node.id, node]))
+  const bitsPerParticle = flowBitsPerParticle(props.links
+    .filter(link => !link.stale && nodeMap.has(link.source) && nodeMap.has(link.target))
+    .flatMap(link => [link.txBps, link.rxBps]))
   for (const node of nodeMap.values()) {
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(node.id === selectedId.value ? 0.025 : 0.018, 12, 8),
@@ -504,19 +505,22 @@ function rebuildTopology() {
       new THREE.LineBasicMaterial({ color: 0x77bce6, transparent: true, opacity: link.stale ? 0.28 : 0.72 }),
     ))
     for (const [reverse, rate] of [[false, link.txBps], [true, link.rxBps]] as const) {
-      const count = flowDensity(rate, link.stale)
+      const emissionsPerSecond = flowEmissionsPerSecond(rate, bitsPerParticle, link.stale)
+      if (!emissionsPerSecond)
+        continue
       const travelSeconds = flowTravelSeconds(link.latencyMs)
-      for (let particle = 0; particle < count; particle++) {
-        const mesh = new THREE.Mesh(
-          new THREE.SphereGeometry(0.009, 8, 6),
-          new THREE.MeshBasicMaterial({ color: reverse ? 0xdaf1ff : 0xffffff }),
-        )
-        const key = JSON.stringify([link.source, link.target, reverse, particle])
-        const progress = previousProgress.get(key)
-          ?? (index * 0.23 + particle / count + (reverse ? 0.37 : 0)) % 1
-        flows.push({ key, mesh, curve, progress, travelSeconds, reverse })
-        topologyGroup.add(mesh)
-      }
+      const mesh = new THREE.InstancedMesh(
+        new THREE.SphereGeometry(0.009, 8, 6),
+        new THREE.MeshBasicMaterial({ color: reverse ? 0xdaf1ff : 0xffffff }),
+        MAX_FLOW_PARTICLES,
+      )
+      mesh.count = 0
+      mesh.frustumCulled = false
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      const key = JSON.stringify([link.source, link.target, reverse])
+      const emitter = previousEmitters.get(key) ?? new FlowEmitter((index * 0.23 + (reverse ? 0.37 : 0)) % 1)
+      flows.push({ key, mesh, curve, emitter, emissionsPerSecond, travelSeconds, reverse })
+      topologyGroup.add(mesh)
     }
     addLabel(
       createFlowLabel({
@@ -532,8 +536,16 @@ function rebuildTopology() {
     )
   }
   scene.add(topologyGroup)
-  renderer.domElement.dataset.globeForwardParticles = String(flows.filter(flow => !flow.reverse).length)
-  renderer.domElement.dataset.globeReverseParticles = String(flows.filter(flow => flow.reverse).length)
+  renderer.domElement.dataset.globeEmissionBits = String(bitsPerParticle)
+  renderer.domElement.dataset.globeForwardEmissionRate = String(
+    flows.filter(flow => !flow.reverse).reduce((total, flow) => total + flow.emissionsPerSecond, 0),
+  )
+  renderer.domElement.dataset.globeReverseEmissionRate = String(
+    flows.filter(flow => flow.reverse).reduce((total, flow) => total + flow.emissionsPerSecond, 0),
+  )
+  renderer.domElement.dataset.globeFlowTimings = JSON.stringify(
+    flows.map(flow => ({ key: flow.key, emissionsPerSecond: flow.emissionsPerSecond, travelSeconds: flow.travelSeconds })),
+  )
 }
 
 function selectNode(id: string) {
@@ -619,19 +631,35 @@ function animate(now: number) {
   if (now - lastFrame >= 1000 / 30) {
     controls.autoRotate = rotating.value && !interacting
     const deltaSeconds = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 1 / 30
+    const flowSeconds = lastFrame ? (now - lastFrame) / 1000 : 0
     controls.update(deltaSeconds)
     updateCloudDetail()
     for (const mesh of markerMeshes)
       scaleMarker(mesh, mesh.userData.radius, mesh.userData.nodeId === selectedId.value ? 7 : 5)
+    let invalidFlows = 0
+    let forwardParticles = 0
+    let reverseParticles = 0
     for (const flow of flows) {
-      flow.progress = (flow.progress + deltaSeconds / flow.travelSeconds) % 1
-      flow.mesh.position.copy(flow.curve.getPointAt(flow.reverse ? 1 - flow.progress : flow.progress))
-      scaleMarker(flow.mesh, 0.009, 2)
+      flow.emitter.advance(flowSeconds, flow.emissionsPerSecond, flow.travelSeconds)
+      flow.mesh.count = flow.emitter.progress.length
+      if (flow.reverse)
+        reverseParticles += flow.mesh.count
+      else
+        forwardParticles += flow.mesh.count
+      flow.emitter.progress.forEach((progress, index) => {
+        flowMarker.position.copy(flow.curve.getPointAt(flow.reverse ? 1 - progress : progress))
+        if (![flowMarker.position.x, flowMarker.position.y, flowMarker.position.z].every(Number.isFinite))
+          invalidFlows++
+        scaleMarker(flowMarker, 0.009, 2)
+        flowMarker.updateMatrix()
+        flow.mesh.setMatrixAt(index, flowMarker.matrix)
+      })
+      if (flow.mesh.count)
+        flow.mesh.instanceMatrix.needsUpdate = true
     }
-    renderer.domElement.dataset.globeInvalidFlows = String(
-      flows.filter(flow => ![flow.mesh.position.x, flow.mesh.position.y, flow.mesh.position.z]
-        .every(Number.isFinite)).length,
-    )
+    renderer.domElement.dataset.globeForwardParticles = String(forwardParticles)
+    renderer.domElement.dataset.globeReverseParticles = String(reverseParticles)
+    renderer.domElement.dataset.globeInvalidFlows = String(invalidFlows)
     renderer.render(scene, camera)
     updateLabels()
     if (rotating.value && now - lastViewSavedAt >= 5_000)

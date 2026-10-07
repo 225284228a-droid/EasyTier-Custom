@@ -81,10 +81,18 @@ both measured traffic directions only at close zoom (distance <= 1.7).
 Traffic labels use a cross layout: endpoint names flank the bidirectional
 arrow, with the corresponding directional rates above and below the arrow.
 No latency value is displayed in this label.
-Flow particles move in both directions, with logarithmically scaled density
-based on each direction's measured traffic. Travel time follows the mean
-valid RTT of fresh open channels, with a logarithmic 0.35-8 second display
-range; a missing RTT uses a conservative five-second animation fallback.
+Flow particles move in both directions. One-shot emission frequency is
+linear in each direction's measured bit/s, independent of RTT. Visible
+directions share a payload unit of at least 64,000 bits per dot; it scales
+up together when necessary to limit the busiest direction to 24 dots/second
+without changing relative emission rates. Sparse traffic is not rounded up
+to a minimum continuous stream. Faster links therefore have fewer particles
+in flight at equal throughput, not a higher emission frequency.
+Travel time follows the mean valid RTT of fresh open channels, expanded
+twentyfold and bounded to 0.08-6 seconds for display. Latency ratios are
+preserved within those limits; a missing RTT uses a conservative five-second
+animation fallback. Particles retire at arrival instead of looping, and
+fractional emissions/in-flight progress survive display rebuilds.
 This is a visual timing scale, not individual-packet tracing. Zero/unknown/stale directions
 do not show fabricated moving particles. Attribution is in the About dialog.
 
