@@ -14,10 +14,12 @@ message PeerConnStats {
 
   uint64 latency_us = 5;
 
-  // Passive bandwidth estimates from peak business-data rates in recent
-  // short tunnel transmission windows, in bits per second. Zero means unknown.
+  // Actual transport sending-window/RTT estimates, in bit/s. RX is reported
+  // by the peer's sending transport. Zero means unknown, never a traffic rate.
   uint64 estimated_rx_bps = 6;
   uint64 estimated_tx_bps = 7;
+  // 1 = transmission-window formula. Missing/0 is the retired traffic estimator.
+  uint32 bandwidth_estimate_version = 8;
 }
 
 message PeerConnInfo {

@@ -163,6 +163,7 @@ pub(crate) async fn upgrade_connected(
         conn: connection,
         _endpoint: endpoint,
     });
+    let bandwidth_source = super::quic::window_source(&connection.conn);
     let info = TunnelInfo {
         tunnel_type: "http3".to_owned(),
         local_addr: Some(
@@ -173,11 +174,14 @@ pub(crate) async fn upgrade_connected(
             super::build_url_from_socket_addr(&resolved_remote_addr.to_string(), "http3").into(),
         ),
     };
-    Ok(Box::new(TunnelWrapper::new(
-        FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
-        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
-        Some(info),
-    )))
+    Ok(Box::new(
+        TunnelWrapper::new(
+            FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
+            FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+            Some(info),
+        )
+        .with_bandwidth_source(Some(bandwidth_source)),
+    ))
 }
 
 struct PendingHttp3SessionTunnel {
@@ -211,6 +215,7 @@ async fn finish_http3_session_tunnel(
         conn: connection,
         _endpoint: endpoint,
     });
+    let bandwidth_source = super::quic::window_source(&connection.conn);
     let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "http3");
     let info = TunnelInfo {
         tunnel_type: "http3".to_owned(),
@@ -218,11 +223,14 @@ async fn finish_http3_session_tunnel(
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(remote_url.into()),
     };
-    Ok(Box::new(TunnelWrapper::new(
-        FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
-        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
-        Some(info),
-    )))
+    Ok(Box::new(
+        TunnelWrapper::new(
+            FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
+            FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+            Some(info),
+        )
+        .with_bandwidth_source(Some(bandwidth_source)),
+    ))
 }
 
 async fn run_http3_accepted_session(

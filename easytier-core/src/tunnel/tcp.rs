@@ -1,8 +1,9 @@
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::{
     proto::common::TunnelInfo,
     socket::tcp::VirtualTcpSocket,
+    tunnel::bandwidth::TransmissionWindowSource,
     tunnel::framed::{FramedReader, FramedWriter, TCP_MTU_BYTES},
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };
@@ -11,14 +12,17 @@ pub struct TcpTunnel<S> {
     info: Option<TunnelInfo>,
     socket: StdMutex<Option<S>>,
     max_packet_size: usize,
+    bandwidth_source: Option<Arc<dyn TransmissionWindowSource>>,
 }
 
-impl<S> TcpTunnel<S> {
+impl<S: VirtualTcpSocket> TcpTunnel<S> {
     fn new(socket: S, tunnel_info: TunnelInfo, max_packet_size: usize) -> Self {
+        let bandwidth_source = socket.bandwidth_source();
         Self {
             info: Some(tunnel_info),
             socket: StdMutex::new(Some(socket)),
             max_packet_size,
+            bandwidth_source,
         }
     }
 }
@@ -43,6 +47,10 @@ where
 
     fn info(&self) -> Option<TunnelInfo> {
         self.info.clone()
+    }
+
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
+        self.bandwidth_source.clone()
     }
 }
 

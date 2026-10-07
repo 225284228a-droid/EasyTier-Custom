@@ -6,13 +6,14 @@ use std::{
 
 use crate::proto::common::TunnelInfo;
 
-use super::{Tunnel, ZCPacketSink, ZCPacketStream};
+use super::{Tunnel, ZCPacketSink, ZCPacketStream, bandwidth::TransmissionWindowSource};
 
 pub struct TunnelWrapper<R, W> {
     reader: Arc<Mutex<Option<R>>>,
     writer: Arc<Mutex<Option<W>>>,
     info: Option<TunnelInfo>,
     _associate_data: Option<Box<dyn Any + Send + 'static>>,
+    bandwidth_source: Option<Arc<dyn TransmissionWindowSource>>,
 }
 
 impl<R, W> TunnelWrapper<R, W> {
@@ -31,7 +32,16 @@ impl<R, W> TunnelWrapper<R, W> {
             writer: Arc::new(Mutex::new(Some(writer))),
             info,
             _associate_data: associate_data,
+            bandwidth_source: None,
         }
+    }
+
+    pub fn with_bandwidth_source(
+        mut self,
+        source: Option<Arc<dyn TransmissionWindowSource>>,
+    ) -> Self {
+        self.bandwidth_source = source;
+        self
     }
 }
 
@@ -48,5 +58,9 @@ where
 
     fn info(&self) -> Option<TunnelInfo> {
         self.info.clone()
+    }
+
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
+        self.bandwidth_source.clone()
     }
 }

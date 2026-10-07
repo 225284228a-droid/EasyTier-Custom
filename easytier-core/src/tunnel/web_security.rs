@@ -9,6 +9,7 @@ use crate::{
     proto::common::TunnelInfo,
     tunnel::{
         SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+        bandwidth::TransmissionWindowSource,
         filter::{TunnelFilter, TunnelWithFilter},
         secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
     },
@@ -26,6 +27,7 @@ const WEB_SECURE_ACCEPT_TIMEOUT: Duration = WEB_SECURE_HANDSHAKE_TIMEOUT;
 struct RawSplitTunnel {
     info: Option<TunnelInfo>,
     split: Mutex<Option<SplitTunnel>>,
+    bandwidth_source: Option<Arc<dyn TransmissionWindowSource>>,
 }
 
 impl RawSplitTunnel {
@@ -33,10 +35,12 @@ impl RawSplitTunnel {
         info: Option<TunnelInfo>,
         stream: std::pin::Pin<Box<dyn ZCPacketStream>>,
         sink: std::pin::Pin<Box<dyn ZCPacketSink>>,
+        bandwidth_source: Option<Arc<dyn TransmissionWindowSource>>,
     ) -> Self {
         Self {
             info,
             split: Mutex::new(Some((stream, sink))),
+            bandwidth_source,
         }
     }
 }
@@ -52,6 +56,10 @@ impl Tunnel for RawSplitTunnel {
 
     fn info(&self) -> Option<TunnelInfo> {
         self.info.clone()
+    }
+
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
+        self.bandwidth_source.clone()
     }
 }
 
@@ -187,8 +195,9 @@ fn wrap_secure_tunnel(
     sink: std::pin::Pin<Box<dyn ZCPacketSink>>,
     session: Arc<SecureDatagramSession>,
     role: SecureTunnelRole,
+    bandwidth_source: Option<Arc<dyn TransmissionWindowSource>>,
 ) -> Box<dyn Tunnel> {
-    let raw = RawSplitTunnel::new(info, stream, sink);
+    let raw = RawSplitTunnel::new(info, stream, sink, bandwidth_source);
     Box::new(TunnelWithFilter::new(
         raw,
         SecureDatagramTunnelFilter { session, role },
@@ -200,6 +209,7 @@ pub async fn upgrade_client_tunnel(
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
     let web_cipher_algorithm = web_secure_cipher_algorithm()?;
     let info = tunnel.info();
+    let bandwidth_source = tunnel.bandwidth_source();
     let (mut stream, mut sink) = tunnel.split();
 
     let params: NoiseParams = NOISE_PATTERN
@@ -245,6 +255,7 @@ pub async fn upgrade_client_tunnel(
         sink,
         new_web_secure_session(root_key_buf, web_cipher_algorithm),
         SecureTunnelRole::Initiator,
+        bandwidth_source,
     ))
 }
 
@@ -252,6 +263,7 @@ pub async fn accept_or_upgrade_server_tunnel(
     tunnel: Box<dyn Tunnel>,
 ) -> Result<(Box<dyn Tunnel>, bool), TunnelError> {
     let info = tunnel.info();
+    let bandwidth_source = tunnel.bandwidth_source();
     let (stream, sink) = tunnel.split();
     let mut stream = stream;
     let mut sink = sink;
@@ -262,7 +274,8 @@ pub async fn accept_or_upgrade_server_tunnel(
         Ok(None) => return Err(TunnelError::Shutdown),
         Err(_) => {
             return Ok((
-                Box::new(RawSplitTunnel::new(info, stream, sink)) as Box<dyn Tunnel>,
+                Box::new(RawSplitTunnel::new(info, stream, sink, bandwidth_source))
+                    as Box<dyn Tunnel>,
                 false,
             ));
         }
@@ -271,7 +284,7 @@ pub async fn accept_or_upgrade_server_tunnel(
     let Some(msg1_cipher) = decode_noise_payload(first_payload) else {
         let stream = Box::pin(futures::stream::once(async move { Ok(first_packet) }).chain(stream));
         return Ok((
-            Box::new(RawSplitTunnel::new(info, stream, sink)) as Box<dyn Tunnel>,
+            Box::new(RawSplitTunnel::new(info, stream, sink, bandwidth_source)) as Box<dyn Tunnel>,
             false,
         ));
     };
@@ -308,6 +321,7 @@ pub async fn accept_or_upgrade_server_tunnel(
             sink,
             new_web_secure_session(root_key, web_cipher_algorithm),
             SecureTunnelRole::Responder,
+            bandwidth_source,
         ),
         true,
     ))
@@ -320,6 +334,50 @@ mod tests {
     use crate::{foundation::time::sleep, tunnel::ring::create_ring_tunnel_pair};
 
     use super::*;
+
+    #[derive(Debug)]
+    struct FixedWindowSource;
+
+    impl TransmissionWindowSource for FixedWindowSource {
+        fn transmission_window(&self) -> Option<super::super::bandwidth::TransmissionWindow> {
+            Some(super::super::bandwidth::TransmissionWindow {
+                congestion_window_bytes: 125_000,
+                peer_receive_window_bytes: None,
+                rtt: Duration::from_millis(10),
+            })
+        }
+    }
+
+    fn with_test_window(tunnel: Box<dyn Tunnel>) -> Box<dyn Tunnel> {
+        let info = tunnel.info();
+        let (reader, writer) = tunnel.split();
+        Box::new(
+            super::super::wrapper::TunnelWrapper::new(reader, writer, info)
+                .with_bandwidth_source(Some(Arc::new(FixedWindowSource))),
+        )
+    }
+
+    #[tokio::test]
+    async fn plain_server_fallback_preserves_the_underlying_window_source() {
+        let (server, client) = create_ring_tunnel_pair();
+        let server = with_test_window(server);
+        let (_, mut writer) = client.split();
+        writer
+            .send(pack_control_packet(b"legacy peer"))
+            .await
+            .unwrap();
+        let (server, secure) = accept_or_upgrade_server_tunnel(server).await.unwrap();
+        assert!(!secure);
+        assert_eq!(
+            server
+                .bandwidth_source()
+                .unwrap()
+                .transmission_window()
+                .unwrap()
+                .estimated_bps(),
+            Some(100_000_000),
+        );
+    }
 
     #[test]
     fn web_secure_cipher_algorithm_matches_support_flag() {
@@ -388,6 +446,8 @@ mod tests {
         }
 
         let (server_tunnel, client_tunnel) = create_ring_tunnel_pair();
+        let server_tunnel = with_test_window(server_tunnel);
+        let client_tunnel = with_test_window(client_tunnel);
 
         let server_task =
             tokio::spawn(async move { accept_or_upgrade_server_tunnel(server_tunnel).await });
@@ -397,8 +457,19 @@ mod tests {
         let client_task = tokio::spawn(async move { upgrade_client_tunnel(client_tunnel).await });
 
         let (server_res, client_res) = tokio::join!(server_task, client_task);
-        let (_, secure) = server_res.unwrap().unwrap();
+        let (server, secure) = server_res.unwrap().unwrap();
         assert!(secure);
-        assert!(client_res.unwrap().is_ok());
+        let client = client_res.unwrap().unwrap();
+        for tunnel in [server, client] {
+            assert_eq!(
+                tunnel
+                    .bandwidth_source()
+                    .unwrap()
+                    .transmission_window()
+                    .unwrap()
+                    .estimated_bps(),
+                Some(100_000_000),
+            );
+        }
     }
 }

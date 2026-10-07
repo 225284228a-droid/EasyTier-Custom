@@ -98,6 +98,8 @@ function formatBitRate(bitsPerSecond: number): string {
 }
 
 function connectionBandwidth(conn: ReturnType<typeof peerConns>[number], direction: 'tx' | 'rx') {
+  if (conn.is_closed || numericValue(conn.stats?.bandwidth_estimate_version) !== 1)
+    return undefined
   const value = numericValue(direction === 'tx' ? conn.stats?.estimated_tx_bps : conn.stats?.estimated_rx_bps)
   return value !== undefined && value > 0 ? value : undefined
 }

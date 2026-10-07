@@ -18,6 +18,7 @@ use crate::{
     packet::{PacketType, ZCPacket},
     peers::{conn::peer_conn_liveness::PeerConnLiveness, context::ArcPeerContext, error::Error},
     tunnel::{
+        bandwidth::{decode_window_report, encode_window_report},
         mpsc::MpscTunnelSender,
         stats::{Throughput, WindowLatency},
     },
@@ -165,8 +166,8 @@ impl PeerConnPinger {
         }
     }
 
-    fn new_ping_packet(my_node_id: PeerId, peer_id: PeerId, seq: u32) -> ZCPacket {
-        let mut packet = ZCPacket::new_with_payload(&seq.to_le_bytes());
+    fn new_ping_packet(my_node_id: PeerId, peer_id: PeerId, seq: u32, bps: u64) -> ZCPacket {
+        let mut packet = ZCPacket::new_with_payload(&encode_window_report(seq, bps, false));
         packet.fill_peer_manager_hdr(my_node_id, peer_id, PacketType::Ping as u8);
         packet
     }
@@ -178,7 +179,12 @@ impl PeerConnPinger {
         liveness_token: Option<u8>,
     ) -> Result<PingResponse, Error> {
         // should add seq here. so latency can be calculated more accurately
-        let req = Self::new_ping_packet(self.my_peer_id, self.peer_id, seq);
+        let req = Self::new_ping_packet(
+            self.my_peer_id,
+            self.peer_id,
+            seq,
+            self.throughput_stats.estimated_tx_bps(),
+        );
         let req_len = req.buf_len() as u64;
         self.sink.send(req).await?;
         self.context.record_control_tx(&self.network_name, req_len);
@@ -189,12 +195,17 @@ impl PeerConnPinger {
                 match receiver.recv().await {
                     Ok(p) => {
                         let payload = p.payload();
-                        let Ok(seq_buf) = payload[0..4].try_into() else {
+                        let Some(seq_buf) =
+                            payload.get(..4).and_then(|bytes| bytes.try_into().ok())
+                        else {
                             tracing::debug!("pingpong recv invalid packet, continue");
                             continue;
                         };
                         let resp_seq = u32::from_le_bytes(seq_buf);
                         if resp_seq == seq {
+                            if let Some(bps) = decode_window_report(payload, true) {
+                                self.throughput_stats.record_peer_window_estimate(bps);
+                            }
                             break;
                         }
                     }
@@ -336,6 +347,103 @@ mod tests {
             Tunnel, filter::TunnelWithFilter, mpsc::MpscTunnel, ring::create_ring_tunnel_pair,
         },
     };
+
+    #[derive(Debug)]
+    struct FixedWindowSource;
+
+    impl crate::tunnel::bandwidth::TransmissionWindowSource for FixedWindowSource {
+        fn transmission_window(&self) -> Option<crate::tunnel::bandwidth::TransmissionWindow> {
+            Some(crate::tunnel::bandwidth::TransmissionWindow {
+                congestion_window_bytes: 125_000,
+                peer_receive_window_bytes: None,
+                rtt: Duration::from_millis(10),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn first_ping_reports_independent_directional_windows_without_business_traffic() {
+        let (local, remote) = create_ring_tunnel_pair();
+        let tunnel = MpscTunnel::new(local, None);
+        let (ctrl_sender, _) = broadcast::channel(16);
+        let throughput = Arc::new(Throughput::new());
+        throughput.set_window_source(Some(Arc::new(FixedWindowSource)));
+        let pinger = PeerConnPinger::new(
+            1,
+            2,
+            tunnel.get_sink(),
+            ctrl_sender.clone(),
+            Arc::new(WindowLatency::new(15)),
+            Arc::new(AtomicU32::new(0)),
+            throughput.clone(),
+            Arc::new(NoopPeerContext::default()),
+            "test".to_owned(),
+            PeerConnLiveness::new(),
+        );
+        let mut responses = ctrl_sender.subscribe();
+        let (mut stream, _writer) = remote.split();
+        let responder = tokio::spawn(async move {
+            let request = stream.next().await.unwrap().unwrap();
+            assert_eq!(
+                decode_window_report(request.payload(), false),
+                Some(100_000_000)
+            );
+            let mut reply = ZCPacket::new_with_payload(&encode_window_report(7, 40_000_000, true));
+            reply.fill_peer_manager_hdr(2, 1, PacketType::Pong as u8);
+            ctrl_sender.send(reply).unwrap();
+        });
+        assert!(matches!(
+            pinger
+                .do_pingpong_once(&mut responses, 7, None)
+                .await
+                .unwrap(),
+            PingResponse::Pong(_)
+        ));
+        responder.await.unwrap();
+        assert_eq!(throughput.tx_bytes(), 0);
+        assert_eq!(throughput.rx_bytes(), 0);
+        assert_eq!(throughput.estimated_tx_bps(), 100_000_000);
+        assert_eq!(throughput.estimated_rx_bps(), 40_000_000);
+    }
+
+    #[tokio::test]
+    async fn a_legacy_echo_does_not_copy_upload_into_download_or_panic_on_short_payloads() {
+        let (local, remote) = create_ring_tunnel_pair();
+        let tunnel = MpscTunnel::new(local, None);
+        let (ctrl_sender, _) = broadcast::channel(16);
+        let throughput = Arc::new(Throughput::new());
+        throughput.set_window_source(Some(Arc::new(FixedWindowSource)));
+        let pinger = PeerConnPinger::new(
+            1,
+            2,
+            tunnel.get_sink(),
+            ctrl_sender.clone(),
+            Arc::new(WindowLatency::new(15)),
+            Arc::new(AtomicU32::new(0)),
+            throughput.clone(),
+            Arc::new(NoopPeerContext::default()),
+            "test".to_owned(),
+            PeerConnLiveness::new(),
+        );
+        let mut responses = ctrl_sender.subscribe();
+        let (mut stream, _writer) = remote.split();
+        let responder = tokio::spawn(async move {
+            let mut request = stream.next().await.unwrap().unwrap();
+            ctrl_sender.send(ZCPacket::new_with_payload(&[0])).unwrap();
+            request.mut_peer_manager_header().unwrap().packet_type = PacketType::Pong as u8;
+            ctrl_sender.send(request).unwrap();
+        });
+        assert!(matches!(
+            pinger
+                .do_pingpong_once(&mut responses, 7, None)
+                .await
+                .unwrap(),
+            PingResponse::Pong(_)
+        ));
+        responder.await.unwrap();
+        assert_eq!(throughput.estimated_tx_bps(), 100_000_000);
+        assert_eq!(throughput.estimated_rx_bps(), 0);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn ingress_traffic_does_not_mask_failed_round_trips() {

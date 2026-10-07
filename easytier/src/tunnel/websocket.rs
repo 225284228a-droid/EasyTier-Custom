@@ -419,6 +419,7 @@ where
     S: VirtualTcpSocket,
 {
     let peer_addr = stream.peer_addr()?;
+    let bandwidth_source = stream.bandwidth_source();
     let mut remote_url = socket_url(local_url.scheme(), peer_addr);
     let stream = if is_wss(&local_url)? {
         init_crypto_provider();
@@ -473,11 +474,14 @@ where
         remote_addr: Some(remote_url.clone()),
         resolved_remote_addr: Some(remote_url),
     };
-    Ok(Box::new(TunnelWrapper::new(
-        read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
-        WebSocketPacketSink::new(write),
-        Some(info),
-    )))
+    Ok(Box::new(
+        TunnelWrapper::new(
+            read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
+            WebSocketPacketSink::new(write),
+            Some(info),
+        )
+        .with_bandwidth_source(bandwidth_source),
+    ))
 }
 
 fn socket_url(scheme: &str, addr: SocketAddr) -> url::Url {
@@ -573,6 +577,7 @@ pub(crate) async fn upgrade_connected<S>(
 where
     S: VirtualTcpSocket,
 {
+    let bandwidth_source = stream.bandwidth_source();
     let is_wss = is_wss(&remote_url)?;
     let local_addr = stream.local_addr()?;
     let resolved_remote_addr = stream.peer_addr()?;
@@ -651,11 +656,14 @@ where
     } else {
         WebSocketPacketSink::new(write)
     };
-    Ok(Box::new(TunnelWrapper::new(
-        read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
-        write,
-        Some(info),
-    )))
+    Ok(Box::new(
+        TunnelWrapper::new(
+            read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
+            write,
+            Some(info),
+        )
+        .with_bandwidth_source(bandwidth_source),
+    ))
 }
 
 #[cfg(test)]

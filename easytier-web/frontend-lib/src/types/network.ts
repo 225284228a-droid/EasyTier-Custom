@@ -499,6 +499,7 @@ export interface PeerConnStats {
   latency_us: number | string
   estimated_rx_bps?: number | string
   estimated_tx_bps?: number | string
+  bandwidth_estimate_version?: number | string
 }
 
 export interface CommonUuid {

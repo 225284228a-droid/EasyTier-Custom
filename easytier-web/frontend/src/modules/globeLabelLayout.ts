@@ -26,6 +26,8 @@ export interface LayoutLabel {
   priority: number
   anchors: LabelAnchor[]
   previous?: LabelChoice
+  stacked?: boolean
+  heights?: number[]
 }
 
 export interface LabelPlacement extends LabelRect {
@@ -78,6 +80,12 @@ function candidates(label: LayoutLabel, width: number, height: number): {
   placement: LabelPlacement
   score: number
 }[] {
+  if (label.heights?.length) {
+    return label.heights.flatMap((stackHeight, index) =>
+      candidates({ ...label, height: stackHeight, heights: undefined }, width, height)
+        .map(candidate => ({ ...candidate, score: candidate.score + index * 40 })))
+      .sort((left, right) => left.score - right.score)
+  }
   const result: { placement: LabelPlacement, score: number }[] = []
   const right = width - label.width - 5
   const bottom = height - label.height - 34
@@ -93,47 +101,54 @@ function candidates(label: LayoutLabel, width: number, height: number): {
     const tangent = tangentLength > 1e-6 && Number.isFinite(tangentLength)
       ? { x: anchor.tangent!.x / tangentLength, y: anchor.tangent!.y / tangentLength } : undefined
     const normal = tangent ? { x: -tangent.y, y: tangent.x } : { x: 0, y: -1 }
-    const directions = label.kind === 'traffic'
+    const directions = label.kind === 'traffic' && !label.stacked
       ? [normal, { x: -normal.x, y: -normal.y }, { x: 0, y: -1 }, { x: 0, y: 1 }, { x: 1, y: 0 }, { x: -1, y: 0 }]
-      : [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: -1 }, { x: 0, y: 1 }]
+      : label.kind === 'node' && label.stacked
+        ? [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: 1, y: 0 }, { x: -1, y: 0 }]
+        : [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: -1 }, { x: 0, y: 1 }]
     directions.forEach((direction, side) => {
-      for (const corner of [false, true]) {
-        const distance = Math.abs(direction.x) * label.width / 2
-          + Math.abs(direction.y) * label.height / 2 + LABEL_GAP
-        // Corner attachment keeps a diagonal link's connector short even for a wide box.
-        const desiredX = corner
-          ? anchor.x + direction.x * LABEL_GAP - (Math.abs(direction.x) < 0.15 ? label.width / 2 : direction.x < 0 ? label.width : 0)
-          : anchor.x + direction.x * distance - label.width / 2
-        const desiredY = corner
-          ? anchor.y + direction.y * LABEL_GAP - (Math.abs(direction.y) < 0.15 ? label.height / 2 : direction.y < 0 ? label.height : 0)
-          : anchor.y + direction.y * distance - label.height / 2
-        const x = clamp(desiredX, 5, right)
-        const y = clamp(desiredY, 5, bottom)
-        const rect = { x, y, width: label.width, height: label.height }
-        const leaderEnd = {
-          x: clamp(anchor.x, x, x + label.width),
-          y: clamp(anchor.y, y, y + label.height),
-        }
-        const leaderLength = Math.hypot(leaderEnd.x - anchor.x, leaderEnd.y - anchor.y)
-        if (leaderLength < 3 || leaderLength > maxLeader)
-          continue
-        if (label.kind === 'traffic' && tangent) {
-          const span = Math.hypot(label.width, label.height) + maxLeader
-          if (crossesBox(
-            { x: anchor.x - tangent.x * span, y: anchor.y - tangent.y * span },
-            { x: anchor.x + tangent.x * span, y: anchor.y + tangent.y * span },
-            rect,
-          ))
+      for (const [gapIndex, gap] of (label.stacked ? [LABEL_GAP, 20, 28] : [LABEL_GAP]).entries()) {
+        for (const corner of [false, true]) {
+          const distance = Math.abs(direction.x) * label.width / 2
+            + Math.abs(direction.y) * label.height / 2 + gap
+          // Corner attachment keeps a diagonal link's connector short even for a wide box.
+          const desiredX = corner
+            ? anchor.x + direction.x * gap - (Math.abs(direction.x) < 0.15 ? label.width / 2 : direction.x < 0 ? label.width : 0)
+            : anchor.x + direction.x * distance - label.width / 2
+          const desiredY = corner
+            ? anchor.y + direction.y * gap - (Math.abs(direction.y) < 0.15 ? label.height / 2 : direction.y < 0 ? label.height : 0)
+            : anchor.y + direction.y * distance - label.height / 2
+          const x = clamp(desiredX, 5, right)
+          const y = clamp(desiredY, 5, bottom)
+          const rect = { x, y, width: label.width, height: label.height }
+          const leaderEnd = {
+            x: clamp(anchor.x, x, x + label.width),
+            y: clamp(anchor.y, y, y + label.height),
+          }
+          const leaderLength = Math.hypot(leaderEnd.x - anchor.x, leaderEnd.y - anchor.y)
+          if (leaderLength < 3 || leaderLength > maxLeader)
             continue
+          if (label.kind === 'traffic' && tangent && !label.stacked) {
+            const span = Math.hypot(label.width, label.height) + maxLeader
+            if (crossesBox(
+              { x: anchor.x - tangent.x * span, y: anchor.y - tangent.y * span },
+              { x: anchor.x + tangent.x * span, y: anchor.y + tangent.y * span },
+              rect,
+            ))
+              continue
+          }
+          const choice = {
+            anchorIndex: anchor.index,
+            direction: side * (label.stacked ? 6 : 2) + gapIndex * 2 + Number(corner),
+          }
+          const unchanged = label.previous?.anchorIndex === choice.anchorIndex
+            && label.previous.direction === choice.direction
+          result.push({
+            placement: { id: label.id, ...rect, anchor, leaderEnd, leaderLength, choice },
+            score: leaderLength + anchor.index * 2 + side * 2 + Number(corner) * 3
+              + Math.hypot(x - desiredX, y - desiredY) * 0.25 - (unchanged ? 24 : 0),
+          })
         }
-        const choice = { anchorIndex: anchor.index, direction: side * 2 + Number(corner) }
-        const unchanged = label.previous?.anchorIndex === choice.anchorIndex
-          && label.previous.direction === choice.direction
-        result.push({
-          placement: { id: label.id, ...rect, anchor, leaderEnd, leaderLength, choice },
-          score: leaderLength + anchor.index * 2 + side * 2 + Number(corner) * 3
-            + Math.hypot(x - desiredX, y - desiredY) * 0.25 - (unchanged ? 24 : 0),
-        })
       }
     })
   }

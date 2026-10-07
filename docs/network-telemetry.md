@@ -1,24 +1,41 @@
 # Network Telemetry
 
-## Passive Bandwidth Estimate
+## Transmission Window Estimate
 
-Connection statistics expose `estimated_tx_bps` and `estimated_rx_bps` in bit/s.
-The estimator retains 50 fixed 200 ms buckets and reports the highest eligible
-business-payload rate from the last 10 seconds. Each direction needs at least
-4 packets, 4,096 bytes and 100 ms of observation in a bucket. Sparse traffic
-falls back to a recent payload average after at least 1,024 bytes, using the
-actual first/last payload sample span with a minimum 200 ms duration.
-A usable estimate is retained for five minutes after its underlying sample,
-not extended by UI polling. Zero means that no usable sample exists or the
-retained estimate expired, so the UI displays `--`. Estimates are captured
-when business traffic is sampled; opening or polling the UI does not create
-them or change their expiration.
+Connection statistics expose `estimated_tx_bps` and `estimated_rx_bps` in bit/s,
+with `bandwidth_estimate_version = 1`. The business-traffic peak estimator,
+sparse-traffic fallback, sampling filter and five-minute peak retention have
+been removed. The UI rejects unversioned/old estimates and closed connections.
 
-This is a traffic-derived capacity hint, not an active speed test, a guaranteed
-delivery rate, or a measurement of unused headroom. It adds no probe traffic.
-Control packets, ambiguous encrypted foreign-network payloads and packets
-rejected by session authentication are not sampled. Existing wire byte and
-packet counters remain separate.
+The replacement formula is `min(cwnd_bytes, peer_receive_window_bytes) * 8 / RTT_seconds`.
+If peer flow-control information is not exposed, the formula uses the real
+congestion window alone. Zero windows or missing/zero RTT remain unknown.
+No socket send/receive buffer size is substituted for a congestion window.
+
+Native TCP uses `TCP_INFO` on Linux and `SIO_TCP_INFO` on Windows. Linux's
+segment-count cwnd is multiplied by the actual sending MSS; Windows already
+reports cwnd in bytes. Snapshots are sampled at most once every 200 ms during
+socket I/O, expire after 60 seconds without I/O, and cannot keep a socket alive.
+WS/WSS retain their underlying TCP telemetry. QUIC/HTTP3 use Quinn's live path
+congestion window and RTT; its peer flow-control credit is not exposed here.
+Other native TCP platforms and transports without congestion-window telemetry
+(plain UDP, WireGuard, fake TCP, ring/host transports) remain unknown.
+
+Upload is the local transport's window estimate. Download is the remote
+transport's upload estimate, carried in the existing per-connection Ping/Pong
+path, inside session authentication when that security mode is enabled.
+The first four sequence bytes remain compatible with old peers. A distinct
+request/reply marker prevents an old peer's echo from being mistaken for a
+remote measurement. Missing directions are not mirrored. Remote reports expire
+after 90 seconds; polling never extends their lifetime. Normal pings, rather
+than business payloads or added speed-test traffic, maintain idle-link telemetry.
+
+This is a window-limited throughput reference, not measured physical capacity,
+unused headroom or an active speed test. Initial/app-limited congestion windows
+can still underestimate a fast link before the transport learns its path.
+TCP terminated by a CDN/proxy describes that TCP leg, not all proxy backhaul.
+Both nodes need the updated binary for two-sided window reporting; updating only
+the web frontend cannot add window telemetry to an old node.
 
 The shared status table places Estimated Available Bandwidth between Download
 and Loss Rate, with upload and download on separate lines.
@@ -91,6 +108,12 @@ refresh shows its loading state. Labels and their connectors retain their DOM
 identity, dimensions and previous attachment during polling, with names/rates/RTT
 updated in place. Only departed nodes and links remove their labels.
 Traffic connectors are two pixels wide with higher contrast.
+Device names in the same reported city form one stable vertical column.
+Links between the same two geographic city groups share another vertical
+column, while retaining each device pair's separate rates, RTT and emitters.
+Each column has one short shared connector. Long columns shrink by complete
+rows and scroll internally instead of scattering, hiding or merging their
+members. Scrolling a column does not zoom the globe.
 Labels try multiple visible anchors along their own link and both sides of
 its projected tangent, with at most a 48-pixel traffic connector (32 pixels
 for node names). They avoid other labels, node markers and existing label
@@ -119,7 +142,9 @@ do not show fabricated moving particles. Attribution is in the About dialog.
 
 ## Verification
 
-- Rust: `cargo test -p easytier --lib tunnel::stats::tests`
+- Core window math, telemetry and framing: `cargo test -p easytier-core --lib tunnel::`
+- Bidirectional/legacy Ping compatibility: `cargo test -p easytier-core --lib peers::conn::peer_conn_ping::tests`
+- Native TCP telemetry: `cargo test -p easytier --lib socket::tcp::window::tests`
 - Node IP selection: `cargo test -p easytier-web node_public_ip`
 - GeoIP and location cache: `cargo test -p easytier-web location`
 - Online city cache: `cargo test -p easytier-web geolocation`

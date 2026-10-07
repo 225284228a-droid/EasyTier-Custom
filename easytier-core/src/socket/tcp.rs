@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::socket::{IpVersion, SocketContext, SocketListener};
+use crate::tunnel::bandwidth::TransmissionWindowSource;
 
 pub type VirtualTcpReadHalf = Box<dyn AsyncRead + Unpin + Send + 'static>;
 pub type VirtualTcpWriteHalf = Box<dyn AsyncWrite + Unpin + Send + 'static>;
@@ -14,7 +15,7 @@ pub type VirtualTcpSplit = (VirtualTcpReadHalf, VirtualTcpWriteHalf);
 ///
 /// Implementations are runtime adapters over concrete TCP stream types. This
 /// trait deliberately stays below tunnel framing: it only exposes stream I/O and
-/// socket addresses.
+/// socket addresses, plus optional read-only transport-window telemetry.
 pub trait VirtualTcpSocket: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     /// Consumes the stream into independently owned read and write halves.
     ///
@@ -34,6 +35,10 @@ pub trait VirtualTcpSocket: AsyncRead + AsyncWrite + Unpin + Send + 'static {
 
     /// Optional host transport label retained in tunnel management metadata.
     fn transport_label(&self) -> Option<&str> {
+        None
+    }
+
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
         None
     }
 }

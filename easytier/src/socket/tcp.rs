@@ -2,6 +2,7 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     pin::Pin,
+    sync::{Arc, OnceLock},
     task::{Context, Poll},
     time::Duration,
 };
@@ -12,7 +13,9 @@ use easytier_core::{
         VirtualTcpListener, VirtualTcpSocket, VirtualTcpSplit,
     },
     tunnel::TunnelError,
+    tunnel::bandwidth::TransmissionWindowSource,
 };
+mod window;
 use socket2::{SockRef, TcpKeepalive};
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -20,6 +23,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpSocket, TcpStream},
 };
+use window::{TcpWindowIo, TcpWindowSampler, TcpWindowSource};
 
 use crate::{
     common::netns::NetNS,
@@ -37,6 +41,7 @@ enum RuntimeTcpSocketInner {
 
 pub struct RuntimeTcpSocket {
     inner: RuntimeTcpSocketInner,
+    window_sampler: OnceLock<Arc<TcpWindowSampler>>,
 }
 
 impl RuntimeTcpSocket {
@@ -46,6 +51,7 @@ impl RuntimeTcpSocket {
         }
         Self {
             inner: RuntimeTcpSocketInner::Tcp(stream),
+            window_sampler: OnceLock::new(),
         }
     }
 
@@ -53,6 +59,7 @@ impl RuntimeTcpSocket {
     pub(crate) fn from_unix(stream: UnixStream) -> Self {
         Self {
             inner: RuntimeTcpSocketInner::Unix(stream),
+            window_sampler: OnceLock::new(),
         }
     }
 
@@ -60,6 +67,7 @@ impl RuntimeTcpSocket {
     pub(crate) fn from_fake_tcp(socket: crate::socket::fake_tcp::FakeTcpSocket) -> Self {
         Self {
             inner: RuntimeTcpSocketInner::FakeTcp(socket),
+            window_sampler: OnceLock::new(),
         }
     }
 }
@@ -77,8 +85,14 @@ impl AsyncRead for RuntimeTcpSocket {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        match &mut self.inner {
-            RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+        let this = self.as_mut().get_mut();
+        match &mut this.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => {
+                if let Some(sampler) = this.window_sampler.get() {
+                    sampler.sample(stream);
+                }
+                Pin::new(stream).poll_read(cx, buf)
+            }
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
             #[cfg(feature = "faketcp")]
@@ -93,8 +107,14 @@ impl AsyncWrite for RuntimeTcpSocket {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match &mut self.inner {
-            RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
+        let this = self.as_mut().get_mut();
+        match &mut this.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => {
+                if let Some(sampler) = this.window_sampler.get() {
+                    sampler.sample(stream);
+                }
+                Pin::new(stream).poll_write(cx, buf)
+            }
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_write(cx, buf),
             #[cfg(feature = "faketcp")]
@@ -113,22 +133,37 @@ impl AsyncWrite for RuntimeTcpSocket {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match &mut self.inner {
+        let this = self.as_mut().get_mut();
+        let result = match &mut this.inner {
             RuntimeTcpSocketInner::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => Pin::new(stream).poll_shutdown(cx),
             #[cfg(feature = "faketcp")]
             RuntimeTcpSocketInner::FakeTcp(socket) => Pin::new(socket).poll_shutdown(cx),
+        };
+        if matches!(result, Poll::Ready(Ok(())))
+            && let Some(sampler) = this.window_sampler.get()
+        {
+            sampler.stop();
         }
+        result
     }
 }
 
 impl VirtualTcpSocket for RuntimeTcpSocket {
     fn into_split(self) -> VirtualTcpSplit {
+        let window_sampler = self.window_sampler.into_inner();
         match self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => {
                 let (reader, writer) = stream.into_split();
-                (Box::new(reader), Box::new(writer))
+                if let Some(sampler) = window_sampler {
+                    (
+                        Box::new(TcpWindowIo::new(reader, sampler.clone())),
+                        Box::new(TcpWindowIo::new(writer, sampler)),
+                    )
+                } else {
+                    (Box::new(reader), Box::new(writer))
+                }
             }
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(stream) => {
@@ -177,6 +212,21 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
             #[cfg(unix)]
             RuntimeTcpSocketInner::Unix(_) => None,
         }
+    }
+
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
+        let stream = match &self.inner {
+            RuntimeTcpSocketInner::Tcp(stream) => stream,
+            #[cfg(unix)]
+            RuntimeTcpSocketInner::Unix(_) => return None,
+            #[cfg(feature = "faketcp")]
+            RuntimeTcpSocketInner::FakeTcp(_) => return None,
+        };
+        let sampler = self
+            .window_sampler
+            .get_or_init(|| Arc::new(TcpWindowSampler::new()));
+        sampler.sample(stream);
+        Some(Arc::new(TcpWindowSource(Arc::downgrade(sampler))))
     }
 }
 

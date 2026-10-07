@@ -7,7 +7,7 @@
 //! on top of them, and the packet encryption primitives (`encrypt`,
 //! `secure_datagram`) shared by tunnels and peer sessions.
 
-use std::{fmt::Debug, pin::Pin};
+use std::{fmt::Debug, pin::Pin, sync::Arc};
 
 use futures::{Sink, Stream};
 
@@ -15,6 +15,7 @@ use crate::{foundation::time::error::Elapsed, packet::ZCPacket, proto::common::T
 
 pub use crate::socket::IpVersion;
 
+pub mod bandwidth;
 pub(crate) mod encrypt;
 pub mod filter;
 pub mod framed;
@@ -88,6 +89,9 @@ pub type SplitTunnel = (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>
 pub trait Tunnel: Send {
     fn split(&self) -> SplitTunnel;
     fn info(&self) -> Option<TunnelInfo>;
+    fn bandwidth_source(&self) -> Option<Arc<dyn bandwidth::TransmissionWindowSource>> {
+        None
+    }
 }
 
 impl std::fmt::Debug for dyn Tunnel {

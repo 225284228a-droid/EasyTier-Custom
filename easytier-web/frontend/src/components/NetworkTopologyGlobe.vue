@@ -10,6 +10,7 @@ import { spherePosition as position, sphericalArc } from '../modules/globeBounda
 import { FlowEmitter, flowEmissionsPerSecond, flowTravelSeconds, MAX_FLOW_PARTICLES } from '../modules/globeFlow'
 import { createFlowLabel, updateFlowLabel, type FlowLabelInput } from '../modules/globeFlowLabel'
 import { arrangeGlobeLabels, type LabelChoice, type LayoutLabel } from '../modules/globeLabelLayout'
+import { linkLocationGroup, nodeLocationGroup } from '../modules/globeLabelGroups'
 import { loadGlobeMapDetail } from '../modules/globeMapDetail'
 import { buildCloudPointPositions } from '../modules/globePointCloud'
 import { readGlobePreferences, saveGlobePreferences } from '../modules/dashboardPersistence'
@@ -79,13 +80,21 @@ interface GlobeLabel {
   id: string
   kind: 'node' | 'traffic'
   element: HTMLDivElement
-  leader: HTMLDivElement
+  stackId: string
   anchors: { point: THREE.Vector3, tangentPoints?: [THREE.Vector3, THREE.Vector3] }[]
   priority: number
-  choice?: LabelChoice
   size?: { width: number, height: number }
 }
+interface GlobeLabelStack {
+  id: string
+  kind: 'node' | 'traffic'
+  element: HTMLDivElement
+  leader: HTMLDivElement
+  labels: GlobeLabel[]
+  choice?: LabelChoice
+}
 const labels = new Map<string, GlobeLabel>()
+const labelStacks = new Map<string, GlobeLabelStack>()
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
 const markerViewPosition = new THREE.Vector3()
@@ -316,7 +325,7 @@ function scaleMarker(mesh: THREE.Object3D, radius: number, pixels: number) {
   mesh.scale.setScalar(Math.max(0.001, unitsPerPixel * pixels / radius))
 }
 
-function addLabel(id: string, content: string | FlowLabelInput, kind: 'node' | 'traffic', anchors: GlobeLabel['anchors'], priority: number, stale?: boolean) {
+function addLabel(id: string, content: string | FlowLabelInput, kind: 'node' | 'traffic', anchors: GlobeLabel['anchors'], priority: number, stale?: boolean, stackId = id) {
   if (!labelLayer.value)
     return
   let label = labels.get(id)
@@ -324,17 +333,15 @@ function addLabel(id: string, content: string | FlowLabelInput, kind: 'node' | '
     const element = document.createElement('div')
     element.dataset.labelId = id
     element.style.display = 'none'
-    const leader = document.createElement('div')
-    leader.className = `globe-label-leader globe-${kind}-leader`
-    leader.style.display = 'none'
-    labelLayer.value.append(leader, element)
-    label = { id, kind, element, leader, anchors, priority }
+    label = { id, kind, element, stackId, anchors, priority }
     labels.set(id, label)
   }
   const { element } = label
   element.className = `globe-${kind}-label${stale ? ' is-stale' : ''}`
   label.anchors = anchors
   label.priority = priority
+  label.stackId = stackId
+  element.dataset.labelGroup = stackId
   if (typeof content === 'string') {
     if (element.textContent !== content) {
       element.textContent = content
@@ -348,6 +355,40 @@ function addLabel(id: string, content: string | FlowLabelInput, kind: 'node' | '
       element.append(createFlowLabel(content))
     element.setAttribute('role', 'img')
     element.setAttribute('aria-label', element.firstElementChild!.getAttribute('aria-label') ?? '')
+  }
+}
+
+function syncLabelStacks() {
+  if (!labelLayer.value)
+    return
+  labelStacks.forEach(stack => { stack.labels = [] })
+  for (const label of [...labels.values()].sort((left, right) => left.id.localeCompare(right.id))) {
+    let stack = labelStacks.get(label.stackId)
+    if (!stack) {
+      const element = document.createElement('div')
+      element.className = `globe-label-stack globe-${label.kind}-stack`
+      element.dataset.stackId = label.stackId
+      element.style.display = 'none'
+      element.addEventListener('wheel', event => event.stopPropagation())
+      element.addEventListener('pointerdown', event => event.stopPropagation())
+      const leader = document.createElement('div')
+      leader.className = `globe-label-leader globe-${label.kind}-leader`
+      leader.style.display = 'none'
+      labelLayer.value.append(leader, element)
+      stack = { id: label.stackId, kind: label.kind, element, leader, labels: [] }
+      labelStacks.set(label.stackId, stack)
+    }
+    const index = stack.labels.length
+    stack.labels.push(label)
+    if (stack.element.children[index] !== label.element)
+      stack.element.insertBefore(label.element, stack.element.children[index] ?? null)
+  }
+  for (const [id, stack] of labelStacks) {
+    if (!stack.labels.length) {
+      stack.element.remove()
+      stack.leader.remove()
+      labelStacks.delete(id)
+    }
   }
 }
 
@@ -378,10 +419,10 @@ function updateLabels() {
   labelLayer.value.dataset.nodeLabelsVisible = String(nodesVisible)
   labelLayer.value.dataset.trafficLabelsVisible = String(trafficVisible)
   const pending: LayoutLabel[] = []
-  for (const label of labels.values()) {
-    if (!nodesVisible || (label.kind === 'traffic' && !trafficVisible))
+  for (const stack of labelStacks.values()) {
+    if (!nodesVisible || (stack.kind === 'traffic' && !trafficVisible))
       continue
-    const anchors = label.anchors.flatMap(({ point, tangentPoints }, index) => {
+    const anchors = stack.labels[0].anchors.flatMap(({ point, tangentPoints }, index) => {
       const anchor = projectedAnchor(point, width, height)
       if (!anchor)
         return []
@@ -398,15 +439,29 @@ function updateLabels() {
     })
     if (!anchors.length)
       continue
-    if (!label.size) {
-      const previousDisplay = label.element.style.display
+    const previousDisplay = stack.element.style.display
+    stack.element.style.display = 'flex'
+    for (const label of stack.labels) {
       label.element.style.display = 'block'
-      label.size = { width: label.element.offsetWidth, height: label.element.offsetHeight }
-      label.element.style.display = previousDisplay
+      if (!label.size)
+        label.size = { width: label.element.offsetWidth, height: label.element.offsetHeight }
     }
+    const stackWidth = Math.max(...stack.labels.map(label => label.size!.width)) + 8
+    let stackHeight = 0
+    const heights = stack.labels.flatMap((label, index) => {
+      stackHeight += label.size!.height + (index ? 4 : 0)
+      return stackHeight <= height - 39 ? [stackHeight] : []
+    }).reverse()
+    stack.element.style.width = `${stackWidth}px`
+    stack.element.style.display = previousDisplay
+    if (!heights.length)
+      continue
     pending.push({
-      id: label.id, kind: label.kind, anchors, priority: label.priority,
-      ...label.size, previous: label.choice,
+      id: stack.id, kind: stack.kind, anchors,
+      priority: Math.max(...stack.labels.map(label => label.priority)),
+      width: stackWidth, height: heights[0], previous: stack.choice,
+      stacked: stack.labels.length > 1,
+      heights: stack.labels.length > 1 ? heights : undefined,
     })
   }
   const markers = markerMeshes.flatMap(mesh => {
@@ -415,24 +470,26 @@ function updateLabels() {
   })
   const visibleIds = new Set<string>()
   for (const placement of arrangeGlobeLabels(pending, width, height, markers)) {
-    const label = labels.get(placement.id)!
+    const stack = labelStacks.get(placement.id)!
     visibleIds.add(placement.id)
-    label.choice = placement.choice
-    label.element.style.display = 'block'
-    label.element.style.left = `${placement.x}px`
-    label.element.style.top = `${placement.y}px`
-    label.leader.style.display = 'block'
-    label.leader.style.left = `${placement.anchor.x}px`
-    label.leader.style.top = `${placement.anchor.y}px`
-    label.leader.style.width = `${placement.leaderLength}px`
-    label.leader.style.transform = `rotate(${Math.atan2(
+    stack.choice = placement.choice
+    stack.element.style.display = 'flex'
+    stack.element.style.left = `${placement.x}px`
+    stack.element.style.top = `${placement.y}px`
+    stack.element.style.height = `${placement.height}px`
+    stack.leader.style.display = 'block'
+    stack.leader.style.left = `${placement.anchor.x}px`
+    stack.leader.style.top = `${placement.anchor.y}px`
+    stack.leader.style.width = `${placement.leaderLength}px`
+    stack.leader.style.transform = `rotate(${Math.atan2(
       placement.leaderEnd.y - placement.anchor.y, placement.leaderEnd.x - placement.anchor.x,
     )}rad)`
   }
-  for (const label of labels.values()) {
-    if (!visibleIds.has(label.id)) {
-      label.element.style.display = 'none'
-      label.leader.style.display = 'none'
+  for (const stack of labelStacks.values()) {
+    if (!visibleIds.has(stack.id)) {
+      stack.element.style.display = 'none'
+      stack.leader.style.display = 'none'
+      stack.labels.forEach(label => { label.element.style.display = 'none' })
     }
   }
 }
@@ -504,6 +561,16 @@ function rebuildTopology() {
   markerMeshes = []
   flows = []
   const nodeMap = new Map<string, LocatedNode>(locatedNodes.value.map(node => [node.id, node]))
+  const nodeGroups = new Map([...nodeMap.values()].map(node => [node.id, nodeLocationGroup(node)]))
+  const groupPositions = new Map<string, THREE.Vector3>()
+  for (const node of nodeMap.values()) {
+    const groupId = nodeGroups.get(node.id)!
+    const center = groupPositions.get(groupId) ?? new THREE.Vector3()
+    center.add(position(node.latitude, node.longitude))
+    groupPositions.set(groupId, center)
+  }
+  groupPositions.forEach(center => center.normalize())
+  const labelCurves = new Map<string, THREE.CatmullRomCurve3>()
   for (const node of nodeMap.values()) {
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(node.id === selectedId.value ? 0.025 : 0.018, 12, 8),
@@ -520,8 +587,9 @@ function rebuildTopology() {
     topologyGroup.add(mesh)
     const labelId = `node:${node.id}`
     activeLabelIds.add(labelId)
-    addLabel(labelId, node.label, 'node', [{ point: mesh.position.clone() }],
-      node.id === selectedId.value ? 10 : 6, node.stale)
+    addLabel(labelId, node.label, 'node',
+      [{ point: groupPositions.get(nodeGroups.get(node.id)!)!.clone().multiplyScalar(1.018) }],
+      node.id === selectedId.value ? 10 : 6, node.stale, `node:${nodeGroups.get(node.id)}`)
   }
   for (const [index, link] of props.links.entries()) {
     const source = nodeMap.get(link.source)
@@ -552,6 +620,15 @@ function rebuildTopology() {
       topologyGroup.add(mesh)
     }
     const labelId = `traffic:${JSON.stringify([link.source, link.target])}`
+    const sourceGroup = nodeGroups.get(link.source)!
+    const targetGroup = nodeGroups.get(link.target)!
+    const groupId = linkLocationGroup(sourceGroup, targetGroup)
+    let labelCurve = labelCurves.get(groupId)
+    if (!labelCurve) {
+      const [from, to] = [sourceGroup, targetGroup].sort()
+      labelCurve = linkCurve(groupPositions.get(from)!, groupPositions.get(to)!)
+      labelCurves.set(groupId, labelCurve)
+    }
     activeLabelIds.add(labelId)
     addLabel(
       labelId,
@@ -564,20 +641,21 @@ function rebuildTopology() {
       },
       'traffic',
       [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9, 0.05, 0.95, 0.02, 0.98].map(progress => ({
-        point: curve.getPoint(progress),
-        tangentPoints: [curve.getPoint(Math.max(0, progress - 0.005)), curve.getPoint(Math.min(1, progress + 0.005))],
+        point: labelCurve!.getPoint(progress),
+        tangentPoints: [labelCurve!.getPoint(Math.max(0, progress - 0.005)), labelCurve!.getPoint(Math.min(1, progress + 0.005))],
       })),
       link.source === selectedId.value || link.target === selectedId.value ? 7 : 1,
       link.stale,
+      `traffic:${groupId}`,
     )
   }
   for (const [id, label] of labels) {
     if (!activeLabelIds.has(id)) {
       label.element.remove()
-      label.leader.remove()
       labels.delete(id)
     }
   }
+  syncLabelStacks()
   scene.add(topologyGroup)
   renderer.domElement.dataset.globeForwardEmissionRate = String(
     flows.filter(flow => !flow.reverse).reduce((total, flow) => total + flow.emissionsPerSecond, 0),
@@ -862,12 +940,15 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: #10191d; overflow: hidden; }
 .globe-stage :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }
 .globe-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
+.globe-labels :deep(.globe-label-stack) { position: absolute; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #728b91 transparent; pointer-events: auto; }
+.globe-labels :deep(.globe-label-stack::-webkit-scrollbar) { width: 6px; }
+.globe-labels :deep(.globe-label-stack::-webkit-scrollbar-thumb) { background: #728b91; border-radius: 3px; }
 .globe-labels :deep(.globe-node-label), .globe-labels :deep(.globe-traffic-label) {
-  position: absolute; padding: 3px 5px; max-width: 220px; box-sizing: border-box;
+  position: relative; flex-shrink: 0; align-self: flex-start; padding: 3px 5px; max-width: 220px; box-sizing: border-box;
   border-radius: 3px; background: rgba(10, 17, 19, 0.88); color: #edf7f5;
   font-size: 11px; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis;
 }
-.globe-labels :deep(.globe-node-label) { max-width: 174px; color: #ffda88; font-weight: 600; }
+.globe-labels :deep(.globe-node-label) { width: max-content; max-width: 174px; color: #ffda88; font-weight: 600; }
 .globe-labels :deep(.globe-traffic-label) { width: 198px; max-width: 198px; white-space: normal; }
 .globe-labels :deep(.globe-flow-cross) { display: grid; gap: 2px; }
 .globe-labels :deep(.traffic-endpoints) { display: grid; grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr); gap: 4px; align-items: center; }

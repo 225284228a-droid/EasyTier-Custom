@@ -40,8 +40,8 @@ const snapshot = (index) => ({
   my_node_info: { peer_id: index + 1 },
   node_location: {
     public_ip: `203.0.113.${index + 1}`,
-    country: locations[index].country,
-    city: ['Shanghai', 'Auckland', 'Singapore', ''][index],
+    country: colocated ? 'China' : locations[index].country,
+    city: colocated ? 'Shanghai' : ['Shanghai', 'Auckland', 'Singapore', ''][index],
     region: '',
     latitude: colocated ? 31.2 : locations[index].latitude,
     longitude: colocated ? 121.5 : locations[index].longitude,
@@ -68,23 +68,37 @@ const snapshot = (index) => ({
 async function assertLocalLabelLayout(page, name) {
   const layout = await page.locator('.globe-labels').evaluate(element => {
     const stage = element.getBoundingClientRect()
-    return [...element.querySelectorAll('.globe-node-label, .globe-traffic-label')]
-      .filter(label => getComputedStyle(label).display !== 'none')
-      .map(label => {
-        const rect = label.getBoundingClientRect()
+    return [...element.querySelectorAll('.globe-label-stack')]
+      .filter(stack => getComputedStyle(stack).display !== 'none')
+      .map(stack => {
+        const rect = stack.getBoundingClientRect()
         return {
-          id: label.getAttribute('data-label-id'),
-          traffic: label.classList.contains('globe-traffic-label'),
+          id: stack.getAttribute('data-stack-id'),
+          traffic: stack.classList.contains('globe-traffic-stack'),
           x: rect.x - stage.x, y: rect.y - stage.y,
           width: rect.width, height: rect.height,
           stageWidth: stage.width, stageHeight: stage.height,
-          leaderLength: Number.parseFloat(label.previousElementSibling.style.width),
-          leaderThickness: Number.parseFloat(getComputedStyle(label.previousElementSibling).height),
+          leaderLength: Number.parseFloat(stack.previousElementSibling.style.width),
+          leaderThickness: Number.parseFloat(getComputedStyle(stack.previousElementSibling).height),
+          rows: [...stack.children].map(label => {
+            const row = label.getBoundingClientRect()
+            return { id: label.getAttribute('data-label-id'), x: row.x, y: row.y, height: row.height }
+          }),
         }
       })
   })
   assert.equal(new Set(layout.map(label => label.id)).size, layout.length, `${name}: duplicate link labels`)
+  const ids = layout.flatMap(stack => stack.rows.map(row => row.id))
+  assert.equal(new Set(ids).size, ids.length, `${name}: grouped labels merged or duplicated device links`)
   layout.forEach((label, index) => {
+    label.rows.forEach((row, rowIndex) => {
+      assert.ok(Math.abs(row.x - label.rows[0].x) < 0.1, `${name}: grouped labels are not vertically aligned`)
+      if (rowIndex) {
+        const previous = label.rows[rowIndex - 1]
+        assert.ok(Math.abs(row.y - previous.y - previous.height - 4) < 0.1,
+          `${name}: grouped rows do not keep their vertical gap`)
+      }
+    })
     assert.ok(label.leaderLength <= (label.traffic ? 48 : 32) + 0.1,
       `${name}: a label connector stretched away from its link`)
     if (label.traffic)
@@ -108,8 +122,9 @@ const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
 })
 const errors = []
+let page
 try {
-  const page = await browser.newPage()
+  page = await browser.newPage()
   page.on('pageerror', error => errors.push(error.message))
   let empty = false
   await page.route('**/api/v1/**', async route => {
@@ -305,17 +320,19 @@ try {
       const tracked = [...layer.querySelectorAll('.globe-traffic-label')]
         .filter(element => getComputedStyle(element).display !== 'none')
         .map(element => ({
-          element, leader: element.previousElementSibling,
+          element, stack: element.closest('.globe-label-stack'),
+          leader: element.closest('.globe-label-stack').previousElementSibling,
           rate: element.querySelector('.globe-flow-source-stat'),
         }))
       const state = { frames: 0, hiddenFrames: 0, replacedFrames: 0, frame: 0 }
       const sample = () => {
         state.frames++
-        if (tracked.some(({ element, leader, rate }) => !element.isConnected
-          || element.previousElementSibling !== leader
+        if (tracked.some(({ element, stack, leader, rate }) => !element.isConnected
+          || element.parentElement !== stack || stack.previousElementSibling !== leader
           || element.querySelector('.globe-flow-source-stat') !== rate))
           state.replacedFrames++
-        if (tracked.some(({ element }) => getComputedStyle(element).display === 'none'))
+        if (tracked.some(({ element, stack }) => getComputedStyle(element).display === 'none'
+          || getComputedStyle(stack).display === 'none'))
           state.hiddenFrames++
         state.frame = requestAnimationFrame(sample)
       }
@@ -408,7 +425,7 @@ try {
   await page.reload()
   await page.locator('.node-row').first().waitFor()
   await page.waitForTimeout(3500)
-  await page.locator('.node-row').filter({ hasText: 'Shanghai' }).click()
+  await page.locator('.node-row .node-name').filter({ hasText: 'Shanghai' }).click()
   const overlappingCanvas = page.locator('.globe-stage canvas')
   const overlappingBounds = await overlappingCanvas.boundingBox()
   await page.mouse.move(overlappingBounds.x + overlappingBounds.width / 2,
@@ -431,7 +448,40 @@ try {
   const overlappingLabels = await assertLocalLabelLayout(page, 'overlapping mobile')
   assert.ok(overlappingLabels.some(label => label.traffic),
     'Crowded-link validation did not display any traffic labels')
+  assert.equal(await page.locator('.globe-node-stack:visible').count(), 1,
+    'Devices in the same city split into several scattered name groups')
+  assert.equal(await page.locator('.globe-node-stack .globe-node-label').count(), 4,
+    'A city group lost individual device names')
+  const routeStack = page.locator('.globe-traffic-stack:visible')
+  assert.equal(await routeStack.count(), 1, 'Overlapping geographic links split into separate label groups')
+  assert.equal(await routeStack.locator('.globe-traffic-label').count(), 6,
+    'A route group merged or discarded the separate device-link measurements')
+  assert.ok(await routeStack.evaluate(element => element.scrollHeight > element.clientHeight),
+    'Crowded mobile route groups should scroll internally')
+  const distanceBeforeScrolling = await overlappingCanvas.getAttribute('data-globe-distance')
+  await routeStack.hover()
+  await page.mouse.wheel(0, 1200)
+  await page.waitForFunction(() => {
+    const stack = [...document.querySelectorAll('.globe-traffic-stack')]
+      .find(element => getComputedStyle(element).display !== 'none')
+    return stack?.scrollTop > 0
+  })
+  assert.ok(await routeStack.evaluate(element => element.scrollTop > 0),
+    'The grouped route column cannot be scrolled')
+  assert.equal(await overlappingCanvas.getAttribute('data-globe-distance'), distanceBeforeScrolling,
+    'Scrolling a label column also zoomed the globe')
   await page.screenshot({ path: join(output, 'mobile-overlapping.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.waitForFunction(() => document.querySelector('.globe-stage canvas')?.clientWidth > 800)
+  await page.waitForTimeout(300)
+  await routeStack.evaluate(element => { element.scrollTop = 0 })
+  const desktopStacks = await assertLocalLabelLayout(page, 'overlapping desktop')
+  const expandedRoutes = desktopStacks.find(stack => stack.traffic)
+  assert.ok(expandedRoutes && expandedRoutes.height > expandedRoutes.rows[0].height * 2,
+    'The desktop route group did not expand to multiple stacked rows')
+  assert.equal(await page.locator('.globe-node-stack:visible').count(), 1)
+  assert.equal(await routeStack.locator('.globe-traffic-label').count(), 6)
+  await page.screenshot({ path: join(output, 'desktop-overlapping.png'), fullPage: true })
   empty = true
   await page.goto(dashboardUrl)
   await page.reload()
@@ -439,6 +489,9 @@ try {
   assert.equal(await page.locator('.node-row').count(), 0)
   assert.deepEqual(errors, [])
   console.log(`Empty state and browser errors passed. Screenshots: ${output}`)
+} catch (error) {
+  await page?.screenshot({ path: join(output, 'failure.png'), fullPage: true }).catch(() => {})
+  throw error
 } finally {
   await browser.close()
 }

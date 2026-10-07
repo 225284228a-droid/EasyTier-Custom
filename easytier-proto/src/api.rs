@@ -86,6 +86,7 @@ pub mod instance {
                 latency_us: value.latency_us,
                 estimated_rx_bps: value.estimated_rx_bps,
                 estimated_tx_bps: value.estimated_tx_bps,
+                bandwidth_estimate_version: value.bandwidth_estimate_version,
             }
         }
     }

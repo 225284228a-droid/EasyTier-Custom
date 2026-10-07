@@ -12,6 +12,7 @@ use easytier_core::{
     socket::udp::UdpSession,
     tunnel::{
         Tunnel, TunnelError,
+        bandwidth::{TransmissionWindow, TransmissionWindowSource},
         framed::{FramedReader, FramedWriter},
         wrapper::TunnelWrapper,
     },
@@ -446,6 +447,27 @@ struct ConnWrapper {
     _endpoint: Endpoint,
 }
 
+#[derive(Debug)]
+struct QuicWindowSource(Connection);
+
+impl TransmissionWindowSource for QuicWindowSource {
+    fn transmission_window(&self) -> Option<TransmissionWindow> {
+        if self.0.close_reason().is_some() {
+            return None;
+        }
+        let path = self.0.stats().path;
+        Some(TransmissionWindow {
+            congestion_window_bytes: path.cwnd,
+            peer_receive_window_bytes: None,
+            rtt: path.rtt,
+        })
+    }
+}
+
+pub(crate) fn window_source(connection: &Connection) -> Arc<dyn TransmissionWindowSource> {
+    Arc::new(QuicWindowSource(connection.clone()))
+}
+
 impl Drop for ConnWrapper {
     fn drop(&mut self) {
         self.conn.close(0u32.into(), b"done");
@@ -476,6 +498,7 @@ pub(crate) async fn upgrade_connected(
         conn: connection,
         _endpoint: endpoint,
     });
+    let bandwidth_source = window_source(&connection.conn);
     let info = TunnelInfo {
         tunnel_type: "quic".to_owned(),
         local_addr: Some(super::build_url_from_socket_addr(&local_addr.to_string(), "quic").into()),
@@ -484,11 +507,14 @@ pub(crate) async fn upgrade_connected(
             super::build_url_from_socket_addr(&resolved_remote_addr.to_string(), "quic").into(),
         ),
     };
-    Ok(Box::new(TunnelWrapper::new(
-        FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
-        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
-        Some(info),
-    )))
+    Ok(Box::new(
+        TunnelWrapper::new(
+            FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
+            FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+            Some(info),
+        )
+        .with_bandwidth_source(Some(bandwidth_source)),
+    ))
 }
 
 struct PendingQuicSessionTunnel {
@@ -522,6 +548,7 @@ async fn finish_quic_session_tunnel(
         conn: connection,
         _endpoint: endpoint,
     });
+    let bandwidth_source = window_source(&connection.conn);
     let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "quic");
     let info = TunnelInfo {
         tunnel_type: "quic".to_owned(),
@@ -529,11 +556,14 @@ async fn finish_quic_session_tunnel(
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(remote_url.into()),
     };
-    Ok(Box::new(TunnelWrapper::new(
-        FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
-        FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
-        Some(info),
-    )))
+    Ok(Box::new(
+        TunnelWrapper::new(
+            FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
+            FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
+            Some(info),
+        )
+        .with_bandwidth_source(Some(bandwidth_source)),
+    ))
 }
 
 async fn run_quic_accepted_session(
@@ -740,8 +770,20 @@ pub(crate) mod tests {
             let client = client.unwrap();
             assert_bbr_controller(&client, client_bbr);
             assert_bbr_controller(&server, server_bbr);
+            let client_source = window_source(&client);
+            let server_source = window_source(&server);
+            for source in [&client_source, &server_source] {
+                let window = source
+                    .transmission_window()
+                    .expect("a newly established QUIC path must expose its sending window");
+                assert!(window.congestion_window_bytes > 0);
+                assert!(window.estimated_bps().is_some());
+            }
             client_endpoint.close(0u32.into(), b"test done");
             server_endpoint.close(0u32.into(), b"test done");
+            let _ = tokio::join!(client.closed(), server.closed());
+            assert!(client_source.transmission_window().is_none());
+            assert!(server_source.transmission_window().is_none());
         })
         .await
         .unwrap();

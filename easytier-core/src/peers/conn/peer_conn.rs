@@ -54,10 +54,8 @@ use crate::{
     },
     tunnel::{
         Tunnel, TunnelError, ZCPacketStream,
-        filter::{
-            BandwidthRecorderTunnelFilter, StatsRecorderTunnelFilter, TunnelFilter,
-            TunnelFilterChain, TunnelWithFilter,
-        },
+        bandwidth::{BANDWIDTH_ESTIMATE_VERSION, decode_window_report, encode_window_report},
+        filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelFilterChain, TunnelWithFilter},
         mpsc::{MpscTunnel, MpscTunnelSender},
         stats::{Throughput, WindowLatency},
     },
@@ -366,12 +364,9 @@ impl PeerConn {
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
-        let bandwidth_filter = BandwidthRecorderTunnelFilter::new(throughput.clone());
+        throughput.set_window_source(tunnel.bandwidth_source());
         let liveness = PeerConnLiveness::new();
-        // Business samples are inside session authentication; wire counters
-        // remain outside encryption and retain the full tunnel byte totals.
-        let filter_chain = TunnelFilterChain::new(bandwidth_filter, session_filter.clone())
-            .chain(peer_conn_tunnel_filter)
+        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter)
             .chain(liveness.clone());
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
         let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
@@ -1314,6 +1309,7 @@ impl PeerConn {
             origin: self.origin,
         };
         let control_network_name = conn_info_for_instrument.network_name.clone();
+        let throughput = self.throughput.clone();
 
         let is_foreign_network =
             conn_info_for_instrument.network_name != self.context.network_identity().network_name;
@@ -1351,6 +1347,18 @@ impl PeerConn {
                     if peer_mgr_hdr.packet_type == PacketType::Ping as u8 {
                         context.record_control_rx(&control_network_name, buf_len);
                         peer_mgr_hdr.packet_type = PacketType::Pong as u8;
+                        if let Some(remote_bps) = decode_window_report(zc_packet.payload(), false) {
+                            throughput.record_peer_window_estimate(remote_bps);
+                            let seq =
+                                u32::from_le_bytes(zc_packet.payload()[..4].try_into().unwrap());
+                            zc_packet
+                                .mut_payload()
+                                .copy_from_slice(&encode_window_report(
+                                    seq,
+                                    throughput.estimated_tx_bps(),
+                                    true,
+                                ));
+                        }
                         if let Err(e) = sink.send(zc_packet).await {
                             tracing::error!(?e, "peer conn send req error");
                         } else {
@@ -1480,6 +1488,7 @@ impl PeerConn {
             rx_packets: self.throughput.rx_packets(),
             estimated_rx_bps: self.throughput.estimated_rx_bps(),
             estimated_tx_bps: self.throughput.estimated_tx_bps(),
+            bandwidth_estimate_version: BANDWIDTH_ESTIMATE_VERSION,
         }
     }
 
