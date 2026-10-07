@@ -81,13 +81,24 @@ both measured traffic directions only at close zoom (distance <= 1.7).
 Traffic labels use a cross layout: endpoint names flank the bidirectional
 arrow, with the corresponding directional rates above and below the arrow.
 No latency value is displayed in this label.
+Labels try multiple visible anchors along their own link and both sides of
+its projected tangent, with at most a 48-pixel traffic connector (32 pixels
+for node names). They avoid other labels, node markers and existing label
+connectors. A valid previous attachment is preferred to prevent jitter.
+Selected-node links take precedence; labels that cannot fit locally are
+hidden instead of being pushed into distant rows.
 Flow particles move in both directions. One-shot emission frequency is
-linear in each direction's measured bit/s, independent of RTT. Visible
-directions share a payload unit of at least 64,000 bits per dot; it scales
-up together when necessary to limit the busiest direction to 24 dots/second
-without changing relative emission rates. Sparse traffic is not rounded up
-to a minimum continuous stream. Faster links therefore have fewer particles
-in flight at equal throughput, not a higher emission frequency.
+independent of RTT and of all other links. It uses the same soft display
+curve per direction: `6 * sqrt(bps / 16000000) / (1 + sqrt(bps / 16000000))`.
+Two Mbit/s is about 1.6 dots/second, twenty Mbit/s about 3.2 dots/second,
+and very large rates approach six dots/second without a hard saturation
+threshold. Dot frequency is a compressed visual indicator, not a linear
+byte/packet count; the labels retain the actual measured bit/s.
+Sparse traffic is not rounded up to a minimum continuous stream. Faster
+links have fewer particles in flight at equal throughput, not a higher
+emission frequency. Each device pair and direction owns its own emitter
+and RTT-derived speed even when several paths coincide on the map. Only
+parallel tunnels belonging to the same device pair are aggregated.
 Travel time follows the mean valid RTT of fresh open channels, expanded
 twentyfold and bounded to 0.08-6 seconds for display. Latency ratios are
 preserved within those limits; a missing RTT uses a conservative five-second

@@ -7,8 +7,9 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { locateNode, worldGeography, type LocatedNode } from '../modules/globeGeography'
 import { spherePosition as position, sphericalArc } from '../modules/globeBoundaryGeometry'
-import { FlowEmitter, flowBitsPerParticle, flowEmissionsPerSecond, flowTravelSeconds, MAX_FLOW_PARTICLES } from '../modules/globeFlow'
+import { FlowEmitter, flowEmissionsPerSecond, flowTravelSeconds, MAX_FLOW_PARTICLES } from '../modules/globeFlow'
 import { createFlowLabel } from '../modules/globeFlowLabel'
+import { arrangeGlobeLabels, type LabelChoice, type LayoutLabel } from '../modules/globeLabelLayout'
 import { loadGlobeMapDetail } from '../modules/globeMapDetail'
 import { buildCloudPointPositions } from '../modules/globePointCloud'
 import { readGlobePreferences, saveGlobePreferences } from '../modules/dashboardPersistence'
@@ -75,11 +76,14 @@ let flows: {
   reverse: boolean
 }[] = []
 interface GlobeLabel {
+  id: string
   kind: 'node' | 'traffic'
   element: HTMLDivElement
   leader: HTMLDivElement
-  anchors: THREE.Vector3[]
+  anchors: { point: THREE.Vector3, tangentPoints?: [THREE.Vector3, THREE.Vector3] }[]
   priority: number
+  choice?: LabelChoice
+  size?: { width: number, height: number }
 }
 let labels: GlobeLabel[] = []
 const raycaster = new THREE.Raycaster()
@@ -87,6 +91,8 @@ const pointer = new THREE.Vector2()
 const markerViewPosition = new THREE.Vector3()
 const flowMarker = new THREE.Object3D()
 const labelProjection = new THREE.Vector3()
+const labelTangentStart = new THREE.Vector3()
+const labelTangentEnd = new THREE.Vector3()
 const labelDirection = new THREE.Vector3()
 const labelIntersection = new THREE.Vector3()
 const labelRay = new THREE.Ray()
@@ -310,11 +316,12 @@ function scaleMarker(mesh: THREE.Object3D, radius: number, pixels: number) {
   mesh.scale.setScalar(Math.max(0.001, unitsPerPixel * pixels / radius))
 }
 
-function addLabel(content: string | HTMLElement, kind: 'node' | 'traffic', anchors: THREE.Vector3[], priority: number, stale?: boolean) {
+function addLabel(id: string, content: string | HTMLElement, kind: 'node' | 'traffic', anchors: GlobeLabel['anchors'], priority: number, stale?: boolean) {
   if (!labelLayer.value)
     return
   const element = document.createElement('div')
   element.className = `globe-${kind}-label${stale ? ' is-stale' : ''}`
+  element.dataset.labelId = id
   if (typeof content === 'string') {
     element.textContent = content
   } else {
@@ -327,7 +334,7 @@ function addLabel(content: string | HTMLElement, kind: 'node' | 'traffic', ancho
   leader.className = 'globe-label-leader'
   leader.style.display = 'none'
   labelLayer.value.append(leader, element)
-  labels.push({ kind, element, leader, anchors, priority })
+  labels.push({ id, kind, element, leader, anchors, priority })
 }
 
 function projectedAnchor(point: THREE.Vector3, width: number, height: number) {
@@ -356,54 +363,61 @@ function updateLabels() {
   labelLayer.value.dataset.detailVisible = String(nodesVisible)
   labelLayer.value.dataset.nodeLabelsVisible = String(nodesVisible)
   labelLayer.value.dataset.trafficLabelsVisible = String(trafficVisible)
-  const occupied: { x: number, y: number, width: number, height: number }[] = []
   for (const label of labels) {
     label.element.style.display = 'none'
     label.leader.style.display = 'none'
   }
   if (!nodesVisible)
     return
-  for (const label of [...labels].sort((left, right) => right.priority - left.priority)) {
+  const pending: LayoutLabel[] = []
+  const byId = new Map(labels.map(label => [label.id, label]))
+  for (const label of labels) {
     if (label.kind === 'traffic' && !trafficVisible)
       continue
-    const anchor = label.anchors.map(point => projectedAnchor(point, width, height)).find(Boolean)
-    if (!anchor)
-      continue
-    label.element.style.display = 'block'
-    const labelWidth = label.element.offsetWidth
-    const labelHeight = label.element.offsetHeight
-    let placed = false
-    for (const column of [1, -1]) {
-      for (const row of [0, -1, 1, -2, 2, -3, 3, -4, 4]) {
-        const x = THREE.MathUtils.clamp(
-          anchor.x + (column > 0 ? 10 : -labelWidth - 10), 5, Math.max(5, width - labelWidth - 5),
-        )
-        const y = THREE.MathUtils.clamp(
-          anchor.y - labelHeight / 2 + row * (labelHeight + 5), 5, Math.max(5, height - labelHeight - 34),
-        )
-        if (occupied.some(rect => x < rect.x + rect.width + 4 && x + labelWidth + 4 > rect.x
-          && y < rect.y + rect.height + 4 && y + labelHeight + 4 > rect.y))
-          continue
-        occupied.push({ x, y, width: labelWidth, height: labelHeight })
-        label.element.style.left = `${x}px`
-        label.element.style.top = `${y}px`
-        const endX = THREE.MathUtils.clamp(anchor.x, x, x + labelWidth)
-        const endY = THREE.MathUtils.clamp(anchor.y, y, y + labelHeight)
-        const dx = endX - anchor.x
-        const dy = endY - anchor.y
-        label.leader.style.display = 'block'
-        label.leader.style.left = `${anchor.x}px`
-        label.leader.style.top = `${anchor.y}px`
-        label.leader.style.width = `${Math.hypot(dx, dy)}px`
-        label.leader.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`
-        placed = true
-        break
+    const anchors = label.anchors.flatMap(({ point, tangentPoints }, index) => {
+      const anchor = projectedAnchor(point, width, height)
+      if (!anchor)
+        return []
+      let tangent
+      if (tangentPoints) {
+        labelTangentStart.copy(tangentPoints[0]).project(camera)
+        labelTangentEnd.copy(tangentPoints[1]).project(camera)
+        tangent = {
+          x: (labelTangentEnd.x - labelTangentStart.x) * width / 2,
+          y: -(labelTangentEnd.y - labelTangentStart.y) * height / 2,
+        }
       }
-      if (placed)
-        break
-    }
-    if (!placed)
+      return [{ ...anchor, index, tangent }]
+    })
+    if (!anchors.length)
+      continue
+    if (!label.size) {
+      label.element.style.display = 'block'
+      label.size = { width: label.element.offsetWidth, height: label.element.offsetHeight }
       label.element.style.display = 'none'
+    }
+    pending.push({
+      id: label.id, kind: label.kind, anchors, priority: label.priority,
+      ...label.size, previous: label.choice,
+    })
+  }
+  const markers = markerMeshes.flatMap(mesh => {
+    const anchor = projectedAnchor(mesh.position, width, height)
+    return anchor ? [{ x: anchor.x - 7, y: anchor.y - 7, width: 14, height: 14 }] : []
+  })
+  for (const placement of arrangeGlobeLabels(pending, width, height, markers)) {
+    const label = byId.get(placement.id)!
+    label.choice = placement.choice
+    label.element.style.display = 'block'
+    label.element.style.left = `${placement.x}px`
+    label.element.style.top = `${placement.y}px`
+    label.leader.style.display = 'block'
+    label.leader.style.left = `${placement.anchor.x}px`
+    label.leader.style.top = `${placement.anchor.y}px`
+    label.leader.style.width = `${placement.leaderLength}px`
+    label.leader.style.transform = `rotate(${Math.atan2(
+      placement.leaderEnd.y - placement.anchor.y, placement.leaderEnd.x - placement.anchor.x,
+    )}rad)`
   }
 }
 
@@ -465,6 +479,7 @@ function rebuildTopology() {
   if (!renderer)
     return
   const previousEmitters = new Map(flows.map(flow => [flow.key, flow.emitter]))
+  const previousChoices = new Map(labels.map(label => [label.id, label.choice]))
   if (topologyGroup) {
     scene.remove(topologyGroup)
     disposeGroup(topologyGroup)
@@ -475,9 +490,6 @@ function rebuildTopology() {
   labels = []
   labelLayer.value?.replaceChildren()
   const nodeMap = new Map<string, LocatedNode>(locatedNodes.value.map(node => [node.id, node]))
-  const bitsPerParticle = flowBitsPerParticle(props.links
-    .filter(link => !link.stale && nodeMap.has(link.source) && nodeMap.has(link.target))
-    .flatMap(link => [link.txBps, link.rxBps]))
   for (const node of nodeMap.values()) {
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(node.id === selectedId.value ? 0.025 : 0.018, 12, 8),
@@ -492,7 +504,8 @@ function rebuildTopology() {
     mesh.userData.radius = node.id === selectedId.value ? 0.025 : 0.018
     markerMeshes.push(mesh)
     topologyGroup.add(mesh)
-    addLabel(node.label, 'node', [mesh.position.clone()], node.id === selectedId.value ? 10 : 6, node.stale)
+    addLabel(`node:${node.id}`, node.label, 'node', [{ point: mesh.position.clone() }],
+      node.id === selectedId.value ? 10 : 6, node.stale)
   }
   for (const [index, link] of props.links.entries()) {
     const source = nodeMap.get(link.source)
@@ -505,7 +518,7 @@ function rebuildTopology() {
       new THREE.LineBasicMaterial({ color: 0x77bce6, transparent: true, opacity: link.stale ? 0.28 : 0.72 }),
     ))
     for (const [reverse, rate] of [[false, link.txBps], [true, link.rxBps]] as const) {
-      const emissionsPerSecond = flowEmissionsPerSecond(rate, bitsPerParticle, link.stale)
+      const emissionsPerSecond = flowEmissionsPerSecond(rate, link.stale)
       if (!emissionsPerSecond)
         continue
       const travelSeconds = flowTravelSeconds(link.latencyMs)
@@ -523,6 +536,7 @@ function rebuildTopology() {
       topologyGroup.add(mesh)
     }
     addLabel(
+      `traffic:${JSON.stringify([link.source, link.target])}`,
       createFlowLabel({
         sourceLabel: source.label,
         targetLabel: target.label,
@@ -530,13 +544,16 @@ function rebuildTopology() {
         rxBps: link.rxBps,
       }),
       'traffic',
-      [0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9, 0.05, 0.95, 0.02, 0.98].map(progress => curve.getPoint(progress)),
-      link.source === selectedId.value || link.target === selectedId.value ? 5 : 1,
+      [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9, 0.05, 0.95, 0.02, 0.98].map(progress => ({
+        point: curve.getPoint(progress),
+        tangentPoints: [curve.getPoint(Math.max(0, progress - 0.005)), curve.getPoint(Math.min(1, progress + 0.005))],
+      })),
+      link.source === selectedId.value || link.target === selectedId.value ? 7 : 1,
       link.stale,
     )
   }
+  labels.forEach(label => { label.choice = previousChoices.get(label.id) })
   scene.add(topologyGroup)
-  renderer.domElement.dataset.globeEmissionBits = String(bitsPerParticle)
   renderer.domElement.dataset.globeForwardEmissionRate = String(
     flows.filter(flow => !flow.reverse).reduce((total, flow) => total + flow.emissionsPerSecond, 0),
   )
@@ -544,7 +561,10 @@ function rebuildTopology() {
     flows.filter(flow => flow.reverse).reduce((total, flow) => total + flow.emissionsPerSecond, 0),
   )
   renderer.domElement.dataset.globeFlowTimings = JSON.stringify(
-    flows.map(flow => ({ key: flow.key, emissionsPerSecond: flow.emissionsPerSecond, travelSeconds: flow.travelSeconds })),
+    flows.map(flow => ({
+      key: flow.key, emissionsPerSecond: flow.emissionsPerSecond, travelSeconds: flow.travelSeconds,
+      emittedCount: flow.emitter.emittedCount,
+    })),
   )
 }
 
@@ -650,7 +670,7 @@ function animate(now: number) {
         flowMarker.position.copy(flow.curve.getPointAt(flow.reverse ? 1 - progress : progress))
         if (![flowMarker.position.x, flowMarker.position.y, flowMarker.position.z].every(Number.isFinite))
           invalidFlows++
-        scaleMarker(flowMarker, 0.009, 2)
+        scaleMarker(flowMarker, 0.009, 1.6)
         flowMarker.updateMatrix()
         flow.mesh.setMatrixAt(index, flowMarker.matrix)
       })
@@ -817,7 +837,7 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
   font-size: 11px; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis;
 }
 .globe-labels :deep(.globe-node-label) { max-width: 174px; color: #ffda88; font-weight: 600; }
-.globe-labels :deep(.globe-traffic-label) { width: 226px; max-width: 226px; white-space: normal; }
+.globe-labels :deep(.globe-traffic-label) { width: 198px; max-width: 198px; white-space: normal; }
 .globe-labels :deep(.globe-flow-cross) { display: grid; gap: 2px; }
 .globe-labels :deep(.traffic-endpoints) { display: grid; grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr); gap: 4px; align-items: center; }
 .globe-labels :deep(.globe-flow-stat) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 10px; line-height: 14px; color: #c7e2e9; }

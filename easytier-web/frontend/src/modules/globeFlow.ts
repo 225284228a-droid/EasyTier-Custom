@@ -1,7 +1,7 @@
 const MIN_TRAVEL_SECONDS = 0.08
 const MAX_TRAVEL_SECONDS = 6
-const MIN_BITS_PER_PARTICLE = 64_000
-export const MAX_FLOW_EMISSIONS_PER_SECOND = 24
+const FLOW_CURVE_KNEE_BPS = 16_000_000
+export const MAX_FLOW_EMISSIONS_PER_SECOND = 6
 export const MAX_FLOW_PARTICLES = Math.ceil(MAX_FLOW_EMISSIONS_PER_SECOND * MAX_TRAVEL_SECONDS) + 1
 
 /** Expand RTT twentyfold for display, preserving ratios inside the readable limits. */
@@ -11,18 +11,12 @@ export function flowTravelSeconds(latencyMs: number | undefined): number {
   return Math.min(MAX_TRAVEL_SECONDS, Math.max(MIN_TRAVEL_SECONDS, latencyMs * 0.02))
 }
 
-/** All visible directions share one payload unit, so their emission-rate ratios agree. */
-export function flowBitsPerParticle(rates: (number | undefined)[]): number {
-  const peak = rates.reduce<number>((maximum, rate) =>
-    rate !== undefined && Number.isFinite(rate) && rate > maximum ? rate : maximum, 0)
-  return Math.max(MIN_BITS_PER_PARTICLE, peak / MAX_FLOW_EMISSIONS_PER_SECOND)
-}
-
-export function flowEmissionsPerSecond(rate: number | undefined, bitsPerParticle: number, stale = false): number {
-  if (stale || rate === undefined || !Number.isFinite(rate) || rate <= 0
-    || !Number.isFinite(bitsPerParticle) || bitsPerParticle <= 0)
+/** A shared soft curve keeps high throughput readable without involving RTT or other links. */
+export function flowEmissionsPerSecond(rate: number | undefined, stale = false): number {
+  if (stale || rate === undefined || !Number.isFinite(rate) || rate <= 0)
     return 0
-  return Math.min(MAX_FLOW_EMISSIONS_PER_SECOND, rate / bitsPerParticle)
+  const weight = Math.sqrt(rate / FLOW_CURVE_KNEE_BPS)
+  return MAX_FLOW_EMISSIONS_PER_SECOND * weight / (1 + weight)
 }
 
 /** One-shot particles: throughput schedules births; RTT only advances their journey. */

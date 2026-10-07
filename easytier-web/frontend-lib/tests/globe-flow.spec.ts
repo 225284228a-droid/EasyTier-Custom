@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  FlowEmitter, flowBitsPerParticle, flowEmissionsPerSecond, flowTravelSeconds,
+  FlowEmitter, flowEmissionsPerSecond, flowTravelSeconds,
   MAX_FLOW_EMISSIONS_PER_SECOND, MAX_FLOW_PARTICLES,
 } from '../../frontend/src/modules/globeFlow'
 
@@ -29,30 +29,39 @@ describe('globe RTT travel speed', () => {
 })
 
 describe('throughput-based globe emissions', () => {
-  it('uses a common payload unit and preserves rate ratios across links', () => {
-    const unit = flowBitsPerParticle([20_000_000, 10_000_000, 200_000])
-    expect(flowEmissionsPerSecond(20_000_000, unit)).toBe(MAX_FLOW_EMISSIONS_PER_SECOND)
-    expect(flowEmissionsPerSecond(10_000_000, unit)).toBe(12)
-    expect(flowEmissionsPerSecond(200_000, unit)).toBeCloseTo(0.24)
+  it('keeps two megabits below two dots per second instead of saturating the display', () => {
+    expect(flowEmissionsPerSecond(2_000_000)).toBeGreaterThan(1)
+    expect(flowEmissionsPerSecond(2_000_000)).toBeLessThan(2)
+    expect(flowEmissionsPerSecond(20_000_000)).toBeGreaterThan(3)
+    expect(flowEmissionsPerSecond(20_000_000)).toBeLessThan(4)
+    expect(flowEmissionsPerSecond(100_000_000)).toBeLessThan(5)
+  })
+
+  it('uses a monotonic soft curve without making busy links a continuous stripe', () => {
+    const rates = [1_000, 200_000, 2_000_000, 20_000_000, 100_000_000, 1_000_000_000]
+    const emissions = rates.map(rate => flowEmissionsPerSecond(rate))
+    emissions.forEach((value, index) => {
+      expect(value).toBeLessThan(MAX_FLOW_EMISSIONS_PER_SECOND)
+      if (index)
+        expect(value).toBeGreaterThan(emissions[index - 1])
+    })
   })
 
   it('does not force sparse traffic to emit at least one point per second', () => {
-    const unit = flowBitsPerParticle([1_000])
-    expect(unit).toBe(64_000)
-    expect(flowEmissionsPerSecond(1_000, unit)).toBe(1 / 64)
+    expect(flowEmissionsPerSecond(1_000)).toBeGreaterThan(0)
+    expect(flowEmissionsPerSecond(1_000)).toBeLessThan(0.1)
+    expect(flowEmissionsPerSecond(200_000)).toBeLessThan(1)
   })
 
   it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     'does not emit for an invalid or absent throughput %s', rate => {
-      expect(flowEmissionsPerSecond(rate, flowBitsPerParticle([rate]))).toBe(0)
+      expect(flowEmissionsPerSecond(rate)).toBe(0)
     },
   )
 
-  it('suppresses stale traffic and rejects invalid payload units', () => {
-    expect(flowEmissionsPerSecond(20_000_000, 64_000, true)).toBe(0)
-    for (const unit of [0, -1, Number.NaN, Number.POSITIVE_INFINITY])
-      expect(flowEmissionsPerSecond(100_000, unit)).toBe(0)
-    expect(flowBitsPerParticle([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY])).toBe(64_000)
+  it('suppresses stale traffic and keeps very large rates finite', () => {
+    expect(flowEmissionsPerSecond(20_000_000, true)).toBe(0)
+    expect(flowEmissionsPerSecond(Number.MAX_VALUE)).toBe(MAX_FLOW_EMISSIONS_PER_SECOND)
   })
 })
 
@@ -65,21 +74,22 @@ describe('one-shot globe particle scheduler', () => {
   it('emits the same count for equal throughput despite different RTTs', () => {
     const short = new FlowEmitter()
     const long = new FlowEmitter()
-    run(short, 10, 10, flowTravelSeconds(5))
-    run(long, 10, 10, flowTravelSeconds(100))
-    expect(short.emittedCount).toBe(100)
-    expect(long.emittedCount).toBe(100)
+    const frequency = flowEmissionsPerSecond(2_000_000)
+    run(short, 10, frequency, flowTravelSeconds(5))
+    run(long, 10, frequency, flowTravelSeconds(100))
+    expect(short.emittedCount).toBe(Math.floor(10 * frequency))
+    expect(long.emittedCount).toBe(short.emittedCount)
     // Faster journeys reduce in-flight occupancy, never increase emission rate.
     expect(short.progress.length).toBeLessThan(long.progress.length)
   })
 
-  it('doubles emission count when throughput doubles without changing RTT', () => {
-    const unit = flowBitsPerParticle([10_000_000, 20_000_000])
+  it('increases emissions when throughput rises without changing RTT', () => {
     const low = new FlowEmitter()
     const high = new FlowEmitter()
-    run(low, 10, flowEmissionsPerSecond(10_000_000, unit), 1)
-    run(high, 10, flowEmissionsPerSecond(20_000_000, unit), 1)
-    expect(high.emittedCount).toBe(low.emittedCount * 2)
+    run(low, 10, flowEmissionsPerSecond(2_000_000), 1)
+    run(high, 10, flowEmissionsPerSecond(20_000_000), 1)
+    expect(high.emittedCount).toBeGreaterThan(low.emittedCount)
+    expect(high.emittedCount).toBeLessThan(low.emittedCount * 10)
   })
 
   it('retires arriving points instead of wrapping them into fake new emissions', () => {
@@ -94,8 +104,8 @@ describe('one-shot globe particle scheduler', () => {
   it('accounts for birth time within each frame and is independent of frame rate', () => {
     const fastFrames = new FlowEmitter()
     const slowFrames = new FlowEmitter()
-    run(fastFrames, 4, 10, 1, 60)
-    run(slowFrames, 4, 10, 1, 30)
+    run(fastFrames, 4, 4, 1, 60)
+    run(slowFrames, 4, 4, 1, 30)
     expect(fastFrames.emittedCount).toBe(slowFrames.emittedCount)
     expect(fastFrames.progress.length).toBe(slowFrames.progress.length)
     fastFrames.progress.forEach((progress, index) =>
@@ -104,9 +114,9 @@ describe('one-shot globe particle scheduler', () => {
 
   it('keeps fractional emission credit through rate changes and display rebuilds', () => {
     const emitter = new FlowEmitter()
-    emitter.advance(0.1, 5, 1)
+    emitter.advance(0.1, 4, 1)
     expect(emitter.emittedCount).toBe(0)
-    emitter.advance(0.05, 10, 1)
+    emitter.advance(0.1, 6, 1)
     expect(emitter.emittedCount).toBe(1)
     expect(emitter.progress[0]).toBeCloseTo(0)
   })
@@ -122,17 +132,17 @@ describe('one-shot globe particle scheduler', () => {
 
   it('handles suspended-tab gaps without a burst of already-arrived points', () => {
     const emitter = new FlowEmitter()
-    emitter.advance(3_600, 24, 0.2)
-    expect(emitter.emittedCount).toBe(86_400)
-    expect(emitter.progress.length).toBeLessThanOrEqual(5)
+    emitter.advance(3_600, MAX_FLOW_EMISSIONS_PER_SECOND, 0.2)
+    expect(emitter.emittedCount).toBe(21_600)
+    expect(emitter.progress.length).toBeLessThanOrEqual(2)
     expect(emitter.progress.every(progress => progress >= 0 && progress < 1)).toBe(true)
   })
 
-  it('bounds slow high-throughput directions without sacrificing the common emission scale', () => {
+  it('bounds slow high-throughput directions with the reduced visual ceiling', () => {
     const emitter = new FlowEmitter()
     run(emitter, 10, MAX_FLOW_EMISSIONS_PER_SECOND, 6)
     expect(emitter.progress.length).toBeLessThanOrEqual(MAX_FLOW_PARTICLES)
-    expect(emitter.emittedCount).toBe(240)
+    expect(emitter.emittedCount).toBe(60)
   })
 
   it('clears idle or stale directions and ignores non-forward frame times', () => {

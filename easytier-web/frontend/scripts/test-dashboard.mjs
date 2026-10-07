@@ -23,6 +23,7 @@ let jitter = false
 let colocated = false
 let hangNext = false
 let hungRoute
+let trafficScale = 1
 const machineItems = locations.map((location, index) => ({
   client_url: `tcp://198.51.100.${index + 1}:11010`,
   location,
@@ -55,13 +56,47 @@ const snapshot = (index) => ({
         latency_us: String(index === 0 || peer === 0
           ? (index === 1 || peer === 1 ? 5_000 : 50_000) : 150_000),
         tx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
-          * (index < peer ? 2_500_000 : 25_000))),
+          * (index < peer ? 2_500_000 : 25_000) * trafficScale)),
         rx_bytes: String(Math.floor((Date.now() - trafficStarted) / 1000
-          * (index < peer ? 25_000 : 2_500_000))),
+          * (index < peer ? 25_000 : 2_500_000) * trafficScale)),
       },
     }],
   })),
 })
+
+async function assertLocalLabelLayout(page, name) {
+  const layout = await page.locator('.globe-labels').evaluate(element => {
+    const stage = element.getBoundingClientRect()
+    return [...element.querySelectorAll('.globe-node-label, .globe-traffic-label')]
+      .filter(label => getComputedStyle(label).display !== 'none')
+      .map(label => {
+        const rect = label.getBoundingClientRect()
+        return {
+          id: label.getAttribute('data-label-id'),
+          traffic: label.classList.contains('globe-traffic-label'),
+          x: rect.x - stage.x, y: rect.y - stage.y,
+          width: rect.width, height: rect.height,
+          stageWidth: stage.width, stageHeight: stage.height,
+          leaderLength: Number.parseFloat(label.previousElementSibling.style.width),
+        }
+      })
+  })
+  assert.equal(new Set(layout.map(label => label.id)).size, layout.length, `${name}: duplicate link labels`)
+  layout.forEach((label, index) => {
+    assert.ok(label.leaderLength <= (label.traffic ? 48 : 32) + 0.1,
+      `${name}: a label connector stretched away from its link`)
+    assert.ok(label.x >= 4.9 && label.y >= 4.9
+      && label.x + label.width <= label.stageWidth - 4.9
+      && label.y + label.height <= label.stageHeight - 33.9, `${name}: label exceeds stage bounds`)
+    for (const previous of layout.slice(0, index)) {
+      assert.equal(label.x < previous.x + previous.width + 3.5
+        && label.x + label.width + 3.5 > previous.x
+        && label.y < previous.y + previous.height + 3.5
+        && label.y + label.height + 3.5 > previous.y, false, `${name}: labels overlap`)
+    }
+  })
+  return layout
+}
 
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_EXECUTABLE || undefined,
@@ -150,12 +185,14 @@ try {
         && Number(canvas?.getAttribute('data-globe-reverse-particles')) > 0
     })
     assert.ok(Number(await canvas.getAttribute('data-globe-forward-emission-rate'))
-      > Number(await canvas.getAttribute('data-globe-reverse-emission-rate')) * 90,
-      `${name}: emission frequency must preserve measured throughput ratios`)
+      > Number(await canvas.getAttribute('data-globe-reverse-emission-rate')) * 4,
+      `${name}: emission frequency must distinguish different directional traffic`)
     const timings = JSON.parse(await canvas.getAttribute('data-globe-flow-timings'))
       .filter(flow => JSON.parse(flow.key)[2] === false)
       .sort((left, right) => left.travelSeconds - right.travelSeconds)
     assert.equal(timings.length, 3)
+    assert.ok(timings.every(flow => flow.emissionsPerSecond < 6),
+      `${name}: busy links immediately saturated the emission density`)
     assert.ok(Math.abs(timings[0].emissionsPerSecond - timings[2].emissionsPerSecond) < 0.1,
       `${name}: equal throughput must emit equally despite different RTTs`)
     assert.ok(Math.abs(timings[1].travelSeconds / timings[0].travelSeconds - 10) < 0.01,
@@ -239,6 +276,7 @@ try {
       elements.some(element => getComputedStyle(element).display !== 'none'
         && !element.textContent.includes('RTT') && element.querySelector('.traffic-endpoints'))),
     `${name}: traffic labels must use the cross layout with rates only`)
+    await assertLocalLabelLayout(page, name)
     await page.screenshot({ path: join(output, `${name}-close.png`), fullPage: true })
     const savedDistance = Number(await canvas.getAttribute('data-globe-distance'))
     const savedAzimuth = Number(await canvas.getAttribute('data-globe-azimuth'))
@@ -281,11 +319,34 @@ try {
   assert.equal(await page.locator('.node-row.stale').count(), 0, 'A timed-out request did not recover through retry')
   await hungRoute.abort()
   colocated = true
+  trafficScale = 0.1
   await page.reload()
   await page.locator('.node-row').first().waitFor()
   await page.waitForTimeout(3500)
+  await page.locator('.node-row').filter({ hasText: 'Shanghai' }).click()
+  const overlappingCanvas = page.locator('.globe-stage canvas')
+  const overlappingBounds = await overlappingCanvas.boundingBox()
+  await page.mouse.move(overlappingBounds.x + overlappingBounds.width / 2,
+    overlappingBounds.y + overlappingBounds.height / 2)
+  await page.mouse.wheel(0, -2500)
+  await page.waitForFunction(() =>
+    document.querySelector('.globe-labels')?.getAttribute('data-traffic-labels-visible') === 'true')
+  await page.waitForFunction(() => [...document.querySelectorAll('.globe-traffic-label')]
+    .some(element => getComputedStyle(element).display !== 'none'))
   assert.equal(await page.locator('.globe-stage canvas').getAttribute('data-globe-invalid-flows'), '0',
     'Colocated nodes generated invalid connection flow coordinates')
+  const overlapping = JSON.parse(await page.locator('.globe-stage canvas').getAttribute('data-globe-flow-timings'))
+  assert.equal(overlapping.length, 12, 'Overlapping device paths merged independent directions')
+  assert.equal(new Set(overlapping.map(flow => flow.key)).size, 12, 'Distinct devices share an emitter key')
+  const forwardOverlapping = overlapping.filter(flow => JSON.parse(flow.key)[2] === false)
+  assert.ok(forwardOverlapping.every(flow => flow.emissionsPerSecond < 2),
+    'Two-megabit overlapping links became solid streams')
+  assert.ok(new Set(forwardOverlapping.map(flow => flow.travelSeconds)).size >= 3,
+    'Overlapping paths lost their individual RTT travel speeds')
+  const overlappingLabels = await assertLocalLabelLayout(page, 'overlapping mobile')
+  assert.ok(overlappingLabels.some(label => label.traffic),
+    'Crowded-link validation did not display any traffic labels')
+  await page.screenshot({ path: join(output, 'mobile-overlapping.png'), fullPage: true })
   empty = true
   await page.goto(dashboardUrl)
   await page.reload()
