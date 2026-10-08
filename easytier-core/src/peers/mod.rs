@@ -38,26 +38,6 @@ pub(crate) enum PeerConnectionOrigin {
     Attached,
 }
 
-/// How a peer connection came into existence. Used to tell connections the
-/// user asked for from the ones P2P discovered on its own, so redundant
-/// automatic transports can be closed once a disguised connection is up.
-///
-/// Note: every behavioral consumer currently distinguishes only `Automatic`
-/// from "not automatic" (redundant-connection cleanup and same-URL
-/// supersession both keep Manual and Inbound); the three variants otherwise
-/// exist for documentation and logs. Inbound connections additionally never
-/// register a client URL, so they cannot appear in the same-URL registry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PeerConnSource {
-    /// Established from a peer URL configured by the user (manual connector).
-    Manual,
-    /// Accepted from a remote peer that dialed us; the remote side owns the
-    /// configuration and will reconnect if we drop it.
-    Inbound,
-    /// Discovered by automatic P2P direct connect or hole punching.
-    Automatic,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PeerPacketIngress {
     Local,

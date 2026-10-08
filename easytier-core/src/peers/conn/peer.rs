@@ -11,7 +11,7 @@ use tracing::Instrument;
 
 use super::peer_conn::{PeerConn, PeerConnId};
 use crate::peers::{
-    PacketRecvChan, PeerConnSource,
+    PacketRecvChan,
     context::{ArcPeerContext, PeerEvent},
     util::shrink_dashmap,
 };
@@ -56,7 +56,7 @@ fn redundant_conn_eligible(
     }
     if replacement.is_closed()
         || replacement.get_stats().latency_us == 0
-        || conn.conn_source() != PeerConnSource::Automatic
+        || !conn.can_retire_as_redundant()
     {
         return false;
     }
@@ -614,7 +614,7 @@ mod tests {
     use crate::{
         packet::{PacketType, ZCPacket},
         peers::{
-            PeerConnSource, PeerConnectionOrigin,
+            PeerConnectionOrigin,
             conn::{peer_conn::PeerConn, peer_session::PeerSessionStore},
             context::ArcPeerContext,
             create_packet_recv_chan,
@@ -663,9 +663,8 @@ mod tests {
     async fn handshaken_connection(
         context: ArcPeerContext,
         scheme: &str,
-        source: PeerConnSource,
         origin: PeerConnectionOrigin,
-        is_hole_punched: bool,
+        is_client: bool,
     ) -> (PeerConn, PeerConn) {
         let (client_socket, server_socket) = create_ring_socket_pair(64);
         let tunnel_info = Some(TunnelInfo {
@@ -673,17 +672,7 @@ mod tests {
             ..Default::default()
         });
         let session_store = Arc::new(PeerSessionStore::new());
-        let origin = match (origin, source, is_hole_punched) {
-            (PeerConnectionOrigin::Attached, _, _) => PeerConnectionOrigin::Attached,
-            (_, PeerConnSource::Manual, _) => PeerConnectionOrigin::Manual,
-            (_, PeerConnSource::Inbound, _) => PeerConnectionOrigin::Listener,
-            (_, PeerConnSource::Automatic, false) => PeerConnectionOrigin::Direct,
-            (_, PeerConnSource::Automatic, true) => match scheme {
-                "tcp" | "wss" => PeerConnectionOrigin::TcpHolePunch,
-                _ => PeerConnectionOrigin::UdpHolePunch,
-            },
-        };
-        let mut client = PeerConn::new_with_peer_id_hint_and_origin(
+        let mut local = PeerConn::new_with_peer_id_hint_and_origin(
             1,
             context,
             Box::new(RingTunnel::new(client_socket, tunnel_info.clone())),
@@ -691,19 +680,26 @@ mod tests {
             session_store.clone(),
             origin,
         );
-        let mut server = PeerConn::new(
+        let mut remote = PeerConn::new(
             2,
             Arc::new(NoopPeerContext::default()),
             Box::new(RingTunnel::new(server_socket, tunnel_info)),
             session_store,
         );
-        let (client_result, server_result) = tokio::join!(
-            client.do_handshake_as_client(),
-            server.do_handshake_as_server_ext(|_, _| Ok(())),
-        );
-        client_result.unwrap();
-        server_result.unwrap();
-        (client, server)
+        let (local_result, remote_result) = if is_client {
+            tokio::join!(
+                local.do_handshake_as_client(),
+                remote.do_handshake_as_server_ext(|_, _| Ok(())),
+            )
+        } else {
+            tokio::join!(
+                local.do_handshake_as_server_ext(|_, _| Ok(())),
+                remote.do_handshake_as_client(),
+            )
+        };
+        local_result.unwrap();
+        remote_result.unwrap();
+        (local, remote)
     }
 
     fn data_packet() -> ZCPacket {
@@ -734,11 +730,11 @@ mod tests {
     }
 
     async fn check_preferred_transition(default_protocol: &str, use_disguise: bool, strict: bool) {
-        let (preferred, fallback) = match (default_protocol, use_disguise) {
-            ("udp", true) => ("http3", "wss"),
-            ("tcp", true) => ("wss", "http3"),
-            ("udp", false) => ("udp", "wss"),
-            ("tcp", false) => ("tcp", "http3"),
+        let (preferred, fallback, punch_origin) = match (default_protocol, use_disguise) {
+            ("udp", true) => ("http3", "wss", PeerConnectionOrigin::UdpHolePunch),
+            ("tcp", true) => ("wss", "http3", PeerConnectionOrigin::TcpHolePunch),
+            ("udp", false) => ("udp", "wss", PeerConnectionOrigin::UdpHolePunch),
+            ("tcp", false) => ("tcp", "http3", PeerConnectionOrigin::TcpHolePunch),
             _ => unreachable!(),
         };
         let context: ArcPeerContext =
@@ -754,9 +750,8 @@ mod tests {
         let (old, mut old_remote) = handshaken_connection(
             context.clone(),
             fallback,
-            PeerConnSource::Automatic,
             PeerConnectionOrigin::Direct,
-            false,
+            true,
         )
         .await;
         let old_id = old.get_conn_id();
@@ -768,14 +763,8 @@ mod tests {
         peer.note_negotiated_disguise(use_disguise);
         assert!(!peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
 
-        let (replacement, mut replacement_remote) = handshaken_connection(
-            context.clone(),
-            preferred,
-            PeerConnSource::Automatic,
-            PeerConnectionOrigin::Direct,
-            true,
-        )
-        .await;
+        let (replacement, mut replacement_remote) =
+            handshaken_connection(context.clone(), preferred, punch_origin, true).await;
         let replacement_id = replacement.get_conn_id();
         peer.add_peer_conn(replacement).await.unwrap();
         assert!(peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
@@ -830,14 +819,8 @@ mod tests {
         .await
         .unwrap();
         assert!(!peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
-        let (recovered, mut recovered_remote) = handshaken_connection(
-            context,
-            fallback,
-            PeerConnSource::Automatic,
-            PeerConnectionOrigin::Direct,
-            false,
-        )
-        .await;
+        let (recovered, mut recovered_remote) =
+            handshaken_connection(context, fallback, PeerConnectionOrigin::Direct, true).await;
         let (recovered_tx, mut recovered_rx) = create_packet_recv_chan();
         recovered_remote.start_recv_loop(recovered_tx).await;
         peer.add_peer_conn(recovered).await.unwrap();
@@ -873,27 +856,15 @@ mod tests {
             }));
         let (local_tx, _local_rx) = create_packet_recv_chan();
         let peer = Peer::new(2, local_tx, context.clone());
-        let (fallback, mut fallback_remote) = handshaken_connection(
-            context.clone(),
-            "wss",
-            PeerConnSource::Automatic,
-            PeerConnectionOrigin::Direct,
-            false,
-        )
-        .await;
+        let (fallback, mut fallback_remote) =
+            handshaken_connection(context.clone(), "wss", PeerConnectionOrigin::Direct, true).await;
         let fallback_id = fallback.get_conn_id();
         let (remote_tx, mut remote_rx) = create_packet_recv_chan();
         fallback_remote.start_recv_loop(remote_tx).await;
         peer.add_peer_conn(fallback).await.unwrap();
         assert!(!peer.has_connection_at_least_as_preferred("http3", Some(true)));
-        let (replacement, replacement_remote) = handshaken_connection(
-            context,
-            "http3",
-            PeerConnSource::Automatic,
-            PeerConnectionOrigin::Direct,
-            true,
-        )
-        .await;
+        let (replacement, replacement_remote) =
+            handshaken_connection(context, "http3", PeerConnectionOrigin::UdpHolePunch, true).await;
         let replacement_id = replacement.get_conn_id();
         peer.add_peer_conn(replacement).await.unwrap();
         drop(replacement_remote);
@@ -928,23 +899,12 @@ mod tests {
                 }));
             let (tx, _rx) = create_packet_recv_chan();
             let peer = Peer::new(2, tx, context.clone());
-            let (udp, mut udp_remote) = handshaken_connection(
-                context.clone(),
-                "udp",
-                PeerConnSource::Automatic,
-                PeerConnectionOrigin::Direct,
-                false,
-            )
-            .await;
+            let (udp, mut udp_remote) =
+                handshaken_connection(context.clone(), "udp", PeerConnectionOrigin::Direct, true)
+                    .await;
             let udp_id = udp.get_conn_id();
-            let (wss, mut wss_remote) = handshaken_connection(
-                context,
-                "wss",
-                PeerConnSource::Automatic,
-                PeerConnectionOrigin::Direct,
-                false,
-            )
-            .await;
+            let (wss, mut wss_remote) =
+                handshaken_connection(context, "wss", PeerConnectionOrigin::Direct, true).await;
             let wss_id = wss.get_conn_id();
             // Retiring a conn requires a verified replacement (first ping
             // answered), so let both conns run their ping round trips.
@@ -998,34 +958,22 @@ mod tests {
         peer.note_negotiated_disguise(false);
         let mut remote_conns = Vec::new();
         let mut kept_ids = Vec::new();
-        for (scheme, source, origin) in [
-            ("wss", PeerConnSource::Manual, PeerConnectionOrigin::Direct),
-            (
-                "wss",
-                PeerConnSource::Inbound,
-                PeerConnectionOrigin::Direct,
-            ),
-            (
-                "udp",
-                PeerConnSource::Automatic,
-                PeerConnectionOrigin::Direct,
-            ),
-            (
-                "udp",
-                PeerConnSource::Automatic,
-                PeerConnectionOrigin::Direct,
-            ),
-            (
-                "ring",
-                PeerConnSource::Automatic,
-                PeerConnectionOrigin::Attached,
-            ),
+        for (scheme, origin, is_client) in [
+            ("wss", PeerConnectionOrigin::Manual, true),
+            ("wss", PeerConnectionOrigin::Listener, false),
+            ("udp", PeerConnectionOrigin::Direct, true),
+            ("udp", PeerConnectionOrigin::Direct, true),
+            ("ring", PeerConnectionOrigin::Attached, true),
         ] {
-            let (conn, remote) =
-                handshaken_connection(context.clone(), scheme, source, origin, false).await;
-            kept_ids.push(conn.get_conn_id());
+            let (conn, mut remote) =
+                handshaken_connection(context.clone(), scheme, origin, is_client).await;
+            let conn_id = conn.get_conn_id();
+            let (remote_tx, _remote_rx) = create_packet_recv_chan();
+            remote.start_recv_loop(remote_tx).await;
             remote_conns.push(remote);
             peer.add_peer_conn(conn).await.unwrap();
+            wait_until_latency_verified(&peer, &[conn_id]).await;
+            kept_ids.push(conn_id);
         }
         peer.reconcile_connections().await;
         tokio::task::yield_now().await;
@@ -1047,26 +995,15 @@ mod tests {
                 }));
             let (local_tx, _local_rx) = create_packet_recv_chan();
             let peer = Peer::new(2, local_tx, context.clone());
-            let (wss, mut wss_remote) = handshaken_connection(
-                context.clone(),
-                "wss",
-                PeerConnSource::Automatic,
-                PeerConnectionOrigin::Direct,
-                false,
-            )
-            .await;
+            let (wss, mut wss_remote) =
+                handshaken_connection(context.clone(), "wss", PeerConnectionOrigin::Direct, true)
+                    .await;
             let wss_id = wss.get_conn_id();
             let (wss_tx, _wss_rx) = create_packet_recv_chan();
             wss_remote.start_recv_loop(wss_tx).await;
             peer.add_peer_conn(wss).await.unwrap();
-            let (udp, mut udp_remote) = handshaken_connection(
-                context,
-                "udp",
-                PeerConnSource::Automatic,
-                PeerConnectionOrigin::Direct,
-                false,
-            )
-            .await;
+            let (udp, mut udp_remote) =
+                handshaken_connection(context, "udp", PeerConnectionOrigin::Direct, true).await;
             let udp_id = udp.get_conn_id();
             let (udp_tx, _udp_rx) = create_packet_recv_chan();
             udp_remote.start_recv_loop(udp_tx).await;
@@ -1108,14 +1045,9 @@ mod tests {
             }));
         let (local_tx, _local_rx) = create_packet_recv_chan();
         let peer = Peer::new(2, local_tx, context.clone());
-        let (http3, _remote) = handshaken_connection(
-            context.clone(),
-            "http3",
-            PeerConnSource::Automatic,
-            PeerConnectionOrigin::Direct,
-            false,
-        )
-        .await;
+        let (http3, _remote) =
+            handshaken_connection(context.clone(), "http3", PeerConnectionOrigin::Direct, true)
+                .await;
         let http3_id = http3.get_conn_id();
         peer.add_peer_conn(http3).await.unwrap();
         // Authoritative metadata records the negotiated disguise preference
@@ -1137,14 +1069,8 @@ mod tests {
         let context: ArcPeerContext = Arc::new(NoopPeerContext::default());
         let (local_tx, _local_rx) = create_packet_recv_chan();
         let peer = Peer::new(2, local_tx, context.clone());
-        let (conn, _remote) = handshaken_connection(
-            context,
-            "ring",
-            PeerConnSource::Automatic,
-            PeerConnectionOrigin::Attached,
-            false,
-        )
-        .await;
+        let (conn, _remote) =
+            handshaken_connection(context, "ring", PeerConnectionOrigin::Attached, true).await;
         peer.add_peer_conn(conn).await.unwrap();
         assert!(!peer.has_connection_at_least_as_preferred("udp", Some(false)));
         assert!(!peer.has_connection_at_least_as_preferred("http3", Some(true)));

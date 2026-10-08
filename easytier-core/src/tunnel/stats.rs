@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::bandwidth::TransmissionWindowSource;
+use crate::foundation::bandwidth::TransmissionWindowSource;
 
 const PEER_WINDOW_REPORT_TTL: Duration = Duration::from_secs(90);
 
@@ -183,7 +183,7 @@ impl Throughput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tunnel::bandwidth::TransmissionWindow;
+    use crate::foundation::bandwidth::TransmissionWindow;
 
     #[derive(Debug)]
     struct TestWindowSource(Mutex<Option<TransmissionWindow>>);

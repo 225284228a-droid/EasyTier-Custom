@@ -7,6 +7,7 @@ use auto_impl::auto_impl;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
 use crate::{
+    foundation::bandwidth::TransmissionWindowSource,
     packet::ZCPacket,
     proto::common::TunnelInfo,
     tunnel::{
@@ -206,7 +207,7 @@ where
         self.inner.info()
     }
 
-    fn bandwidth_source(&self) -> Option<Arc<dyn super::bandwidth::TransmissionWindowSource>> {
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
         self.inner.bandwidth_source()
     }
 

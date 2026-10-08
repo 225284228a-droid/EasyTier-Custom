@@ -28,6 +28,7 @@ use crate::{
 async fn handshake_client_conn_with_remote_url(
     url: &url::Url,
     peer_session_store: Arc<PeerSessionStore>,
+    origin: PeerConnectionOrigin,
 ) -> (PeerConn, PeerConn) {
     let (client_socket, server_socket) = create_ring_socket_pair(64);
     let client_tunnel = Box::new(RingTunnel::new(
@@ -46,7 +47,7 @@ async fn handshake_client_conn_with_remote_url(
         client_tunnel,
         None,
         peer_session_store.clone(),
-        PeerConnectionOrigin::Direct,
+        origin,
     );
     let mut server_conn = PeerConn::new(
         2,
@@ -457,8 +458,12 @@ async fn peer_map_replaces_superseded_client_conns_for_the_same_url() {
     let (client_tx, _client_rx) = create_packet_recv_chan();
     let client_map = PeerMap::new(client_tx, client_ctx.clone(), 1);
 
-    let (conn_a, _server_a) =
-        handshake_client_conn_with_remote_url(&url, peer_session_store.clone()).await;
+    let (conn_a, _server_a) = handshake_client_conn_with_remote_url(
+        &url,
+        peer_session_store.clone(),
+        PeerConnectionOrigin::Direct,
+    )
+    .await;
     let conn_a_id = conn_a.get_conn_id();
     client_map.add_new_peer_conn(conn_a).await.unwrap();
     assert!(client_map.is_client_url_alive(&url));
@@ -472,7 +477,12 @@ async fn peer_map_replaces_superseded_client_conns_for_the_same_url() {
         1
     );
 
-    let (conn_b, _server_b) = handshake_client_conn_with_remote_url(&url, peer_session_store).await;
+    let (conn_b, _server_b) = handshake_client_conn_with_remote_url(
+        &url,
+        peer_session_store,
+        PeerConnectionOrigin::Direct,
+    )
+    .await;
     client_map.add_new_peer_conn(conn_b).await.unwrap();
 
     timeout(Duration::from_secs(2), async {
@@ -501,4 +511,52 @@ async fn peer_map_replaces_superseded_client_conns_for_the_same_url() {
         conn_a_id
     );
     assert!(client_map.is_client_url_alive(&url));
+}
+
+#[tokio::test]
+async fn peer_map_preserves_manual_and_attached_clients_for_the_same_url() {
+    for origin in [PeerConnectionOrigin::Manual, PeerConnectionOrigin::Attached] {
+        let store = Arc::new(PeerSessionStore::new());
+        let context = Arc::new(NoopPeerContext::default());
+        let url: url::Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        let (client_tx, _client_rx) = create_packet_recv_chan();
+        let map = PeerMap::new(client_tx, context, 1);
+        let (protected, mut protected_remote) =
+            handshake_client_conn_with_remote_url(&url, store.clone(), origin).await;
+        let protected_id = protected.get_conn_id();
+        let (replacement, mut replacement_remote) =
+            handshake_client_conn_with_remote_url(&url, store, PeerConnectionOrigin::Direct).await;
+        let replacement_id = replacement.get_conn_id();
+        let (protected_tx, _protected_rx) = create_packet_recv_chan();
+        protected_remote.start_recv_loop(protected_tx).await;
+        let (replacement_tx, _replacement_rx) = create_packet_recv_chan();
+        replacement_remote.start_recv_loop(replacement_tx).await;
+        map.add_new_peer_conn(protected).await.unwrap();
+        map.add_new_peer_conn(replacement).await.unwrap();
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let conns = map.get_peer_by_id(2).unwrap().list_peer_conns().await;
+                if conns.len() == 2
+                    && conns.iter().all(|conn| {
+                        conn.stats
+                            .as_ref()
+                            .is_some_and(|stats| stats.latency_us > 0)
+                    })
+                {
+                    let ids: Vec<PeerConnId> = conns
+                        .iter()
+                        .map(|conn| conn.conn_id.parse().unwrap())
+                        .collect();
+                    assert!(ids.contains(&protected_id), "{origin:?}");
+                    assert!(ids.contains(&replacement_id), "{origin:?}");
+                    break;
+                }
+                crate::foundation::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("protected and replacement connections should remain active");
+        assert!(map.is_client_url_alive(&url));
+    }
 }

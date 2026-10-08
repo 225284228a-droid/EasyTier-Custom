@@ -9,10 +9,10 @@ use easytier_core::{
         protocol::{ServerProtocolAdmission, ServerTunnelAcceptor},
         transport::ConnectedUdpSession,
     },
+    foundation::bandwidth::{TransmissionWindow, TransmissionWindowSource},
     socket::udp::UdpSession,
     tunnel::{
         Tunnel, TunnelError,
-        bandwidth::{TransmissionWindow, TransmissionWindowSource},
         framed::{FramedReader, FramedWriter},
         wrapper::TunnelWrapper,
     },

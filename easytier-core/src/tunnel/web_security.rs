@@ -4,12 +4,14 @@ use futures::{SinkExt, StreamExt};
 use snow::{Builder, params::NoiseParams};
 
 use crate::{
-    foundation::time::{Duration, timeout},
+    foundation::{
+        bandwidth::TransmissionWindowSource,
+        time::{Duration, timeout},
+    },
     packet::{PacketType, ZCPacket, ZCPacketType},
     proto::common::TunnelInfo,
     tunnel::{
         SplitTunnel, StreamItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
-        bandwidth::TransmissionWindowSource,
         filter::{TunnelFilter, TunnelWithFilter},
         secure_datagram::{SecureDatagramDirection, SecureDatagramSession},
     },
@@ -339,8 +341,8 @@ mod tests {
     struct FixedWindowSource;
 
     impl TransmissionWindowSource for FixedWindowSource {
-        fn transmission_window(&self) -> Option<super::super::bandwidth::TransmissionWindow> {
-            Some(super::super::bandwidth::TransmissionWindow {
+        fn transmission_window(&self) -> Option<crate::foundation::bandwidth::TransmissionWindow> {
+            Some(crate::foundation::bandwidth::TransmissionWindow {
                 congestion_window_bytes: 125_000,
                 peer_receive_window_bytes: None,
                 rtt: Duration::from_millis(10),

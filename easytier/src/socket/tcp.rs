@@ -8,12 +8,12 @@ use std::{
 };
 
 use easytier_core::{
+    foundation::bandwidth::TransmissionWindowSource,
     socket::tcp::{
         TcpBindOptions, TcpConnectOptions, TcpListenOptions, TcpListenPurpose, TcpSocketPurpose,
         VirtualTcpListener, VirtualTcpSocket, VirtualTcpSplit,
     },
     tunnel::TunnelError,
-    tunnel::bandwidth::TransmissionWindowSource,
 };
 mod window;
 use socket2::{SockRef, TcpKeepalive};

@@ -4,9 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::proto::common::TunnelInfo;
+use crate::{foundation::bandwidth::TransmissionWindowSource, proto::common::TunnelInfo};
 
-use super::{Tunnel, ZCPacketSink, ZCPacketStream, bandwidth::TransmissionWindowSource};
+use super::{Tunnel, ZCPacketSink, ZCPacketStream};
 
 pub struct TunnelWrapper<R, W> {
     reader: Arc<Mutex<Option<R>>>,

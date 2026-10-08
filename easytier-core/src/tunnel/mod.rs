@@ -11,7 +11,11 @@ use std::{fmt::Debug, pin::Pin, sync::Arc};
 
 use futures::{Sink, Stream};
 
-use crate::{foundation::time::error::Elapsed, packet::ZCPacket, proto::common::TunnelInfo};
+use crate::{
+    foundation::{bandwidth::TransmissionWindowSource, time::error::Elapsed},
+    packet::ZCPacket,
+    proto::common::TunnelInfo,
+};
 
 pub use crate::socket::IpVersion;
 
@@ -90,7 +94,7 @@ pub type SplitTunnel = (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>
 pub trait Tunnel: Send {
     fn split(&self) -> SplitTunnel;
     fn info(&self) -> Option<TunnelInfo>;
-    fn bandwidth_source(&self) -> Option<Arc<dyn bandwidth::TransmissionWindowSource>> {
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
         None
     }
 }

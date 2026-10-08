@@ -4,6 +4,7 @@
 //! depend on a domain Module. See `CONTEXT.md` "Module layers".
 
 pub mod backoff;
+pub mod bandwidth;
 pub mod expiring_set;
 #[cfg(any(
     feature = "proxy-smoltcp-stack",

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use easytier_core::tunnel::bandwidth::{TransmissionWindow, TransmissionWindowSource};
+use easytier_core::foundation::bandwidth::{TransmissionWindow, TransmissionWindowSource};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,

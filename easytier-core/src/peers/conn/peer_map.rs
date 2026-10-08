@@ -31,7 +31,7 @@ use super::{
     peer_conn::{PeerConn, PeerConnCloseNotify, PeerConnId},
 };
 use crate::peers::{
-    PacketRecvChan, PeerConnSource,
+    PacketRecvChan, PeerConnectionOrigin,
     route::{ArcRoute, NextHopPolicy},
 };
 
@@ -44,11 +44,11 @@ pub struct PeerMap {
     alive_client_urls: Arc<Mutex<HashMap<url::Url, AliveClientConns>>>,
 }
 
-/// Client conns registered for one dialed URL. The source is recorded at
+/// Client conns registered for one dialed URL. The origin is recorded at
 /// registration time so supersede checks can exempt manual conns without a
 /// round-trip through `Peer::conns` (which is filled only after the conn is
 /// fully admitted).
-type AliveClientConns = HashMap<PeerConnId, (PeerId, PeerConnSource)>;
+type AliveClientConns = HashMap<PeerConnId, (PeerId, PeerConnectionOrigin)>;
 
 impl PeerMap {
     pub(crate) fn new(
@@ -84,7 +84,7 @@ impl PeerMap {
         // `add_peer_conn` takes ownership of the conn.
         let conn_info = peer_conn.get_conn_info();
         let close_notifier = peer_conn.get_close_notifier();
-        let conn_source = peer_conn.conn_source();
+        let origin = peer_conn.origin();
         let no_entry = self.peer_map.get(&peer_id).is_none();
         if no_entry {
             let new_peer = Peer::new(peer_id, self.packet_send.clone(), self.context.clone());
@@ -94,8 +94,7 @@ impl PeerMap {
             let peer = self.peer_map.get(&peer_id).unwrap().clone();
             peer.add_peer_conn(peer_conn).await?;
         }
-        let alive_url =
-            self.register_alive_client_url(peer_id, conn_info, close_notifier, conn_source);
+        let alive_url = self.register_alive_client_url(peer_id, conn_info, close_notifier, origin);
         // A non-hole-punched client conn replaces earlier conns to the same URL:
         // the connector only dials again because the previous conns looked dead,
         // and letting the old ones linger leaks one conn per reconnect until the
@@ -109,10 +108,9 @@ impl PeerMap {
     }
 
     async fn close_superseded_client_conns(&self, url: &url::Url, keep_conn_id: PeerConnId) {
-        // Only automatic dials supersede each other. Manual connections are
-        // kept (see the `PeerConnSource` docs and the proto comments on
-        // close_redundant_conns_when_disguised); inbound conns never register
-        // a client URL in the first place.
+        // Only automatic P2P dials supersede each other. Preserve manual,
+        // listener, and attached origins. Server conns never register a client
+        // URL in the first place.
         let superseded: Vec<(PeerConnId, PeerId)> = {
             let mut guard = self.alive_client_urls.lock();
             let Some(conns) = guard.get_mut(url) else {
@@ -121,7 +119,13 @@ impl PeerMap {
             let stale: Vec<(PeerConnId, PeerId)> = conns
                 .iter()
                 .filter(|(conn_id, entry)| {
-                    **conn_id != keep_conn_id && entry.1 == PeerConnSource::Automatic
+                    **conn_id != keep_conn_id
+                        && matches!(
+                            entry.1,
+                            PeerConnectionOrigin::Direct
+                                | PeerConnectionOrigin::TcpHolePunch
+                                | PeerConnectionOrigin::UdpHolePunch
+                        )
                 })
                 .map(|(conn_id, entry)| (*conn_id, entry.0))
                 .collect();
@@ -151,7 +155,7 @@ impl PeerMap {
         peer_id: PeerId,
         conn_info: PeerConnInfo,
         close_notifier: Arc<PeerConnCloseNotify>,
-        conn_source: PeerConnSource,
+        origin: PeerConnectionOrigin,
     ) -> Option<url::Url> {
         if !conn_info.is_client {
             return None;
@@ -164,7 +168,7 @@ impl PeerMap {
             .lock()
             .entry(alive_client_url.clone())
             .or_default()
-            .insert(conn_id, (peer_id, conn_source));
+            .insert(conn_id, (peer_id, origin));
 
         let alive_client_url_for_task = alive_client_url.clone();
         tokio::spawn(async move {

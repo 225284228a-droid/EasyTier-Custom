@@ -369,9 +369,9 @@ mod tests {
     #[derive(Debug)]
     struct FixedWindowSource;
 
-    impl crate::tunnel::bandwidth::TransmissionWindowSource for FixedWindowSource {
-        fn transmission_window(&self) -> Option<crate::tunnel::bandwidth::TransmissionWindow> {
-            Some(crate::tunnel::bandwidth::TransmissionWindow {
+    impl crate::foundation::bandwidth::TransmissionWindowSource for FixedWindowSource {
+        fn transmission_window(&self) -> Option<crate::foundation::bandwidth::TransmissionWindow> {
+            Some(crate::foundation::bandwidth::TransmissionWindow {
                 congestion_window_bytes: 125_000,
                 peer_receive_window_bytes: None,
                 rtt: Duration::from_millis(10),

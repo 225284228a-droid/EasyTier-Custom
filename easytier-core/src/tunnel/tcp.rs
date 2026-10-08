@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::{
+    foundation::bandwidth::TransmissionWindowSource,
     proto::common::TunnelInfo,
     socket::tcp::VirtualTcpSocket,
-    tunnel::bandwidth::TransmissionWindowSource,
     tunnel::framed::{FramedReader, FramedWriter, TCP_MTU_BYTES},
     tunnel::{SplitTunnel, Tunnel, TunnelError},
 };

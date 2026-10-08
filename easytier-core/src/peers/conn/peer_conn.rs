@@ -34,7 +34,7 @@ use super::{
     peer_session::{PeerSession, PeerSessionAction},
 };
 use crate::peers::{
-    PacketRecvChan, PeerConnSource, PeerConnectionOrigin, PeerPacketIngress,
+    PacketRecvChan, PeerConnectionOrigin, PeerPacketIngress,
     context::{ArcPeerContext, NetworkIdentity, NetworkSecretDigest},
     send_peer_packet_to_chan,
     traffic_metrics::data_packet_payload_len,
@@ -459,23 +459,20 @@ impl PeerConn {
         }
     }
 
-    /// Whether this connection was configured by the user, dialed by a remote
-    /// peer, or discovered automatically by P2P.
-    pub fn conn_source(&self) -> PeerConnSource {
+    pub(crate) fn origin(&self) -> PeerConnectionOrigin {
+        self.origin
+    }
+
+    /// Whether a verified, preferred P2P connection may replace this one.
+    pub(crate) fn can_retire_as_redundant(&self) -> bool {
         match self.origin {
-            PeerConnectionOrigin::Manual => PeerConnSource::Manual,
-            PeerConnectionOrigin::Listener => PeerConnSource::Inbound,
-            PeerConnectionOrigin::Direct | PeerConnectionOrigin::Attached => {
-                PeerConnSource::Automatic
-            }
+            PeerConnectionOrigin::Manual
+            | PeerConnectionOrigin::Listener
+            | PeerConnectionOrigin::Attached => false,
+            PeerConnectionOrigin::Direct => true,
             PeerConnectionOrigin::TcpHolePunch | PeerConnectionOrigin::UdpHolePunch => {
-                // Preserve the existing cleanup scope during the upstream merge:
-                // accepted punch connections still receive inbound protection.
-                if self.is_client == Some(true) {
-                    PeerConnSource::Automatic
-                } else {
-                    PeerConnSource::Inbound
-                }
+                // Keep the existing server protection while unifying origins.
+                self.is_client == Some(true)
             }
         }
     }
@@ -1610,7 +1607,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hole_punch_sources_preserve_client_and_inbound_cleanup_roles() {
+    async fn hole_punch_origins_preserve_client_and_server_cleanup_roles() {
         for origin in [
             PeerConnectionOrigin::TcpHolePunch,
             PeerConnectionOrigin::UdpHolePunch,
@@ -1635,17 +1632,13 @@ mod tests {
             );
             let (client_result, server_result) = tokio::join!(
                 client.do_handshake_as_client(),
-                server.do_handshake_as_server(),
+                server.do_handshake_as_server_ext(|_, _| Ok(())),
             );
             client_result.unwrap();
             server_result.unwrap();
 
-            assert_eq!(
-                client.conn_source(),
-                PeerConnSource::Automatic,
-                "{origin:?}"
-            );
-            assert_eq!(server.conn_source(), PeerConnSource::Inbound, "{origin:?}");
+            assert!(client.can_retire_as_redundant(), "{origin:?}");
+            assert!(!server.can_retire_as_redundant(), "{origin:?}");
             assert!(client.is_hole_punched());
             assert!(server.is_hole_punched());
         }

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::foundation::bandwidth::TransmissionWindowSource;
 use crate::socket::{IpVersion, SocketContext, SocketListener};
-use crate::tunnel::bandwidth::TransmissionWindowSource;
 
 pub type VirtualTcpReadHalf = Box<dyn AsyncRead + Unpin + Send + 'static>;
 pub type VirtualTcpWriteHalf = Box<dyn AsyncWrite + Unpin + Send + 'static>;
