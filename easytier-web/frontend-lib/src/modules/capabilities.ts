@@ -1,7 +1,14 @@
 import type { NetworkConfig } from '../types/network'
 
 export const LOCAL_CONFIG_REVISION_CAPABILITY = 'management:persisted-config-revision-v1'
+export const LOCAL_CONFIG_APPLY_CAPABILITY = 'management:persisted-config-apply-v1'
 export const HTTP3_CAPABILITY = 'transport:http3-framed-v1'
+
+export function assertLocalConfigApplyCapability(capabilities: readonly string[]): void {
+  if (!capabilities.includes(LOCAL_CONFIG_APPLY_CAPABILITY)) {
+    throw new Error('Applying saved configuration without edits is unsupported. Upgrade the device before applying.')
+  }
+}
 
 export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = {
   sni: 'config:sni',

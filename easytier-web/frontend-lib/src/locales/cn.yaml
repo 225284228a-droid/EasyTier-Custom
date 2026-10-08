@@ -378,6 +378,8 @@ web:
     title: 本地配置
     description: 在线读取设备的本地配置，按所选字段逐个保存。离线设备仅供查看，不会排队下发。保存并应用只应用正在运行的实例；停用实例须明确启用。
     save_apply: 保存并应用
+    apply_saved: 应用已保存配置
+    apply_unsupported: 此节点不支持直接应用已保存配置，请升级节点后再应用。
     persist_only: 仅保存
     select: 选择
     device: 设备

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { NetworkTypes } from 'easytier-frontend-lib'
+import { NetworkTypes, LocalConfigs, Capabilities } from 'easytier-frontend-lib'
 import { GUIRemoteClient } from './api'
 
 const invoke = vi.hoisted(() => vi.fn())
@@ -8,6 +8,24 @@ const id = '00000000-0000-0000-0000-000000000001'
 beforeEach(() => invoke.mockReset())
 
 describe('GUI management bridge capabilities and revisions', () => {
+  it('gates apply-only independently and forwards an empty config/mask with the observed revision', async () => {
+    const revision = Capabilities.LOCAL_CONFIG_REVISION_CAPABILITY
+    invoke.mockImplementation(async command => command === 'list_network_instance_ids'
+      ? { running_inst_ids: [id], disabled_inst_ids: [], runtime_capabilities: [revision] }
+      : { status: 'Success' })
+    const request = { inst_id: id, expected_revision: 'observed-revision', config: {}, field_mask: [], apply_mode: 0 }
+    await expect(new GUIRemoteClient().patch_local_config(request)).rejects.toThrow('Upgrade the device')
+    expect(invoke.mock.calls.some(([command]) => command === 'patch_local_config')).toBe(false)
+    invoke.mockImplementation(async command => command === 'list_network_instance_ids'
+      ? { running_inst_ids: [id], disabled_inst_ids: [], runtime_capabilities: [revision, Capabilities.LOCAL_CONFIG_APPLY_CAPABILITY] }
+      : command === 'observe_local_configs' ? { catalog_epoch: 'boot-a', catalog_generation: '1', entries: [] } : { status: 'Success' })
+    const api = new GUIRemoteClient()
+    expect((await api.observe_local_configs()).capabilities).toContain(Capabilities.LOCAL_CONFIG_APPLY_CAPABILITY)
+    await api.localConfigClient().patch('current', LocalConfigs.buildLocalConfigApplyRequest({ inst_id: id, revision: 'observed-revision' },
+      [Capabilities.LOCAL_CONFIG_APPLY_CAPABILITY]))
+    expect(invoke).toHaveBeenCalledWith('patch_local_config', { request: { ...request, inst_id: { part1: 0, part2: 0, part3: 0, part4: 1 } } })
+  })
+
   it('removes unsupported extensions from every legacy config operation, keeping WS/WSS', async () => {
     invoke.mockImplementation(async (command: string) => command === 'list_network_instance_ids'
       ? { running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: ['config:sni'] }

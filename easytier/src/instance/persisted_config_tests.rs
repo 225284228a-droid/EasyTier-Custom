@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -15,9 +15,10 @@ use easytier_core::management::{
 };
 use easytier_proto::{
     api::manage::{
-        NetworkConfig, NetworkingMethod, ObserveConfigsRequest, PatchPersistedConfigRequest,
-        PersistedConfigApplyMode, PersistedConfigMutationStatus, PersistedConfigService,
-        RunNetworkInstanceRequest, WebClientService,
+        DeleteNetworkInstanceRequest, NetworkConfig, NetworkingMethod, ObserveConfigsRequest,
+        PatchPersistedConfigRequest, PersistedConfigApplyMode, PersistedConfigMutationStatus,
+        PersistedConfigService, RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
+        SetNetworkInstanceEnabledRequest, WebClientService,
     },
     rpc_types::controller::BaseController,
 };
@@ -33,6 +34,8 @@ use crate::{
 struct MemoryFiles {
     files: Mutex<BTreeMap<PathBuf, Vec<u8>>>,
     readonly: Mutex<Vec<PathBuf>>,
+    duplicate_on_load: Mutex<Option<PathBuf>>,
+    writes: AtomicUsize,
     block_next_write: AtomicBool,
     write_started: Notify,
     release_write: Notify,
@@ -72,7 +75,27 @@ impl ConfigFileStorage for MemoryFiles {
         Ok(self.files.lock().unwrap().get(path).cloned())
     }
 
+    async fn load_config(
+        &self,
+        path: &Path,
+        _config_dir: Option<&Path>,
+    ) -> anyhow::Result<Option<(TomlConfigLoader, ConfigFileControl)>> {
+        let Some(contents) = self.read(path).await? else {
+            return Ok(None);
+        };
+        let config = TomlConfigLoader::new_from_str_with_source(
+            &path.display().to_string(),
+            std::str::from_utf8(&contents)?,
+        )?;
+        let control = self.inspect(path).await;
+        if let Some(alias) = self.duplicate_on_load.lock().unwrap().take() {
+            self.files.lock().unwrap().insert(alias, contents);
+        }
+        Ok(Some((config, control)))
+    }
+
     async fn write(&self, path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+        self.writes.fetch_add(1, Ordering::AcqRel);
         if self.block_next_write.swap(false, Ordering::AcqRel) {
             self.write_started.notify_one();
             self.release_write.notified().await;
@@ -146,6 +169,42 @@ fn patch(
         field_mask: vec!["hostname".into()],
         apply_mode: mode as i32,
     }
+}
+
+fn apply_persisted(id: uuid::Uuid, revision: String) -> PatchPersistedConfigRequest {
+    PatchPersistedConfigRequest {
+        inst_id: Some(id.into()),
+        expected_revision: revision,
+        config: Some(NetworkConfig::default()),
+        field_mask: Vec::new(),
+        apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
+    }
+}
+
+async fn start_saved_instance(
+    manager: &NativeInstanceManager,
+    rpc: &ProcessManagementRpc<super::factory::NativeInstanceFactory>,
+    id: uuid::Uuid,
+) {
+    use easytier_core::instance::CoreInstanceState;
+    WebClientService::set_network_instance_enabled(
+        rpc,
+        BaseController::default(),
+        SetNetworkInstanceEnabledRequest {
+            inst_id: Some(id.into()),
+            enabled: true,
+            expected_revision: None,
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while manager.instance(id).unwrap().state() != CoreInstanceState::Running {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -499,6 +558,213 @@ async fn save_and_apply_replaces_running_instance_and_keeps_original_non_form_fi
     let raw = String::from_utf8(files.read(&path(id)).await.unwrap().unwrap()).unwrap();
     assert!(raw.starts_with("# keep this comment"));
     assert!(raw.contains("unmodeled = 'keep'"));
+    manager.delete_network_instances([id]).await.unwrap();
+}
+
+#[tokio::test]
+async fn apply_only_restarts_from_current_toml_without_writing_or_projecting_fields() {
+    use easytier_core::config::toml::ConfigSource;
+    let (manager, files, rpc) = fixture();
+    let id = uuid::Uuid::new_v4();
+    let raw = initial(id, "active").replace("netns = 'keep-netns'", "unmodeled = 'keep'");
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), raw.into_bytes());
+    start_saved_instance(&manager, &rpc, id).await;
+    assert!(
+        manager
+            .management_capabilities()
+            .iter()
+            .any(|cap| { cap == "management:persisted-config-apply-v1" })
+    );
+    let before = observe(&rpc).await;
+    let saved = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        patch(
+            id,
+            before.entries[0].revision.clone(),
+            "pending",
+            PersistedConfigApplyMode::PersistOnly,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved.status, PersistedConfigMutationStatus::Success as i32);
+    assert!(saved.entry.as_ref().unwrap().pending_apply);
+    let pending = String::from_utf8(files.read(&path(id)).await.unwrap().unwrap())
+        .unwrap()
+        .replace("no_tun = true", "no_tun = true\nmtu = 1337");
+    let pending = format!("{pending}\n[source]\nsource = 'web'\n");
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), pending.clone().into_bytes());
+    let current = observe(&rpc).await.entries.remove(0);
+    let running = manager.instance(id).unwrap();
+    let writes = files.writes.load(Ordering::Acquire);
+    let stale = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        apply_persisted(id, saved.entry.unwrap().revision),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stale.status, PersistedConfigMutationStatus::Conflict as i32);
+    assert!(Arc::ptr_eq(&running, &manager.instance(id).unwrap()));
+    let result = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        apply_persisted(id, current.revision.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
+    let applied = result.entry.unwrap();
+    assert!(!applied.pending_apply);
+    assert_ne!(applied.revision, current.revision);
+    assert!(!Arc::ptr_eq(&running, &manager.instance(id).unwrap()));
+    assert_eq!(manager.config(id).unwrap().get_hostname(), "pending");
+    assert_eq!(manager.config(id).unwrap().get_flags().mtu, 1337);
+    assert_eq!(manager.config_source(id), Some(ConfigSource::Web));
+    assert_eq!(files.writes.load(Ordering::Acquire), writes);
+    assert_eq!(
+        files.read(&path(id)).await.unwrap().unwrap(),
+        pending.as_bytes()
+    );
+    assert!(pending.contains("# keep this comment"));
+    assert!(pending.contains("unmodeled = 'keep'"));
+    let implicit_user = pending.replace("\n[source]\nsource = 'web'\n", "");
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), implicit_user.clone().into_bytes());
+    let user_pending = observe(&rpc).await.entries.remove(0);
+    assert!(user_pending.pending_apply);
+    let result = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        apply_persisted(id, user_pending.revision),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
+    assert!(!result.entry.unwrap().pending_apply);
+    assert_eq!(manager.config_source(id), Some(ConfigSource::User));
+    assert_eq!(files.writes.load(Ordering::Acquire), writes);
+    assert_eq!(
+        files.read(&path(id)).await.unwrap().unwrap(),
+        implicit_user.as_bytes()
+    );
+    manager.delete_network_instances([id]).await.unwrap();
+}
+
+#[tokio::test]
+async fn empty_mask_only_applies_existing_configs_and_never_enables_stopped_instances() {
+    let (manager, files, rpc) = fixture();
+    let id = uuid::Uuid::new_v4();
+    let raw = initial(id, "stopped").into_bytes();
+    files.files.lock().unwrap().insert(path(id), raw.clone());
+    WebClientService::set_network_instance_enabled(
+        &rpc,
+        BaseController::default(),
+        SetNetworkInstanceEnabledRequest {
+            inst_id: Some(id.into()),
+            enabled: false,
+            expected_revision: None,
+        },
+    )
+    .await
+    .unwrap();
+    let before = observe(&rpc).await;
+    let base_request = apply_persisted(id, before.entries[0].revision.clone());
+    let result =
+        PersistedConfigService::patch_config(&rpc, BaseController::default(), base_request.clone())
+            .await
+            .unwrap();
+    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
+    assert_eq!(result.entry.as_ref(), before.entries.first());
+    let mut persist_only = base_request.clone();
+    persist_only.apply_mode = PersistedConfigApplyMode::PersistOnly as i32;
+    let mut unmasked_edits = base_request;
+    unmasked_edits.config.as_mut().unwrap().hostname = Some("ignored-edit".into());
+    for request in [
+        persist_only,
+        unmasked_edits,
+        apply_persisted(uuid::Uuid::new_v4(), String::new()),
+    ] {
+        let rejected =
+            PersistedConfigService::patch_config(&rpc, BaseController::default(), request)
+                .await
+                .unwrap();
+        assert_eq!(
+            rejected.status,
+            PersistedConfigMutationStatus::Invalid as i32
+        );
+    }
+    assert_eq!(observe(&rpc).await, before);
+    assert!(manager.instance_ids().is_empty());
+    assert_eq!(files.files.lock().unwrap().len(), 1);
+    assert_eq!(files.read(&path(id)).await.unwrap().unwrap(), raw);
+    assert_eq!(files.writes.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn failed_apply_only_restores_active_config_and_keeps_pending_file_untouched() {
+    use easytier_core::management::InstanceMutationHooks;
+    struct FailAfterRun;
+    #[async_trait::async_trait]
+    impl InstanceMutationHooks for FailAfterRun {
+        async fn post_run_network_instance(&self, _: &uuid::Uuid) -> Result<(), String> {
+            Err("host start failed".into())
+        }
+    }
+    let (manager, files, first) = fixture();
+    let id = uuid::Uuid::new_v4();
+    let original = initial(id, "active").replace("netns = 'keep-netns'\n", "");
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), original.clone().into_bytes());
+    start_saved_instance(&manager, &first, id).await;
+    let pending = original.replace("hostname = 'active'", "hostname = 'pending'");
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), pending.clone().into_bytes());
+    let before = observe(&first).await.entries.remove(0);
+    assert!(before.pending_apply);
+    let applying = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(FailAfterRun),
+        files.clone(),
+        Arc::new(InstanceStateStore::in_memory()),
+    );
+    let result = PersistedConfigService::patch_config(
+        &applying,
+        BaseController::default(),
+        apply_persisted(id, before.revision),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result.status,
+        PersistedConfigMutationStatus::ApplyFailed as i32
+    );
+    let entry = result.entry.unwrap();
+    assert!(entry.pending_apply && entry.running && entry.enabled);
+    assert_eq!(manager.config(id).unwrap().get_hostname(), "active");
+    assert_eq!(
+        files.read(&path(id)).await.unwrap().unwrap(),
+        pending.as_bytes()
+    );
+    assert_eq!(files.writes.load(Ordering::Acquire), 0);
     manager.delete_network_instances([id]).await.unwrap();
 }
 
@@ -874,6 +1140,344 @@ async fn duplicate_identities_are_hidden_and_cannot_be_written_by_legacy_clients
         raw.as_bytes()
     );
     assert!(manager.instance_ids().is_empty());
+}
+
+#[tokio::test]
+async fn legacy_lifecycle_preserves_ambiguous_ids_and_completes_other_batch_members() {
+    for running in [false, true] {
+        let (manager, files, rpc) = fixture();
+        let id = uuid::Uuid::new_v4();
+        let alias = uuid::Uuid::new_v4();
+        let deleted = uuid::Uuid::new_v4();
+        let removed = uuid::Uuid::new_v4();
+        let raw = initial(id, "base").replace("netns = 'keep-netns'\n", "");
+        files
+            .files
+            .lock()
+            .unwrap()
+            .insert(path(id), raw.clone().into_bytes());
+        if running {
+            start_saved_instance(&manager, &rpc, id).await;
+        } else {
+            WebClientService::set_network_instance_enabled(
+                &rpc,
+                BaseController::default(),
+                SetNetworkInstanceEnabledRequest {
+                    inst_id: Some(id.into()),
+                    enabled: false,
+                    expected_revision: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let instance = manager.instance(id);
+        {
+            let mut contents = files.files.lock().unwrap();
+            contents.insert(path(alias), raw.clone().into_bytes());
+            contents.insert(path(deleted), initial(deleted, "delete-me").into_bytes());
+            contents.insert(path(removed), initial(removed, "remove-me").into_bytes());
+        }
+        for enabled in [true, false] {
+            let error = WebClientService::set_network_instance_enabled(
+                &rpc,
+                BaseController::default(),
+                SetNetworkInstanceEnabledRequest {
+                    inst_id: Some(id.into()),
+                    enabled,
+                    expected_revision: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("configuration identity is ambiguous")
+            );
+        }
+        let result = WebClientService::delete_network_instance(
+            &rpc,
+            BaseController::default(),
+            DeleteNetworkInstanceRequest {
+                inst_ids: vec![id.into(), deleted.into()],
+                expected_revision: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.remain_inst_ids, vec![id.into()]);
+        assert!(files.read(&path(deleted)).await.unwrap().is_none());
+        let result = WebClientService::remove_network_instance_config(
+            &rpc,
+            BaseController::default(),
+            RemoveNetworkInstanceConfigRequest {
+                inst_ids: vec![id.into(), removed.into()],
+                expected_revision: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.remain_inst_ids, vec![id.into()]);
+        assert!(files.read(&path(removed)).await.unwrap().is_none());
+        assert_eq!(
+            files.read(&path(id)).await.unwrap().unwrap(),
+            raw.as_bytes()
+        );
+        assert_eq!(
+            files.read(&path(alias)).await.unwrap().unwrap(),
+            raw.as_bytes()
+        );
+        assert!(
+            observe(&rpc)
+                .await
+                .entries
+                .iter()
+                .all(|entry| { entry.status == "identity_conflict" && entry.enabled == running })
+        );
+        if let Some(instance) = instance {
+            assert!(Arc::ptr_eq(&instance, &manager.instance(id).unwrap()));
+            manager.delete_network_instances([id]).await.unwrap();
+        } else {
+            assert!(manager.instance_ids().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn legacy_lifecycle_rechecks_duplicates_created_during_hooks_and_config_loading() {
+    use easytier_core::management::InstanceMutationHooks;
+    struct DuplicateOnHook {
+        files: Arc<MemoryFiles>,
+        alias: PathBuf,
+        on_start: bool,
+    }
+    impl DuplicateOnHook {
+        fn duplicate(&self, id: uuid::Uuid) {
+            let mut files = self.files.files.lock().unwrap();
+            let contents = files.get(&path(id)).unwrap().clone();
+            files.insert(self.alias.clone(), contents);
+        }
+    }
+    #[async_trait::async_trait]
+    impl InstanceMutationHooks for DuplicateOnHook {
+        async fn pre_run_network_instance(&self, config: &TomlConfigLoader) -> Result<(), String> {
+            if self.on_start {
+                self.duplicate(config.get_id());
+            }
+            Ok(())
+        }
+        async fn post_stop_network_instances(&self, ids: &[uuid::Uuid]) -> Result<(), String> {
+            if !self.on_start {
+                for id in ids {
+                    self.duplicate(*id);
+                }
+            }
+            Ok(())
+        }
+    }
+    for operation in [
+        "enable",
+        "delete",
+        "remove",
+        "disable-on-load",
+        "delete-on-load",
+    ] {
+        let (manager, files, first) = fixture();
+        let id = uuid::Uuid::new_v4();
+        let alias = path(uuid::Uuid::new_v4());
+        let raw = initial(id, "base").replace("netns = 'keep-netns'\n", "");
+        files
+            .files
+            .lock()
+            .unwrap()
+            .insert(path(id), raw.clone().into_bytes());
+        if matches!(operation, "delete" | "disable-on-load" | "delete-on-load") {
+            start_saved_instance(&manager, &first, id).await;
+        }
+        let active_before = manager.instance(id);
+        let guarded = ProcessManagementRpc::new(
+            manager.clone(),
+            Arc::new(DuplicateOnHook {
+                files: files.clone(),
+                alias: alias.clone(),
+                on_start: operation == "enable",
+            }),
+            files.clone(),
+            Arc::new(InstanceStateStore::in_memory()),
+        );
+        match operation {
+            "enable" => {
+                let error = WebClientService::set_network_instance_enabled(
+                    &guarded,
+                    BaseController::default(),
+                    SetNetworkInstanceEnabledRequest {
+                        inst_id: Some(id.into()),
+                        enabled: true,
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("configuration identity is ambiguous")
+                );
+            }
+            "delete" => {
+                let result = WebClientService::delete_network_instance(
+                    &guarded,
+                    BaseController::default(),
+                    DeleteNetworkInstanceRequest {
+                        inst_ids: vec![id.into()],
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.remain_inst_ids, vec![id.into()]);
+            }
+            "remove" => {
+                *files.duplicate_on_load.lock().unwrap() = Some(alias.clone());
+                let result = WebClientService::remove_network_instance_config(
+                    &guarded,
+                    BaseController::default(),
+                    RemoveNetworkInstanceConfigRequest {
+                        inst_ids: vec![id.into()],
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.remain_inst_ids, vec![id.into()]);
+            }
+            "disable-on-load" => {
+                *files.duplicate_on_load.lock().unwrap() = Some(alias.clone());
+                let error = WebClientService::set_network_instance_enabled(
+                    &guarded,
+                    BaseController::default(),
+                    SetNetworkInstanceEnabledRequest {
+                        inst_id: Some(id.into()),
+                        enabled: false,
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("configuration identity is ambiguous")
+                );
+            }
+            "delete-on-load" => {
+                *files.duplicate_on_load.lock().unwrap() = Some(alias.clone());
+                let result = WebClientService::delete_network_instance(
+                    &guarded,
+                    BaseController::default(),
+                    DeleteNetworkInstanceRequest {
+                        inst_ids: vec![id.into()],
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.remain_inst_ids, vec![id.into()]);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            files.read(&path(id)).await.unwrap().unwrap(),
+            raw.as_bytes()
+        );
+        assert_eq!(files.read(&alias).await.unwrap().unwrap(), raw.as_bytes());
+        if matches!(operation, "disable-on-load" | "delete-on-load") {
+            assert!(Arc::ptr_eq(
+                &active_before.unwrap(),
+                &manager.instance(id).unwrap()
+            ));
+            assert!(
+                observe(&first)
+                    .await
+                    .entries
+                    .iter()
+                    .all(|entry| entry.enabled)
+            );
+            manager.delete_network_instances([id]).await.unwrap();
+        } else {
+            assert!(manager.instance(id).is_none());
+        }
+        assert_eq!(files.writes.load(Ordering::Acquire), 0);
+    }
+}
+
+#[tokio::test]
+async fn apply_capability_requires_observation_and_legacy_runtime_without_directory_still_works() {
+    use easytier_core::management::UnsupportedConfigFileStorage;
+    for directory in [None, Some(PathBuf::from("virtual-configs"))] {
+        let manager = Arc::new(native_instance_manager_with_config_dir(directory.clone()));
+        let storage: Arc<dyn ConfigFileStorage> = if directory.is_none() {
+            Arc::new(MemoryFiles::default())
+        } else {
+            Arc::new(UnsupportedConfigFileStorage)
+        };
+        let rpc = ProcessManagementRpc::new(
+            manager.clone(),
+            Arc::new(DefaultHooks),
+            storage,
+            Arc::new(InstanceStateStore::in_memory()),
+        );
+        assert!(!manager.management_capabilities().iter().any(|cap| {
+            cap == "management:persisted-config-apply-v1"
+                || cap == "management:persisted-config-revision-v1"
+        }));
+        if directory.is_some() {
+            continue;
+        }
+        let id = uuid::Uuid::new_v4();
+        let config = TomlConfigLoader::new_from_str(
+            &initial(id, "legacy-managed").replace("netns = 'keep-netns'\n", ""),
+        )
+        .unwrap();
+        WebClientService::run_network_instance(
+            &rpc,
+            BaseController::default(),
+            RunNetworkInstanceRequest {
+                inst_id: Some(id.into()),
+                config: Some(easytier_core::config::api::network_config_from_toml(
+                    &config,
+                )),
+                overwrite: true,
+                source: 0,
+            },
+        )
+        .await
+        .unwrap();
+        WebClientService::set_network_instance_enabled(
+            &rpc,
+            BaseController::default(),
+            SetNetworkInstanceEnabledRequest {
+                inst_id: Some(id.into()),
+                enabled: false,
+                expected_revision: None,
+            },
+        )
+        .await
+        .unwrap();
+        let removed = WebClientService::delete_network_instance(
+            &rpc,
+            BaseController::default(),
+            DeleteNetworkInstanceRequest {
+                inst_ids: vec![id.into()],
+                expected_revision: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(removed.remain_inst_ids.is_empty());
+        assert!(manager.instance_ids().is_empty());
+    }
 }
 
 #[tokio::test]

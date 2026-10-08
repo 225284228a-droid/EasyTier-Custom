@@ -4,7 +4,7 @@ use easytier::proto::{
     api::manage::{
         DeleteNetworkInstanceRequest, ListNetworkInstanceRequest, ObserveConfigsRequest,
         ObserveConfigsResponse, PatchPersistedConfigRequest, PatchPersistedConfigResponse,
-        PersistedConfigService, PersistedConfigServiceClientFactory,
+        PersistedConfigApplyMode, PersistedConfigService, PersistedConfigServiceClientFactory,
         SetNetworkInstanceEnabledRequest, WebClientService, WebClientServiceClientFactory,
     },
     rpc_types::controller::BaseController,
@@ -43,12 +43,7 @@ pub(crate) async fn patch_local_config(
         .await
         .map_err(|error| error.to_string())?
         .runtime_capabilities;
-    if !capabilities
-        .iter()
-        .any(|cap| cap == "management:persisted-config-revision-v1")
-    {
-        return Err("local_config_revision_unsupported".into());
-    }
+    validate_patch_capabilities(&request, &capabilities)?;
     let client = manager
         .rpc_manager
         .rpc_client()
@@ -62,6 +57,27 @@ pub(crate) async fn patch_local_config(
     .await
     .map_err(|_| "local_config_outcome_unknown".to_owned())?
     .map_err(|error| error.to_string())
+}
+
+fn validate_patch_capabilities(
+    request: &PatchPersistedConfigRequest,
+    capabilities: &[String],
+) -> Result<(), String> {
+    if !capabilities
+        .iter()
+        .any(|cap| cap == "management:persisted-config-revision-v1")
+    {
+        return Err("local_config_revision_unsupported".into());
+    }
+    if request.field_mask.is_empty()
+        && request.apply_mode == PersistedConfigApplyMode::SaveAndApply as i32
+        && !capabilities
+            .iter()
+            .any(|cap| cap == "management:persisted-config-apply-v1")
+    {
+        return Err("local_config_apply_unsupported".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -140,4 +156,35 @@ async fn lifecycle(
     .await
     .map_err(|_| "local_config_outcome_unknown".to_owned())?
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_only_requires_its_capability_without_blocking_existing_patches() {
+        let old_capabilities = vec!["management:persisted-config-revision-v1".into()];
+        let mut request = PatchPersistedConfigRequest {
+            config: Some(Default::default()),
+            apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_patch_capabilities(&request, &old_capabilities),
+            Err("local_config_apply_unsupported".into())
+        );
+        let mut new_capabilities = old_capabilities.clone();
+        new_capabilities.push("management:persisted-config-apply-v1".into());
+        assert!(validate_patch_capabilities(&request, &new_capabilities).is_ok());
+        request.field_mask = vec!["hostname".into()];
+        assert!(validate_patch_capabilities(&request, &old_capabilities).is_ok());
+        request.field_mask.clear();
+        request.apply_mode = PersistedConfigApplyMode::PersistOnly as i32;
+        assert!(validate_patch_capabilities(&request, &old_capabilities).is_ok());
+        assert_eq!(
+            validate_patch_capabilities(&request, &[]),
+            Err("local_config_revision_unsupported".into())
+        );
+    }
 }

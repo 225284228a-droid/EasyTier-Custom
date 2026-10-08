@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, nextTick } from 'vue'
 import RemoteManagement from '../src/components/RemoteManagement.vue'
+import { LOCAL_CONFIG_APPLY_CAPABILITY } from '../src/modules/capabilities'
 import {
   DEFAULT_NETWORK_CONFIG,
   type NetworkConfig,
@@ -104,6 +105,7 @@ vi.mock('primevue', async () => {
 
   const MenuStub = defineComponent({
     name: 'Menu',
+    props: ['model'],
     setup(_, { expose }) {
       expose({ toggle: vi.fn() })
       return () => h('div', { 'data-stub': 'menu' })
@@ -333,7 +335,7 @@ describe('RemoteManagement config save', () => {
 })
 
 const RevisionConfigForm = defineComponent({
-  name: 'Config', props: ['curNetwork'], emits: ['runNetwork'], template: '<div class="revision-config-form" />',
+  name: 'Config', props: ['curNetwork', 'actionLabel', 'configInvalid'], emits: ['runNetwork'], template: '<div class="revision-config-form" />',
 })
 function revisionApi() {
   const config = { ...DEFAULT_NETWORK_CONFIG(), instance_id: INSTANCE_ID, hostname: 'original-host' }
@@ -367,7 +369,140 @@ async function openRevision(api: any, instanceId: string | undefined = INSTANCE_
   return wrapper
 }
 
+function runningRevision(pendingApply = false, applySupported = true) {
+  const state = revisionApi()
+  Object.assign(state.entry, { enabled: true, running: true, pending_apply: pendingApply })
+  if (applySupported) state.snapshot.capabilities.push(LOCAL_CONFIG_APPLY_CAPABILITY)
+  state.api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [],
+    runtime_capabilities: state.snapshot.capabilities })
+  state.api.get_network_info.mockResolvedValue({ running: true })
+  return state
+}
+
+async function editRunning(wrapper: Awaited<ReturnType<typeof openRevision>>) {
+  const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
+  await actions[0].command()
+  await flushPromises()
+  return wrapper.findComponent(RevisionConfigForm)
+}
+
 describe('revision-aware RemoteManagement forms', () => {
+  it('applies persisted changes after a running configuration is saved without further edits', async () => {
+    const { api, entry } = runningRevision()
+    api.patch_local_config.mockImplementation(async (...args: any[]) => {
+      const request = args[0]
+      Object.assign(entry.config, request.config)
+      entry.pending_apply = request.apply_mode === 1
+      entry.revision = entry.pending_apply ? 'saved-revision' : 'applied-revision'
+      return { status: 0, entry: { ...entry } }
+    })
+    const wrapper = await openRevision(api)
+    try {
+      const form = await editRunning(wrapper)
+      form.props('curNetwork').hostname = 'persisted-host'
+      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
+      await flushPromises()
+      expect(entry.pending_apply).toBe(true)
+      expect(form.props('actionLabel')).toBe('web.local_configs.apply_saved')
+      expect(wrapper.text()).toContain('web.local_configs.pending_apply')
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[1][0]).toEqual({ inst_id: INSTANCE_ID, expected_revision: 'saved-revision',
+        config: {}, field_mask: [], apply_mode: 0 })
+      expect(entry.pending_apply).toBe(false)
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
+      expect(api.run_network).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('applies the persisted revision after reopening the editor and observing a manual disk edit', async () => {
+    const { api, entry } = runningRevision(true)
+    const first = await openRevision(api)
+    await editRunning(first)
+    first.unmount()
+    vi.useRealTimers()
+    entry.config.hostname = 'manually-edited-on-disk'
+    entry.revision = 'disk-revision'
+    const wrapper = await openRevision(api)
+    try {
+      const form = await editRunning(wrapper)
+      expect(form.props('curNetwork').hostname).toBe('manually-edited-on-disk')
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[0][0]).toEqual({ inst_id: INSTANCE_ID, expected_revision: 'disk-revision',
+        config: {}, field_mask: [], apply_mode: 0 })
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('keeps pending changes visible and asks to upgrade an older revision-capable node', async () => {
+    const { api } = runningRevision(true, false)
+    const wrapper = await openRevision(api)
+    try {
+      const form = await editRunning(wrapper)
+      toastSpy.add.mockClear()
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config).not.toHaveBeenCalled()
+      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(true)
+      expect(wrapper.text()).toContain('web.local_configs.apply_unsupported')
+      expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error',
+        detail: expect.stringContaining('web.local_configs.apply_unsupported') }))
+      expect(wrapper.emitted('update')).toBeUndefined()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it.each([{ status: 1, message: 'revision conflict' }, { status: 5, message: 'apply failed' }])(
+    'retains the pending revision and form after an apply failure: $message', async failure => {
+      const { api } = runningRevision(true)
+      api.patch_local_config.mockResolvedValue(failure)
+      const wrapper = await openRevision(api)
+      try {
+        const form = await editRunning(wrapper)
+        form.vm.$emit('runNetwork')
+        await flushPromises()
+        await vi.advanceTimersByTimeAsync(1_000)
+        expect(api.patch_local_config).toHaveBeenCalledTimes(1)
+        expect(api.patch_local_config.mock.calls[0][0].expected_revision).toBe('revision-a')
+        expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(true)
+        expect(wrapper.text()).toContain('web.local_configs.pending_apply')
+        expect(wrapper.emitted('update')).toBeUndefined()
+      } finally { wrapper.unmount(); vi.useRealTimers() }
+    },
+  )
+
+  it('ignores an outstanding apply response after the management connection changes', async () => {
+    const { api, entry } = runningRevision(true)
+    let resolve!: (result: any) => void
+    api.patch_local_config.mockImplementation(() => new Promise(done => { resolve = done }))
+    const wrapper = await openRevision(api)
+    try {
+      const form = await editRunning(wrapper)
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(form.props('configInvalid')).toBe(true)
+      const next = runningRevision()
+      next.api.scope = 'connection-b'
+      await wrapper.setProps({ api: next.api })
+      resolve({ status: 0, entry: { ...entry, pending_apply: false, revision: 'late-revision' } })
+      await flushPromises()
+      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('web.local_configs.pending_apply')
+      expect(wrapper.emitted('update')).toBeUndefined()
+      expect(next.api.patch_local_config).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('starts an unchanged disabled configuration through the existing lifecycle CAS', async () => {
+    const { api } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      wrapper.findComponent(RevisionConfigForm).vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config).not.toHaveBeenCalled()
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-a')
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
   it('shows GUI conflict messages on save-and-start and retains the dirty form and revision', async () => {
     const { api } = revisionApi()
     const wrapper = await openRevision(api)

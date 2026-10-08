@@ -295,20 +295,29 @@ where
     /// including legacy clients that cannot supply a revision. The caller
     /// already owns the process coordinator; do not acquire it again here.
     #[cfg(feature = "management")]
-    async fn ensure_catalog_identity_locked(&self, instance_id: uuid::Uuid) -> anyhow::Result<()> {
+    async fn ambiguous_catalog_ids_locked(&self) -> anyhow::Result<HashSet<uuid::Uuid>> {
         if self.instances.config_dir().is_none() || !self.storage.supports_catalog() {
-            return Ok(());
+            return Ok(HashSet::new());
         }
         let snapshot = self.refresh_local_configs_locked().await?;
-        let entries = snapshot
-            .entries
-            .iter()
-            .filter(|entry| entry.inst_id.map(uuid::Uuid::from) == Some(instance_id))
-            .collect::<Vec<_>>();
-        if entries.len() > 1
-            || entries
-                .first()
-                .is_some_and(|entry| entry.status == "identity_conflict")
+        let mut seen = HashSet::new();
+        let mut ambiguous = HashSet::new();
+        for entry in snapshot.entries {
+            if let Some(instance_id) = entry.inst_id.map(uuid::Uuid::from)
+                && (!seen.insert(instance_id) || entry.status == "identity_conflict")
+            {
+                ambiguous.insert(instance_id);
+            }
+        }
+        Ok(ambiguous)
+    }
+
+    #[cfg(feature = "management")]
+    async fn ensure_catalog_identity_locked(&self, instance_id: uuid::Uuid) -> anyhow::Result<()> {
+        if self
+            .ambiguous_catalog_ids_locked()
+            .await?
+            .contains(&instance_id)
         {
             anyhow::bail!("configuration identity is ambiguous");
         }
@@ -387,6 +396,7 @@ where
         &self,
         ids: &[uuid::Uuid],
         require_known_instances: bool,
+        check_catalog_identity: bool,
     ) -> anyhow::Result<()> {
         // Validate every recoverable config before stopping any existing
         // network. Instances without persistent configuration (e.g. started
@@ -411,6 +421,15 @@ where
                 }
             }
         }
+        #[cfg(feature = "management")]
+        if check_catalog_identity {
+            let ambiguous = self.ambiguous_catalog_ids_locked().await?;
+            if ids.iter().any(|id| ambiguous.contains(id)) {
+                anyhow::bail!("configuration identity is ambiguous");
+            }
+        }
+        #[cfg(not(feature = "management"))]
+        let _ = check_catalog_identity;
         for (id, control) in controls {
             self.instances.register_managed_config(id, control)?;
         }
@@ -466,7 +485,7 @@ where
                 "instance name {instance_name} is already used by a running instance; change the network name or stop that instance first"
             );
         }
-        self.stop_instances_locked(&ids, true).await
+        self.stop_instances_locked(&ids, true, false).await
     }
 
     async fn is_remote_removable(&self, control: &ConfigFileControl) -> bool {
@@ -623,6 +642,7 @@ where
             overwrite,
             requested_source,
             None,
+            false,
             None,
         )
         .await
@@ -635,6 +655,7 @@ where
         overwrite: bool,
         requested_source: Option<ConfigSource>,
         persisted_contents: Option<&[u8]>,
+        apply_only: bool,
         expected_revision: Option<&str>,
     ) -> anyhow::Result<uuid::Uuid> {
         let remote_managed = self.hooks.manages_remote_config_instances();
@@ -656,7 +677,9 @@ where
             }
             self.ensure_overwritable(instance_id, &control, remote_managed)
                 .await?;
-            config.set_network_config_source(requested_source.or(existing_source));
+            if !apply_only {
+                config.set_network_config_source(requested_source.or(existing_source));
+            }
             replacing = true;
             restore_instance = self
                 .instances
@@ -666,16 +689,22 @@ where
         } else if let Some(control) = self.instances.managed_config_control(instance_id) {
             self.ensure_overwritable(instance_id, &control, remote_managed)
                 .await?;
-            config.set_network_config_source(requested_source);
+            if !apply_only {
+                config.set_network_config_source(requested_source);
+            }
             control
         } else if let Some(config_dir) = self.instances.config_dir() {
-            config.set_network_config_source(requested_source);
+            if !apply_only {
+                config.set_network_config_source(requested_source);
+            }
             ConfigFileControl::new(
                 Some(config_dir.join(format!("{instance_id}.toml"))),
                 ConfigFilePermission::default(),
             )
         } else {
-            config.set_network_config_source(requested_source);
+            if !apply_only {
+                config.set_network_config_source(requested_source);
+            }
             ConfigFileControl::new(None, ConfigFilePermission::default())
         };
 
@@ -756,6 +785,7 @@ where
             if let Some(contents) = persisted_contents {
                 written = contents.to_vec();
             }
+            let unchanged = matches!(&original, Ok(Some(contents)) if contents == &written);
             let cleanup = match original {
                 Ok(Some(contents)) => Some(ConfigFileCleanup::Restore {
                     path: path.to_owned(),
@@ -776,16 +806,21 @@ where
                     ));
                 }
             };
-            if let Err(error) = self.storage.write(path, &written).await {
-                if !replacing {
-                    self.restore_enabled_state(instance_id, previous_enabled)?;
+            if apply_only && !unchanged {
+                anyhow::bail!("local_config_revision_conflict");
+            }
+            if !apply_only {
+                if let Err(error) = self.storage.write(path, &written).await {
+                    if !replacing {
+                        self.restore_enabled_state(instance_id, previous_enabled)?;
+                    }
+                    return Err(anyhow::anyhow!(
+                        "failed to write config file {}: {error}",
+                        path.display()
+                    ));
+                } else {
+                    file_cleanup = cleanup;
                 }
-                return Err(anyhow::anyhow!(
-                    "failed to write config file {}: {error}",
-                    path.display()
-                ));
-            } else {
-                file_cleanup = cleanup;
             }
         }
 
@@ -956,9 +991,15 @@ where
         } else {
             None
         };
+        #[cfg(feature = "management")]
+        let ambiguous = self.ambiguous_catalog_ids_locked().await?;
         let requested = requested.into_iter().collect::<HashSet<_>>();
         let mut removed = Vec::new();
         for instance_id in &requested {
+            #[cfg(feature = "management")]
+            if ambiguous.contains(instance_id) {
+                continue;
+            }
             let active = self.instances.config_control(*instance_id);
             if self.instances.instance(*instance_id).is_some() && active.is_none() {
                 continue;
@@ -986,6 +1027,11 @@ where
                 .as_ref()
                 .and_then(|(_, control)| control.path.clone())
                 .or_else(|| active.as_ref().and_then(|control| control.path.clone()));
+            #[cfg(feature = "management")]
+            if let Err(error) = self.ensure_catalog_identity_locked(*instance_id).await {
+                tracing::warn!(%error, %instance_id, "preserving instance with uncertain identity before deletion");
+                continue;
+            }
             let was_running = self.instances.instance(*instance_id).is_some();
             if was_running {
                 if let Err(error) = self.state_store.set_enabled(*instance_id, false) {
@@ -1013,6 +1059,11 @@ where
                 #[cfg(feature = "management")]
                 if let Some(expected) = &expected_file {
                     self.verify_lifecycle_file_locked(&path, expected).await?;
+                }
+                #[cfg(feature = "management")]
+                if let Err(error) = self.ensure_catalog_identity_locked(*instance_id).await {
+                    tracing::warn!(%error, %instance_id, "preserving config with uncertain identity during deletion");
+                    continue;
                 }
                 let current = self.storage.inspect(&path).await;
                 if current.is_read_only() || !current.is_deletable() {
@@ -1154,6 +1205,8 @@ where
         let expected_file = self
             .capture_local_revision_locked(instance_id, expected_revision.as_deref())
             .await?;
+        #[cfg(feature = "management")]
+        self.ensure_catalog_identity_locked(instance_id).await?;
         self.ensure_config_identity(instance_id)?;
         if enabled {
             if self.instances.instance(instance_id).is_some() {
@@ -1188,6 +1241,8 @@ where
                     .ok_or_else(|| anyhow::anyhow!("local_config_revision_conflict"))?;
                 self.verify_lifecycle_file_locked(path, expected).await?;
             }
+            #[cfg(feature = "management")]
+            self.ensure_catalog_identity_locked(instance_id).await?;
             self.instances
                 .register_managed_config(instance_id, control.clone())?;
             self.instances.run_network_instance(config, control)?;
@@ -1199,7 +1254,9 @@ where
                 anyhow::bail!("post-run hook failed: {error}");
             }
         } else {
-            return self.stop_instances_locked(&[instance_id], false).await;
+            return self
+                .stop_instances_locked(&[instance_id], false, true)
+                .await;
         }
         if let Err(error) = self.state_store.set_enabled(instance_id, enabled) {
             self.instances
@@ -1242,8 +1299,14 @@ where
         } else {
             None
         };
+        #[cfg(feature = "management")]
+        let ambiguous = self.ambiguous_catalog_ids_locked().await?;
         let mut removed = Vec::new();
         for instance_id in requested {
+            #[cfg(feature = "management")]
+            if ambiguous.contains(instance_id) {
+                continue;
+            }
             if self.instances.config_dir().is_none() {
                 continue;
             }
@@ -1269,6 +1332,11 @@ where
                 #[cfg(feature = "management")]
                 if let Some(expected) = &expected_file {
                     self.verify_lifecycle_file_locked(&path, expected).await?;
+                }
+                #[cfg(feature = "management")]
+                if let Err(error) = self.ensure_catalog_identity_locked(*instance_id).await {
+                    tracing::warn!(%error, %instance_id, "preserving config with uncertain identity during removal");
+                    continue;
                 }
                 match self.storage.remove(&path).await {
                     Ok(()) => {}

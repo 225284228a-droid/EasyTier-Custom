@@ -650,6 +650,9 @@ class WebRemoteClient implements Api.RemoteClient {
     }
     async patch_local_config(request: LocalConfigs.LocalConfigPatchRequest): Promise<LocalConfigs.LocalConfigSnapshot | LocalConfigs.LocalConfigPatchResult> {
         this.ensureScope();
+        if (!request.field_mask.length && request.apply_mode === LocalConfigs.LocalConfigApplyMode.SaveAndApply) {
+            Capabilities.assertLocalConfigApplyCapability(this.capabilities ?? []);
+        }
         Capabilities.assertPatchCapabilities(request.config, request.field_mask, this.capabilities ?? []);
         return await this.client.post(`/machines/${this.machine_id}/local-configs/patch`, { ...request, inst_id: Utils.StrToUuid(request.inst_id) });
     }

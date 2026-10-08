@@ -115,6 +115,9 @@ export class GUIRemoteClient implements Api.RemoteClient {
     async patch_local_config(request: LocalConfigs.LocalConfigPatchRequest): Promise<LocalConfigs.LocalConfigPatchResult> {
         const capabilities = await this.targetCapabilities();
         if (!this.supportsRevision) throw new Error('Local configuration revisions are unsupported');
+        if (!request.field_mask.length && request.apply_mode === LocalConfigs.LocalConfigApplyMode.SaveAndApply) {
+            Capabilities.assertLocalConfigApplyCapability(capabilities);
+        }
         Capabilities.assertPatchCapabilities(request.config, request.field_mask, capabilities);
         return backend.patchLocalConfig(request);
     }

@@ -18,6 +18,7 @@ use std::{
 };
 
 use anyhow::{Context, ensure};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use easytier_core::{
     config::toml::TomlConfig, process_runtime::CoreProcessRuntime,
     rpc::bidirect::BidirectRpcManager, socket::SocketListener,
@@ -190,7 +191,12 @@ bind_device = false
     )
 }
 
-async fn peer_interop(scheme: &str, official_listens: bool, padding: &str) -> anyhow::Result<()> {
+async fn peer_interop(
+    scheme: &str,
+    official_listens: bool,
+    padding: &str,
+    secure_mode: bool,
+) -> anyhow::Result<()> {
     let binary = official_binary()?;
     let port = std::net::TcpListener::bind("127.0.0.1:0")?
         .local_addr()?
@@ -198,7 +204,7 @@ async fn peer_interop(scheme: &str, official_listens: bool, padding: &str) -> an
     let plain_url = format!("{scheme}://127.0.0.1:{port}/");
     let padded_url = format!("{plain_url}?padding={padding}");
     let name = format!("official-interop-{}", uuid::Uuid::new_v4());
-    let (custom, official) = if official_listens {
+    let (mut custom, mut official) = if official_listens {
         (
             network_config(&name, None, Some(&padded_url)),
             network_config(&name, Some(&plain_url), None),
@@ -209,6 +215,19 @@ async fn peer_interop(scheme: &str, official_listens: bool, padding: &str) -> an
             network_config(&name, None, Some(&plain_url)),
         )
     };
+    custom = custom.replace(
+        "disable_p2p = true",
+        "disable_p2p = true\nclose_redundant_conns_when_disguised = true",
+    );
+    if secure_mode {
+        for (config, key) in [(&mut custom, 1), (&mut official, 2)] {
+            *config = config.replace("enable_encryption = false", "enable_encryption = true");
+            config.push_str(&format!(
+                "\n[secure_mode]\nenabled = true\nlocal_private_key = \"{}\"\n",
+                BASE64_STANDARD.encode([key; 32]),
+            ));
+        }
+    }
     let mut instance = TestInstance::new_with_process_runtime(
         TomlConfig::new_from_str(&custom)?,
         CoreProcessRuntime::new(),
@@ -265,12 +284,23 @@ async fn peer_interop(scheme: &str, official_listens: bool, padding: &str) -> an
             stats.rx_bytes > 0 && stats.tx_bytes > 0,
             "peer connection must exchange bytes in both directions"
         );
+        ensure!(
+            !conn
+                .features
+                .iter()
+                .any(|feature| feature.starts_with("p2p-cleanup-")),
+            "official peer must remain connected without advertising custom cleanup support"
+        );
+        ensure!(
+            !secure_mode || !conn.noise_remote_static_pubkey.is_empty(),
+            "secure interoperability must exercise the Noise handshake"
+        );
         Ok(())
     }
     .await;
     instance.clear_resources().await;
     outcome.with_context(|| {
-        format!("{scheme}, official_listens={official_listens}, padding={padding}")
+        format!("{scheme}, official_listens={official_listens}, padding={padding}, secure_mode={secure_mode}")
     })
 }
 
@@ -384,7 +414,9 @@ async fn management_interop(scheme: &str) -> anyhow::Result<()> {
 async fn official_ws_peer_both_directions() {
     for padding in ["true", "50,64"] {
         for official_listens in [true, false] {
-            peer_interop("ws", official_listens, padding).await.unwrap();
+            peer_interop("ws", official_listens, padding, false)
+                .await
+                .unwrap();
         }
     }
 }
@@ -394,7 +426,19 @@ async fn official_ws_peer_both_directions() {
 async fn official_wss_peer_both_directions() {
     for padding in ["true", "50,64"] {
         for official_listens in [true, false] {
-            peer_interop("wss", official_listens, padding)
+            peer_interop("wss", official_listens, padding, false)
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires independently built upstream CLI in OFFICIAL_EASYTIER_BIN"]
+async fn official_noise_handshake_ignores_cleanup_extension() {
+    for scheme in ["ws", "wss"] {
+        for official_listens in [true, false] {
+            peer_interop(scheme, official_listens, "50,64", true)
                 .await
                 .unwrap();
         }

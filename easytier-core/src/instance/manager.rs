@@ -416,6 +416,7 @@ impl<F: InstanceFactory> InstanceManager<F> {
         #[cfg(feature = "management")]
         if self.local_config_catalog.supports_revision() {
             capabilities.push("management:persisted-config-revision-v1".into());
+            capabilities.push("management:persisted-config-apply-v1".into());
         }
         capabilities.sort();
         capabilities.dedup();

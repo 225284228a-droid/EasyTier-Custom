@@ -6,9 +6,9 @@ import * as Api from '../modules/api';
 import * as Utils from '../modules/utils';
 import * as NetworkTypes from '../types/network';
 import { type MenuItem } from 'primevue/menuitem';
-import { LOCAL_CONFIG_REVISION_CAPABILITY } from '../modules/capabilities';
+import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../modules/capabilities';
 import {
-    buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, cloneEditableConfig, localConfigEditable,
+    buildLocalConfigApplyRequest, buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, cloneEditableConfig, localConfigEditable,
     localConfigInstanceId, LocalConfigApplyMode, patchStatusName,
     type LocalConfigEntry, type LocalConfigPatchResult, type LocalConfigSnapshot,
 } from '../modules/localConfigPatch';
@@ -56,6 +56,7 @@ const isEditingNetwork = ref(false); // Flag to indicate if we're in network edi
 const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefined);
 const configBaseline = ref<NetworkTypes.NetworkConfig>();
 const editingEntry = ref<LocalConfigEntry>();
+const configSubmitting = ref(false);
 const scope = computed(() => props.scopeKey ?? props.api.scope ?? '');
 let generation = 0;
 let configRequest = 0;
@@ -80,6 +81,10 @@ const runtimeCapabilities = computed(() => listInstanceIdResponse.value?.runtime
 const revisionSupported = computed(() => !!props.api.observe_local_configs && !!props.api.patch_local_config
     && (listInstanceIdResponse.value?.support_local_config_revision === true
         || runtimeCapabilities.value.includes(LOCAL_CONFIG_REVISION_CAPABILITY)));
+const applySupported = computed(() => runtimeCapabilities.value.includes(LOCAL_CONFIG_APPLY_CAPABILITY));
+const applySavedConfig = computed(() => !!editingEntry.value?.running && editingEntry.value.pending_apply && !dirty.value);
+const configActionLabel = computed(() => applySavedConfig.value ? t('web.local_configs.apply_saved')
+    : editingEntry.value?.running ? t('web.local_configs.save_apply') : undefined);
 
 const isRunning = (instanceId: string) => {
     return (listInstanceIdResponse.value?.running_inst_ids ?? []).map(Utils.UuidToStr).includes(instanceId);
@@ -252,10 +257,14 @@ const saveEditedConfig = async (config: NetworkTypes.NetworkConfig, mode: LocalC
     }
     if (!configBaseline.value) throw new Error(t('web.local_configs.reread'));
     const fields = changedConfigFields(configBaseline.value, config);
-    if (!fields.length) return editingEntry.value;
+    const applyOnly = !fields.length && mode === LocalConfigApplyMode.SaveAndApply
+        && editingEntry.value.running && editingEntry.value.pending_apply;
+    if (!fields.length && !applyOnly) return editingEntry.value;
+    if (applyOnly && !applySupported.value) throw new Error(t('web.local_configs.apply_unsupported'));
     const context = requestContext();
     const selected = localConfigInstanceId(editingEntry.value);
-    const request = buildLocalConfigPatch(editingEntry.value, config, fields, runtimeCapabilities.value, mode);
+    const request = applyOnly ? buildLocalConfigApplyRequest(editingEntry.value, runtimeCapabilities.value)
+        : buildLocalConfigPatch(editingEntry.value, config, fields, runtimeCapabilities.value, mode);
     const response = await context.api.patch_local_config!(request);
     if (!context.current() || instanceId.value !== selected) throw new Error('Management connection changed');
     const result = response as LocalConfigPatchResult;
@@ -347,6 +356,7 @@ const confirmDeleteNetwork = (event: any) => {
 };
 
 const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
+    if (configSubmitting.value) return;
     const cfg = config ?? currentNetworkConfig.value;
     if (!cfg) {
         return;
@@ -357,8 +367,9 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         cfg.instance_id = targetInstanceId;
     }
 
+    const context = requestContext();
+    configSubmitting.value = true;
     try {
-        const context = requestContext();
         const disabled = networkIsDisabled.value;
         if (revisionSupported.value) {
             const entry = await saveEditedConfig(cfg, LocalConfigApplyMode.SaveAndApply);
@@ -380,32 +391,42 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         await loadNetworkInstanceIds();
         await loadCurrentNetworkInfo();
     } catch (e: any) {
+        if (!context.current()) return;
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to run network, error: ' + formatError(e), life: 2000 });
         return;
+    } finally {
+        if (context.current()) configSubmitting.value = false;
     }
 
+    if (!context.current()) return;
     emits('update');
     isEditingNetwork.value = false;
 }
 
 const saveNetworkConfig = async () => {
-    if (!currentNetworkConfig.value) {
+    if (!currentNetworkConfig.value || configSubmitting.value) {
         return;
     }
+    const config = currentNetworkConfig.value;
+    const context = requestContext();
+    configSubmitting.value = true;
     try {
-        if (revisionSupported.value) await saveEditedConfig(currentNetworkConfig.value, LocalConfigApplyMode.PersistOnly);
-        else await props.api.save_config(currentNetworkConfig.value);
+        if (revisionSupported.value) await saveEditedConfig(config, LocalConfigApplyMode.PersistOnly);
+        else await context.api.save_config(config);
+        if (!context.current()) return;
+
+        delete networkMetaCache.value[config.instance_id];
+        await loadNetworkMetas([config.instance_id]);
+        if (context.current()) toast.add({ severity: 'success', summary: t("web.common.success"), detail: t("web.device_management.config_saved"), life: 2000 });
     } catch (e: any) {
+        if (!context.current()) return;
         console.error(e);
         toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.save_config_failed", { error: formatError(e) }), life: 5000 });
         return;
+    } finally {
+        if (context.current()) configSubmitting.value = false;
     }
-
-    delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
-    await loadNetworkMetas([currentNetworkConfig.value.instance_id]);
-
-    toast.add({ severity: 'success', summary: t("web.common.success"), detail: t("web.device_management.config_saved"), life: 2000 });
 }
 const newNetwork = async () => {
     const newNetworkConfig = props.newConfigGenerator?.() ?? NetworkTypes.DEFAULT_NETWORK_CONFIG();
@@ -627,6 +648,7 @@ let periodFunc = new Utils.PeriodicTask(async () => {
 
 watch([() => props.api, scope], () => {
     generation++;
+    configSubmitting.value = false;
     clearConfig();
     isEditingNetwork.value = false;
     showConfigEditDialog.value = false;
@@ -721,14 +743,14 @@ onUnmounted(() => {
                 <!-- 简化的按钮区域 - 无论屏幕大小都显示 -->
                 <div class="flex gap-2 shrink-0 button-container items-center">
                     <!-- Create/Cancel button based on state -->
-                    <Button v-if="!isEditingNetwork" @click="newNetwork" icon="pi pi-plus"
+                    <Button v-if="!isEditingNetwork" @click="newNetwork" icon="pi pi-plus" :disabled="configSubmitting"
                         :label="screenWidth > 640 ? t('web.device_management.create_new') : undefined"
                         :class="['create-button', screenWidth <= 640 ? 'p-button-icon-only' : '']"
                         :style="screenWidth <= 640 ? 'width: 3rem !important; height: 3rem !important; font-size: 1.2rem' : ''"
                         :tooltip="screenWidth <= 640 ? t('web.device_management.create_network') : undefined"
                         tooltipOptions="{ position: 'bottom' }" severity="primary" />
 
-                    <Button v-else @click="cancelEditNetwork" icon="pi pi-times"
+                    <Button v-else @click="cancelEditNetwork" icon="pi pi-times" :disabled="configSubmitting"
                         :label="screenWidth > 640 ? t('web.device_management.cancel_edit') : undefined"
                         :class="['cancel-button', screenWidth <= 640 ? 'p-button-icon-only' : '']"
                         :style="screenWidth <= 640 ? 'width: 3rem !important; height: 3rem !important; font-size: 1.2rem' : ''"
@@ -757,12 +779,12 @@ onUnmounted(() => {
 
                 <div class="w-full flex gap-2 flex-wrap justify-start mb-3">
                     <Button v-if="editingEntry" @click="rereadEditingRevision" icon="pi pi-refresh"
-                        :label="t('web.local_configs.reread')" severity="secondary" outlined />
+                        :label="t('web.local_configs.reread')" severity="secondary" outlined :disabled="configSubmitting" />
                     <Button @click="showConfigEditDialog = true" icon="pi pi-file-edit"
-                        :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" />
+                        :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" :disabled="configSubmitting" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
-                        iconPos="left" severity="help" />
-                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig"
+                        iconPos="left" severity="help" :disabled="configSubmitting" />
+                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting"
                         icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
                         severity="success" />
                 </div>
@@ -770,9 +792,13 @@ onUnmounted(() => {
                 <Divider />
 
                 <Message v-if="dirty" severity="info" :closable="false" class="mb-3">{{ t('web.local_configs.dirty_preserved') }}</Message>
+                <Message v-if="editingEntry?.pending_apply" severity="warn" :closable="false" class="mb-3">
+                    {{ t('web.local_configs.pending_apply') }}
+                    <span v-if="applySavedConfig && !applySupported"> — {{ t('web.local_configs.apply_unsupported') }}</span>
+                </Message>
 
-                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig"
-                    :runtime-capabilities="runtimeCapabilities"
+                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig || configSubmitting"
+                    :runtime-capabilities="runtimeCapabilities" :action-label="configActionLabel"
                     @run-network="saveAndRunNewNetwork"></Config>
             </div>
 

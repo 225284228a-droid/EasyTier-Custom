@@ -29,6 +29,7 @@ use snow::{HandshakeState, params::NoiseParams};
 use crate::foundation::time::{Duration, timeout};
 
 use super::{
+    cleanup_policy::CleanupPolicyPair,
     peer_conn_liveness::{FEATURE as LIVENESS_ECHO_FEATURE, PeerConnLiveness},
     peer_conn_ping::PeerConnPinger,
     peer_session::{PeerSession, PeerSessionAction},
@@ -274,6 +275,9 @@ impl PeerConnCloseNotify {
 pub struct PeerConn {
     conn_id: PeerConnId,
     origin: PeerConnectionOrigin,
+    cleanup_policy: CleanupPolicyPair,
+    #[cfg(test)]
+    handshake_features_override: Option<Vec<String>>,
 
     my_peer_id: PeerId,
     peer_id_hint: Option<PeerId>,
@@ -344,6 +348,7 @@ impl PeerConn {
         origin: PeerConnectionOrigin,
     ) -> Self {
         let flags = context.flags();
+        let cleanup_policy = CleanupPolicyPair::new(&flags);
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
@@ -373,6 +378,9 @@ impl PeerConn {
         PeerConn {
             conn_id,
             origin,
+            cleanup_policy,
+            #[cfg(test)]
+            handshake_features_override: None,
 
             my_peer_id,
             peer_id_hint,
@@ -461,6 +469,27 @@ impl PeerConn {
 
     pub(crate) fn origin(&self) -> PeerConnectionOrigin {
         self.origin
+    }
+
+    pub(crate) fn cleanup_policy(&self) -> &CleanupPolicyPair {
+        &self.cleanup_policy
+    }
+
+    fn handshake_features(&self) -> Vec<String> {
+        #[cfg(test)]
+        if let Some(features) = &self.handshake_features_override {
+            return features.clone();
+        }
+        let mut features = vec![LIVENESS_ECHO_FEATURE.to_owned()];
+        if let Some(feature) = self.cleanup_policy.feature() {
+            features.push(feature);
+        }
+        features
+    }
+
+    #[cfg(test)]
+    pub(crate) fn override_handshake_features(&mut self, features: Vec<String>) {
+        self.handshake_features_override = Some(features);
     }
 
     /// Whether a verified, preferred P2P connection may replace this one.
@@ -560,7 +589,7 @@ impl PeerConn {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.handshake_features(),
             network_name: network.network_name.clone(),
             ..Default::default()
         };
@@ -831,7 +860,7 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
             client_encryption_algorithm: self.my_encrypt_algo.clone(),
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.handshake_features(),
         };
 
         let mut hs = builder
@@ -1104,7 +1133,7 @@ impl PeerConn {
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
             server_encryption_algorithm: algo,
-            features: vec![LIVENESS_ECHO_FEATURE.to_owned()],
+            features: self.handshake_features(),
         };
         self.send_noise_msg(
             msg2_pb,
@@ -1258,6 +1287,8 @@ impl PeerConn {
 
         self.liveness
             .set_remote_features(&self.info.as_ref().unwrap().features);
+        self.cleanup_policy
+            .set_remote_features(&self.info.as_ref().unwrap().features);
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
@@ -1288,6 +1319,8 @@ impl PeerConn {
         }
 
         self.liveness
+            .set_remote_features(&self.info.as_ref().unwrap().features);
+        self.cleanup_policy
             .set_remote_features(&self.info.as_ref().unwrap().features);
 
         if self.get_peer_id() == self.my_peer_id {
@@ -1571,7 +1604,181 @@ impl Drop for PeerConn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{peers::test_support::NoopPeerContext, tunnel::ring::create_ring_tunnel_pair};
+    use crate::{
+        peers::{context::PeerContext, test_support::NoopPeerContext},
+        proto::common::FlagsInConfig,
+        tunnel::ring::create_ring_tunnel_pair,
+    };
+
+    fn cleanup_handshake_context(key: u8, secure: bool, flags: FlagsInConfig) -> ArcPeerContext {
+        let mut context = NoopPeerContext::new(NetworkIdentity {
+            network_name: "cleanup-handshake".to_owned(),
+            network_secret: Some("cleanup-secret".to_owned()),
+            network_secret_digest: None,
+        })
+        .with_flags(flags);
+        if secure {
+            let private = x25519_dalek::StaticSecret::from([key; 32]);
+            let public = x25519_dalek::PublicKey::from(&private);
+            context = context.with_secure_mode(SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+                local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+            });
+        }
+        Arc::new(context)
+    }
+
+    #[tokio::test]
+    async fn ordinary_and_noise_handshakes_exchange_cleanup_snapshots() {
+        for secure in [false, true] {
+            let client_flags = FlagsInConfig {
+                default_protocol: " TCP ".to_owned(),
+                prefer_wss_http3_for_p2p: true,
+                ..Default::default()
+            };
+            let server_flags = FlagsInConfig {
+                default_protocol: "tcp".to_owned(),
+                only_use_wss_http3_for_hole_punching: true,
+                ..Default::default()
+            };
+            let client_context = cleanup_handshake_context(1, secure, client_flags.clone());
+            let server_context = cleanup_handshake_context(2, secure, server_flags.clone());
+            let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+            let mut client = PeerConn::new(
+                1,
+                client_context,
+                client_tunnel,
+                Arc::new(PeerSessionStore::new()),
+            );
+            let mut server = PeerConn::new(
+                2,
+                server_context,
+                server_tunnel,
+                Arc::new(PeerSessionStore::new()),
+            );
+            let (client_result, server_result) = tokio::join!(
+                client.do_handshake_as_client(),
+                server.do_handshake_as_server_ext(|_, _| Ok(())),
+            );
+            client_result.unwrap();
+            server_result.unwrap();
+            assert_eq!(
+                client.get_conn_info().features,
+                [LIVENESS_ECHO_FEATURE, "p2p-cleanup-v1:tcp:0:1:0"]
+            );
+            assert_eq!(
+                server.get_conn_info().features,
+                [LIVENESS_ECHO_FEATURE, "p2p-cleanup-v1:tcp:1:0:0"]
+            );
+            assert_eq!(
+                client.cleanup_policy().agreed_disguise(&client_flags),
+                Some(true)
+            );
+            assert_eq!(
+                server.cleanup_policy().agreed_disguise(&server_flags),
+                Some(true)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_cleanup_offers_do_not_reject_ordinary_or_noise_handshakes() {
+        for secure in [false, true] {
+            for client_offers in [false, true] {
+                for features in [
+                    vec![LIVENESS_ECHO_FEATURE],
+                    vec![LIVENESS_ECHO_FEATURE, "p2p-cleanup-v2:tcp:0:0:0"],
+                    vec![LIVENESS_ECHO_FEATURE, "p2p-cleanup-v1:tcp:2:0:0"],
+                    vec![
+                        LIVENESS_ECHO_FEATURE,
+                        "p2p-cleanup-v1:tcp:0:0:0",
+                        "p2p-cleanup-v1:tcp:0:0:0",
+                    ],
+                ] {
+                    let flags = FlagsInConfig {
+                        default_protocol: "tcp".to_owned(),
+                        ..Default::default()
+                    };
+                    let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+                    let mut client = PeerConn::new(
+                        1,
+                        cleanup_handshake_context(1, secure, flags.clone()),
+                        client_tunnel,
+                        Arc::new(PeerSessionStore::new()),
+                    );
+                    let mut server = PeerConn::new(
+                        2,
+                        cleanup_handshake_context(2, secure, flags.clone()),
+                        server_tunnel,
+                        Arc::new(PeerSessionStore::new()),
+                    );
+                    let features = features.into_iter().map(str::to_owned).collect::<Vec<_>>();
+                    if client_offers {
+                        client.override_handshake_features(features.clone());
+                    } else {
+                        server.override_handshake_features(features.clone());
+                    }
+                    let (client_result, server_result) = tokio::join!(
+                        client.do_handshake_as_client(),
+                        server.do_handshake_as_server_ext(|_, _| Ok(())),
+                    );
+                    client_result.unwrap();
+                    server_result.unwrap();
+                    let recipient = if client_offers { &server } else { &client };
+                    assert_eq!(recipient.get_conn_info().features, features);
+                    assert_eq!(recipient.cleanup_policy().agreed_disguise(&flags), None);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_offer_does_not_follow_flags_changed_after_connection_creation() {
+        struct MutableContext(std::sync::Mutex<FlagsInConfig>);
+        impl PeerContext for MutableContext {
+            fn network_identity(&self) -> NetworkIdentity {
+                NetworkIdentity::default()
+            }
+            fn flags(&self) -> FlagsInConfig {
+                self.0.lock().unwrap().clone()
+            }
+        }
+        let flags = FlagsInConfig {
+            default_protocol: "tcp".to_owned(),
+            ..Default::default()
+        };
+        let context = Arc::new(MutableContext(std::sync::Mutex::new(flags.clone())));
+        let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+        let mut client = PeerConn::new(
+            1,
+            context.clone(),
+            client_tunnel,
+            Arc::new(PeerSessionStore::new()),
+        );
+        let mut server = PeerConn::new(
+            2,
+            Arc::new(NoopPeerContext::default().with_flags(flags.clone())),
+            server_tunnel,
+            Arc::new(PeerSessionStore::new()),
+        );
+        context.0.lock().unwrap().prefer_wss_http3_for_p2p = true;
+        let (client_result, server_result) = tokio::join!(
+            client.do_handshake_as_client(),
+            server.do_handshake_as_server_ext(|_, _| Ok(())),
+        );
+        client_result.unwrap();
+        server_result.unwrap();
+        assert_eq!(
+            server.get_conn_info().features,
+            [LIVENESS_ECHO_FEATURE, "p2p-cleanup-v1:tcp:0:0:0"]
+        );
+        assert_eq!(
+            client.cleanup_policy().agreed_disguise(&context.flags()),
+            None
+        );
+        assert_eq!(server.cleanup_policy().agreed_disguise(&flags), Some(false));
+    }
 
     #[tokio::test]
     async fn connection_origin_determines_hole_punch_and_ping_policy() {

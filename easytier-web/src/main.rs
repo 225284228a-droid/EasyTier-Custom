@@ -438,6 +438,37 @@ async fn create_config_server_listeners(
     listeners
 }
 
+/// Bind in configuration order and advertise the first successful endpoint,
+/// including the actual port when a listener requested an ephemeral one.
+async fn bind_config_server_listeners(
+    manager: &mut client_manager::ClientManager,
+    urls: &[url::Url],
+    network_instances: Option<&Arc<gateway::NetworkInstanceManager>>,
+) -> anyhow::Result<url::Url> {
+    let mut first_bound = None;
+    for (url, listener) in create_config_server_listeners(urls).await {
+        let result = if let Some(instances) = network_instances {
+            manager
+                .add_listener(gateway::listener::GatewayListener::new(
+                    listener,
+                    instances.clone(),
+                ))
+                .await
+        } else {
+            manager.add_listener(listener).await
+        };
+        match result {
+            Ok(local_url) => {
+                tracing::info!(?local_url, "config server listener started");
+                first_bound.get_or_insert(local_url);
+            }
+            Err(error) => tracing::warn!(%url, %error, "failed to start config server listener"),
+        }
+    }
+    first_bound
+        .ok_or_else(|| anyhow::anyhow!("failed to listen on any config server listener: {urls:?}"))
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
@@ -584,28 +615,10 @@ async fn main() {
     if let Some(cache) = city_geo_cache {
         mgr.set_city_geo_cache(cache);
     }
-    let mut bound_urls = Vec::new();
-    for (url, listener) in create_config_server_listeners(&listener_urls).await {
-        let result = if let Some(instances) = network_instances.as_ref() {
-            mgr.add_listener(gateway::listener::GatewayListener::new(
-                listener,
-                instances.clone(),
-            ))
+    let config_server_url =
+        bind_config_server_listeners(&mut mgr, &listener_urls, network_instances.as_ref())
             .await
-        } else {
-            mgr.add_listener(listener).await
-        };
-        match result {
-            Ok(local_url) => {
-                tracing::info!(?local_url, "config server listener started");
-                bound_urls.push(local_url);
-            }
-            Err(error) => tracing::warn!(%url, %error, "failed to start config server listener"),
-        }
-    }
-    if bound_urls.is_empty() {
-        panic!("Failed to listen on any config server listener: {listener_urls:?}");
-    }
+            .unwrap_or_else(|error| panic!("{error:#}"));
 
     let mgr = Arc::new(mgr);
     let central_service = Arc::new(
@@ -658,8 +671,10 @@ async fn main() {
         feature_flags,
         oidc_config,
         webhook_config,
-        cli.config_server_protocol.clone(),
-        cli.config_server_port,
+        config_server_url.scheme().to_owned(),
+        config_server_url
+            .port_or_known_default()
+            .expect("bound config server listener has a port"),
     )
     .await
     .unwrap()
@@ -690,6 +705,70 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn listener_test_manager() -> client_manager::ClientManager {
+        client_manager::ClientManager::new(
+            db::Db::memory_db().await,
+            None,
+            client_manager::HeartbeatPolicy::default(),
+            Arc::new(FeatureFlags::default()),
+            Arc::new(webhook::WebhookConfig::new(None, None, None, None, None)),
+        )
+    }
+
+    #[tokio::test]
+    async fn enrollment_endpoint_uses_actual_bound_protocol_and_port() {
+        for scheme in ["tcp", "udp", "ws", "wss"] {
+            let mut manager = listener_test_manager().await;
+            let endpoint = bind_config_server_listeners(
+                &mut manager,
+                &[format!("{scheme}://127.0.0.1:0").parse().unwrap()],
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(endpoint.scheme(), scheme);
+            assert_ne!(endpoint.port_or_known_default(), Some(0));
+            assert!(endpoint.port_or_known_default().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_endpoint_keeps_configured_listener_order() {
+        let mut manager = listener_test_manager().await;
+        let endpoint = bind_config_server_listeners(
+            &mut manager,
+            &parse_entries(&["ws://127.0.0.1:0", "tcp://127.0.0.1:0"]).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(endpoint.scheme(), "ws");
+        tokio::net::TcpStream::connect(("127.0.0.1", endpoint.port().unwrap()))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn enrollment_endpoint_skips_failed_listeners() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let unavailable = format!("tcp://{}", occupied.local_addr().unwrap());
+        let mut manager = listener_test_manager().await;
+        let endpoint = bind_config_server_listeners(
+            &mut manager,
+            &parse_entries(&[&unavailable, "ws://127.0.0.1:0", "udp://127.0.0.1:0"]).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(endpoint.scheme(), "ws");
+        assert_ne!(endpoint.port(), Some(0));
+        assert!(
+            bind_config_server_listeners(&mut manager, &[], None)
+                .await
+                .is_err()
+        );
+    }
 
     fn parse_entries(entries: &[&str]) -> anyhow::Result<Vec<url::Url>> {
         parse_config_server_listener_urls(

@@ -2286,6 +2286,7 @@ mod manager {
                 storage,
                 rpc_manager: BidirectRpcManager::new(),
                 capabilities: std::sync::Mutex::new(RuntimeCapabilities::default()),
+                config_mutation: tokio::sync::Mutex::new(()),
                 local: false,
             };
             let mut client = WebClientServiceClientFactory::<BaseController>::new(service.clone());

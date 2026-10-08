@@ -179,6 +179,22 @@ where
                 Some("invalid apply mode"),
             ));
         };
+        let apply_only = request.field_mask.is_empty();
+        if apply_only
+            && (mode != PersistedConfigApplyMode::SaveAndApply
+                || existing.is_none()
+                || request.expected_revision.is_empty()
+                || values != &Default::default())
+        {
+            return Ok(response(
+                snapshot,
+                id,
+                PersistedConfigMutationStatus::Invalid,
+                Some(
+                    "applying persisted configuration requires an existing revision and no edited values",
+                ),
+            ));
+        }
         let capabilities = self.instances.management_capabilities();
         if unsupported_capability(values, &request.field_mask, &capabilities).is_some() {
             return Ok(response(
@@ -215,7 +231,11 @@ where
                 )
             }
         };
-        let merged = match merge_persisted_config(&original, values, &request.field_mask) {
+        let merged = match if apply_only {
+            Ok(original)
+        } else {
+            merge_persisted_config(&original, values, &request.field_mask)
+        } {
             Ok(merged) => merged,
             Err(_) => {
                 return Ok(response(
@@ -291,10 +311,15 @@ where
                 true,
                 None,
                 Some(merged.as_bytes()),
+                apply_only,
                 Some(&request.expected_revision),
             )
             .await
             .map(|_| ())
+        } else if apply_only {
+            // Applying saved configuration never enables a stopped instance or
+            // rewrites its file. The checks above still fence the observation.
+            Ok(())
         } else {
             let previous_enabled = self.state_store.enabled_state(&id);
             if existing.is_none() {

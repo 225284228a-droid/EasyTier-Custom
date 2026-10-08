@@ -378,6 +378,8 @@ web:
     title: Local configurations
     description: Read local configurations from online devices and save selected fields individually. Offline snapshots are viewable and are never queued for delivery. Save and apply updates running instances; disabled instances require an explicit enable action.
     save_apply: Save and apply
+    apply_saved: Apply saved configuration
+    apply_unsupported: This node does not support applying saved configuration without edits. Upgrade it before applying.
     persist_only: Save only
     select: Select
     device: Device

@@ -2,7 +2,7 @@ import { NetworkConfig as NetworkConfigPb } from '../generated/proto/api_manage'
 import { normalizeNetworkConfig, toBackendNetworkConfig, type NetworkConfig } from '../types/network'
 import { type UUID, UuidToStr } from './utils'
 import { ConfigFilePermission } from './api'
-import { assertPatchCapabilities, configFieldSupported, LOCAL_CONFIG_REVISION_CAPABILITY } from './capabilities'
+import { assertLocalConfigApplyCapability, assertPatchCapabilities, configFieldSupported, LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from './capabilities'
 
 export enum LocalConfigApplyMode {
   SaveAndApply = 0,
@@ -80,6 +80,27 @@ export function localConfigEditable(snapshot: LocalConfigSnapshot, entry: LocalC
     && (snapshot.support_local_config_revision === true || snapshot.capabilities.includes(LOCAL_CONFIG_REVISION_CAPABILITY))
     && entry.status === 'ready' && !!entry.revision && !!entry.config
     && ConfigFilePermission.isEditable(entry.config_permission ?? 0)
+}
+
+export function localConfigApplyAvailable(snapshot: LocalConfigSnapshot, entry: LocalConfigEntry): boolean {
+  return localConfigEditable(snapshot, entry) && entry.running && entry.pending_apply
+    && snapshot.capabilities.includes(LOCAL_CONFIG_APPLY_CAPABILITY)
+}
+
+/** Apply this observed revision on the node, without copying a typed projection over its TOML. */
+export function buildLocalConfigApplyRequest(
+  entry: Pick<LocalConfigEntry, 'inst_id' | 'revision'>,
+  capabilities: readonly string[],
+): LocalConfigPatchRequest {
+  if (!entry.revision) throw new Error('Configuration revision is unavailable')
+  assertLocalConfigApplyCapability(capabilities)
+  return {
+    inst_id: localConfigInstanceId(entry),
+    expected_revision: entry.revision,
+    config: {},
+    field_mask: [],
+    apply_mode: LocalConfigApplyMode.SaveAndApply,
+  }
 }
 
 export function cloneEditableConfig(config: NetworkConfig): NetworkConfig {

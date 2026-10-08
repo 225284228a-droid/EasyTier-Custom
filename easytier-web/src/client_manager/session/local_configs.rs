@@ -4,7 +4,7 @@ use std::{sync::Weak, time::Duration};
 use easytier::proto::{
     api::manage::{
         DeleteNetworkInstanceRequest, ObserveConfigsRequest, PatchPersistedConfigRequest,
-        PersistedConfigService, PersistedConfigServiceClientFactory,
+        PersistedConfigApplyMode, PersistedConfigService, PersistedConfigServiceClientFactory,
         SetNetworkInstanceEnabledRequest, WebClientServiceClientFactory,
     },
     rpc_types::controller::BaseController,
@@ -16,6 +16,7 @@ use super::{Session, SessionData, SharedSessionData};
 use crate::db::local_config_mirror::LocalConfigMirror;
 
 pub(crate) const REVISION_CAPABILITY: &str = "management:persisted-config-revision-v1";
+pub(crate) const APPLY_CAPABILITY: &str = "management:persisted-config-apply-v1";
 pub(super) type PersistedClient =
     Box<dyn PersistedConfigService<Controller = BaseController> + Send + Sync>;
 
@@ -382,6 +383,12 @@ fn validate_capability_mask(
     request: &PatchPersistedConfigRequest,
     caps: &[String],
 ) -> Result<(), LocalConfigError> {
+    if request.field_mask.is_empty()
+        && request.apply_mode == PersistedConfigApplyMode::SaveAndApply as i32
+        && !caps.iter().any(|cap| cap == APPLY_CAPABILITY)
+    {
+        return Err(LocalConfigError::Unsupported);
+    }
     const EXTENSIONS: &[&str] = &[
         "sni",
         "enable_bbr",

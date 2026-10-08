@@ -7,7 +7,7 @@ import type { NetworkConfig } from '../types/network'
 import { ConfigFilePermission } from '../modules/api'
 import { assertPatchCapabilities } from '../modules/capabilities'
 import {
-  buildLocalConfigPatch, changedConfigFields, cloneEditableConfig, localConfigEditable,
+  buildLocalConfigApplyRequest, buildLocalConfigPatch, changedConfigFields, cloneEditableConfig, localConfigApplyAvailable, localConfigEditable,
   localConfigInstanceId, LocalConfigApplyMode, patchStatusName,
   type LocalConfigClient, type LocalConfigEntry, type LocalConfigMachine,
   type LocalConfigPatchResult, type LocalConfigSnapshot,
@@ -97,6 +97,7 @@ async function load(observe = false): Promise<void> {
 }
 
 function beginEdit(): void {
+  if (mutating.value || submitting.value) return
   const chosen = rows.value.filter(row => selected.value.includes(row.key) && localConfigEditable(row.machine, row.entry))
   if (!chosen.length) return
   targets.value = chosen.map(target => ({ ...target, entry: { ...target.entry } }))
@@ -118,7 +119,7 @@ async function rereadRevisions(): Promise<void> {
 }
 
 async function submit(): Promise<void> {
-  if (submitting.value || !edited.value || !selectedFields.value.length) return
+  if (submitting.value || mutating.value || !edited.value || !selectedFields.value.length) return
   const client = props.client
   const scope = client.scope
   const requestGeneration = generation
@@ -176,9 +177,10 @@ async function submit(): Promise<void> {
   await load()
 }
 
-async function mutate(row: Target, action: 'toggle' | 'remove'): Promise<void> {
-  if (mutating.value || edited.value || !localConfigEditable(row.machine, row.entry)) return
+async function mutate(row: Target, action: 'toggle' | 'remove' | 'apply'): Promise<void> {
+  if (loading.value || mutating.value || submitting.value || edited.value || !localConfigEditable(row.machine, row.entry)) return
   if (action === 'remove' && !ConfigFilePermission.isDeletable(row.entry.config_permission)) return
+  if (action === 'apply' && !localConfigApplyAvailable(row.machine, row.entry)) return
   const client = props.client
   const scope = client.scope
   const requestGeneration = generation
@@ -188,7 +190,9 @@ async function mutate(row: Target, action: 'toggle' | 'remove'): Promise<void> {
   mutating.value = row.key
   pendingDelete.value = ''
   try {
-    const response = action === 'toggle'
+    const response = action === 'apply'
+      ? await client.patch(row.machine.machine_id, buildLocalConfigApplyRequest(row.entry, row.machine.capabilities))
+      : action === 'toggle'
       ? await client.setEnabled!(row.machine.machine_id, instanceId, revision, !row.entry.enabled)
       : await client.remove!(row.machine.machine_id, instanceId, revision)
     if (!current()) return
@@ -206,9 +210,10 @@ async function mutate(row: Target, action: 'toggle' | 'remove'): Promise<void> {
   } catch (cause) {
     if (current()) results.value = [{ key: row.key, label: row.entry.network_name, status: 'failed', message: describeError(cause) }]
   } finally {
+    // Observe after an unknown apply outcome; never repeat the write automatically.
+    if (current()) await load(action === 'apply')
     if (current()) mutating.value = ''
   }
-  if (current()) await load()
 }
 
 watch([() => props.client, () => props.client.scope], () => {
@@ -225,7 +230,7 @@ watch([() => props.client, () => props.client.scope], () => {
   clearEditor()
   void load(true)
 })
-onMounted(() => { void load(true); timer = setInterval(() => void load(), 5_000) })
+onMounted(() => { void load(true); timer = setInterval(() => { if (!mutating.value && !submitting.value) void load() }, 5_000) })
 onUnmounted(() => { generation++; clearInterval(timer); clearEditor(); machines.value = [] })
 </script>
 
@@ -233,7 +238,7 @@ onUnmounted(() => { generation++; clearInterval(timer); clearEditor(); machines.
   <div class="local-config-batch">
     <header class="batch-heading">
       <div><h2>{{ t('web.local_configs.title') }}</h2><p>{{ t('web.local_configs.description') }}</p></div>
-      <Button icon="pi pi-refresh" :label="t('web.console.refresh')" severity="secondary" outlined :loading="loading" @click="load(true)" />
+      <Button icon="pi pi-refresh" :label="t('web.console.refresh')" severity="secondary" outlined :loading="loading" :disabled="!!mutating || submitting" @click="load(true)" />
     </header>
     <Message v-if="error" severity="warn" :closable="false">{{ error }}</Message>
     <div class="config-table-wrap">
@@ -241,12 +246,16 @@ onUnmounted(() => { generation++; clearInterval(timer); clearEditor(); machines.
         <thead><tr><th>{{ t('web.local_configs.select') }}</th><th>{{ t('web.local_configs.device') }}</th><th>{{ t('network_name') }}</th><th>{{ t('web.local_configs.state') }}</th><th>{{ t('web.local_configs.actions') }}</th></tr></thead>
         <tbody>
           <tr v-for="row in rows" :key="row.key">
-            <td><Checkbox v-model="selected" :value="row.key" :input-id="`local-${row.key}`" :disabled="!!edited || !localConfigEditable(row.machine, row.entry)" /></td>
+            <td><Checkbox v-model="selected" :value="row.key" :input-id="`local-${row.key}`" :disabled="!!edited || !!mutating || submitting || !localConfigEditable(row.machine, row.entry)" /></td>
             <td><label :for="`local-${row.key}`">{{ row.machine.hostname || row.machine.machine_id }}</label><small>{{ row.machine.online ? t('web.local_configs.online') : t('web.local_configs.offline') }}{{ row.machine.stale ? ` / ${t('web.local_configs.stale')}` : '' }}</small></td>
             <td>{{ row.entry.network_name || row.entry.entry_key }}<small>{{ localConfigInstanceId(row.entry) }}</small></td>
             <td>{{ t(`web.local_configs.${row.entry.status}`) }}<small>{{ row.entry.running ? t('web.local_configs.running') : row.entry.enabled ? t('web.local_configs.stopped') : t('web.local_configs.disabled') }}{{ row.entry.pending_apply ? ` / ${t('web.local_configs.pending_apply')}` : '' }}</small></td>
             <td class="row-actions">
               <template v-if="localConfigEditable(row.machine, row.entry)">
+                <Button v-if="row.entry.running && row.entry.pending_apply" :label="t('web.local_configs.apply_saved')" size="small"
+                  :disabled="loading || !!edited || !!mutating || submitting || !localConfigApplyAvailable(row.machine, row.entry)"
+                  :title="localConfigApplyAvailable(row.machine, row.entry) ? undefined : t('web.local_configs.apply_unsupported')"
+                  @click="mutate(row, 'apply')" />
                 <Button v-if="client.setEnabled" :label="t(row.entry.enabled ? 'web.local_configs.disable' : 'web.local_configs.enable')" size="small" severity="secondary" outlined :disabled="!!edited || !!mutating" @click="mutate(row, 'toggle')" />
                 <Button v-if="client.remove && ConfigFilePermission.isDeletable(row.entry.config_permission) && pendingDelete !== row.key" :label="t('web.local_configs.delete')" size="small" severity="danger" text :disabled="!!edited || !!mutating" @click="pendingDelete = row.key" />
                 <template v-if="pendingDelete === row.key">
@@ -260,7 +269,7 @@ onUnmounted(() => { generation++; clearInterval(timer); clearEditor(); machines.
         </tbody>
       </table>
     </div>
-    <Button v-if="!edited" icon="pi pi-pencil" :label="t('web.local_configs.edit_selected', { count: selected.length })" :disabled="!selected.length" @click="beginEdit" />
+    <Button v-if="!edited" icon="pi pi-pencil" :label="t('web.local_configs.edit_selected', { count: selected.length })" :disabled="!selected.length || !!mutating || submitting" @click="beginEdit" />
     <section v-if="edited" class="batch-editor">
       <div class="editor-actions">
         <strong>{{ t('web.local_configs.editing', { count: targets.length }) }}</strong>

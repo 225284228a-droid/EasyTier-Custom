@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_NETWORK_CONFIG, normalizeNetworkConfig } from '../src/types/network'
-import { buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, localConfigEditable, LocalConfigApplyMode, type LocalConfigEntry } from '../src/modules/localConfigPatch'
+import { buildLocalConfigApplyRequest, buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, localConfigApplyAvailable, localConfigEditable, LocalConfigApplyMode, type LocalConfigEntry } from '../src/modules/localConfigPatch'
+import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../src/modules/capabilities'
 
 const entry = (): LocalConfigEntry => ({
   entry_key: 'a.toml', inst_id: '00000000-0000-0000-0000-000000000001', revision: 'revision-a',
@@ -10,6 +11,30 @@ const entry = (): LocalConfigEntry => ({
 })
 
 describe('online local configuration patches', () => {
+  it('applies only the observed revision without copying its projected fields or TOML', () => {
+    const source = entry()
+    const patch = buildLocalConfigApplyRequest(source, [LOCAL_CONFIG_APPLY_CAPABILITY])
+    expect(patch).toEqual({ inst_id: source.inst_id, expected_revision: source.revision,
+      config: {}, field_mask: [], apply_mode: LocalConfigApplyMode.SaveAndApply })
+    expect(() => buildLocalConfigApplyRequest(source, [LOCAL_CONFIG_REVISION_CAPABILITY])).toThrow('Upgrade the device')
+    expect(() => buildLocalConfigApplyRequest({ ...source, revision: '' }, [LOCAL_CONFIG_APPLY_CAPABILITY])).toThrow('revision is unavailable')
+    expect(() => buildLocalConfigPatch(source, source.config!, [], [LOCAL_CONFIG_APPLY_CAPABILITY])).toThrow('No configuration fields selected')
+    expect(() => buildLocalConfigPatch(source, source.config!, [], [LOCAL_CONFIG_APPLY_CAPABILITY], LocalConfigApplyMode.PersistOnly)).toThrow('No configuration fields selected')
+  })
+
+  it('allows explicit apply only for editable running entries with saved changes and the new capability', () => {
+    const snapshot = { online: true, stale: false, capabilities: [LOCAL_CONFIG_REVISION_CAPABILITY, LOCAL_CONFIG_APPLY_CAPABILITY],
+      entries: [], catalog_epoch: 'boot-a', catalog_generation: 1 }
+    const pending = { ...entry(), pending_apply: true }
+    expect(localConfigApplyAvailable(snapshot, pending)).toBe(true)
+    expect(localConfigApplyAvailable({ ...snapshot, capabilities: [LOCAL_CONFIG_REVISION_CAPABILITY] }, pending)).toBe(false)
+    expect(localConfigApplyAvailable({ ...snapshot, online: false }, pending)).toBe(false)
+    expect(localConfigApplyAvailable({ ...snapshot, stale: true }, pending)).toBe(false)
+    expect(localConfigApplyAvailable(snapshot, { ...pending, config_permission: 1 })).toBe(false)
+    expect(localConfigApplyAvailable(snapshot, { ...pending, running: false })).toBe(false)
+    expect(localConfigApplyAvailable(snapshot, { ...pending, pending_apply: false })).toBe(false)
+  })
+
   it('sends only changed fields with the target revision and retains explicit false and deletion', () => {
     const source = entry()
     source.config!.enable_bbr = true

@@ -351,7 +351,7 @@ impl P2pPolicyFlags {
     }
 }
 
-fn normalized_p2p_protocol(default_protocol: &str) -> String {
+pub(crate) fn normalized_p2p_protocol(default_protocol: &str) -> String {
     let protocol = default_protocol.trim().to_ascii_lowercase();
     if protocol.is_empty() {
         DEFAULT_PROTOCOL.to_owned()
