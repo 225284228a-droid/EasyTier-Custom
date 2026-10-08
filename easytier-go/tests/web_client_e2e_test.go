@@ -77,24 +77,27 @@ func TestWebClientEndToEnd(t *testing.T) {
 	networkName := "go-host-managed"
 	networkSecret := "test"
 	managedConfig := map[string]any{
-		"instance_id":                    managedID,
-		"dhcp":                           true,
-		"network_name":                   networkName,
-		"network_secret":                 networkSecret,
-		"networking_method":              2,
-		"listener_urls":                  []string{"tcp://0.0.0.0:11010", "udp://0.0.0.0:11010", "wg://0.0.0.0:11011"},
-		"proxy_cidrs":                    []string{"10.200.0.0/24"},
-		"disable_p2p":                    true,
-		"disable_ipv6":                   true,
-		"enable_vpn_portal":              true,
-		"vpn_portal_listen_port":         11012,
-		"vpn_portal_client_network_addr": "10.210.0.0",
-		"vpn_portal_client_network_len":  24,
-		"data_compress_algo":             2,
-		"credential_file":                "/unsupported",
-		"enable_quic_proxy":              true,
-		"mapped_listeners":               []string{"wg://0.0.0.0:11012"},
-		"advanced_settings":              true,
+		"instance_id":       managedID,
+		"dhcp":              true,
+		"network_name":      networkName,
+		"network_secret":    networkSecret,
+		"networking_method": 2,
+		"listener_urls":     []string{"tcp://0.0.0.0:11010", "udp://0.0.0.0:11010", "wg://0.0.0.0:11011"},
+		"proxy_cidrs":       []string{"10.200.0.0/24"},
+		"disable_p2p":       true,
+		"disable_ipv6":      true,
+		"vpn_portal_config": map[string]any{
+			"wireguard_listen": "0.0.0.0:11012",
+			"clients": []map[string]any{{
+				"name":       "go-host-unsupported",
+				"virtual_ip": "10.210.0.2/24",
+			}},
+		},
+		"data_compress_algo": 2,
+		"credential_file":    "/unsupported",
+		"enable_quic_proxy":  true,
+		"mapped_listeners":   []string{"wg://0.0.0.0:11012"},
+		"advanced_settings":  true,
 	}
 	payload, err := json.Marshal(map[string]any{
 		"config": managedConfig,
@@ -136,6 +139,14 @@ func TestWebClientEndToEnd(t *testing.T) {
 		t.Fatalf("collect managed status: status=%d body=%s", status, body)
 	}
 
+	portalProbe, err := net.ListenPacket("udp4", "0.0.0.0:11012")
+	if err != nil {
+		t.Fatalf("unsupported VPN portal bound its UDP port: %v", err)
+	}
+	if err := portalProbe.Close(); err != nil {
+		t.Fatalf("release VPN portal port probe: %v", err)
+	}
+
 	portProbe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve port-forward address: %v", err)
@@ -165,7 +176,7 @@ func TestWebClientEndToEnd(t *testing.T) {
 		t.Fatalf("encode managed network update: %v", err)
 	}
 	body, status = webRequest(t, ctx, authToken, http.MethodPut, base, payload)
-	if status != http.StatusOK {
+	if status != http.StatusNoContent {
 		t.Fatalf("update managed instance: status=%d body=%s", status, body)
 	}
 	waitFor(t, ctx, func() bool {
