@@ -9,7 +9,7 @@ use crate::{
     foundation::token_bucket::{ArcByteLimiter, ByteLimiter},
     packet::{PacketType, ZCPacket},
     peers::{
-        PeerConnSource, PeerConnectionOrigin, PeerPacketIngress,
+        PeerConnectionOrigin, PeerPacketIngress,
         conn::{
             peer_conn::{PeerConn, PeerConnId},
             peer_map::PeerMap,
@@ -40,13 +40,14 @@ async fn handshake_client_conn_with_remote_url(
         }),
     ));
     let server_tunnel = Box::new(RingTunnel::new(server_socket, None));
-    let mut client_conn = PeerConn::new(
+    let mut client_conn = PeerConn::new_with_peer_id_hint_and_origin(
         1,
         Arc::new(NoopPeerContext::default()),
         client_tunnel,
+        None,
         peer_session_store.clone(),
+        PeerConnectionOrigin::Direct,
     );
-    client_conn.set_is_hole_punched(false);
     let mut server_conn = PeerConn::new(
         2,
         Arc::new(NoopPeerContext::default()),
@@ -317,7 +318,6 @@ async fn peer_channel_uses_admission_origin_instead_of_packet_header() {
         None,
         peer_session_store,
         PeerConnectionOrigin::Attached,
-        PeerConnSource::Automatic,
     );
     let (client_ret, server_ret) = tokio::join!(
         client_conn.do_handshake_as_client(),
@@ -325,7 +325,6 @@ async fn peer_channel_uses_admission_origin_instead_of_packet_header() {
     );
     client_ret.unwrap();
     server_ret.unwrap();
-    server_conn.set_is_hole_punched(false);
     let server_conn_id = server_conn.get_conn_id();
 
     let (client_tx, _client_rx) = create_packet_recv_chan();

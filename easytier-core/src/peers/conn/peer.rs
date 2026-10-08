@@ -673,6 +673,16 @@ mod tests {
             ..Default::default()
         });
         let session_store = Arc::new(PeerSessionStore::new());
+        let origin = match (origin, source, is_hole_punched) {
+            (PeerConnectionOrigin::Attached, _, _) => PeerConnectionOrigin::Attached,
+            (_, PeerConnSource::Manual, _) => PeerConnectionOrigin::Manual,
+            (_, PeerConnSource::Inbound, _) => PeerConnectionOrigin::Listener,
+            (_, PeerConnSource::Automatic, false) => PeerConnectionOrigin::Direct,
+            (_, PeerConnSource::Automatic, true) => match scheme {
+                "tcp" | "wss" => PeerConnectionOrigin::TcpHolePunch,
+                _ => PeerConnectionOrigin::UdpHolePunch,
+            },
+        };
         let mut client = PeerConn::new_with_peer_id_hint_and_origin(
             1,
             context,
@@ -680,9 +690,7 @@ mod tests {
             None,
             session_store.clone(),
             origin,
-            source,
         );
-        client.set_is_hole_punched(is_hole_punched);
         let mut server = PeerConn::new(
             2,
             Arc::new(NoopPeerContext::default()),
@@ -747,7 +755,7 @@ mod tests {
             context.clone(),
             fallback,
             PeerConnSource::Automatic,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Direct,
             false,
         )
         .await;
@@ -764,7 +772,7 @@ mod tests {
             context.clone(),
             preferred,
             PeerConnSource::Automatic,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Direct,
             true,
         )
         .await;
@@ -826,7 +834,7 @@ mod tests {
             context,
             fallback,
             PeerConnSource::Automatic,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Direct,
             false,
         )
         .await;
@@ -869,7 +877,7 @@ mod tests {
             context.clone(),
             "wss",
             PeerConnSource::Automatic,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Direct,
             false,
         )
         .await;
@@ -882,7 +890,7 @@ mod tests {
             context,
             "http3",
             PeerConnSource::Automatic,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Direct,
             true,
         )
         .await;
@@ -924,7 +932,7 @@ mod tests {
                 context.clone(),
                 "udp",
                 PeerConnSource::Automatic,
-                PeerConnectionOrigin::Network,
+                PeerConnectionOrigin::Direct,
                 false,
             )
             .await;
@@ -933,7 +941,7 @@ mod tests {
                 context,
                 "wss",
                 PeerConnSource::Automatic,
-                PeerConnectionOrigin::Network,
+                PeerConnectionOrigin::Direct,
                 false,
             )
             .await;
@@ -991,21 +999,21 @@ mod tests {
         let mut remote_conns = Vec::new();
         let mut kept_ids = Vec::new();
         for (scheme, source, origin) in [
-            ("wss", PeerConnSource::Manual, PeerConnectionOrigin::Network),
+            ("wss", PeerConnSource::Manual, PeerConnectionOrigin::Direct),
             (
                 "wss",
                 PeerConnSource::Inbound,
-                PeerConnectionOrigin::Network,
+                PeerConnectionOrigin::Direct,
             ),
             (
                 "udp",
                 PeerConnSource::Automatic,
-                PeerConnectionOrigin::Network,
+                PeerConnectionOrigin::Direct,
             ),
             (
                 "udp",
                 PeerConnSource::Automatic,
-                PeerConnectionOrigin::Network,
+                PeerConnectionOrigin::Direct,
             ),
             (
                 "ring",
@@ -1043,7 +1051,7 @@ mod tests {
                 context.clone(),
                 "wss",
                 PeerConnSource::Automatic,
-                PeerConnectionOrigin::Network,
+                PeerConnectionOrigin::Direct,
                 false,
             )
             .await;
@@ -1055,7 +1063,7 @@ mod tests {
                 context,
                 "udp",
                 PeerConnSource::Automatic,
-                PeerConnectionOrigin::Network,
+                PeerConnectionOrigin::Direct,
                 false,
             )
             .await;
@@ -1104,7 +1112,7 @@ mod tests {
             context.clone(),
             "http3",
             PeerConnSource::Automatic,
-            PeerConnectionOrigin::Network,
+            PeerConnectionOrigin::Direct,
             false,
         )
         .await;

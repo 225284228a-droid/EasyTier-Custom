@@ -238,17 +238,20 @@ function allFieldFixture() {
       },
     },
     credential_file: '/tmp/easytier-credential.toml',
-    managed_credentials: [{
-      credential_id: 'fixture-id',
-      credential_secret: 'fixture-secret',
-      groups: ['ops'],
-      allow_relay: true,
-      allowed_proxy_cidrs: ['10.44.0.0/24'],
-      expiry_unix: '1893456000',
-      reusable: true,
-    }],
+    managed_credentials: [
+      {
+        credential_id: 'managed-credential',
+        credential_secret: 'managed-secret',
+        groups: ['ops'],
+        allow_relay: true,
+        allowed_proxy_cidrs: ['10.30.0.0/16'],
+        expiry_unix: '1791971218',
+        reusable: true,
+      },
+    ],
     lazy_p2p: true,
     need_p2p: true,
+    prefer_peer_relay: true,
     instance_recv_bps_limit: '9007199254740993',
     disable_upnp: true,
     ipv6_public_addr_provider: true,
@@ -306,9 +309,9 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
   assert.equal(backend.prefer_peer_relay, true)
-  assert.equal(backend.managed_credentials[0].credential_id, 'fixture-id')
-  assert.equal(backend.managed_credentials[0].expiry_unix, '1893456000')
-  assert.deepEqual(backend.managed_credentials[0].allowed_proxy_cidrs, ['10.44.0.0/24'])
+  assert.equal(backend.managed_credentials[0].credential_id, input.managed_credentials[0].credential_id)
+  assert.equal(backend.managed_credentials[0].expiry_unix, input.managed_credentials[0].expiry_unix)
+  assert.deepEqual(backend.managed_credentials[0].allowed_proxy_cidrs, input.managed_credentials[0].allowed_proxy_cidrs)
 }
 
 function assertLegacyVpnPortalFieldsReachBackendValidation() {

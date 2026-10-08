@@ -274,7 +274,6 @@ impl PeerConnCloseNotify {
 pub struct PeerConn {
     conn_id: PeerConnId,
     origin: PeerConnectionOrigin,
-    conn_source: PeerConnSource,
 
     my_peer_id: PeerId,
     peer_id_hint: Option<PeerId>,
@@ -294,9 +293,6 @@ pub struct PeerConn {
 
     info: Option<HandshakeRequest>,
     is_client: Option<bool>,
-
-    // remote or local
-    is_hole_punched: bool,
 
     close_event_notifier: Arc<PeerConnCloseNotify>,
 
@@ -335,8 +331,7 @@ impl PeerConn {
             tunnel,
             None,
             peer_session_store,
-            PeerConnectionOrigin::Network,
-            PeerConnSource::Automatic,
+            PeerConnectionOrigin::Manual,
         )
     }
 
@@ -347,7 +342,6 @@ impl PeerConn {
         peer_id_hint: Option<PeerId>,
         peer_session_store: Arc<PeerSessionStore>,
         origin: PeerConnectionOrigin,
-        conn_source: PeerConnSource,
     ) -> Self {
         let flags = context.flags();
         let tunnel_info = tunnel.info();
@@ -379,7 +373,6 @@ impl PeerConn {
         PeerConn {
             conn_id,
             origin,
-            conn_source,
 
             my_peer_id,
             peer_id_hint,
@@ -401,8 +394,6 @@ impl PeerConn {
 
             info: None,
             is_client: None,
-
-            is_hole_punched: true,
 
             close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
 
@@ -449,18 +440,44 @@ impl PeerConn {
         self.origin == PeerConnectionOrigin::Attached
     }
 
-    pub fn set_is_hole_punched(&mut self, is_hole_punched: bool) {
-        self.is_hole_punched = is_hole_punched;
+    pub fn is_hole_punched(&self) -> bool {
+        matches!(
+            self.origin,
+            PeerConnectionOrigin::TcpHolePunch | PeerConnectionOrigin::UdpHolePunch
+        )
     }
 
-    pub fn is_hole_punched(&self) -> bool {
-        self.is_hole_punched
+    fn max_ping_interval(&self) -> Duration {
+        match self.origin {
+            // TCP hole-punched connections need frequent traffic to stay alive.
+            PeerConnectionOrigin::TcpHolePunch => Duration::from_secs(1),
+            PeerConnectionOrigin::Manual
+            | PeerConnectionOrigin::Direct
+            | PeerConnectionOrigin::Listener
+            | PeerConnectionOrigin::UdpHolePunch
+            | PeerConnectionOrigin::Attached => Duration::from_secs(32),
+        }
     }
 
     /// Whether this connection was configured by the user, dialed by a remote
     /// peer, or discovered automatically by P2P.
     pub fn conn_source(&self) -> PeerConnSource {
-        self.conn_source
+        match self.origin {
+            PeerConnectionOrigin::Manual => PeerConnSource::Manual,
+            PeerConnectionOrigin::Listener => PeerConnSource::Inbound,
+            PeerConnectionOrigin::Direct | PeerConnectionOrigin::Attached => {
+                PeerConnSource::Automatic
+            }
+            PeerConnectionOrigin::TcpHolePunch | PeerConnectionOrigin::UdpHolePunch => {
+                // Preserve the existing cleanup scope during the upstream merge:
+                // accepted punch connections still receive inbound protection.
+                if self.is_client == Some(true) {
+                    PeerConnSource::Automatic
+                } else {
+                    PeerConnSource::Inbound
+                }
+            }
+        }
     }
 
     pub fn is_closed(&self) -> bool {
@@ -1402,6 +1419,7 @@ impl PeerConn {
             self.context.clone(),
             self.get_conn_info().network_name,
             self.liveness.clone(),
+            self.max_ping_interval(),
         );
 
         let close_event_notifier = self.close_event_notifier.clone();
@@ -1552,5 +1570,84 @@ impl Drop for PeerConn {
     fn drop(&mut self) {
         // if someone drop a conn manually, the notifier is not called.
         self.close_event_notifier.notify_close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{peers::test_support::NoopPeerContext, tunnel::ring::create_ring_tunnel_pair};
+
+    #[tokio::test]
+    async fn connection_origin_determines_hole_punch_and_ping_policy() {
+        for (origin, is_hole_punched, max_interval) in [
+            (PeerConnectionOrigin::Manual, false, 32),
+            (PeerConnectionOrigin::Direct, false, 32),
+            (PeerConnectionOrigin::Listener, false, 32),
+            (PeerConnectionOrigin::TcpHolePunch, true, 1),
+            (PeerConnectionOrigin::UdpHolePunch, true, 32),
+            (PeerConnectionOrigin::Attached, false, 32),
+        ] {
+            // Admission determines the policy even when the transport is a ring.
+            let (tunnel, _remote_tunnel) = create_ring_tunnel_pair();
+            let conn = PeerConn::new_with_peer_id_hint_and_origin(
+                1,
+                Arc::new(NoopPeerContext::default()),
+                tunnel,
+                None,
+                Arc::new(PeerSessionStore::new()),
+                origin,
+            );
+
+            assert_eq!(conn.is_hole_punched(), is_hole_punched, "{origin:?}");
+            assert_eq!(
+                conn.max_ping_interval(),
+                Duration::from_secs(max_interval),
+                "{origin:?}",
+            );
+            assert_eq!(conn.is_attached(), origin == PeerConnectionOrigin::Attached);
+        }
+    }
+
+    #[tokio::test]
+    async fn hole_punch_sources_preserve_client_and_inbound_cleanup_roles() {
+        for origin in [
+            PeerConnectionOrigin::TcpHolePunch,
+            PeerConnectionOrigin::UdpHolePunch,
+        ] {
+            let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+            let store = Arc::new(PeerSessionStore::new());
+            let mut client = PeerConn::new_with_peer_id_hint_and_origin(
+                1,
+                Arc::new(NoopPeerContext::default()),
+                client_tunnel,
+                None,
+                store.clone(),
+                origin,
+            );
+            let mut server = PeerConn::new_with_peer_id_hint_and_origin(
+                2,
+                Arc::new(NoopPeerContext::default()),
+                server_tunnel,
+                None,
+                store,
+                origin,
+            );
+            let (client_result, server_result) = tokio::join!(
+                client.do_handshake_as_client(),
+                server.do_handshake_as_server(),
+            );
+            client_result.unwrap();
+            server_result.unwrap();
+
+            assert_eq!(
+                client.conn_source(),
+                PeerConnSource::Automatic,
+                "{origin:?}"
+            );
+            assert_eq!(server.conn_source(), PeerConnSource::Inbound, "{origin:?}");
+            assert!(client.is_hole_punched());
+            assert!(server.is_hole_punched());
+        }
     }
 }

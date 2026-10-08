@@ -34,6 +34,7 @@ use crate::{
             ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager, reap_joinset_background,
         },
     },
+    peers::PeerConnectionOrigin,
     proto::{
         common::{NatType, PeerFeatureFlag},
         peer_rpc::{
@@ -185,7 +186,7 @@ where
             };
             return self
                 .tunnel_sink
-                .add_server_tunnel(tunnel)
+                .add_server_tunnel(tunnel, PeerConnectionOrigin::TcpHolePunch)
                 .await
                 .map_err(TcpHolePunchTransportError::Admission);
         }
@@ -195,17 +196,18 @@ where
             .await
             .map_err(TcpHolePunchTransportError::Upgrade)?;
         match admission {
-            TcpHolePunchAdmission::Client => self
-                .tunnel_sink
-                .add_client_tunnel(tunnel)
-                .await
-                .map_err(TcpHolePunchTransportError::Admission),
-            TcpHolePunchAdmission::Server => self
-                .tunnel_sink
-                .add_server_tunnel(tunnel)
-                .await
-                .map_err(TcpHolePunchTransportError::Admission),
+            TcpHolePunchAdmission::Client => {
+                self.tunnel_sink
+                    .add_client_tunnel(tunnel, PeerConnectionOrigin::TcpHolePunch)
+                    .await
+            }
+            TcpHolePunchAdmission::Server => {
+                self.tunnel_sink
+                    .add_server_tunnel(tunnel, PeerConnectionOrigin::TcpHolePunch)
+                    .await
+            }
         }
+        .map_err(TcpHolePunchTransportError::Admission)
     }
 
     async fn add_accepted_transport(
@@ -224,7 +226,7 @@ where
             )));
         };
         self.tunnel_sink
-            .add_server_tunnel(tunnel)
+            .add_server_tunnel(tunnel, PeerConnectionOrigin::TcpHolePunch)
             .await
             .map_err(TcpHolePunchTransportError::Admission)
     }
@@ -1751,7 +1753,12 @@ mod tests {
 
     #[async_trait]
     impl HolePunchTunnelSink for MockTunnelSink {
-        async fn add_client_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        async fn add_client_tunnel(
+            &self,
+            _tunnel: Box<dyn Tunnel>,
+            origin: PeerConnectionOrigin,
+        ) -> anyhow::Result<()> {
+            assert_eq!(origin, PeerConnectionOrigin::TcpHolePunch);
             if self.fail_client_admission.load(Ordering::Relaxed) {
                 anyhow::bail!("mock client admission failure");
             }
@@ -1759,7 +1766,12 @@ mod tests {
             Ok(())
         }
 
-        async fn add_server_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> anyhow::Result<()> {
+        async fn add_server_tunnel(
+            &self,
+            _tunnel: Box<dyn Tunnel>,
+            origin: PeerConnectionOrigin,
+        ) -> anyhow::Result<()> {
+            assert_eq!(origin, PeerConnectionOrigin::TcpHolePunch);
             self.servers.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }

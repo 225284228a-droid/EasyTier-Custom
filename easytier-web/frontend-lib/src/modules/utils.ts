@@ -84,8 +84,15 @@ export interface Location {
     longitude?: number | undefined;
 }
 
+export interface DeviceNetwork {
+    network_id: string;
+    display_name: string;
+    network_name: string;
+}
+
 export interface DeviceInfo {
     hostname: string;
+    alias?: string;
     public_ip: string | undefined;
     running_network_count: number;
     report_time: string;
@@ -93,12 +100,16 @@ export interface DeviceInfo {
     running_network_instances?: Array<string>;
     machine_id: string;
     location: Location | undefined;
+    networks?: Array<DeviceNetwork>;
+    online?: boolean;
+    last_seen?: string;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
     const runningInstances = device.info?.running_network_instances ?? [];
     let dev_info: DeviceInfo = {
         hostname: device.info?.hostname,
+        alias: device.alias || undefined,
         // `client_url` is the config-server transport endpoint and can be a
         // CDN/FRP address. The API now supplies the address learned by the
         // connected EasyTier network as `public_ip`.
@@ -109,6 +120,9 @@ export function buildDeviceInfo(device: any): DeviceInfo {
         easytier_version: device.info?.easytier_version,
         machine_id: UuidToStr(device.info?.machine_id),
         location: device.location,
+        networks: device.networks ?? [],
+        online: device.online ?? Boolean(device.info),
+        last_seen: device.last_seen,
     };
 
     return dev_info;

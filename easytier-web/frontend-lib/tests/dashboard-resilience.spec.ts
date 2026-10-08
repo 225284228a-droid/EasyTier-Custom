@@ -22,6 +22,7 @@ const info = {
 const globe = { props: ['nodes', 'links', 'loading', 'persistenceKey'], template: '<div />' }
 const api = () => ({
   persistenceScope: 'https://dashboard-test.invalid',
+  get_summary: vi.fn().mockResolvedValue({ device_count: devices.length }),
   list_machines: vi.fn().mockResolvedValue(devices),
   collect_machine_network_info: vi.fn().mockResolvedValue(info),
 })

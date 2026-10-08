@@ -7,6 +7,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use central_network::gateway;
+
 use clap::Parser;
 use easytier::tunnel::websocket::WsTunnelListener;
 use easytier::{
@@ -24,6 +26,7 @@ use easytier_core::{socket::SocketListener, tunnel::Tunnel};
 use easytier::tunnel::IpScheme;
 use mimalloc::MiMalloc;
 
+mod central_network;
 mod client_manager;
 mod db;
 mod geolocation;
@@ -141,6 +144,12 @@ struct Cli {
         help = t!("cli.heartbeat_timeout_ms").to_string(),
     )]
     heartbeat_timeout_ms: u64,
+
+    #[arg(long, env = "ET_GATEWAY_PEER_URL")]
+    gateway_peer_url: Option<url::Url>,
+
+    #[arg(long, env = "ET_GATEWAY_RELAY_DATA", default_value = "false")]
+    gateway_relay_data: bool,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -268,7 +277,9 @@ fn raw_has_explicit_port(raw: &str, port: u16) -> bool {
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let port_str = if let Some(stripped) = host_port.strip_prefix('[') {
         // IPv6 literal: the port (if any) follows the closing bracket.
-        stripped.split_once(']').and_then(|(_, tail)| tail.strip_prefix(':'))
+        stripped
+            .split_once(']')
+            .and_then(|(_, tail)| tail.strip_prefix(':'))
     } else {
         host_port.rsplit_once(':').map(|(_, p)| p)
     };
@@ -486,13 +497,25 @@ async fn main() {
         }
     };
     let feature_flags = Arc::new(cli.feature_flags);
-    let webhook_config = Arc::new(webhook::WebhookConfig::new(
+    let mut webhook_config = webhook::WebhookConfig::new(
         cli.webhook.webhook_url,
         cli.webhook.webhook_secret,
         cli.webhook.internal_auth_token,
         cli.webhook.web_instance_id,
         cli.webhook.web_instance_api_base_url,
-    ));
+    );
+    let central_mode = !webhook_config.has_external_endpoint();
+    if central_mode {
+        webhook_config =
+            webhook_config.with_handler(Arc::new(central_network::device_auth::DeviceAuth::new(
+                db.clone(),
+                feature_flags.allow_auto_create_user,
+            )));
+    } else if cli.gateway_peer_url.is_some() {
+        eprintln!("Gateway requires central network mode; remove --webhook-url");
+        std::process::exit(2);
+    }
+    let webhook_config = Arc::new(webhook_config);
     let listener_urls = match cli
         .config_server_listeners
         .as_ref()
@@ -536,6 +559,21 @@ async fn main() {
         eprintln!("Invalid heartbeat configuration: {error}");
         std::process::exit(2);
     });
+
+    let network_instances = cli.gateway_peer_url.as_ref().map(|peer_url| {
+        let config = gateway::GatewayConfig {
+            peer_url: peer_url.to_string(),
+            relay_data: cli.gateway_relay_data,
+        };
+        config
+            .validate(&cli.config_server_protocol)
+            .unwrap_or_else(|error| {
+                eprintln!("Invalid Gateway configuration: {error}");
+                std::process::exit(2);
+            });
+        Arc::new(gateway::NetworkInstanceManager::new(config))
+    });
+
     let mut mgr = client_manager::ClientManager::new(
         db.clone(),
         cli.geoip_db,
@@ -548,14 +586,21 @@ async fn main() {
     }
     let mut bound_urls = Vec::new();
     for (url, listener) in create_config_server_listeners(&listener_urls).await {
-        match mgr.add_listener(listener).await {
+        let result = if let Some(instances) = network_instances.as_ref() {
+            mgr.add_listener(gateway::listener::GatewayListener::new(
+                listener,
+                instances.clone(),
+            ))
+            .await
+        } else {
+            mgr.add_listener(listener).await
+        };
+        match result {
             Ok(local_url) => {
                 tracing::info!(?local_url, "config server listener started");
                 bound_urls.push(local_url);
             }
-            Err(error) => {
-                tracing::warn!(%url, %error, "failed to start config server listener");
-            }
+            Err(error) => tracing::warn!(%url, %error, "failed to start config server listener"),
         }
     }
     if bound_urls.is_empty() {
@@ -563,6 +608,16 @@ async fn main() {
     }
 
     let mgr = Arc::new(mgr);
+    let central_service = Arc::new(
+        central_network::service::CentralNetworkService::with_gateway(
+            db.clone(),
+            mgr.clone(),
+            network_instances,
+        ),
+    );
+    if central_mode {
+        central_service.start_reconciler();
+    }
 
     #[cfg(feature = "embed")]
     let (web_router_restful, web_router_static) = if cli.no_web {
@@ -597,11 +652,14 @@ async fn main() {
     let _restful_server_tasks = restful::RestfulServer::new(
         std::net::SocketAddr::new(cli.api_server_addr, cli.api_server_port),
         mgr.clone(),
+        central_service,
         db,
         web_router_restful,
         feature_flags,
         oidc_config,
         webhook_config,
+        cli.config_server_protocol.clone(),
+        cli.config_server_port,
     )
     .await
     .unwrap()

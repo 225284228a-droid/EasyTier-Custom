@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod listener_tests;
 mod managed_config;
 mod runtime_reconcile;
 pub mod session;
@@ -16,6 +18,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use easytier::common::config::{ConfigSource, config_source_from_rpc, config_source_to_rpc};
 use easytier::proto::{
+    api::config::ConfigRpc,
     api::manage::{
         CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
         GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest, MyNodeInfo,
@@ -54,6 +57,7 @@ const MAX_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 const MIN_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(120);
 const HEARTBEAT_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+const MAX_PENDING_HANDSHAKES: usize = 4096;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HeartbeatPolicy {
@@ -177,7 +181,7 @@ impl ClientManager {
         tasks.spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                sessions.retain(|_, session| session.is_running());
+                Self::prune_sessions(&sessions).await;
             }
         });
         ClientManager {
@@ -276,6 +280,22 @@ impl ClientManager {
         });
     }
 
+    async fn prune_sessions(sessions: &DashMap<url::Url, Arc<Session>>) {
+        // Release the map guards before reading session state or stopping RPC tasks.
+        let snapshot = sessions
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        for (client_url, session) in snapshot {
+            if session.is_running() && !session.is_superseded().await {
+                continue;
+            }
+            // A reconnect may have reused the URL since the snapshot was taken.
+            sessions.remove_if(&client_url, |_, current| Arc::ptr_eq(current, &session));
+            session.stop().await;
+        }
+    }
+
     pub async fn add_listener<L: SocketListener<Accepted = Box<dyn Tunnel>> + 'static>(
         &mut self,
         mut listener: L,
@@ -293,47 +313,64 @@ impl ClientManager {
         let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
             let _slot = ListenerCountGuard(listeners_cnt);
-            while let Ok(tunnel) = listener.accept().await {
-                let (tunnel, secure) = match web_security::accept_or_upgrade_server_tunnel(
-                    tunnel,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(error) => {
-                        tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");
+            let mut handshakes = JoinSet::new();
+            'accept: loop {
+                // Some listeners include a WebSocket upgrade in accept(). Keep
+                // that future alive while processing completed handshakes.
+                let accepting = listener.accept();
+                tokio::pin!(accepting);
+                loop {
+                    let result = tokio::select! {
+                        accepted = &mut accepting, if handshakes.len() < MAX_PENDING_HANDSHAKES => {
+                            let Ok(tunnel) = accepted else { break 'accept };
+                            handshakes.spawn(web_security::accept_or_upgrade_server_tunnel(tunnel));
+                            break;
+                        }
+                        result = handshakes.join_next(), if !handshakes.is_empty() => {
+                            result.unwrap()
+                        }
+                    };
+                    let (tunnel, secure) = match result {
+                        Ok(Ok(value)) => value,
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "secure tunnel handshake task failed");
+                            continue;
+                        }
+                    };
+                    let Some(info) = tunnel.info() else {
+                        tracing::warn!("accepted tunnel carries no info, dropping connection");
                         continue;
-                    }
-                };
-                let Some(info) = tunnel.info() else {
-                    tracing::warn!("accepted tunnel carries no info, dropping connection");
-                    continue;
-                };
-                let Some(remote_addr) = info.remote_addr else {
-                    tracing::warn!("accepted tunnel carries no remote addr, dropping connection");
-                    continue;
-                };
-                let client_url: url::Url = remote_addr.into();
-                let location = Self::lookup_location(&client_url, geoip_db.clone());
-                tracing::info!(
-                    "New session from {:?}, secure: {}, location: {:?}",
-                    client_url,
-                    secure,
-                    location
-                );
-                let mut session = Session::new(
-                    storage.clone(),
-                    client_url.clone(),
-                    location,
-                    heartbeat_policy,
-                    feature_flags.clone(),
-                    webhook_config.clone(),
-                    next_session_epoch.fetch_add(1, Ordering::Relaxed) + 1,
-                );
-                session.serve(tunnel).await;
-                let session = Arc::new(session);
-                sessions.insert(client_url, session.clone());
-                session.mark_route_ready();
+                    };
+                    let Some(remote_addr) = info.remote_addr else {
+                        tracing::warn!("accepted tunnel carries no remote addr, dropping connection");
+                        continue;
+                    };
+                    let client_url: url::Url = remote_addr.into();
+                    let location = Self::lookup_location(&client_url, geoip_db.clone());
+                    tracing::info!(
+                        "New session from {:?}, secure: {}, location: {:?}",
+                        client_url,
+                        secure,
+                        location
+                    );
+                    let mut session = Session::new(
+                        storage.clone(),
+                        client_url.clone(),
+                        location,
+                        heartbeat_policy,
+                        feature_flags.clone(),
+                        webhook_config.clone(),
+                        next_session_epoch.fetch_add(1, Ordering::Relaxed) + 1,
+                    );
+                    session.serve(tunnel).await;
+                    let session = Arc::new(session);
+                    sessions.insert(client_url, session.clone());
+                    session.mark_route_ready();
+                }
             }
         });
 
@@ -896,6 +933,14 @@ impl
     ) -> Option<Box<dyn WebClientService<Controller = BaseController> + Send>> {
         let s = self.get_session_by_machine_id(user_id, &machine_id)?;
         Some(s.scoped_rpc_client())
+    }
+
+    fn get_config_rpc_client(
+        &self,
+        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+    ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
+        let session = self.get_session_by_machine_id(user_id, &machine_id)?;
+        Some(session.scoped_config_client())
     }
 
     fn get_storage(
