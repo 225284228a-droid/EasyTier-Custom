@@ -123,14 +123,6 @@ export async function patchLocalConfig(request: LocalConfigs.LocalConfigPatchReq
   return invoke<LocalConfigs.LocalConfigPatchResult>('patch_local_config', { request: { ...request, inst_id: Utils.StrToUuid(request.inst_id) } })
 }
 
-export async function setLocalConfigEnabled(instanceId: string, expectedRevision: string, enabled: boolean) {
-  return invoke<void>('set_local_config_enabled', { instanceId, expectedRevision, enabled })
-}
-
-export async function removeLocalConfig(instanceId: string, expectedRevision: string) {
-  return invoke<void>('remove_local_config', { instanceId, expectedRevision })
-}
-
 export async function getConfig(instanceId: string, normalize = true) {
   const config = await invoke<NetworkConfig>('get_config', { instanceId })
   return normalize ? NetworkTypes.normalizeNetworkConfig(config) : config

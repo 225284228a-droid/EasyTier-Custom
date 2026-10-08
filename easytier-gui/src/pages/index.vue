@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
-import { I18nUtils, RemoteManagement, LocalConfigBatch, Utils } from "easytier-frontend-lib"
+import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
 import { useTray } from '~/composables/tray'
 import {
@@ -401,9 +401,6 @@ const remoteClient = computed(() => {
   managementScope.value;
   return new GUIRemoteClient(() => managementScope.value);
 });
-const localConfigClient = computed(() => remoteClient.value.localConfigClient());
-const showLocalConfigs = ref(false);
-watch(managementScope, () => { showLocalConfigs.value = false; });
 const instanceId = ref<string | undefined>(undefined);
 const clientRunning = ref(false);
 
@@ -692,15 +689,7 @@ const configServerConnectionStatus = computed(() => {
 
     <Menu ref="log_menu" :model="log_menu_items_popup" :popup="true" />
 
-    <div v-if="clientRunning" class="flex gap-2 px-3 py-2">
-      <Button :label="t('web.device_management.network_status')" icon="pi pi-sitemap" :outlined="showLocalConfigs"
-        severity="secondary" @click="showLocalConfigs = false" />
-      <Button :label="t('web.local_configs.title')" icon="pi pi-file-edit" :outlined="!showLocalConfigs"
-        severity="secondary" @click="showLocalConfigs = true" />
-    </div>
-    <LocalConfigBatch v-if="clientRunning && showLocalConfigs" :key="managementScope" :client="localConfigClient"
-      class="flex-1 overflow-y-auto p-3" />
-    <RemoteManagement v-else-if="clientRunning" :key="managementScope" class="flex-1 overflow-y-auto" :api="remoteClient"
+    <RemoteManagement v-if="clientRunning" :key="managementScope" class="flex-1 overflow-y-auto" :api="remoteClient"
       :scope-key="managementScope" :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" />
     <div v-else class="empty-state flex-1 flex flex-col items-center py-12">
       <i class="pi pi-server text-5xl text-secondary mb-4 opacity-50"></i>

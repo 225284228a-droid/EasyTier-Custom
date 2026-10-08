@@ -576,42 +576,6 @@ export class ApiClient {
         if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
         return this.machineCapabilities.get(machine_id) ?? [];
     }
-    public async list_local_configs(): Promise<LocalConfigs.LocalConfigMachine[]> {
-        const scope = this.persistenceScope;
-        const [snapshot, devices] = await Promise.allSettled([
-            this.client.get<any, { machines: LocalConfigs.LocalConfigMachine[] }>('/local-configs'),
-            this.list_machines({ timeout: 8_000 }),
-        ]);
-        if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
-        if (snapshot.status === 'rejected') throw snapshot.reason;
-        const names = new Map(devices.status === 'fulfilled' ? devices.value.map(device => [
-            Utils.UuidToStr(device.info?.machine_id ?? device.machine_id), device.alias || device.info?.hostname,
-        ]) : []);
-        return snapshot.value.machines.map(machine => ({ ...machine, hostname: machine.hostname || names.get(machine.machine_id) }));
-    }
-    public async observe_local_configs(machine_id: string): Promise<LocalConfigs.LocalConfigSnapshot> {
-        const scope = this.persistenceScope;
-        const response = await this.client.get<any, LocalConfigs.LocalConfigSnapshot>(`/machines/${machine_id}/local-configs`);
-        if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
-        this.machineCapabilities.set(machine_id, response.capabilities ?? []);
-        return response;
-    }
-    public async patch_local_config(machine_id: string, request: LocalConfigs.LocalConfigPatchRequest): Promise<LocalConfigs.LocalConfigSnapshot | LocalConfigs.LocalConfigPatchResult> {
-        return await this.client.post(`/machines/${machine_id}/local-configs/patch`, { ...request, inst_id: Utils.StrToUuid(request.inst_id) });
-    }
-    public get_local_config_client(): LocalConfigs.LocalConfigClient {
-        const api = this;
-        const scope = api.persistenceScope;
-        const ensureScope = () => { if (scope !== api.persistenceScope) throw new Error('Connection scope changed'); };
-        return {
-            get scope() { return api.persistenceScope; },
-            list: () => api.list_local_configs(),
-            observe: id => api.observe_local_configs(id),
-            patch: (id, request) => { ensureScope(); return api.patch_local_config(id, request); },
-            setEnabled: async (id, instanceId, expected_revision, enabled) => { ensureScope(); return await api.client.post(`/machines/${id}/local-configs/${instanceId}/enabled`, { expected_revision, enabled }); },
-            remove: async (id, instanceId, expected_revision) => { ensureScope(); return await api.client.delete(`/machines/${id}/local-configs/${instanceId}`, { data: { expected_revision } }); },
-        };
-    }
     public get_remote_client(machine_id: string): Api.RemoteClient {
         return new WebRemoteClient(machine_id, this.client, () => this.runtime_capabilities(machine_id), () => this.persistenceScope);
     }

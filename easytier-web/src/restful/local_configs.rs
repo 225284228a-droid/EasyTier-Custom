@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use easytier::proto::api::manage::PatchPersistedConfigRequest;
 use uuid::Uuid;
@@ -12,11 +12,6 @@ use crate::{
     client_manager::session::local_configs::LocalConfigError,
     db::local_config_mirror::LocalConfigMirror,
 };
-
-#[derive(serde::Serialize)]
-struct Mirrors {
-    machines: Vec<LocalConfigMirror>,
-}
 
 pub(super) fn failure(error: LocalConfigError) -> HttpHandleError {
     let (status, code, revision) = match &error {
@@ -61,18 +56,6 @@ pub(super) fn failure(error: LocalConfigError) -> HttpHandleError {
     )
 }
 
-async fn list(
-    auth: AuthSession,
-    State(manager): State<AppStateInner>,
-) -> Result<Json<Mirrors>, HttpHandleError> {
-    let user = authed_user_id(&auth)?;
-    let machines = manager
-        .local_config_mirrors(user)
-        .await
-        .map_err(|_| failure(LocalConfigError::Observation))?;
-    Ok(Json(Mirrors { machines }))
-}
-
 async fn observe(
     auth: AuthSession,
     State(manager): State<AppStateInner>,
@@ -111,69 +94,11 @@ async fn patch(
     ))
 }
 
-#[derive(serde::Deserialize)]
-struct LifecycleRequest {
-    expected_revision: String,
-    enabled: Option<bool>,
-}
-
-async fn set_enabled(
-    auth: AuthSession,
-    State(manager): State<AppStateInner>,
-    Path((machine, instance)): Path<(Uuid, Uuid)>,
-    Json(request): Json<LifecycleRequest>,
-) -> Result<Json<LocalConfigMirror>, HttpHandleError> {
-    let enabled = request
-        .enabled
-        .ok_or_else(|| failure(LocalConfigError::Invalid))?;
-    Ok(Json(
-        manager
-            .mutate_local_config_lifecycle(
-                authed_user_id(&auth)?,
-                machine,
-                instance,
-                request.expected_revision,
-                Some(enabled),
-            )
-            .await
-            .map_err(failure)?,
-    ))
-}
-
-async fn remove(
-    auth: AuthSession,
-    State(manager): State<AppStateInner>,
-    Path((machine, instance)): Path<(Uuid, Uuid)>,
-    Json(request): Json<LifecycleRequest>,
-) -> Result<Json<LocalConfigMirror>, HttpHandleError> {
-    Ok(Json(
-        manager
-            .mutate_local_config_lifecycle(
-                authed_user_id(&auth)?,
-                machine,
-                instance,
-                request.expected_revision,
-                None,
-            )
-            .await
-            .map_err(failure)?,
-    ))
-}
-
 pub(super) fn router() -> Router<AppStateInner> {
     Router::new()
-        .route("/api/v1/local-configs", get(list))
         .route("/api/v1/machines/{machine}/local-configs", get(observe))
         .route(
             "/api/v1/machines/{machine}/local-configs/patch",
             post(patch),
-        )
-        .route(
-            "/api/v1/machines/{machine}/local-configs/{instance}/enabled",
-            post(set_enabled),
-        )
-        .route(
-            "/api/v1/machines/{machine}/local-configs/{instance}",
-            delete(remove),
         )
 }

@@ -865,7 +865,7 @@ async fn clearing_stopped_file_permissions_restores_editability() {
     assert!(restored.entries[0].persisted_toml.is_some());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn periodic_observation_refreshes_without_a_read_request_or_starting_instances() {
     let (manager, files, _rpc) = fixture();
     let id = uuid::Uuid::new_v4();
@@ -902,9 +902,40 @@ async fn periodic_observation_refreshes_without_a_read_request_or_starting_insta
         .lock()
         .unwrap()
         .insert(path(id), initial(id, "manual").into_bytes());
-    let after = wait_for_hostname("manual").await;
+    tokio::time::sleep(std::time::Duration::from_secs(29)).await;
+    assert_eq!(
+        manager.local_config_catalog().snapshot(),
+        before,
+        "manual edits must not trigger a periodic scan before 30 seconds"
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let after = manager.local_config_catalog().snapshot();
+    assert_eq!(
+        after.entries[0]
+            .config
+            .as_ref()
+            .unwrap()
+            .hostname
+            .as_deref(),
+        Some("manual"),
+        "the periodic scan must publish the edit after 30 seconds"
+    );
     assert!(after.catalog_generation > before.catalog_generation);
     assert_ne!(after.entries[0].revision, before.entries[0].revision);
+
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), initial(id, "notified").into_bytes());
+    let notified_at = tokio::time::Instant::now();
+    manager.local_config_catalog().request_refresh();
+    let notified = wait_for_hostname("notified").await;
+    assert!(notified.catalog_generation > after.catalog_generation);
+    assert!(
+        notified_at.elapsed() < std::time::Duration::from_secs(1),
+        "management notifications must refresh without waiting for the next scan"
+    );
     assert!(manager.instance_ids().is_empty());
 }
 

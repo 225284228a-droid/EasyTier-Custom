@@ -86,7 +86,6 @@ declare global {
   const readonly: typeof import('vue')['readonly']
   const ref: typeof import('vue')['ref']
   const remoteConfigKey: typeof import('./composables/remote_configs')['remoteConfigKey']
-  const removeLocalConfig: typeof import('./composables/backend')['removeLocalConfig']
   const removeVpnPortalClient: typeof import('./composables/backend')['removeVpnPortalClient']
   const resolveComponent: typeof import('vue')['resolveComponent']
   const resolveSharedConfigDir: typeof import('./composables/backend')['resolveSharedConfigDir']
@@ -97,7 +96,6 @@ declare global {
   const saveNetworkConfig: typeof import('./composables/backend')['saveNetworkConfig']
   const sendConfigs: typeof import('./composables/backend')['sendConfigs']
   const setActivePinia: typeof import('pinia')['setActivePinia']
-  const setLocalConfigEnabled: typeof import('./composables/backend')['setLocalConfigEnabled']
   const setLoggingLevel: typeof import('./composables/backend')['setLoggingLevel']
   const setMapStoreSuffix: typeof import('pinia')['setMapStoreSuffix']
   const setMobileVpnTileActionHandler: typeof import('./composables/mobile_vpn')['setMobileVpnTileActionHandler']
@@ -230,7 +228,6 @@ declare module 'vue' {
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
     readonly remoteConfigKey: UnwrapRef<typeof import('./composables/remote_configs')['remoteConfigKey']>
-    readonly removeLocalConfig: UnwrapRef<typeof import('./composables/backend')['removeLocalConfig']>
     readonly removeVpnPortalClient: UnwrapRef<typeof import('./composables/backend')['removeVpnPortalClient']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
     readonly resolveSharedConfigDir: UnwrapRef<typeof import('./composables/backend')['resolveSharedConfigDir']>
@@ -241,7 +238,6 @@ declare module 'vue' {
     readonly saveNetworkConfig: UnwrapRef<typeof import('./composables/backend')['saveNetworkConfig']>
     readonly sendConfigs: UnwrapRef<typeof import('./composables/backend')['sendConfigs']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
-    readonly setLocalConfigEnabled: UnwrapRef<typeof import('./composables/backend')['setLocalConfigEnabled']>
     readonly setLoggingLevel: UnwrapRef<typeof import('./composables/backend')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
     readonly setMobileVpnTileActionHandler: UnwrapRef<typeof import('./composables/mobile_vpn')['setMobileVpnTileActionHandler']>

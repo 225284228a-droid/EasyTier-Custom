@@ -61,19 +61,6 @@ describe('dashboard API request limits', () => {
     expect(client.post).toHaveBeenCalledWith('/machines/node-a/networks/info', {}, options)
   })
 
-  it('keeps cached config liveness and capabilities when joining device names', async () => {
-    const api = new ApiClient('http://localhost')
-    const id = '00000000-0000-0000-0000-000000000001'
-    const snapshot = { machine_id: id, entries: [], online: false, stale: true, capabilities: ['management:persisted-config-revision-v1'] }
-    client.get.mockImplementation(path => Promise.resolve(path === '/local-configs'
-      ? { machines: [snapshot] }
-      : { machines: [{ info: { machine_id: id, hostname: 'node-name' }, alias: 'Node alias', online: true }] }))
-    expect(await api.list_local_configs()).toEqual([{ ...snapshot, hostname: 'Node alias' }])
-    client.get.mockImplementation(path => path === '/local-configs'
-      ? Promise.resolve({ machines: [snapshot] }) : Promise.reject(new Error('metadata unavailable')))
-    expect(await api.list_local_configs()).toEqual([{ ...snapshot, hostname: undefined }])
-  })
-
   it('filters extension fields per target while retaining standard WS/WSS transports', async () => {
     const api = new ApiClient('http://localhost')
     const id = '00000000-0000-0000-0000-000000000001'
@@ -139,13 +126,13 @@ describe('dashboard API request limits', () => {
   it('encodes patch UUIDs for protobuf JSON and carries lifecycle revisions', async () => {
     const api = new ApiClient('http://localhost')
     const id = '00000000-0000-0000-0000-000000000001'
-    const local = api.get_local_config_client()
-    await local.patch(id, { inst_id: id, expected_revision: 'own-revision', field_mask: ['hostname'], config: { hostname: 'edited' }, apply_mode: 1 })
+    const remote = api.get_remote_client(id)
+    await remote.patch_local_config!({ inst_id: id, expected_revision: 'own-revision', field_mask: ['hostname'], config: { hostname: 'edited' }, apply_mode: 1 })
     expect(client.post.mock.calls[0][1]).toMatchObject({ inst_id: { part1: 0, part2: 0, part3: 0, part4: 1 }, expected_revision: 'own-revision', field_mask: ['hostname'], apply_mode: 1 })
-    await local.setEnabled!(id, id, 'new-revision', true)
-    expect(client.post.mock.calls[1][1]).toEqual({ expected_revision: 'new-revision', enabled: true })
-    await local.remove!(id, id, 'delete-revision')
-    expect(client.delete.mock.calls[0][1]).toEqual({ data: { expected_revision: 'delete-revision' } })
+    await remote.update_network_instance_state(id, false, 'new-revision')
+    expect(client.put).toHaveBeenCalledWith(`/machines/${id}/networks/${id}`, { expected_revision: 'new-revision', disabled: false })
+    await remote.delete_network(id, 'delete-revision')
+    expect(client.delete).toHaveBeenCalledWith(`/machines/${id}/networks/${id}`, { params: { expected_revision: 'delete-revision' } })
   })
 
   it('separates account scopes and clears the scope on an authentication failure', async () => {

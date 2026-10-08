@@ -141,31 +141,6 @@ impl Db {
                 .map_err(sqlx_db_error)?;
         row.map(decode_row).transpose()
     }
-
-    pub(crate) async fn local_config_mirrors(
-        &self,
-        user_id: UserIdInDb,
-    ) -> Result<Vec<LocalConfigMirror>, DbErr> {
-        sqlx::query("SELECT * FROM local_config_snapshots WHERE user_id = ? ORDER BY device_id")
-            .bind(user_id)
-            .fetch_all(&self.db)
-            .await
-            .map_err(sqlx_db_error)?
-            .into_iter()
-            .map(decode_row)
-            .collect()
-    }
-
-    pub(crate) async fn has_local_config_mirror(
-        &self,
-        user_id: UserIdInDb,
-        machine_id: Uuid,
-    ) -> Result<bool, DbErr> {
-        Ok(self
-            .local_config_mirror(user_id, machine_id)
-            .await?
-            .is_some())
-    }
 }
 
 #[cfg(test)]
@@ -271,7 +246,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(db.local_config_mirrors(other.id).await.unwrap().is_empty());
         // Session counters restart when the web server restarts. Its independent
         // observer epoch permits a fresh connection to replace the old mirror.
         assert!(

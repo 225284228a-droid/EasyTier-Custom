@@ -2,7 +2,7 @@ import { NetworkConfig as NetworkConfigPb } from '../generated/proto/api_manage'
 import { normalizeNetworkConfig, toBackendNetworkConfig, type NetworkConfig } from '../types/network'
 import { type UUID, UuidToStr } from './utils'
 import { ConfigFilePermission } from './api'
-import { assertLocalConfigApplyCapability, assertPatchCapabilities, configFieldSupported, LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from './capabilities'
+import { assertLocalConfigApplyCapability, assertPatchCapabilities, configFieldSupported, LOCAL_CONFIG_REVISION_CAPABILITY } from './capabilities'
 
 export enum LocalConfigApplyMode {
   SaveAndApply = 0,
@@ -37,11 +37,6 @@ export interface LocalConfigSnapshot {
   observed_at?: string
 }
 
-export interface LocalConfigMachine extends LocalConfigSnapshot {
-  machine_id: string
-  hostname?: string
-}
-
 export interface LocalConfigPatchRequest {
   inst_id: string
   expected_revision: string
@@ -59,15 +54,6 @@ export interface LocalConfigPatchResult {
   snapshot?: LocalConfigSnapshot
 }
 
-export interface LocalConfigClient {
-  readonly scope: string
-  list(): Promise<LocalConfigMachine[]>
-  observe(machineId: string): Promise<LocalConfigSnapshot>
-  patch(machineId: string, request: LocalConfigPatchRequest): Promise<LocalConfigPatchResult | LocalConfigSnapshot>
-  setEnabled?(machineId: string, instanceId: string, expectedRevision: string, enabled: boolean): Promise<LocalConfigPatchResult | LocalConfigSnapshot>
-  remove?(machineId: string, instanceId: string, expectedRevision: string): Promise<LocalConfigPatchResult | LocalConfigSnapshot>
-}
-
 const NON_EDIT_FIELDS = new Set(['instance_id', 'advanced_settings', 'networking_method', 'public_server_url'])
 const EDIT_FIELDS = new Set(NetworkConfigPb.fields.map(field => field.name).filter(field => !NON_EDIT_FIELDS.has(field)))
 
@@ -80,11 +66,6 @@ export function localConfigEditable(snapshot: LocalConfigSnapshot, entry: LocalC
     && (snapshot.support_local_config_revision === true || snapshot.capabilities.includes(LOCAL_CONFIG_REVISION_CAPABILITY))
     && entry.status === 'ready' && !!entry.revision && !!entry.config
     && ConfigFilePermission.isEditable(entry.config_permission ?? 0)
-}
-
-export function localConfigApplyAvailable(snapshot: LocalConfigSnapshot, entry: LocalConfigEntry): boolean {
-  return localConfigEditable(snapshot, entry) && entry.running && entry.pending_apply
-    && snapshot.capabilities.includes(LOCAL_CONFIG_APPLY_CAPABILITY)
 }
 
 /** Apply this observed revision on the node, without copying a typed projection over its TOML. */

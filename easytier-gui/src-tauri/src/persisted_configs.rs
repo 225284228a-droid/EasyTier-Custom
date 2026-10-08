@@ -80,7 +80,6 @@ fn validate_patch_capabilities(
     Ok(())
 }
 
-#[tauri::command]
 pub(crate) async fn set_local_config_enabled(
     instance_id: String,
     expected_revision: String,
@@ -89,7 +88,6 @@ pub(crate) async fn set_local_config_enabled(
     lifecycle(instance_id, expected_revision, Some(enabled)).await
 }
 
-#[tauri::command]
 pub(crate) async fn remove_local_config(
     instance_id: String,
     expected_revision: String,

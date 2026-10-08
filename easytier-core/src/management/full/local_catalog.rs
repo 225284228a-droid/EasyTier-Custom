@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-pub const CATALOG_SCAN_INTERVAL: Duration = Duration::from_secs(2);
+pub const CATALOG_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Shared across RPC registries and reverse connections of one node.
 pub struct LocalConfigCatalog {

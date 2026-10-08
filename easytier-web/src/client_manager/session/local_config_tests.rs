@@ -168,8 +168,10 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
     let machine = uuid::Uuid::new_v4();
     let directory = PathBuf::from("mirror-fixture");
     let path = directory.join(format!("{id}.toml"));
+    // Preserve a field outside NetworkConfig without requiring a real Linux
+    // network namespace when this fixture is enabled later in the test.
     let initial = format!(
-        "# preserve comment\ninstance_id = '{id}'\nhostname = 'base'\nnetns = 'keep-me'\n[network_identity]\nnetwork_name = 'mesh'\nnetwork_secret = 'secret'\n[flags]\nno_tun = true\n"
+        "# preserve comment\ninstance_id = '{id}'\nhostname = 'base'\nunmodeled = 'keep-me'\n[network_identity]\nnetwork_name = 'mesh'\nnetwork_secret = 'secret'\n[flags]\nno_tun = true\n"
     );
     let files = Arc::new(Files::default());
     files
@@ -245,7 +247,7 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
     assert!(!saved.entries[0].enabled && !saved.entries[0].running);
     assert!(manager.instance_ids().is_empty());
     let raw = String::from_utf8(files.read(&path).await.unwrap().unwrap()).unwrap();
-    assert!(raw.contains("# preserve comment") && raw.contains("netns = 'keep-me'"));
+    assert!(raw.contains("# preserve comment") && raw.contains("unmodeled = 'keep-me'"));
     // External edits bypass the mutation lock. The periodic directory scan,
     // rather than an explicit Observe RPC, must discover this change.
     let edit_started = tokio::time::Instant::now();
@@ -253,7 +255,9 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
         path.clone(),
         initial.replace("'base'", "'manual'").into_bytes(),
     );
-    let manual = tokio::time::timeout(Duration::from_secs(5), async {
+    // Allow the 30-second node scan plus scheduling headroom. Mirror delivery
+    // still has its separate ten-second deadline after the new heartbeat.
+    let manual = tokio::time::timeout(Duration::from_secs(35), async {
         loop {
             let snapshot = manager.local_config_catalog().snapshot();
             if snapshot.catalog_generation > saved.catalog_generation {
@@ -263,7 +267,7 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
         }
     })
     .await
-    .unwrap();
+    .expect("the node's 30-second directory scan must observe manual edits");
     send_heartbeat(&rpc1, machine, &manual).await;
     send_heartbeat(&rpc2, machine, &manual).await;
     await_mirrors(
@@ -274,7 +278,7 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
         "manual",
     )
     .await;
-    assert!(edit_started.elapsed() < Duration::from_secs(10));
+    assert!(edit_started.elapsed() < Duration::from_secs(45));
     assert!(manager.instance_ids().is_empty());
     let started = first
         .mutate_local_config_lifecycle(id, manual.entries[0].revision.clone(), Some(true))

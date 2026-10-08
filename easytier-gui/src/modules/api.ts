@@ -122,28 +122,4 @@ export class GUIRemoteClient implements Api.RemoteClient {
         return backend.patchLocalConfig(request);
     }
 
-    localConfigClient(): LocalConfigs.LocalConfigClient {
-        const remote = this;
-        return {
-            get scope() { return remote.scope; },
-            async list() {
-                await remote.list_network_instance_ids();
-                if (!remote.supportsRevision) return [];
-                return [{ ...await remote.observe_local_configs(), machine_id: 'current' }];
-            },
-            observe: () => remote.observe_local_configs(),
-            patch: (_machineId, request) => remote.patch_local_config(request),
-            setEnabled: async (_machineId, instanceId, revision, enabled) => {
-                remote.ensureScope();
-                await backend.setLocalConfigEnabled(instanceId, revision, enabled);
-                return { status: 0 };
-            },
-            remove: async (_machineId, instanceId, revision) => {
-                remote.ensureScope();
-                await backend.removeLocalConfig(instanceId, revision);
-                return { status: 0 };
-            },
-        };
-    }
-
 }

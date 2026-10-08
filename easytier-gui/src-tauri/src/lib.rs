@@ -2904,8 +2904,6 @@ pub fn run_gui() -> std::process::ExitCode {
         .invoke_handler(tauri::generate_handler![
             persisted_configs::observe_local_configs,
             persisted_configs::patch_local_config,
-            persisted_configs::set_local_config_enabled,
-            persisted_configs::remove_local_config,
             parse_network_config,
             generate_network_config,
             run_network_instance,

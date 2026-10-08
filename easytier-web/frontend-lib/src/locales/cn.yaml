@@ -375,49 +375,21 @@ event:
 
 web:
   local_configs:
-    title: 本地配置
-    description: 在线读取设备的本地配置，按所选字段逐个保存。离线设备仅供查看，不会排队下发。保存并应用只应用正在运行的实例；停用实例须明确启用。
     save_apply: 保存并应用
     apply_saved: 应用已保存配置
     apply_unsupported: 此节点不支持直接应用已保存配置，请升级节点后再应用。
-    persist_only: 仅保存
-    select: 选择
-    device: 设备
-    state: 状态
-    actions: 操作
-    online: 在线
-    offline: 离线
-    stale: 缓存过期
-    ready: 可编辑
     protected: 受保护
     invalid: 配置无效
-    missing: 文件缺失
-    identity_conflict: 实例 ID 冲突
-    running: 运行中
-    stopped: 已停止
-    disabled: 已停用
     pending_apply: 尚未应用
-    empty: 没有可用的本地配置快照
-    edit_selected: 编辑已选的 {count} 项
-    editing: 正在编辑 {count} 项
     reread: 重新读取 revision
     dirty_preserved: 刷新不会覆盖未保存的修改。遇到冲突时请重新读取 revision，核对修改后再次保存。
-    fields: 只保存勾选的改动字段
-    no_changes: 尚未修改字段
     unavailable: 配置当前不可写，请确认设备在线、权限及最新快照。
-    unsupported_fields: '设备不支持这些字段，已跳过：{fields}'
     success: 成功
-    partial: 部分成功
-    failed: 失败
     conflict: 配置已变化，请重新读取 revision
     not_found: 配置不存在
     apply_failed: 已保存，应用失败
     unsupported: 设备不支持此管理功能
     unknown: 保存结果未知，请重新读取确认
-    enable: 启用
-    disable: 停用
-    delete: 删除
-    confirm_delete: 确认删除
   console:
     theme_mode: 主题（浅色 / 深色 / 跟随系统）
     location: "位置"

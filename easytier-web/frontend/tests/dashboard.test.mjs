@@ -45,7 +45,7 @@ function fixture() {
         online_member_count: 1, member_count: 2, network_secret: 'test-secret', peer_urls: i === 0 ? [] : ['tcp://192.0.2.1:11010'],
     }));
     const members = [{ member_id: id(101), device_id: id(1), hostname: 'Amsterdam gateway', hostname_override: null, virtual_ipv4: '10.126.126.1', online: true, running: true, version: '2.4.5', error_msg: null, runtime_virtual_ipv4: '10.126.126.1' }];
-    return { machines, networks, members, localMachines: [], localConflict: false, memberConfig: {}, aclPolicy: { default_action: 'allow', rules: [] }, credentials: [], temporaryPeers: [], nodeRoutes: [], nodePeers: [], nodeAclStats: [], loggerConfig: { level: 'INFO' }, writes: [], requests: [], failures: new Set(), gatewayDelay: 0, gatewayEnabled: true };
+    return { machines, networks, members, memberConfig: {}, aclPolicy: { default_action: 'allow', rules: [] }, credentials: [], temporaryPeers: [], nodeRoutes: [], nodePeers: [], nodeAclStats: [], loggerConfig: { level: 'INFO' }, writes: [], requests: [], failures: new Set(), gatewayDelay: 0, gatewayEnabled: true };
 }
 
 async function open(t, route = '/h', options = {}, configure = () => {}) {
@@ -85,19 +85,6 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
         if (state.failures.has(path)) return route.fulfill({ status: 503, json: { message: 'Test unavailable' } });
         let result = {};
         if (path === '/summary') result = { device_count: state.machines.length };
-        else if (path === '/local-configs') result = { machines: state.localMachines };
-        else if (/^\/machines\/[^/]+\/local-configs(?:\/patch)?$/.test(path)) {
-            const machine = state.localMachines.find(machine => machine.machine_id === path.split('/')[2]);
-            if (method === 'POST') {
-                if (!machine.online) return route.fulfill({ status: 503, json: { message: 'Device offline' } });
-                if (state.localConflict) return route.fulfill({ status: 409, json: { message: 'Configuration changed; reread revisions' } });
-                const entry = machine.entries[0];
-                for (const field of payload.field_mask) entry.config[field] = payload.config[field];
-                entry.revision = `${entry.revision}-saved`;
-                machine.catalog_generation++;
-            }
-            result = machine;
-        }
         else if (path === '/console-info') result = { username: 'test-user', config_server_protocol: 'udp', config_server_port: 22020, webhook_auth: state.externalConsole ?? false };
         else if (path === '/machines') result = { machines: state.machines };
         else if (path === '/networks/gateway-info') {
@@ -171,67 +158,12 @@ test('overview uses real counts and recovers from partial refresh failures', asy
     assert.equal(await page.getByText('Unable to refresh data.', { exact: false }).count(), 0);
 });
 
-function localMachine(number, hostname, capabilities = [], online = true) {
-    return { machine_id: id(number), hostname, online, stale: !online,
-        capabilities: ['management:persisted-config-revision-v1', ...capabilities],
-        catalog_epoch: 'boot-a', catalog_generation: 1,
-        entries: [{ entry_key: `${hostname}.toml`, inst_id: uuid(number + 100), revision: `${hostname}-revision`,
-            config: { instance_id: id(number + 100), network_name: 'local-mesh', network_secret: 'secret', hostname: 'original-host', listener_urls: [], peer_urls: [] },
-            config_permission: 0, enabled: true, running: true, persisted_raw_hash: 'a', pending_apply: false,
-            status: 'ready', network_name: 'local-mesh', source: 'ConfigSourceUser' }] };
-}
-
-test('local batch saves selected fields per target capability and displays offline snapshots', async t => {
-    const { page, state } = await open(t, '/h/local-configs', {}, state => {
-        state.localMachines = [localMachine(1, 'custom-node', ['config:sni']), localMachine(2, 'standard-node'), localMachine(3, 'offline-node', [], false)];
-    });
-    const boxes = page.locator('.config-table tbody input[type="checkbox"]');
-    await boxes.nth(0).check();
-    await boxes.nth(1).check();
-    assert.equal(await boxes.nth(2).isDisabled(), true);
-    await page.getByRole('button', { name: 'Edit 2 selected configurations', exact: true }).click();
-    await page.getByRole('button', { name: 'Advanced Settings', exact: true }).click();
-    await page.locator('#hostname').fill('edited-host');
-    await page.locator('#sni').fill('cover.example.test');
-    await page.locator('.p-selectbutton').getByRole('button', { name: 'Save only', exact: true }).click();
-    await page.locator('.frontend-lib').getByRole('button', { name: 'Save only', exact: true }).click();
-    await page.locator('.result-partial').waitFor();
-    const patches = state.writes.filter(write => write.path.endsWith('/local-configs/patch'));
-    assert.equal(patches.length, 2);
-    const custom = patches.find(write => write.path.includes(id(1))).payload;
-    const standard = patches.find(write => write.path.includes(id(2))).payload;
-    assert.deepEqual(custom.field_mask.sort(), ['hostname', 'sni']);
-    assert.deepEqual(standard.field_mask, ['hostname']);
-    assert.equal(custom.apply_mode, 1);
-    assert.equal(standard.expected_revision, 'standard-node-revision');
-    assert.deepEqual(standard.inst_id, uuid(102));
-    assert.deepEqual(standard.config, { hostname: 'edited-host' });
-    assert.equal(await page.locator('#hostname').inputValue(), 'edited-host');
-    if (screenshotDir) await page.screenshot({ path: `${screenshotDir}/local-config-batch.png`, fullPage: true, animations: 'disabled' });
-});
-
-test('local batch keeps dirty values and CAS tokens until an explicit revision reread', async t => {
-    const { page, state } = await open(t, '/h/local-configs', {}, state => {
-        state.localMachines = [localMachine(1, 'conflict-node')];
-        state.localConflict = true;
-    });
-    await page.locator('.config-table tbody input[type="checkbox"]').check();
-    await page.getByRole('button', { name: 'Edit 1 selected configurations', exact: true }).click();
-    await page.locator('#network_name').fill('private-unsaved-edit');
-    const save = page.locator('.frontend-lib').getByRole('button', { name: 'Save and apply', exact: true });
-    await save.click();
-    await page.locator('.result-failed').waitFor();
-    state.localMachines[0].entries[0].revision = 'fresh-revision';
-    await refresh(page);
-    await save.click();
-    await page.waitForFunction(() => document.querySelector('.result-failed')?.textContent.includes('reread revisions'));
-    assert.equal(state.writes.filter(write => write.path.endsWith('/local-configs/patch')).at(-1).payload.expected_revision, 'conflict-node-revision');
-    assert.equal(await page.locator('#network_name').inputValue(), 'private-unsaved-edit');
-    await page.getByRole('button', { name: 'Reread revisions', exact: true }).click();
-    state.localConflict = false;
-    await save.click();
-    await page.locator('.result-success').waitFor();
-    assert.equal(state.writes.filter(write => write.path.endsWith('/local-configs/patch')).at(-1).payload.expected_revision, 'fresh-revision');
+test('removed local configuration page falls back to the dashboard without a navigation entry', async t => {
+    const { page, state } = await open(t, '/h/local-configs');
+    await page.waitForURL(url => url.hash === '#/h');
+    await page.locator('.summary-value').first().waitFor();
+    assert.equal(await page.getByRole('link', { name: 'Local configurations', exact: true }).count(), 0);
+    assert.equal(state.requests.some(request => request.path === '/local-configs'), false);
 });
 
 test('central node detail uses live directional bandwidth and combined traffic totals', async t => {

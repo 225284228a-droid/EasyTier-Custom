@@ -223,19 +223,6 @@ impl Session {
         data.auth_state.is_authorized() && data.req.as_ref().is_some_and(supports_revision)
     }
 
-    pub(crate) async fn local_catalog_binding(&self) -> Option<(String, u64, Vec<String>)> {
-        let data = self.data.read().await;
-        if !data.auth_state.is_authorized() {
-            return None;
-        }
-        let req = data.req.as_ref().filter(|req| supports_revision(req))?;
-        Some((
-            req.local_config_catalog_epoch.clone(),
-            req.local_config_catalog_generation,
-            req.runtime_capabilities.clone(),
-        ))
-    }
-
     pub(crate) async fn patch_local_config(
         &self,
         request: PatchPersistedConfigRequest,

@@ -21,7 +21,7 @@ describe('GUI management bridge capabilities and revisions', () => {
       : command === 'observe_local_configs' ? { catalog_epoch: 'boot-a', catalog_generation: '1', entries: [] } : { status: 'Success' })
     const api = new GUIRemoteClient()
     expect((await api.observe_local_configs()).capabilities).toContain(Capabilities.LOCAL_CONFIG_APPLY_CAPABILITY)
-    await api.localConfigClient().patch('current', LocalConfigs.buildLocalConfigApplyRequest({ inst_id: id, revision: 'observed-revision' },
+    await api.patch_local_config(LocalConfigs.buildLocalConfigApplyRequest({ inst_id: id, revision: 'observed-revision' },
       [Capabilities.LOCAL_CONFIG_APPLY_CAPABILITY]))
     expect(invoke).toHaveBeenCalledWith('patch_local_config', { request: { ...request, inst_id: { part1: 0, part2: 0, part3: 0, part4: 1 } } })
   })
@@ -56,8 +56,10 @@ describe('GUI management bridge capabilities and revisions', () => {
     await api.patch_local_config({ inst_id: id, expected_revision: 'revision-a', field_mask: ['hostname'], config: { hostname: 'edited' }, apply_mode: 1 })
     const args = invoke.mock.calls.find(([command]) => command === 'patch_local_config')![1]
     expect(args.request).toEqual({ inst_id: { part1: 0, part2: 0, part3: 0, part4: 1 }, expected_revision: 'revision-a', field_mask: ['hostname'], config: { hostname: 'edited' }, apply_mode: 1 })
-    expect(await api.localConfigClient().setEnabled!('current', id, 'revision-b', true)).toEqual({ status: 0 })
-    expect(invoke).toHaveBeenCalledWith('set_local_config_enabled', { instanceId: id, expectedRevision: 'revision-b', enabled: true })
+    expect(await api.update_network_instance_state(id, false, 'revision-b')).toBeUndefined()
+    expect(invoke).toHaveBeenCalledWith('update_network_config_state', { instanceId: id, expectedRevision: 'revision-b', disabled: false })
+    expect(await api.delete_network(id, 'revision-c')).toBeUndefined()
+    expect(invoke).toHaveBeenCalledWith('remove_network_instance', { instanceId: id, expectedRevision: 'revision-c' })
   })
 
   it('blocks an old-node extension patch and a pending write after switching the active connection', async () => {

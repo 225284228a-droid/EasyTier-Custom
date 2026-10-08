@@ -16,7 +16,6 @@ import Login from './components/Login.vue'
 import DeviceList from './components/DeviceList.vue'
 import DeviceManagement from './components/DeviceManagement.vue'
 import Dashboard from './components/Dashboard.vue'
-import LocalConfigs from './components/LocalConfigs.vue'
 import NetworkList from './components/NetworkList.vue'
 import NetworkDetail from './components/NetworkDetail.vue'
 import DialogService from 'primevue/dialogservice';
@@ -59,11 +58,6 @@ const routes = [
                         component: DeviceManagement,
                     }
                 ]
-            },
-            {
-                path: 'local-configs',
-                name: 'localConfigs',
-                component: LocalConfigs,
             },
             {
                 path: 'networks',

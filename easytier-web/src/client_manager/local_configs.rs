@@ -23,33 +23,6 @@ impl ClientManager {
             .await?)
     }
 
-    pub(crate) async fn local_config_mirrors(
-        &self,
-        user_id: UserIdInDb,
-    ) -> anyhow::Result<Vec<LocalConfigMirror>> {
-        let mut mirrors = self.storage.db().local_config_mirrors(user_id).await?;
-        for mirror in &mut mirrors {
-            if let Some(session) = self.get_session_by_machine_id(user_id, &mirror.machine_id) {
-                mirror.online = true;
-                if let Some((epoch, generation, capabilities)) =
-                    session.local_catalog_binding().await
-                {
-                    // The background worker keeps the database current. Listing
-                    // all nodes does not serialize a series of remote RPC reads.
-                    mirror.capabilities = capabilities;
-                    mirror.stale = mirror.snapshot.catalog_epoch != epoch
-                        || mirror.snapshot.catalog_generation < generation
-                        || chrono::DateTime::parse_from_rfc3339(&mirror.observed_at)
-                            .map(|time| {
-                                chrono::Utc::now().signed_duration_since(time).num_seconds() > 35
-                            })
-                            .unwrap_or(true);
-                }
-            }
-        }
-        Ok(mirrors)
-    }
-
     pub(crate) async fn patch_local_config(
         &self,
         user_id: UserIdInDb,

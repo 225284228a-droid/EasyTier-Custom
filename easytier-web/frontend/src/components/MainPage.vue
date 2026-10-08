@@ -168,7 +168,6 @@ type NavItem = {
 const workspaceNavigation = computed<NavItem[]>(() => [
     { key: 'dashboard', label: t('web.main.dashboard'), icon: 'pi pi-chart-pie', to: { name: 'dashboard' } },
     { key: 'deviceList', label: t('web.main.device_list'), icon: 'pi pi-server', to: { name: 'deviceList' } },
-    { key: 'localConfigs', label: t('web.local_configs.title'), icon: 'pi pi-file-edit', to: { name: 'localConfigs' } },
 ]);
 const networkNavigation = computed<NavItem[]>(() => [
     { key: 'networkList', label: t('web.main.network_list'), icon: 'pi pi-globe', to: { name: 'networkList' } },

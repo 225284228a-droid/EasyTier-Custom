@@ -1,7 +1,7 @@
 import './style.css'
 
 import type { App } from 'vue';
-import { Config, Status, ConfigEditDialog, RemoteManagement, UrlListInput, LocalConfigBatch } from "./components";
+import { Config, Status, ConfigEditDialog, RemoteManagement, UrlListInput } from "./components";
 import Aura from '@primeuix/themes/aura';
 import PrimeVue from 'primevue/config'
 
@@ -74,4 +74,4 @@ const EasytierFrontendLib: { install: (app: App, options?: FrontendLibOptions) =
 
 export default EasytierFrontendLib;
 
-export { Config, ConfigEditDialog, RemoteManagement, Status, UrlListInput, LocalConfigBatch, I18nUtils, NetworkTypes, Api, Utils, Capabilities, LocalConfigs, StatusDisplay };
+export { Config, ConfigEditDialog, RemoteManagement, Status, UrlListInput, I18nUtils, NetworkTypes, Api, Utils, Capabilities, LocalConfigs, StatusDisplay };
