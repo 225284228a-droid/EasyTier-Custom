@@ -49,4 +49,12 @@ describe('configuration capabilities', () => {
     expect(() => assertLegacyConfigPreservable({ peer_urls: ['http3://saved:443'] }, [HTTP3_CAPABILITY])).not.toThrow()
     expect(() => assertLegacyConfigPreservable({ enable_bbr: false, peer_urls: ['wss://saved:443'] }, [])).not.toThrow()
   })
+
+  it('protects explicitly present false/empty raw overrides without treating legacy defaults as saved extensions', () => {
+    const existing = { enable_bbr: false, sni: '' }
+    expect(() => assertLegacyConfigPreservable(existing, [], true)).toThrow('enable_bbr')
+    expect(() => assertLegacyConfigPreservable(existing, [])).not.toThrow()
+    expect(() => assertLegacyConfigPreservable(existing, ['config:enable_bbr', 'config:sni'], true)).not.toThrow()
+    expect(() => assertLegacyConfigPreservable({}, [], true)).not.toThrow()
+  })
 })

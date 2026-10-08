@@ -381,7 +381,7 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         await loadCurrentNetworkInfo();
     } catch (e: any) {
         console.error(e);
-        toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to run network, error: ' + JSON.stringify(e.response?.data ?? e), life: 2000 });
+        toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to run network, error: ' + formatError(e), life: 2000 });
         return;
     }
 

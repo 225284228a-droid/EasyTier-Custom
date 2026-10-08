@@ -368,6 +368,31 @@ async function openRevision(api: any, instanceId: string | undefined = INSTANCE_
 }
 
 describe('revision-aware RemoteManagement forms', () => {
+  it('shows GUI conflict messages on save-and-start and retains the dirty form and revision', async () => {
+    const { api } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      toastSpy.add.mockClear()
+      api.patch_local_config.mockResolvedValue({ status: 1, message: 'Configuration changed; reread its revision' })
+      const form = wrapper.findComponent(RevisionConfigForm)
+      form.props('curNetwork').hostname = 'unsaved-host'
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({
+        severity: 'error', detail: 'Failed to run network, error: Configuration changed; reread its revision',
+      }))
+      expect(form.props('curNetwork').hostname).toBe('unsaved-host')
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[1][0]).toMatchObject({
+        expected_revision: 'revision-a', field_mask: ['hostname'], config: { hostname: 'unsaved-host' },
+      })
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
+      expect(api.save_config).not.toHaveBeenCalled()
+      expect(api.run_network).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
   it('saves dirty fields only and keeps edits/revision on conflict and status refresh', async () => {
     const { api, entry } = revisionApi()
     const wrapper = await openRevision(api)

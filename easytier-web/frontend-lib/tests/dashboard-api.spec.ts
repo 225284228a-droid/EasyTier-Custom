@@ -59,12 +59,63 @@ describe('dashboard API request limits', () => {
   it('filters extension fields per target while retaining standard WS/WSS transports', async () => {
     const api = new ApiClient('http://localhost')
     const id = '00000000-0000-0000-0000-000000000001'
-    client.get.mockResolvedValue({ machines: [{ info: { machine_id: id, runtime_capabilities: ['config:sni'] } }] })
+    client.get.mockImplementation(async path => path === '/machines'
+      ? { machines: [{ info: { machine_id: id, runtime_capabilities: ['config:sni'] } }] } : {})
     await api.set_member_config('mesh', id, {
       sni: 'example.com', enable_bbr: false, p2p_prefer_protocol: 'tcp',
       listener_urls: ['ws://0.0.0.0:1', 'wss://0.0.0.0:2', 'http3://0.0.0.0:3'],
     })
     expect(client.put.mock.calls[0][1].config).toEqual({ sni: 'example.com', listener_urls: ['ws://0.0.0.0:1', 'wss://0.0.0.0:2'] })
+    expect(client.get).toHaveBeenCalledWith(`/networks/mesh/members/${id}/config`)
+  })
+
+  it.each([
+    { enable_bbr: false },
+    { sni: '' },
+    { p2p_prefer_protocol: 'udp' },
+    { peer_urls: ['http3://saved.example:443'] },
+  ])('refuses central full replacements that would erase an unadvertised raw override: %j', async existing => {
+    const api = new ApiClient('http://localhost')
+    const id = '00000000-0000-0000-0000-000000000001'
+    client.get.mockImplementation(async path => path === '/machines'
+      ? { machines: [{ info: { machine_id: id, runtime_capabilities: [] } }] } : existing)
+    await expect(api.set_member_config('mesh', id, { hostname: 'edited' })).rejects.toThrow('saved custom settings')
+    expect(client.get).toHaveBeenCalledWith(`/networks/mesh/members/${id}/config`)
+    expect(client.put).not.toHaveBeenCalled()
+  })
+
+  it('keeps explicitly supported false/empty overrides in a central replacement', async () => {
+    const api = new ApiClient('http://localhost')
+    const id = '00000000-0000-0000-0000-000000000001'
+    const existing = { enable_bbr: false, sni: '' }
+    client.get.mockImplementation(async path => path === '/machines'
+      ? { machines: [{ info: { machine_id: id, runtime_capabilities: ['config:enable_bbr', 'config:sni'] } }] } : existing)
+    await api.set_member_config('mesh', id, { ...existing, hostname: 'edited' })
+    expect(client.put.mock.calls[0][1].config).toEqual({ ...existing, hostname: 'edited' })
+  })
+
+  it('does not save central overrides if the latest raw configuration cannot be read', async () => {
+    const api = new ApiClient('http://localhost')
+    const id = '00000000-0000-0000-0000-000000000001'
+    client.get.mockImplementation(async path => {
+      if (path === '/machines') return { machines: [{ info: { machine_id: id, runtime_capabilities: [] } }] }
+      throw new Error('configuration unavailable')
+    })
+    await expect(api.set_member_config('mesh', id, { hostname: 'edited' })).rejects.toThrow('configuration unavailable')
+    expect(client.put).not.toHaveBeenCalled()
+  })
+
+  it('rejects a central save when the account changes during the raw configuration read', async () => {
+    const api = new ApiClient('http://localhost')
+    api.set_authenticated_account('alice')
+    const id = '00000000-0000-0000-0000-000000000001'
+    client.get.mockImplementation(async path => {
+      if (path === '/machines') return { machines: [{ info: { machine_id: id, runtime_capabilities: [] } }] }
+      api.set_authenticated_account('bob')
+      return {}
+    })
+    await expect(api.set_member_config('mesh', id, { hostname: 'edited' })).rejects.toThrow('Connection scope changed')
+    expect(client.put).not.toHaveBeenCalled()
   })
 
   it('encodes patch UUIDs for protobuf JSON and carries lifecycle revisions', async () => {

@@ -63,13 +63,20 @@ export function assertPatchCapabilities(
   }
 }
 
-/** A legacy full replacement cannot preserve an existing unadvertised extension. */
-export function assertLegacyConfigPreservable(existing: Partial<NetworkConfig> | undefined, capabilities: readonly string[]): void {
+/** Sparse raw overrides preserve explicit false/empty values; old node reads may contain generated defaults. */
+export function assertLegacyConfigPreservable(
+  existing: Partial<NetworkConfig> | undefined,
+  capabilities: readonly string[],
+  strictPresence = false,
+): void {
   if (!existing) return
   const required: string[] = []
   for (const [field, capability] of Object.entries(CONFIG_FIELD_CAPABILITIES)) {
     const value = existing[field as keyof NetworkConfig]
-    if (!capabilities.includes(capability) && (value === true || (typeof value === 'string' && value.trim() !== ''))) {
+    const present = strictPresence
+      ? Object.prototype.hasOwnProperty.call(existing, field)
+      : value === true || (typeof value === 'string' && value.trim() !== '')
+    if (!capabilities.includes(capability) && present) {
       required.push(field)
     }
   }

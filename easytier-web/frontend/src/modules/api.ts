@@ -473,8 +473,12 @@ export class ApiClient {
 
     public async set_member_config(network_id: string, device_id: string, config: object): Promise<CentralNetworkMember> {
         const scope = this.persistenceScope;
-        const capabilities = await this.runtime_capabilities(device_id);
+        const [capabilities, existing] = await Promise.all([
+            this.runtime_capabilities(device_id),
+            this.get_member_config(network_id, device_id),
+        ]);
         if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
+        Capabilities.assertLegacyConfigPreservable(existing, capabilities, true);
         return await this.client.put(`/networks/${network_id}/members/${device_id}/config`, { config: Capabilities.filterConfigPayload(config, capabilities) });
     }
 
