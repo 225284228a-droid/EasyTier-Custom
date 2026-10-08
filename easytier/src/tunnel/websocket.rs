@@ -31,6 +31,9 @@ use zerocopy::AsBytes as _;
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const SERVER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
+#[cfg(test)]
+mod official_interop;
+
 static TRUSTED_PROXIES: LazyLock<Vec<IpCidr>> = LazyLock::new(|| {
     [
         "127.0.0.0/8",
@@ -132,17 +135,13 @@ impl WssDisguise {
             match key.as_ref() {
                 // An empty `sni`/`host` value means "not set": using it
                 // verbatim would break the TLS SNI and the Host header.
-                "sni" => {
-                    if !value.is_empty() {
-                        disguise.enabled = true;
-                        disguise.sni = Some(value.into_owned());
-                    }
+                "sni" if !value.is_empty() => {
+                    disguise.enabled = true;
+                    disguise.sni = Some(value.into_owned());
                 }
-                "host" => {
-                    if !value.is_empty() {
-                        disguise.enabled = true;
-                        disguise.host = Some(value.into_owned());
-                    }
+                "host" if !value.is_empty() => {
+                    disguise.enabled = true;
+                    disguise.host = Some(value.into_owned());
                 }
                 "path" => {
                     disguise.enabled = true;
