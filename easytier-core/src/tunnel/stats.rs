@@ -72,6 +72,7 @@ pub struct Throughput {
     rx_packets: AtomicU64,
     window_source: Mutex<Option<Arc<dyn TransmissionWindowSource>>>,
     peer_window_report: Mutex<Option<(u64, Instant)>>,
+    tunnel_rtt_us: AtomicU64,
 }
 
 impl Clone for Throughput {
@@ -122,10 +123,31 @@ impl Throughput {
     }
 
     pub(crate) fn record_peer_window_estimate(&self, bps: u64) {
-        *self.peer_window_report.lock().unwrap() = (bps > 0).then(|| (bps, Instant::now()));
+        if bps > 0 && bps < u64::MAX {
+            *self.peer_window_report.lock().unwrap() = Some((bps, Instant::now()));
+        }
     }
 
-    /// The live transport's real sending-window/RTT estimate, in bit/s.
+    pub(crate) fn record_tunnel_rtt(&self, rtt: Duration) {
+        let Ok(observed_us) = u64::try_from(rtt.as_micros()) else {
+            return;
+        };
+        if observed_us == 0 {
+            return;
+        }
+        let _ = self
+            .tunnel_rtt_us
+            .fetch_update(Relaxed, Relaxed, |current| {
+                Some(if current == 0 {
+                    observed_us
+                } else {
+                    ((u128::from(current) * 7 + u128::from(observed_us)) / 8) as u64
+                })
+            });
+    }
+
+    /// The live transport's sending-window estimate, in bit/s, with the tunnel's
+    /// measured round-trip time as a lower bound on the transport RTT.
     /// No payload counters, socket buffer sizes or traffic-rate fallback are used.
     pub fn estimated_tx_bps(&self) -> u64 {
         self.window_source
@@ -133,7 +155,12 @@ impl Throughput {
             .unwrap()
             .as_ref()
             .and_then(|source| source.transmission_window())
-            .and_then(|window| window.estimated_bps())
+            .and_then(|mut window| {
+                window.rtt = window
+                    .rtt
+                    .max(Duration::from_micros(self.tunnel_rtt_us.load(Relaxed)));
+                window.estimated_bps()
+            })
             .unwrap_or_default()
     }
 
@@ -224,7 +251,59 @@ mod tests {
         assert_eq!(throughput.estimated_rx_bps(), 80_000_000);
         assert_eq!(throughput.estimated_tx_bps(), 0);
         throughput.record_peer_window_estimate(0);
+        assert_eq!(throughput.estimated_rx_bps(), 80_000_000);
+    }
+
+    #[test]
+    fn missing_reports_do_not_refresh_or_erase_the_last_valid_estimate() {
+        let throughput = Throughput::new();
+        throughput.record_peer_window_estimate(0);
+        throughput.record_peer_window_estimate(u64::MAX);
         assert_eq!(throughput.estimated_rx_bps(), 0);
+        let now = Instant::now();
+        *throughput.peer_window_report.lock().unwrap() = Some((80_000_000, now));
+        throughput.record_peer_window_estimate(0);
+        throughput.record_peer_window_estimate(u64::MAX);
+        assert_eq!(
+            throughput.peer_estimate_at(now + Duration::from_secs(89)),
+            80_000_000
+        );
+        assert_eq!(throughput.peer_estimate_at(now + PEER_WINDOW_REPORT_TTL), 0);
+    }
+
+    #[test]
+    fn tunnel_round_trips_bound_a_local_transports_tiny_rtt() {
+        let throughput = Throughput::new();
+        throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
+            TransmissionWindow {
+                congestion_window_bytes: 1_048_576,
+                peer_receive_window_bytes: None,
+                rtt: Duration::from_micros(50),
+            },
+        ))))));
+        assert_eq!(throughput.estimated_tx_bps(), 8_388_608_000);
+        throughput.record_tunnel_rtt(Duration::from_millis(50));
+        assert_eq!(throughput.estimated_tx_bps(), 167_772_160);
+        throughput.record_tunnel_rtt(Duration::from_millis(90));
+        assert_eq!(throughput.tunnel_rtt_us.load(Relaxed), 55_000);
+        throughput.record_tunnel_rtt(Duration::ZERO);
+        assert_eq!(throughput.tunnel_rtt_us.load(Relaxed), 55_000);
+        throughput.set_window_source(None);
+        assert_eq!(throughput.estimated_tx_bps(), 0);
+    }
+
+    #[test]
+    fn tunnel_rtt_does_not_replace_a_slower_transport_rtt() {
+        let throughput = Throughput::new();
+        throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
+            TransmissionWindow {
+                congestion_window_bytes: 125_000,
+                peer_receive_window_bytes: None,
+                rtt: Duration::from_millis(20),
+            },
+        ))))));
+        throughput.record_tunnel_rtt(Duration::from_millis(5));
+        assert_eq!(throughput.estimated_tx_bps(), 50_000_000);
     }
 
     #[test]

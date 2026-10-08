@@ -141,6 +141,7 @@ hostname: Hostname
 latency: Latency
 upload_bytes: Upload
 download_bytes: Download
+total_traffic: Total Traffic
 estimated_bandwidth: Estimated Available Bandwidth
 loss_rate: Loss Rate
 nat_type: NAT Type

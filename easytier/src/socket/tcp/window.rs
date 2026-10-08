@@ -40,14 +40,26 @@ impl TcpWindowSampler {
             return;
         }
         sample.next_at = now + Duration::from_millis(200);
-        sample.observed_at = Some(now);
-        sample.window = native_window(stream);
+        sample.record_window(now, native_window(stream));
     }
 
     pub(super) fn stop(&self) {
         let mut sample = self.0.lock().unwrap();
         sample.stopped = true;
         sample.window = None;
+    }
+}
+
+impl Sample {
+    fn record_window(&mut self, now: Instant, window: Option<TransmissionWindow>) {
+        // OS telemetry can be temporarily unavailable or uninitialized between
+        // I/O polls. Only valid samples refresh the existing sample's lifetime.
+        if let Some(window) = window
+            && window.estimated_bps().is_some()
+        {
+            self.observed_at = Some(now);
+            self.window = Some(window);
+        }
     }
 }
 
@@ -254,6 +266,67 @@ mod tests {
         assert!(source.transmission_window().is_none());
         sampler.0.lock().unwrap().observed_at = Some(Instant::now());
         sampler.stop();
+        assert!(source.transmission_window().is_none());
+    }
+
+    #[test]
+    fn transient_missing_or_invalid_tcp_samples_keep_the_last_valid_window() {
+        let sampler = Arc::new(TcpWindowSampler::new());
+        let source = TcpWindowSource(Arc::downgrade(&sampler));
+        let now = Instant::now();
+        let window = TransmissionWindow {
+            congestion_window_bytes: 125_000,
+            peer_receive_window_bytes: Some(250_000),
+            rtt: Duration::from_millis(10),
+        };
+        {
+            let mut sample = sampler.0.lock().unwrap();
+            sample.record_window(now, Some(window));
+            sample.record_window(now + Duration::from_secs(1), None);
+            sample.record_window(
+                now + Duration::from_secs(2),
+                Some(TransmissionWindow {
+                    rtt: Duration::ZERO,
+                    ..window
+                }),
+            );
+            sample.record_window(
+                now + Duration::from_secs(3),
+                Some(TransmissionWindow {
+                    peer_receive_window_bytes: Some(0),
+                    ..window
+                }),
+            );
+            assert_eq!(sample.observed_at, Some(now));
+        }
+        assert_eq!(source.transmission_window(), Some(window));
+        let recovered = TransmissionWindow {
+            rtt: Duration::from_millis(20),
+            ..window
+        };
+        sampler
+            .0
+            .lock()
+            .unwrap()
+            .record_window(now + Duration::from_secs(4), Some(recovered));
+        assert_eq!(source.transmission_window(), Some(recovered));
+        assert_eq!(
+            sampler.0.lock().unwrap().observed_at,
+            Some(now + Duration::from_secs(4)),
+        );
+        sampler.0.lock().unwrap().observed_at = Some(now - Duration::from_secs(61));
+        assert!(source.transmission_window().is_none());
+    }
+
+    #[test]
+    fn missing_first_tcp_sample_is_unavailable_until_a_valid_sample_arrives() {
+        let sampler = Arc::new(TcpWindowSampler::new());
+        let source = TcpWindowSource(Arc::downgrade(&sampler));
+        sampler
+            .0
+            .lock()
+            .unwrap()
+            .record_window(Instant::now(), None);
         assert!(source.transmission_window().is_none());
     }
 }

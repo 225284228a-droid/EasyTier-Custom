@@ -85,12 +85,12 @@ function humanFileSize(bytes: number, si = false, dp = 1) {
 
 function txBytes(info: PeerRoutePair) {
   const tx = statsCommon(info, 'stats.tx_bytes')
-  return tx ? humanFileSize(tx) : ''
+  return tx === undefined ? '--' : humanFileSize(tx)
 }
 
 function rxBytes(info: PeerRoutePair) {
   const rx = statsCommon(info, 'stats.rx_bytes')
-  return rx ? humanFileSize(rx) : ''
+  return rx === undefined ? '--' : humanFileSize(rx)
 }
 
 function version(info: PeerRoutePair) {
@@ -550,8 +550,14 @@ function showEventLogs() {
             <Column :field="routeCost" :header="t('route_cost')" />
             <Column :field="tunnelProto" :header="t('tunnel_proto')" />
             <Column :field="latencyMs" :header="t('latency')" />
-            <Column :field="txBytes" :header="t('upload_bytes')" />
-            <Column :field="rxBytes" :header="t('download_bytes')" />
+            <Column :header="t('total_traffic')">
+              <template #body="slotProps">
+                <div class="whitespace-nowrap text-xs leading-5">
+                  <div>{{ t('upload') }}: {{ txBytes(slotProps.data) }}</div>
+                  <div>{{ t('download') }}: {{ rxBytes(slotProps.data) }}</div>
+                </div>
+              </template>
+            </Column>
             <Column :header="t('estimated_bandwidth')">
               <template #body="slotProps">
                 <div class="whitespace-nowrap text-xs leading-5">

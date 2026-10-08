@@ -7,15 +7,24 @@ with `bandwidth_estimate_version = 1`. The business-traffic peak estimator,
 sparse-traffic fallback, sampling filter and five-minute peak retention have
 been removed. The UI rejects unversioned/old estimates and closed connections.
 
-The replacement formula is `min(cwnd_bytes, peer_receive_window_bytes) * 8 / RTT_seconds`.
+The formula is `min(cwnd_bytes, peer_receive_window_bytes) * 8 / effective_RTT_seconds`.
 If peer flow-control information is not exposed, the formula uses the real
-congestion window alone. Zero windows or missing/zero RTT remain unknown.
+congestion window alone. Effective RTT is the larger of the transport RTT and
+an exponentially smoothed successful tunnel Ping/Pong RTT (1/8 new sample),
+with a conservative 1 ms minimum. A local TCP/proxy leg with a tiny RTT therefore
+cannot outweigh a slower measured end-to-end tunnel round trip. Missing/zero
+RTT and zero windows cannot establish a new estimate; arithmetic overflow is
+rejected instead of reported as a saturated `u64` value.
 No socket send/receive buffer size is substituted for a congestion window.
+The RTT minimum deliberately underestimates some very fast LANs; it is not a
+10 Gbit/s capacity limit, and a sufficiently large valid window can exceed that.
 
 Native TCP uses `TCP_INFO` on Linux and `SIO_TCP_INFO` on Windows. Linux's
 segment-count cwnd is multiplied by the actual sending MSS; Windows already
 reports cwnd in bytes. Snapshots are sampled at most once every 200 ms during
-socket I/O, expire after 60 seconds without I/O, and cannot keep a socket alive.
+socket I/O. A temporarily missing or invalid sample retains the last valid
+snapshot without refreshing its timestamp; the snapshot expires 60 seconds
+after its last valid observation and cannot keep a socket alive.
 WS/WSS retain their underlying TCP telemetry. QUIC/HTTP3 use Quinn's live path
 congestion window and RTT; its peer flow-control credit is not exposed here.
 Other native TCP platforms and transports without congestion-window telemetry
@@ -27,18 +36,26 @@ path, inside session authentication when that security mode is enabled.
 The first four sequence bytes remain compatible with old peers. A distinct
 request/reply marker prevents an old peer's echo from being mistaken for a
 remote measurement. Missing directions are not mirrored. Remote reports expire
-after 90 seconds; polling never extends their lifetime. Normal pings, rather
+after 90 seconds; polling and zero/invalid reports never extend their lifetime.
+Zero reports retain an existing valid report until it expires and leave an
+unmeasured direction unknown. Normal pings, rather
 than business payloads or added speed-test traffic, maintain idle-link telemetry.
 
 This is a window-limited throughput reference, not measured physical capacity,
 unused headroom or an active speed test. Initial/app-limited congestion windows
 can still underestimate a fast link before the transport learns its path.
-TCP terminated by a CDN/proxy describes that TCP leg, not all proxy backhaul.
+TCP terminated by a CDN/proxy still supplies that leg's window, so even a
+tunnel RTT correction cannot establish the capacity of every proxy backhaul.
 Both nodes need the updated binary for two-sided window reporting; updating only
 the web frontend cannot add window telemetry to an old node.
+Connection reconciliation may replace TCP/QUIC with UDP/WireGuard or another
+transport that has no congestion-window telemetry. That new connection remains
+unknown; estimates are never copied across connections or retained after a
+socket closes.
 
-The shared status table places Estimated Available Bandwidth between Download
-and Loss Rate, with upload and download on separate lines.
+The shared status table combines cumulative upload/download into one Total
+Traffic column, with upload and download on separate lines. Estimated Available
+Bandwidth follows it in the same two-line format, before Loss Rate.
 
 ## Dashboard Globe
 

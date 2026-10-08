@@ -142,6 +142,7 @@ sni_placeholder: 例如：www.cloudflare.com
 latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载
+total_traffic: 总流量
 estimated_bandwidth: 预计可用带宽
 loss_rate: 丢包率
 nat_type: NAT 类型

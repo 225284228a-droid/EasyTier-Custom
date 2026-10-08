@@ -125,4 +125,18 @@ describe('status display helpers', () => {
       { stats: { bandwidth_estimate_version: '1', estimated_tx_bps: 1_000_000 } },
     ]))).toEqual({ upload: '1.00 Mbit/s', download: '--' })
   })
+
+  it('uses a live window transport when the default lacks one, then drops it when closed', () => {
+    const defaultConnId = '00000001-0002-0003-0004-000000000005'
+    const udp = { conn_id: defaultConnId, stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 0, estimated_rx_bps: 0 } }
+    const tcp = { conn_id: 'tcp', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 25_000_000, estimated_rx_bps: 10_000_000 } }
+    expect(estimatedBandwidth(peerRoutePairWithDefaultConn([udp, tcp], defaultConnId))).toEqual({
+      upload: '25.0 Mbit/s',
+      download: '10.0 Mbit/s',
+    })
+    expect(estimatedBandwidth(peerRoutePairWithDefaultConn([udp, { ...tcp, is_closed: true }], defaultConnId))).toEqual({
+      upload: '--',
+      download: '--',
+    })
+  })
 })

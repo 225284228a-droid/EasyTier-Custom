@@ -241,7 +241,12 @@ impl PeerConnPinger {
             ));
         }
 
-        resp.unwrap()
+        let response = resp.unwrap()?;
+        if let PingResponse::Pong(latency_us) = response {
+            self.throughput_stats
+                .record_tunnel_rtt(Duration::from_micros(latency_us as u64));
+        }
+        Ok(response)
     }
 
     pub async fn pingpong(&mut self) {
@@ -362,7 +367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_ping_reports_independent_directional_windows_without_business_traffic() {
+    async fn first_ping_records_tunnel_rtt_and_independent_windows_without_business_traffic() {
         let (local, remote) = create_ring_tunnel_pair();
         let tunnel = MpscTunnel::new(local, None);
         let (ctrl_sender, _) = broadcast::channel(16);
@@ -390,6 +395,7 @@ mod tests {
             );
             let mut reply = ZCPacket::new_with_payload(&encode_window_report(7, 40_000_000, true));
             reply.fill_peer_manager_hdr(2, 1, PacketType::Pong as u8);
+            tokio::time::sleep(Duration::from_millis(30)).await;
             ctrl_sender.send(reply).unwrap();
         });
         assert!(matches!(
@@ -402,7 +408,7 @@ mod tests {
         responder.await.unwrap();
         assert_eq!(throughput.tx_bytes(), 0);
         assert_eq!(throughput.rx_bytes(), 0);
-        assert_eq!(throughput.estimated_tx_bps(), 100_000_000);
+        assert!((1..=50_000_000).contains(&throughput.estimated_tx_bps()));
         assert_eq!(throughput.estimated_rx_bps(), 40_000_000);
     }
 

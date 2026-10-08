@@ -2,6 +2,10 @@ use std::{fmt::Debug, time::Duration};
 
 pub const BANDWIDTH_ESTIMATE_VERSION: u32 = 1;
 
+// Very short transport RTTs can measure a local proxy or timer noise instead of
+// the tunnel path. This makes the window estimate conservative on fast LANs.
+const MIN_ESTIMATE_RTT: Duration = Duration::from_millis(1);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransmissionWindow {
     pub congestion_window_bytes: u64,
@@ -20,8 +24,9 @@ impl TransmissionWindow {
         if bytes == 0 || self.rtt.is_zero() {
             return None;
         }
-        let rate = u128::from(bytes) * 8 * 1_000_000_000 / self.rtt.as_nanos();
-        Some(rate.min(u128::from(u64::MAX)) as u64).filter(|rate| *rate > 0)
+        let rtt = self.rtt.max(MIN_ESTIMATE_RTT);
+        let rate = u128::from(bytes) * 8 * 1_000_000_000 / rtt.as_nanos();
+        u64::try_from(rate).ok().filter(|rate| *rate > 0)
     }
 }
 
@@ -36,7 +41,7 @@ pub(crate) fn encode_window_report(seq: u32, bps: u64, reply: bool) -> [u8; WIND
     let mut payload = [0; WINDOW_REPORT_LEN];
     payload[..4].copy_from_slice(&seq.to_le_bytes());
     payload[4..8].copy_from_slice(REPORT_MAGIC);
-    payload[8] = 1;
+    payload[8] = BANDWIDTH_ESTIMATE_VERSION as u8;
     payload[9] = u8::from(reply);
     payload[12..].copy_from_slice(&bps.to_le_bytes());
     payload
@@ -45,7 +50,7 @@ pub(crate) fn encode_window_report(seq: u32, bps: u64, reply: bool) -> [u8; WIND
 pub(crate) fn decode_window_report(payload: &[u8], reply: bool) -> Option<u64> {
     if payload.len() != WINDOW_REPORT_LEN
         || &payload[4..8] != REPORT_MAGIC
-        || payload[8] != 1
+        || payload[8] != BANDWIDTH_ESTIMATE_VERSION as u8
         || payload[9] != u8::from(reply)
         || payload[10..12] != [0, 0]
     {
@@ -115,13 +120,13 @@ mod tests {
     }
 
     #[test]
-    fn preserves_submillisecond_rtt_and_saturates_without_overflow() {
+    fn conservatively_bounds_near_zero_rtt_and_rejects_overflow() {
         let window = TransmissionWindow {
             congestion_window_bytes: 125_000,
             peer_receive_window_bytes: None,
             rtt: Duration::from_micros(500),
         };
-        assert_eq!(window.estimated_bps(), Some(2_000_000_000));
+        assert_eq!(window.estimated_bps(), Some(1_000_000_000));
         assert_eq!(
             TransmissionWindow {
                 congestion_window_bytes: u64::MAX,
@@ -129,7 +134,20 @@ mod tests {
                 ..window
             }
             .estimated_bps(),
-            Some(u64::MAX),
+            None,
+        );
+    }
+
+    #[test]
+    fn does_not_treat_ten_gigabits_as_a_physical_limit() {
+        assert_eq!(
+            TransmissionWindow {
+                congestion_window_bytes: 2_500_000,
+                peer_receive_window_bytes: None,
+                rtt: Duration::from_millis(1),
+            }
+            .estimated_bps(),
+            Some(20_000_000_000),
         );
     }
 
