@@ -17,16 +17,16 @@ if (outputArgument === undefined) {
   throw new Error("Wasm output file is required");
 }
 const browserBuild = profile === "browser";
-const executableSuffix = process.platform === "win32" ? ".cmd" : "";
 const wasmOptExecutable = path.join(
   packageDirectory,
   "node_modules",
-  ".bin",
-  `wasm-opt${executableSuffix}`,
+  "binaryen",
+  "bin",
+  "wasm-opt",
 );
 const artifact = path.join(
-  repositoryRoot,
-  "target/wasm32-wasip1/release/easytier_core.wasm",
+  path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR ?? "target"),
+  "wasm32-wasip1/release/easytier_core.wasm",
 );
 const output = path.resolve(process.cwd(), outputArgument);
 const outputDirectory = path.dirname(output);
@@ -73,8 +73,9 @@ await new Promise((resolve, reject) => {
 await mkdir(outputDirectory, { recursive: true });
 await new Promise((resolve, reject) => {
   const wasmOpt = spawn(
-    wasmOptExecutable,
+    process.execPath,
     [
+      wasmOptExecutable,
       artifact,
       "-Oz",
       "--enable-bulk-memory",

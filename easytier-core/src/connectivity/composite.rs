@@ -12,8 +12,8 @@ use url::Url;
 
 use crate::{
     connectivity::{
-        is_public_ipv6_candidate,
         direct::DirectConnectorHost,
+        is_public_ipv6_candidate,
         manual::{ManualConnectorHost, ManualInterfaceAddrs},
         transport::ConnectedByteStream,
     },

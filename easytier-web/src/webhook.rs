@@ -902,11 +902,16 @@ mod tests {
     async fn node_connected_transport_error_is_retryable() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener);
+        // Close an accepted connection deterministically. Connecting to a
+        // closed port can take more than a second on Windows before refusal.
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        });
         let webhook = WebhookConfig::new(Some(format!("http://{addr}")), None, None, None, None);
 
         let error = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             webhook.notify_node_connected(&node_connected_request()),
         )
         .await
@@ -915,5 +920,6 @@ mod tests {
 
         assert!(matches!(error, WebhookDeliveryError::Transport(_)));
         assert!(error.is_retryable());
+        server.await.unwrap();
     }
 }

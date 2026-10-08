@@ -20,19 +20,17 @@ use tokio_util::task::AbortOnDropHandle;
 use crate::{
     config::{P2pPolicyFlags, PeerDisguiseP2pFlags, PeerId},
     connectivity::{
-            hole_punch::{
-                HolePunchRpcRegistry, HolePunchTunnelSink, PEER_BLACKLIST_TIMEOUT,
-                policy::{BackOff, p2p_engine_gate, should_accept_inbound_punch},
-            },
+        hole_punch::{
+            HolePunchRpcRegistry, HolePunchTunnelSink, PEER_BLACKLIST_TIMEOUT,
+            policy::{BackOff, p2p_engine_gate, should_accept_inbound_punch},
+        },
         protocol::{ClientProtocolUpgrader, ServerProtocolUpgrade, ServerProtocolUpgrader},
         stun::StunInfoProvider,
         transport::ConnectedTransport,
     },
     foundation::{
         expiring_set::ExpiringSet,
-        task::{
-            ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager, reap_joinset_background,
-        },
+        task::{ExternalTaskSignal, PeerTaskLauncher, PeerTaskManager, reap_joinset_background},
     },
     peers::PeerConnectionOrigin,
     proto::{
@@ -346,11 +344,9 @@ where
         label: &'static str,
         remote_addr: SocketAddr,
     ) -> anyhow::Result<bool> {
-        let Ok(Ok(socket)) = crate::foundation::time::timeout(
-            dial_timeout,
-            self.host.connect_tcp(options.clone()),
-        )
-        .await
+        let Ok(Ok(socket)) =
+            crate::foundation::time::timeout(dial_timeout, self.host.connect_tcp(options.clone()))
+                .await
         else {
             tracing::trace!(?remote_addr, label, "tcp hole punch connect attempt failed");
             return Ok(false);
@@ -361,7 +357,11 @@ where
             .await
         {
             Ok(()) => {
-                tracing::info!(?remote_addr, label, "tcp hole punch connected and added tunnel");
+                tracing::info!(
+                    ?remote_addr,
+                    label,
+                    "tcp hole punch connected and added tunnel"
+                );
                 Ok(true)
             }
             Err(TcpHolePunchTransportError::Upgrade(error)) => Err(error),
@@ -1064,13 +1064,17 @@ where
         };
         let use_multi_socket_responder =
             responder_uses_multi_socket(local_nat_type, policy.disable_sym_hole_punching);
-        let permit = self.punch_permits.clone().try_acquire_owned().map_err(|_| {
-            tracing::warn!(
-                ?remote_mapped_addr,
-                "tcp hole punch rpc rejected: responder busy with other punches"
-            );
-            anyhow::anyhow!("TCP hole punch responder is busy with other punches")
-        })?;
+        let permit = self
+            .punch_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                tracing::warn!(
+                    ?remote_mapped_addr,
+                    "tcp hole punch rpc rejected: responder busy with other punches"
+                );
+                anyhow::anyhow!("TCP hole punch responder is busy with other punches")
+            })?;
         let mut tasks = self.tasks.lock().unwrap();
         if self.stopping.load(Ordering::Acquire) {
             return Err(rpc_types::error::Error::Shutdown);

@@ -4,6 +4,10 @@ use std::{
 };
 
 use async_trait::async_trait;
+#[cfg(unix)]
+use easytier_core::socket::udp::{
+    MAX_UDP_DATAGRAM_SIZE, MAX_UDP_SESSION_DATAGRAM_SIZE, UdpSocketDatagram,
+};
 #[cfg(any(feature = "wireguard", test))]
 use easytier_core::socket::{
     NetNamespace,
@@ -12,8 +16,7 @@ use easytier_core::socket::{
 use easytier_core::socket::{
     SocketContext,
     udp::{
-        MAX_UDP_DATAGRAM_SIZE, MAX_UDP_SESSION_DATAGRAM_SIZE, UdpBindOptions, UdpSocketDatagram,
-        UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
+        UdpBindOptions, UdpSocketPurpose, UdpSocketRecvMeta, UdpSocketSendMeta, VirtualUdpSocket,
         VirtualUdpSocketFactory,
     },
 };

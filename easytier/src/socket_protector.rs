@@ -71,7 +71,7 @@ pub(crate) async fn protect_native_socket(
     let handle = u64::try_from(socket.as_raw_fd())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid socket fd"))?;
     #[cfg(windows)]
-    let handle = socket.as_raw_socket() as u64;
+    let handle = socket.as_raw_socket();
     protector.protect(handle).await
 }
 

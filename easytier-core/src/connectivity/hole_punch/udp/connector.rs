@@ -17,8 +17,8 @@ use crate::{
     proto::common::NatType,
 };
 
-use crate::connectivity::hole_punch::policy::BackOff;
 use crate::connectivity::hole_punch::PEER_BLACKLIST_TIMEOUT;
+use crate::connectivity::hole_punch::policy::BackOff;
 
 use super::{
     UdpBothEasySymPunchClient, UdpHolePunchClientError, UdpHolePunchPeerSource,

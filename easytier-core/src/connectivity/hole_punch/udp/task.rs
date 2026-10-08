@@ -3,10 +3,7 @@ use crate::{
     proto::common::{NatType, PeerFeatureFlag},
 };
 
-use super::{
-    super::policy::p2p_engine_gate,
-    UdpNatType, UdpPunchScheme,
-};
+use super::{super::policy::p2p_engine_gate, UdpNatType, UdpPunchScheme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpPunchCandidate {

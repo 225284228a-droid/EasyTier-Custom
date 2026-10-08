@@ -228,10 +228,7 @@ mod windows {
         let deadline = Instant::now() + timeout;
         while service.status()? == ServiceStatus::Running {
             if Instant::now() >= deadline {
-                anyhow::bail!(
-                    "service {name} did not stop within {}s",
-                    timeout.as_secs()
-                );
+                anyhow::bail!("service {name} did not stop within {}s", timeout.as_secs());
             }
             std::thread::sleep(Duration::from_millis(100));
         }

@@ -674,10 +674,7 @@ async fn resolve_reconnect_ip_versions(
     context: SocketContext,
     dns: &dyn DnsResolver,
 ) -> anyhow::Result<Vec<IpVersion>> {
-    if matches!(
-        manual_transport_from_url(url),
-        Ok(IpTransport::ByteStream)
-    ) {
+    if matches!(manual_transport_from_url(url), Ok(IpTransport::ByteStream)) {
         return Ok(vec![IpVersion::Both]);
     }
     if matches!(url.scheme(), "txt" | "srv") {

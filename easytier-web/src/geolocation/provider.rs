@@ -214,10 +214,11 @@ fn retry_at(headers: &header::HeaderMap, now: i64) -> i64 {
     else {
         return fallback;
     };
-    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        if let Ok(seconds) = value.parse::<u64>() {
-            return now.saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX));
-        }
+    if !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && let Ok(seconds) = value.parse::<u64>()
+    {
+        return now.saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX));
     }
     DateTime::parse_from_rfc2822(value)
         .map(|date| date.timestamp().max(now))
@@ -570,8 +571,14 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let _server = AbortOnDropHandle::new(tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 1024];
-            socket.read(&mut request).await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "client must send a complete HTTP request");
+                request.extend_from_slice(&chunk[..count]);
+                assert!(request.len() <= 8192);
+            }
             let body = oversized_geojs_body();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",

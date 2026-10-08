@@ -685,11 +685,10 @@ mod tests {
         }
 
         async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
-            if let Some(remote) = self.observed_remote {
-                if crate::packet::hole_punch_packet_tid(data, HOLE_PUNCH_PACKET_BODY_LEN).is_some()
-                {
-                    let _ = self.incoming_tx.send((data.to_vec(), remote));
-                }
+            if let Some(remote) = self.observed_remote
+                && crate::packet::hole_punch_packet_tid(data, HOLE_PUNCH_PACKET_BODY_LEN).is_some()
+            {
+                let _ = self.incoming_tx.send((data.to_vec(), remote));
             }
             Ok(data.len())
         }

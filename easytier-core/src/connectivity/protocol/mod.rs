@@ -818,7 +818,11 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert!(ws_delegated.to_string().contains("unsupported server protocol"));
+        assert!(
+            ws_delegated
+                .to_string()
+                .contains("unsupported server protocol")
+        );
     }
 
     #[tokio::test]

@@ -57,3 +57,4 @@ go.sum
 /REFACTOR_PLAN.md
 /docs/*-plan.md
 .test-env/
+.pnpm-store/

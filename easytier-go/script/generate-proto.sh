@@ -11,14 +11,19 @@ if [[ ! -f "${proto_root}/api_instance.proto" ]]; then
     exit 1
 fi
 
-if [[ "$(protoc --version)" != "libprotoc 35.1" ]]; then
+protoc_version="$(protoc --version | tr -d '\r')"
+if [[ "${protoc_version}" != "libprotoc 35.1" ]]; then
     echo "protoc 35.1 is required" >&2
     exit 1
 fi
-if [[ "$(protoc-gen-go --version)" != "protoc-gen-go v1.36.11" ]]; then
-    echo "protoc-gen-go v1.36.11 is required" >&2
-    exit 1
-fi
+protoc_gen_go_version="$(protoc-gen-go --version | tr -d '\r')"
+case "${protoc_gen_go_version}" in
+    "protoc-gen-go v1.36.11" | "protoc-gen-go.exe v1.36.11") ;;
+    *)
+        echo "protoc-gen-go v1.36.11 is required" >&2
+        exit 1
+        ;;
+esac
 
 protoc \
     -I "${proto_root}" \

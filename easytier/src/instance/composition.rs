@@ -1109,26 +1109,27 @@ mod tests {
                     let elapsed = started.elapsed();
                     assert_eq!(sent, 256 * (1024 + 28));
                     assert_eq!(replied, sent);
-                    let observed = observations.lock().unwrap();
-                    let first = observed.first_client_datagram.as_ref().unwrap();
-                    assert!(
-                        parse_quic_initial_dcid(first).is_some(),
-                        "public HTTP3 must begin with QUIC Initial, not EasyTier framing"
-                    );
-                    assert!(observed.initial_datagrams > 0);
-                    assert_eq!(observed.nonstandard_initial_versions, 0);
-                    assert_eq!(observed.easytier_envelopes, 0);
-                    assert_eq!(observed.plaintext_markers, 0);
-                    println!(
-                        "native HTTP3 {listener_scheme} {bind}: 512 packets, {} IP bytes, \
+                    {
+                        let observed = observations.lock().unwrap();
+                        let first = observed.first_client_datagram.as_ref().unwrap();
+                        assert!(
+                            parse_quic_initial_dcid(first).is_some(),
+                            "public HTTP3 must begin with QUIC Initial, not EasyTier framing"
+                        );
+                        assert!(observed.initial_datagrams > 0);
+                        assert_eq!(observed.nonstandard_initial_versions, 0);
+                        assert_eq!(observed.easytier_envelopes, 0);
+                        assert_eq!(observed.plaintext_markers, 0);
+                        println!(
+                            "native HTTP3 {listener_scheme} {bind}: 512 packets, {} IP bytes, \
                          {} wire datagrams, {} wire bytes, {:.2} Mbps in {:.3}s",
-                        sent + replied,
-                        observed.datagrams,
-                        observed.bytes,
-                        (sent + replied) as f64 * 8.0 / elapsed.as_secs_f64() / 1_000_000.0,
-                        elapsed.as_secs_f64(),
-                    );
-                    drop(observed);
+                            sent + replied,
+                            observed.datagrams,
+                            observed.bytes,
+                            (sent + replied) as f64 * 8.0 / elapsed.as_secs_f64() / 1_000_000.0,
+                            elapsed.as_secs_f64(),
+                        );
+                    }
                     client.stop().await;
                     server.stop().await;
                     relay.abort();
