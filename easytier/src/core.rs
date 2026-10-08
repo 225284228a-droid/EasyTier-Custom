@@ -10,7 +10,10 @@ use crate::{
         constants::EASYTIER_VERSION,
         log,
     },
-    instance::factory::native_cli_instance_manager,
+    instance::{
+        config_storage::NativeConfigFileStorage,
+        factory::{NativeInstanceManager, native_cli_instance_manager},
+    },
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -20,10 +23,11 @@ use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use easytier_core::config::normalize_secure_mode_config;
-use easytier_core::management::InstanceStateStore;
+use easytier_core::management::{ConfigFileStorage, InstanceStateStore};
 use guarden::defer;
 use rust_i18n::t;
 use std::{
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
@@ -1589,6 +1593,210 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
     win_service_event_loop(stop_notify_recv, cli, status_handle);
 }
 
+struct StartupConfigFile {
+    path: PathBuf,
+    source: ConfigFileSource,
+    config: TomlConfigLoader,
+    control: ConfigFileControl,
+}
+
+#[derive(Default)]
+struct StartupConfigs {
+    files: Vec<StartupConfigFile>,
+    explicit_file_count: usize,
+    config_dir_file_count: usize,
+    config_dir_ids: HashSet<uuid::Uuid>,
+    unidentified_config_dir_entry: bool,
+}
+
+impl StartupConfigs {
+    fn gc_disabled_state(&self, state: &InstanceStateStore) {
+        // A file can still own a stopped instance even when its flags no
+        // longer parse. An unidentified/unreadable file prevents proving
+        // that any of the old identities have actually disappeared.
+        if self.unidentified_config_dir_entry {
+            log::warn!(
+                "Deferring instance state cleanup: a config directory entry has no confirmed identity"
+            );
+            return;
+        }
+        for id in state.disabled_instance_ids() {
+            if !self.config_dir_ids.contains(&id)
+                && let Err(error) = state.remove(&id)
+            {
+                log::warn!(%error, %id, "failed to GC stale instance state entry");
+            }
+        }
+    }
+}
+
+fn config_document_identity(contents: &[u8]) -> Option<uuid::Uuid> {
+    let table = toml::from_str::<toml::Table>(std::str::from_utf8(contents).ok()?).ok()?;
+    table
+        .get("instance_id")?
+        .as_str()?
+        .parse::<uuid::Uuid>()
+        .ok()
+}
+
+async fn prepare_startup_configs(
+    explicit_files: &[PathBuf],
+    config_dir: Option<&PathBuf>,
+    disable_env_parsing: bool,
+) -> anyhow::Result<StartupConfigs> {
+    let mut startup = StartupConfigs {
+        explicit_file_count: explicit_files.len(),
+        ..Default::default()
+    };
+    // Explicit --config-file errors retain their fatal startup behavior.
+    for path in explicit_files {
+        let (config, control) =
+            load_config_from_file(path, config_dir, disable_env_parsing).await?;
+        startup.files.push(StartupConfigFile {
+            path: path.clone(),
+            source: ConfigFileSource::CliConfigFile,
+            config,
+            control,
+        });
+    }
+    let Some(directory) = config_dir else {
+        return Ok(startup);
+    };
+    if !directory.is_dir() {
+        anyhow::bail!("config_dir {} is not a directory", directory.display());
+    }
+    let storage = NativeConfigFileStorage::new(disable_env_parsing);
+    let paths = storage.list_configs(directory).await?;
+    // Count even invalid and conflicting entries, so they never cause an
+    // implicit default network to be created instead.
+    startup.config_dir_file_count = paths.len();
+    let mut owners = HashMap::<uuid::Uuid, HashSet<PathBuf>>::new();
+    for path in paths {
+        let filename_id = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.parse::<uuid::Uuid>().ok());
+        if let Some(id) = filename_id {
+            startup.config_dir_ids.insert(id);
+        }
+        // Inspect identity without expanding environment values or asking
+        // get_id() to generate an identity for a legacy document.
+        let raw_id = match storage.read(&path).await {
+            Ok(Some(raw)) => config_document_identity(&raw),
+            Ok(None) => None,
+            Err(error) => {
+                log::warn!(%error, config_file = ?path, "Could not inspect config directory identity");
+                None
+            }
+        };
+        if let Some(id) = raw_id.or(filename_id) {
+            startup.config_dir_ids.insert(id);
+            owners.entry(id).or_default().insert(path.clone());
+        } else {
+            startup.unidentified_config_dir_entry = true;
+        }
+        // Use the original native loader: valid read-only and environment
+        // configurations can still start locally despite remote protection.
+        let (config, control) = match load_config_from_file(
+            &path,
+            Some(directory),
+            disable_env_parsing,
+        )
+        .await
+        {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                log::warn!(%error, config_file = ?path, "Skipping invalid config directory entry");
+                continue;
+            }
+        };
+        // The native loader may resolve an environment-supplied UUID or
+        // materialize a legacy runtime UUID while assigning permissions.
+        // Reading its dump does not generate another UUID or write the file.
+        let loaded_id = config_document_identity(config.dump().as_bytes());
+        if let Some(id) = loaded_id {
+            startup.config_dir_ids.insert(id);
+            owners.entry(id).or_default().insert(path.clone());
+        }
+        if raw_id.is_some() && raw_id != loaded_id {
+            log::warn!(config_file = ?path, "Skipping config directory entry whose identity changed while loading");
+            continue;
+        }
+        startup.files.push(StartupConfigFile {
+            path,
+            source: ConfigFileSource::ConfigDir,
+            config,
+            control,
+        });
+    }
+    let mut conflicting_paths = HashSet::new();
+    for (id, paths) in owners.into_iter().filter(|(_, paths)| paths.len() > 1) {
+        log::warn!(%id, config_files = ?paths, "Skipping config directory entries with a duplicate instance UUID");
+        conflicting_paths.extend(paths);
+    }
+    startup.files.retain(|file| {
+        file.source != ConfigFileSource::ConfigDir || !conflicting_paths.contains(&file.path)
+    });
+    Ok(startup)
+}
+
+fn start_prepared_configs(
+    startup: &mut StartupConfigs,
+    manager: &NativeInstanceManager,
+    state: &InstanceStateStore,
+    options: &NetworkOptions,
+    mut create_cli_network: bool,
+) -> anyhow::Result<bool> {
+    for StartupConfigFile {
+        path,
+        source,
+        config,
+        mut control,
+    } in startup.files.drain(..)
+    {
+        let result = (|| -> anyhow::Result<()> {
+            if source == ConfigFileSource::ConfigDir {
+                manager.register_managed_config(config.get_id(), control.clone())?;
+                if !state.is_enabled(&config.get_id()) {
+                    log::info!(config_file = ?path, id = %config.get_id(), "Skipping config stopped before shutdown; enable it from the web console to run again");
+                    return Ok(());
+                }
+            }
+            if options.can_merge(
+                &config,
+                source,
+                startup.explicit_file_count,
+                startup.config_dir_file_count,
+            ) {
+                options
+                    .merge_into(&config)
+                    .with_context(|| format!("failed to merge config from cli: {path:?}"))?;
+                create_cli_network = false;
+                control.set_read_only(true);
+                control.set_no_delete(true);
+            }
+            log::info!(
+                "Starting easytier from config file {:?}({:?}) with config:\n############### TOML ###############\n{}\n-----------------------------------\n",
+                path,
+                control.permission,
+                config.dump_redacted()
+            );
+            if source == ConfigFileSource::ConfigDir {
+                manager.register_managed_config(config.get_id(), control.clone())?;
+            }
+            manager.run_network_instance(config, control)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            if source == ConfigFileSource::CliConfigFile {
+                return Err(error);
+            }
+            log::warn!(%error, config_file = ?path, "Skipping config directory entry that could not be started");
+        }
+    }
+    Ok(create_cli_network)
+}
+
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init(&cli.logging_options, true)?;
@@ -1664,39 +1872,15 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         None
     };
 
-    let explicit_config_file_count = cli.config_file.as_ref().map_or(0, |files| files.len());
-    let mut config_dir_file_count = 0;
-    let mut config_files = if let Some(v) = cli.config_file {
-        v.iter()
-            .cloned()
-            .map(|path| (path, ConfigFileSource::CliConfigFile))
-            .collect()
-    } else {
-        vec![]
-    };
-    if let Some(config_dir) = cli.config_dir.as_ref() {
-        if !config_dir.is_dir() {
-            anyhow::bail!("config_dir {} is not a directory", config_dir.display());
-        }
-
-        for entry in std::fs::read_dir(config_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(ext) = path.extension() else {
-                continue;
-            };
-            if ext != "toml" {
-                continue;
-            }
-            config_dir_file_count += 1;
-            config_files.push((path, ConfigFileSource::ConfigDir));
-        }
-    }
-    let config_file_count = config_files.len();
-    let mut crate_cli_network = {
+    let mut startup_configs = prepare_startup_configs(
+        cli.config_file.as_deref().unwrap_or_default(),
+        cli.config_dir.as_ref(),
+        cli.disable_env_parsing,
+    )
+    .await?;
+    let config_file_count =
+        startup_configs.explicit_file_count + startup_configs.config_dir_file_count;
+    let crate_cli_network = {
         if cli.daemon {
             false
         } else if config_file_count == 0 && cli.config_server.is_none() {
@@ -1705,74 +1889,20 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             cli.network_options.network_name.is_some()
         }
     };
-    for (config_file, source) in config_files {
-        let (cfg, mut control) = load_config_from_file(
-            &config_file,
-            cli.config_dir.as_ref(),
-            cli.disable_env_parsing,
-        )
-        .await?;
-
-        if source == ConfigFileSource::ConfigDir {
-            manager.register_managed_config(cfg.get_id(), control.clone())?;
-        }
-
-        if source == ConfigFileSource::ConfigDir && !instance_state_store.is_enabled(&cfg.get_id())
-        {
-            log::info!(
-                "\
-                Skipping easytier config {:?}: instance {} was stopped before shutdown, \
-                enable it from the web console to run again.\n\
-                ",
-                config_file,
-                cfg.get_id()
-            );
-            continue;
-        }
-
-        if cli.network_options.can_merge(
-            &cfg,
-            source,
-            explicit_config_file_count,
-            config_dir_file_count,
-        ) {
-            cli.network_options
-                .merge_into(&cfg)
-                .with_context(|| format!("failed to merge config from cli: {:?}", config_file))?;
-            crate_cli_network = false;
-            control.set_read_only(true);
-            control.set_no_delete(true);
-        }
-
-        log::info!(
-            "\
-            Starting easytier from config file {:?}({:?}) with config:\n\
-            ############### TOML ###############\n\
-            {}\n\
-            -----------------------------------\n\
-            ",
-            config_file,
-            control.permission,
-            cfg.dump_redacted()
-        );
-        if source == ConfigFileSource::ConfigDir {
-            manager.register_managed_config(cfg.get_id(), control.clone())?;
-        }
-        manager.run_network_instance(cfg, control)?;
-    }
+    let crate_cli_network = start_prepared_configs(
+        &mut startup_configs,
+        &manager,
+        &instance_state_store,
+        &cli.network_options,
+        crate_cli_network,
+    )?;
 
     // Garbage collect instance state entries whose config file no longer
     // exists (e.g. the TOML was deleted by hand while the instance was
     // stopped). Without this the web console keeps reporting these ids as
     // disabled instances even though there is nothing to enable.
     if cli.config_dir.is_some() {
-        for id in instance_state_store.disabled_instance_ids() {
-            if !manager.managed_config_ids().contains(&id)
-                && let Err(error) = instance_state_store.remove(&id)
-            {
-                log::warn!(%error, %id, "failed to GC stale instance state entry");
-            }
-        }
+        startup_configs.gc_disabled_state(&instance_state_store);
     }
 
     if crate_cli_network {
@@ -1963,6 +2093,246 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn startup_fixture_config(id: uuid::Uuid) -> String {
+        format!(
+            "instance_id = '{id}'\nlisteners = []\nstun_servers = []\nstun_servers_v6 = []\ntcp_stun_servers = []\n[flags]\nno_tun = true\nbind_device = false\nenable_ipv6 = false\ndisable_upnp = true\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn config_dir_startup_isolates_invalid_and_preserves_stopped_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path().to_path_buf();
+        let invalid = uuid::Uuid::new_v4();
+        let stopped = uuid::Uuid::new_v4();
+        let active = uuid::Uuid::new_v4();
+        let removed = uuid::Uuid::new_v4();
+        for id in [invalid, stopped, active] {
+            let mut raw = startup_fixture_config(id);
+            if id == invalid {
+                raw = raw.replace("no_tun = true", "no_tun = 'invalid'");
+            }
+            std::fs::write(directory.join(format!("{id}.toml")), raw).unwrap();
+        }
+        let state = InstanceStateStore::new(Some(&directory));
+        for id in [invalid, stopped, removed] {
+            state.set_enabled(id, false).unwrap();
+        }
+        let mut startup = prepare_startup_configs(&[], Some(&directory), true)
+            .await
+            .unwrap();
+        assert_eq!(startup.config_dir_file_count, 3);
+        assert_eq!(startup.files.len(), 2);
+        let manager = native_cli_instance_manager().with_config_path(Some(directory.clone()));
+        assert!(
+            !start_prepared_configs(
+                &mut startup,
+                &manager,
+                &state,
+                &NetworkOptions::default(),
+                false,
+            )
+            .unwrap()
+        );
+        assert!(manager.instance(active).is_some());
+        assert!(manager.instance(invalid).is_none());
+        assert!(manager.instance(stopped).is_none());
+        assert!(manager.managed_config_ids().contains(&stopped));
+        startup.gc_disabled_state(&state);
+        assert!(!state.is_enabled(&invalid));
+        assert!(!state.is_enabled(&stopped));
+        assert_eq!(state.enabled_state(&removed), None);
+        manager.delete_network_instances([active]).await.unwrap();
+
+        // A malformed arbitrary filename cannot prove which old UUID it
+        // belonged to; retaining old state is safer than silently enabling it.
+        state.set_enabled(removed, false).unwrap();
+        std::fs::write(directory.join("unknown.toml"), "[flags\ninvalid").unwrap();
+        let startup = prepare_startup_configs(&[], Some(&directory), true)
+            .await
+            .unwrap();
+        assert!(startup.unidentified_config_dir_entry);
+        startup.gc_disabled_state(&state);
+        assert!(!state.is_enabled(&removed));
+    }
+
+    #[tokio::test]
+    async fn config_dir_startup_skips_all_duplicate_owners_including_invalid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path().to_path_buf();
+        let mixed_duplicate = uuid::Uuid::new_v4();
+        let valid_duplicate = uuid::Uuid::new_v4();
+        let stopped = uuid::Uuid::new_v4();
+        for (name, id, invalid) in [
+            ("mixed-valid", mixed_duplicate, false),
+            ("mixed-invalid", mixed_duplicate, true),
+            ("valid-first", valid_duplicate, false),
+            ("valid-second", valid_duplicate, false),
+            ("stopped", stopped, false),
+        ] {
+            let mut raw = startup_fixture_config(id);
+            if invalid {
+                raw = raw.replace("no_tun = true", "no_tun = 'invalid'");
+            }
+            std::fs::write(directory.join(format!("{name}.toml")), raw).unwrap();
+        }
+        let state = InstanceStateStore::new(Some(&directory));
+        for id in [mixed_duplicate, valid_duplicate, stopped] {
+            state.set_enabled(id, false).unwrap();
+        }
+        let mut startup = prepare_startup_configs(&[], Some(&directory), true)
+            .await
+            .unwrap();
+        assert_eq!(startup.config_dir_file_count, 5);
+        assert_eq!(startup.files.len(), 1);
+        assert_eq!(startup.files[0].config.get_id(), stopped);
+        let manager = native_cli_instance_manager().with_config_path(Some(directory));
+        start_prepared_configs(
+            &mut startup,
+            &manager,
+            &state,
+            &NetworkOptions::default(),
+            false,
+        )
+        .unwrap();
+        assert!(manager.instance_ids().is_empty());
+        assert_eq!(manager.managed_config_ids(), vec![stopped]);
+        startup.gc_disabled_state(&state);
+        for id in [mixed_duplicate, valid_duplicate, stopped] {
+            assert!(!state.is_enabled(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn config_dir_startup_keeps_valid_readonly_env_and_legacy_configs() {
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path().to_path_buf();
+        let readonly_id = uuid::Uuid::new_v4();
+        let env_id = uuid::Uuid::new_v4();
+        let readonly_path = directory.join(format!("{readonly_id}.toml"));
+        let legacy_path = directory.join("legacy.toml");
+        std::fs::write(&readonly_path, startup_fixture_config(readonly_id)).unwrap();
+        std::fs::write(
+            directory.join(format!("{env_id}.toml")),
+            startup_fixture_config(env_id).replace(
+                "no_tun = true",
+                &format!("no_tun = ${{ET_STARTUP_TEST_{}:-true}}", env_id.simple()),
+            ),
+        )
+        .unwrap();
+        let legacy_raw = startup_fixture_config(uuid::Uuid::new_v4())
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&legacy_path, &legacy_raw).unwrap();
+        let original_permissions = [readonly_path.clone(), legacy_path.clone()].map(|path| {
+            (
+                path.clone(),
+                std::fs::metadata(&path).unwrap().permissions(),
+            )
+        });
+        for (path, original) in &original_permissions {
+            let mut permissions = original.clone();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+        let prepared = prepare_startup_configs(&[], Some(&directory), false).await;
+        for (path, original) in original_permissions {
+            std::fs::set_permissions(path, original).unwrap();
+        }
+        let mut startup = prepared.unwrap();
+        assert_eq!(startup.files.len(), 3);
+        assert!(startup.files.iter().all(|file| file.control.is_read_only()));
+        assert!(
+            startup
+                .files
+                .iter()
+                .all(|file| file.config.get_flags().no_tun)
+        );
+        let legacy = startup
+            .files
+            .iter()
+            .find(|file| file.path == legacy_path)
+            .unwrap();
+        assert!(config_document_identity(legacy.config.dump().as_bytes()).is_none());
+        assert!(startup.unidentified_config_dir_entry);
+        let manager = native_cli_instance_manager().with_config_path(Some(directory));
+        start_prepared_configs(
+            &mut startup,
+            &manager,
+            &InstanceStateStore::in_memory(),
+            &NetworkOptions::default(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(manager.instance_ids().len(), 3);
+        assert!(manager.instance(readonly_id).is_some());
+        assert!(manager.instance(env_id).is_some());
+        assert_eq!(std::fs::read_to_string(legacy_path).unwrap(), legacy_raw);
+        manager
+            .delete_network_instances(manager.instance_ids())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn config_dir_startup_isolates_register_run_errors_and_keeps_explicit_fatal() {
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path().to_path_buf();
+        let explicit_invalid = directory.join("explicit-invalid.toml");
+        std::fs::write(&explicit_invalid, "[flags]\nno_tun = 'invalid'").unwrap();
+        assert!(
+            prepare_startup_configs(&[explicit_invalid.clone()], Some(&directory), true)
+                .await
+                .is_err()
+        );
+        std::fs::remove_file(explicit_invalid).unwrap();
+        let register_conflict = uuid::Uuid::new_v4();
+        let run_conflict = uuid::Uuid::new_v4();
+        let valid = uuid::Uuid::new_v4();
+        for id in [register_conflict, run_conflict, valid] {
+            std::fs::write(
+                directory.join(format!("{id}.toml")),
+                startup_fixture_config(id),
+            )
+            .unwrap();
+        }
+        let manager = native_cli_instance_manager().with_config_path(Some(directory.clone()));
+        manager
+            .register_managed_config(
+                register_conflict,
+                ConfigFileControl::new(Some(directory.join("old.toml")), Default::default()),
+            )
+            .unwrap();
+        // A pre-existing explicit/runtime instance has no directory control.
+        // Registering the directory candidate succeeds, but creation fails.
+        manager
+            .create(
+                TomlConfigLoader::new_from_str(&startup_fixture_config(run_conflict)).unwrap(),
+                (),
+            )
+            .unwrap();
+        let mut startup = prepare_startup_configs(&[], Some(&directory), true)
+            .await
+            .unwrap();
+        start_prepared_configs(
+            &mut startup,
+            &manager,
+            &InstanceStateStore::in_memory(),
+            &NetworkOptions::default(),
+            false,
+        )
+        .unwrap();
+        assert!(manager.instance(register_conflict).is_none());
+        assert!(manager.instance(run_conflict).is_some());
+        assert!(manager.instance(valid).is_some());
+        manager
+            .delete_network_instances(manager.instance_ids())
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn config_dir_is_enabled_by_default_and_can_be_overridden() {
