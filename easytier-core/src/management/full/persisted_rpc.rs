@@ -13,6 +13,7 @@ use super::{
     ProcessManagement, ProcessManagementRpc,
     local_catalog::{raw_hash, refresh_configs},
     persisted_merge::{merge_persisted_config, unsupported_capability},
+    process_rpc::InstanceRunPersistence,
 };
 use crate::{
     config::toml::{ConfigLoader as _, TomlConfig},
@@ -310,9 +311,11 @@ where
                 id,
                 true,
                 None,
-                Some(merged.as_bytes()),
-                apply_only,
-                Some(&request.expected_revision),
+                InstanceRunPersistence {
+                    contents: Some(merged.as_bytes()),
+                    apply_only,
+                    expected_revision: Some(&request.expected_revision),
+                },
             )
             .await
             .map(|_| ())

@@ -60,7 +60,7 @@ jobs:
       - name: Install pinned protoc 35.1
         run: |
           curl -fsSLO https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protoc-35.1-linux-x86_64.zip
-          sudo unzip -o protoc-35.1-linux-x86_64.zip -d /usr/local bin/protoc include/google
+          sudo unzip -o protoc-35.1-linux-x86_64.zip -d /usr/local bin/protoc 'include/google/**'
           protoc --version
 
       - name: Install pinned protoc-gen-go v1.36.11

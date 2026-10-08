@@ -81,6 +81,13 @@ pub struct ActiveInstanceForStart {
     pub source: ConfigSource,
 }
 
+#[derive(Default)]
+pub(super) struct InstanceRunPersistence<'a> {
+    pub contents: Option<&'a [u8]>,
+    pub apply_only: bool,
+    pub expected_revision: Option<&'a str>,
+}
+
 #[async_trait::async_trait]
 impl InstanceMutationHooks for () {}
 
@@ -641,9 +648,7 @@ where
             instance_id,
             overwrite,
             requested_source,
-            None,
-            false,
-            None,
+            InstanceRunPersistence::default(),
         )
         .await
     }
@@ -654,10 +659,13 @@ where
         instance_id: uuid::Uuid,
         overwrite: bool,
         requested_source: Option<ConfigSource>,
-        persisted_contents: Option<&[u8]>,
-        apply_only: bool,
-        expected_revision: Option<&str>,
+        persistence: InstanceRunPersistence<'_>,
     ) -> anyhow::Result<uuid::Uuid> {
+        let InstanceRunPersistence {
+            contents: persisted_contents,
+            apply_only,
+            expected_revision,
+        } = persistence;
         let remote_managed = self.hooks.manages_remote_config_instances();
         let previous_enabled = self.state_store.enabled_state(&instance_id);
         self.ensure_config_identity(instance_id)?;

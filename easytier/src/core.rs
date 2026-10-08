@@ -2284,9 +2284,13 @@ mod tests {
         let explicit_invalid = directory.join("explicit-invalid.toml");
         std::fs::write(&explicit_invalid, "[flags]\nno_tun = 'invalid'").unwrap();
         assert!(
-            prepare_startup_configs(&[explicit_invalid.clone()], Some(&directory), true)
-                .await
-                .is_err()
+            prepare_startup_configs(
+                std::slice::from_ref(&explicit_invalid),
+                Some(&directory),
+                true
+            )
+            .await
+            .is_err()
         );
         std::fs::remove_file(explicit_invalid).unwrap();
         let register_conflict = uuid::Uuid::new_v4();

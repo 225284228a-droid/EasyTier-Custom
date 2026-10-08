@@ -887,6 +887,20 @@ async fn query_udp_mapping(
     ))
 }
 
+async fn query_udp_mapping_addrs(
+    query_netns: &'static str,
+    expected_external_ip: Ipv4Addr,
+    client_ip: Ipv4Addr,
+) -> Result<Vec<SocketAddr>, Error> {
+    let client_ip = client_ip.to_string();
+    Ok(query_mappings(query_netns, expected_external_ip)
+        .await?
+        .into_iter()
+        .filter(|entry| entry.internal_client == client_ip)
+        .map(|entry| SocketAddr::new(IpAddr::V4(expected_external_ip), entry.external_port))
+        .collect())
+}
+
 fn create_test_instance_config(
     inst_name: &str,
     netns: Option<&str>,
@@ -946,10 +960,10 @@ where
         .unwrap_or_else(|_| panic!("timed out at stage: {stage}"))
 }
 
-async fn peer_has_udp_conn_to_remote_addr(
+async fn peer_has_udp_conn_to_remote_addrs(
     core: Arc<crate::instance::composition::NativeCoreInstance>,
     peer_id: u32,
-    expected_remote_addr: SocketAddr,
+    expected_remote_addrs: &[SocketAddr],
 ) -> bool {
     let Some(peer) = core
         .peer_snapshots()
@@ -979,8 +993,9 @@ async fn peer_has_udp_conn_to_remote_addr(
             return false;
         };
 
-        remote_ip == expected_remote_addr.ip()
-            && remote_addr.port() == Some(expected_remote_addr.port())
+        remote_addr
+            .port()
+            .is_some_and(|port| expected_remote_addrs.contains(&SocketAddr::new(remote_ip, port)))
     })
 }
 
@@ -1161,6 +1176,7 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
     assert_eq!(mapped_addr_a.port(), mapped_port_a);
     assert_eq!(mapped_addr_c.port(), mapped_port_c);
 
+    let mut last_direct_diagnostics = None::<std::time::Instant>;
     timeout_stage(
         "wait_instance_direct_peer_via_upnp_and_route_cost_1",
         Duration::from_secs(20),
@@ -1170,31 +1186,67 @@ async fn instances_build_direct_connection_via_upnp_udp_hole_punch() {
                 let core_c = inst_c.get_core_instance();
                 let peer_id_a = inst_a.peer_id();
                 let peer_id_c = inst_c.peer_id();
+                let now = std::time::Instant::now();
+                let dump_diagnostics = last_direct_diagnostics
+                    .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(2));
+                if dump_diagnostics {
+                    last_direct_diagnostics = Some(now);
+                }
                 async move {
-                    core_a.connected_peers().await.contains(&peer_id_c)
-                        && core_c.connected_peers().await.contains(&peer_id_a)
-                        && core_a
-                            .route_snapshots()
-                            .await
-                            .iter()
-                            .any(|route| route.peer_id == peer_id_c && route.cost == 1)
-                        && core_c
-                            .route_snapshots()
-                            .await
-                            .iter()
-                            .any(|route| route.peer_id == peer_id_a && route.cost == 1)
-                        && peer_has_udp_conn_to_remote_addr(
-                            core_a.clone(),
-                            peer_id_c,
-                            mapped_addr_c,
-                        )
+                    let direct_a = core_a.connected_peers().await.contains(&peer_id_c);
+                    let direct_c = core_c.connected_peers().await.contains(&peer_id_a);
+                    let route_a = core_a
+                        .route_snapshots()
                         .await
-                        && peer_has_udp_conn_to_remote_addr(
-                            core_c.clone(),
-                            peer_id_a,
-                            mapped_addr_a,
-                        )
+                        .iter()
+                        .any(|route| route.peer_id == peer_id_c && route.cost == 1);
+                    let route_c = core_c
+                        .route_snapshots()
                         .await
+                        .iter()
+                        .any(|route| route.peer_id == peer_id_a && route.cost == 1);
+                    let mut mappings_a = Vec::new();
+                    let mut mappings_c = Vec::new();
+                    let mut mapped_a = false;
+                    let mut mapped_c = false;
+                    if direct_a && direct_c && route_a && route_c {
+                        // Concurrent punches may create more than one listener. Query
+                        // the live IGD mappings instead of assuming the first event
+                        // names the listener selected for the A-C connection.
+                        match tokio::join!(
+                            query_udp_mapping_addrs(DUAL_NS_A, DUAL_EXTERNAL_A_IP, DUAL_CLIENT_A_IP),
+                            query_udp_mapping_addrs(DUAL_NS_C, DUAL_EXTERNAL_C_IP, DUAL_CLIENT_C_IP),
+                        ) {
+                            (Ok(a), Ok(c)) => {
+                                mappings_a = a;
+                                mappings_c = c;
+                                mapped_a = peer_has_udp_conn_to_remote_addrs(
+                                    core_a.clone(), peer_id_c, &mappings_c,
+                                ).await;
+                                mapped_c = peer_has_udp_conn_to_remote_addrs(
+                                    core_c.clone(), peer_id_a, &mappings_a,
+                                ).await;
+                            }
+                            (a, c) => eprintln!("failed to query current UPnP mappings: a={a:?}, c={c:?}"),
+                        }
+                    }
+                    // A single UDP tunnel carries traffic in both directions. Its
+                    // client targets a mapped listener; the server sees the client's
+                    // temporary socket, whose mapping can already have been released.
+                    let ready = direct_a && direct_c && route_a && route_c && (mapped_a || mapped_c);
+                    if !ready && dump_diagnostics {
+                        eprintln!(
+                            "UPnP direct check: mappings_a={mappings_a:?}, mappings_c={mappings_c:?}, \
+                             direct_a={direct_a}, direct_c={direct_c}, route_a={route_a}, route_c={route_c}, \
+                             mapped_a={mapped_a}, mapped_c={mapped_c}\n\
+                             peers_a={:#?}\npeers_c={:#?}\nroutes_a={:#?}\nroutes_c={:#?}",
+                            core_a.peer_snapshots().await,
+                            core_c.peer_snapshots().await,
+                            core_a.route_snapshots().await,
+                            core_c.route_snapshots().await,
+                        );
+                    }
+                    ready
                 }
             },
             Duration::from_secs(20),
