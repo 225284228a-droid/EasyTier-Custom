@@ -67,6 +67,22 @@ fn is_wss(url: &url::Url) -> Result<bool, TunnelError> {
 
 const DEFAULT_BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const DEFAULT_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
+const TRANSPORT_FEATURES_HEADER: &str = "x-easytier-transport-features";
+const WS_TEXT_PADDING_V1: &str = "ws-text-padding-v1";
+
+fn supports_text_padding(headers: &http::HeaderMap) -> bool {
+    headers
+        .get_all(TRANSPORT_FEATURES_HEADER)
+        .iter()
+        .any(|value| {
+            value.to_str().is_ok_and(|value| {
+                value
+                    .split(',')
+                    .any(|feature| feature.trim() == WS_TEXT_PADDING_V1)
+            })
+        })
+}
+
 /// Padding frames are carried as WebSocket **text** messages so they can never
 /// collide with real ZCPacket payloads, which are always binary. A real
 /// ZCPacket over a ws/wss tunnel starts with its `PeerManagerHeader`, whose
@@ -92,7 +108,7 @@ const DEFAULT_PADDING_SIZE: usize = 128;
 /// - `path`: request path, e.g. `/api/v1/query` to mimic an API endpoint
 /// - `ua`: User-Agent header, defaults to a Chrome UA
 /// - `accept_language`: Accept-Language header
-/// - `padding=<interval_ms>[,<size>]`: send periodic binary padding frames so
+/// - `padding=<interval_ms>[,<size>]`: send negotiated WebSocket text padding so
 ///   the flow looks like an interactive HTTPS session instead of a steady pipe
 #[derive(Debug, Clone, Default)]
 pub struct WssDisguise {
@@ -389,15 +405,12 @@ async fn map_from_ws_message(
     if message.is_text() {
         if padding_expected {
             tracing::trace!("dropping websocket text padding frame");
+            return None;
         } else {
-            // Still dropped to keep the data path safe, but surfaced loudly:
-            // an unexpected text frame usually means a protocol or version
-            // mismatch on this connection, which must not vanish silently.
-            tracing::warn!(
-                "dropping unexpected websocket text frame (padding not enabled for this connection)"
-            );
+            return Some(Err(TunnelError::InvalidPacket(
+                "unnegotiated websocket text frame".to_owned(),
+            )));
         }
-        return None;
     }
     if !message.is_binary() {
         let message = format!("{message:?}");
@@ -436,6 +449,16 @@ where
     let (request, stream) = ServerBuilder::new()
         .limits(Limits::unlimited())
         .max_headers(128)
+        // This announces receiver support, not an unconditional permission
+        // to send padding. Both the offer and this response must contain the
+        // feature before the client constructs a padding sink. Negotiating at
+        // HTTP upgrade also covers config-server tunnels, which have no peer
+        // handshake. The library sends the response before returning request.
+        .add_header(
+            http::HeaderName::from_static(TRANSPORT_FEATURES_HEADER),
+            http::HeaderValue::from_static(WS_TEXT_PADDING_V1),
+        )
+        .map_err(websocket_error)?
         .accept(stream)
         .await
         .map_err(websocket_error)?;
@@ -465,9 +488,9 @@ where
 
     let (write, read) = stream.split();
     let remote_url: crate::proto::common::Url = remote_url.into();
-    // A padding client dials the URL this listener advertised, so the listener
-    // URL itself declares whether text padding frames may arrive.
-    let padding_expected = WssDisguise::from_url(&local_url).padding_enabled();
+    // Listener URL policy cannot establish remote support. The HTTP offer is
+    // the remote receiver's explicit promise for this connection only.
+    let padding_expected = supports_text_padding(request.headers());
     let info = TunnelInfo {
         tunnel_type: local_url.scheme().to_owned(),
         local_addr: Some(local_url.into()),
@@ -636,6 +659,15 @@ where
             )
             .map_err(websocket_error)?;
     }
+    let padding_offered = disguise.padding_enabled();
+    if padding_offered {
+        client = client
+            .add_header(
+                http::HeaderName::from_static(TRANSPORT_FEATURES_HEADER),
+                http::HeaderValue::from_static(WS_TEXT_PADDING_V1),
+            )
+            .map_err(websocket_error)?;
+    }
 
     let stream: MaybeTlsStream<S> = if is_wss {
         init_crypto_provider();
@@ -648,10 +680,10 @@ where
         MaybeTlsStream::Plain(stream)
     };
 
-    let (client, _) = client.connect_on(stream).await.map_err(websocket_error)?;
+    let (client, response) = client.connect_on(stream).await.map_err(websocket_error)?;
     let (write, read) = client.split();
-    let padding_expected = disguise.padding_enabled();
-    let write = if let Some(interval) = disguise.padding_interval {
+    let padding_expected = padding_offered && supports_text_padding(response.headers());
+    let write = if let Some(interval) = disguise.padding_interval.filter(|_| padding_expected) {
         WebSocketPacketSink::with_padding(write, interval, disguise.padding_size)
     } else {
         WebSocketPacketSink::new(write)
@@ -676,6 +708,184 @@ pub mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpSocket,
     };
+
+    #[test]
+    fn text_padding_feature_requires_an_exact_versioned_token() {
+        for (value, expected) in [
+            ("", false),
+            ("ws-text-padding-v2", false),
+            ("prefix-ws-text-padding-v1", false),
+            ("WS-TEXT-PADDING-V1", false),
+            ("ws-text-padding-v1", true),
+            ("other-v2, ws-text-padding-v1, future-v1", true),
+        ] {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(TRANSPORT_FEATURES_HEADER, value.parse().unwrap());
+            assert_eq!(supports_text_padding(&headers), expected, "{value}");
+        }
+        assert!(!supports_text_padding(&http::HeaderMap::new()));
+        let mut headers = http::HeaderMap::new();
+        headers.append(TRANSPORT_FEATURES_HEADER, "other-v1".parse().unwrap());
+        headers.append(
+            TRANSPORT_FEATURES_HEADER,
+            WS_TEXT_PADDING_V1.parse().unwrap(),
+        );
+        assert!(supports_text_padding(&headers));
+    }
+
+    async fn padding_upgrade_roundtrip(scheme: &str, response_feature: Option<&'static str>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let tls = scheme == "wss";
+        let negotiated = response_feature.is_some_and(|value| {
+            value
+                .split(',')
+                .any(|feature| feature.trim() == WS_TEXT_PADDING_V1)
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let stream = if tls {
+                init_crypto_provider();
+                let (certificates, private_key) = get_insecure_tls_cert();
+                let config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(certificates, private_key)
+                    .unwrap();
+                Either::Left(
+                    TlsAcceptor::from(Arc::new(config))
+                        .accept(stream)
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                Either::Right(stream)
+            };
+            // An unmodified server never advertises padding and rejects text
+            // messages. This exercises the first management/RPC packet without
+            // a Peer HandshakeRequest or Noise message anywhere in the test.
+            let mut builder = ServerBuilder::new();
+            if let Some(feature) = response_feature {
+                builder = builder
+                    .add_header(
+                        http::HeaderName::from_static(TRANSPORT_FEATURES_HEADER),
+                        feature.parse().unwrap(),
+                    )
+                    .unwrap();
+            }
+            let (request, mut websocket) = builder.accept(stream).await.unwrap();
+            assert!(supports_text_padding(request.headers()));
+            let first = websocket.next().await.unwrap().unwrap();
+            let packet = if negotiated {
+                assert!(
+                    first.is_text(),
+                    "acknowledged padding precedes the first packet"
+                );
+                websocket.next().await.unwrap().unwrap()
+            } else {
+                first
+            };
+            assert!(
+                packet.is_binary(),
+                "official peers must only receive binary packets"
+            );
+            websocket.send(packet).await.unwrap();
+        });
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let tunnel = upgrade_connected(
+            RuntimeTcpSocket::new(stream),
+            format!("{scheme}://{address}/config-token?padding=100,64")
+                .parse()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let (mut read, mut write) = tunnel.split();
+        write
+            .send(ZCPacket::new_with_payload(b"first management packet"))
+            .await
+            .unwrap();
+        let packet = timeout(Duration::from_secs(3), read.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.payload(), b"first management packet");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn padding_upgrade_works_for_ws_and_wss_management_tunnels() {
+        for scheme in ["ws", "wss"] {
+            for response in [
+                None,
+                Some("ws-text-padding-v2"),
+                Some("prefix-ws-text-padding-v1"),
+                Some(WS_TEXT_PADDING_V1),
+                Some("other-v2, ws-text-padding-v1"),
+            ] {
+                padding_upgrade_roundtrip(scheme, response).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn listener_accepts_negotiated_padding_without_a_padding_url() {
+        let mut listener = WsTunnelListener::new("ws://127.0.0.1:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let url = listener.local_url();
+        let server = tokio::spawn(async move {
+            let tunnel = listener.accept().await.unwrap();
+            let (mut read, _) = tunnel.split();
+            let packet = read.next().await.unwrap().unwrap();
+            assert_eq!(packet.payload(), b"management handshake");
+        });
+        let (mut client, response) = ClientBuilder::new()
+            .uri(url.as_str())
+            .unwrap()
+            .add_header(
+                http::HeaderName::from_static(TRANSPORT_FEATURES_HEADER),
+                http::HeaderValue::from_static(WS_TEXT_PADDING_V1),
+            )
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        assert!(supports_text_padding(response.headers()));
+        client.send(Message::text("cGFkZGluZw==")).await.unwrap();
+        client
+            .send(Message::binary(
+                ZCPacket::new_with_payload(b"management handshake")
+                    .tunnel_payload_bytes()
+                    .freeze(),
+            ))
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn listener_padding_url_does_not_negotiate_for_an_official_client() {
+        let mut listener =
+            WsTunnelListener::new("ws://127.0.0.1:0/?padding=100,64".parse().unwrap());
+        listener.listen().await.unwrap();
+        let url = listener.local_url();
+        let server = tokio::spawn(async move {
+            let tunnel = listener.accept().await.unwrap();
+            let (mut read, _) = tunnel.split();
+            assert!(matches!(
+                read.next().await,
+                Some(Err(TunnelError::InvalidPacket(_)))
+            ));
+        });
+        let (mut client, _) = ClientBuilder::new()
+            .uri(url.as_str())
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        client.send(Message::text("cGFkZGluZw==")).await.unwrap();
+        server.await.unwrap();
+    }
 
     #[test]
     fn wss_disguise_sni_handles_ip_literal_hosts() {
@@ -715,9 +925,7 @@ pub mod tests {
     #[test]
     fn wss_disguise_request_uri_keeps_ip_literal_host() {
         let url: url::Url = "wss://192.0.2.1:443/ws?sni=".parse().unwrap();
-        let uri = WssDisguise::from_url(&url)
-            .request_uri(&url)
-            .unwrap();
+        let uri = WssDisguise::from_url(&url).request_uri(&url).unwrap();
         // The disguise params must be stripped and the IP host preserved
         // (Url serialization may omit the wss default port).
         let parsed: url::Url = uri.parse().unwrap();
@@ -878,11 +1086,8 @@ pub mod tests {
 
     #[tokio::test]
     async fn map_from_ws_message_reports_unexpected_text_frame() {
-        // Text frames on a connection that did not enable padding are dropped
-        // as well (the data path stays text-free), but they indicate a
-        // protocol mismatch and must not be silent.
         let result = map_from_ws_message(Ok(Message::text("cGFkZGluZw==".to_owned())), false).await;
-        assert!(result.is_none(), "unexpected text frame is still dropped");
+        assert!(matches!(result, Some(Err(TunnelError::InvalidPacket(_)))));
     }
 
     #[tokio::test]
