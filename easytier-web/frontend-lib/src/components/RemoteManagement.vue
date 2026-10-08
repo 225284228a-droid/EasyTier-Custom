@@ -357,10 +357,11 @@ const confirmDeleteNetwork = (event: any) => {
 
 const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
     if (configSubmitting.value) return;
-    const cfg = config ?? currentNetworkConfig.value;
-    if (!cfg) {
+    const editedConfig = config ?? currentNetworkConfig.value;
+    if (!editedConfig) {
         return;
     }
+    const cfg = cloneEditableConfig(editedConfig);
 
     const targetInstanceId = instanceId.value ?? cfg.instance_id;
     if (targetInstanceId && cfg.instance_id !== targetInstanceId) {
@@ -368,30 +369,38 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
     }
 
     const context = requestContext();
+    const selected = instanceId.value;
+    const request = configRequest;
+    const current = () => context.current() && instanceId.value === selected && configRequest === request;
     configSubmitting.value = true;
     try {
         const disabled = networkIsDisabled.value;
         if (revisionSupported.value) {
             const entry = await saveEditedConfig(cfg, LocalConfigApplyMode.SaveAndApply);
-            if (!context.current()) return;
+            if (!current()) return;
             if (disabled) await context.api.update_network_instance_state(cfg.instance_id, false, entry!.revision);
         } else if (disabled) {
             await context.api.save_config(cfg);
-            if (!context.current()) return;
+            if (!current()) return;
             await context.api.update_network_instance_state(cfg.instance_id, false);
         } else {
             await context.api.run_network(cfg, currentNetworkControl.remoteSave.value);
         }
-        if (!context.current()) return;
+        if (!current()) return;
+
+        // Acknowledge only the submitted snapshot; edits made during the request stay dirty.
+        configBaseline.value = cloneEditableConfig(cfg);
+        isEditingNetwork.value = false;
 
         delete networkMetaCache.value[cfg.instance_id];
         await loadNetworkMetas([cfg.instance_id]);
+        if (!current()) return;
 
-        selectedInstanceId.value = cfg.instance_id;
         await loadNetworkInstanceIds();
+        if (!current()) return;
         await loadCurrentNetworkInfo();
     } catch (e: any) {
-        if (!context.current()) return;
+        if (!current()) return;
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to run network, error: ' + formatError(e), life: 2000 });
         return;
@@ -399,9 +408,9 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
         if (context.current()) configSubmitting.value = false;
     }
 
-    if (!context.current()) return;
+    if (!current()) return;
+    selectedInstanceId.value = cfg.instance_id;
     emits('update');
-    isEditingNetwork.value = false;
 }
 
 const saveNetworkConfig = async () => {

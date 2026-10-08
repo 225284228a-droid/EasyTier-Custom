@@ -363,7 +363,9 @@ const locationText = (device: Utils.DeviceInfo) => {
                 </div>
             </template>
             <RouterView v-slot="{ Component }">
-                <component :is="Component" :api="api" :deviceList="deviceList" @update="loadDevices" />
+                <!-- Reset only the editor/status content, leaving the list and drawer in place. -->
+                <component :is="Component" :key="`${route.params.deviceId}:${route.params.instanceId ?? ''}`"
+                    :api="api" :deviceList="deviceList" @update="loadDevices" />
             </RouterView>
         </Drawer>
     </div>

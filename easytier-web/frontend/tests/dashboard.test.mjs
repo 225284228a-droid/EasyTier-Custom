@@ -211,15 +211,52 @@ test('device search, sort, expansion and routed drawer survive reload and histor
     assert.match(await table.locator('tbody > tr').first().textContent(), /Windows desktop/);
     await table.locator('tbody > tr').first().getByRole('button').first().click();
     await table.locator('.device-details').waitFor();
+    await page.getByRole('textbox', { name: 'Search name or address' }).fill('192.0.2.');
+    const tableElement = await table.elementHandle();
     await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).click();
     await page.locator('.console-device-drawer').waitFor();
     assert.ok(page.url().endsWith(`/device/${id(1)}/${id(100)}`));
+    assert.ok(await tableElement.evaluate(element => element === document.querySelector('.desktop-list')), 'opening a device preserves the list');
+    assert.equal(await page.getByRole('textbox', { name: 'Search name or address' }).inputValue(), '192.0.2.');
+    assert.match(await table.locator('tbody > tr').first().textContent(), /Windows desktop/);
+    assert.equal(await table.locator('.device-details').count(), 1);
     await page.reload();
     await page.locator('.console-device-drawer h2').filter({ hasText: 'Amsterdam gateway' }).waitFor();
     await page.keyboard.press('Escape');
     await page.waitForURL('**/#/h/deviceList');
     await page.goBack();
     await page.locator('.console-device-drawer').waitFor();
+});
+
+test('switching the viewed network and device preserves the list and open drawer', async t => {
+    const { page } = await open(t, '/h/deviceList');
+    await page.route('**/machines/*/networks', route => route.fulfill({ json: {
+        running_inst_ids: [uuid(100), uuid(101)], disabled_inst_ids: [],
+    } }));
+    await page.route('**/machines/*/networks/metas', route => route.fulfill({ json: { metas: {
+        [id(100)]: { network_name: 'Engineering', config_permission: 7 },
+        [id(101)]: { network_name: 'Home lab', config_permission: 7 },
+    } } }));
+    const table = page.locator('.desktop-list');
+    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).click();
+    const drawer = page.locator('.console-device-drawer');
+    await drawer.waitFor();
+    const tableElement = await table.elementHandle();
+    const drawerElement = await drawer.elementHandle();
+    await drawer.locator('#dd-inst-id').click();
+    await page.getByRole('option').filter({ hasText: id(101) }).click();
+    await page.waitForURL(`**/device/${id(1)}/${id(101)}`);
+    assert.ok(await tableElement.evaluate(element => element === document.querySelector('.desktop-list')), 'switching instances preserves the list');
+    assert.ok(await drawerElement.evaluate(element => element === document.querySelector('.console-device-drawer')), 'switching instances preserves the open drawer');
+
+    // Direct navigation also reuses the drawer while replacing its device content.
+    await page.evaluate(hash => { location.hash = hash; }, `/h/deviceList/device/${id(2)}/${id(100)}`);
+    await drawer.locator('h2').filter({ hasText: 'Build server' }).waitFor();
+    assert.ok(await tableElement.evaluate(element => element === document.querySelector('.desktop-list')), 'switching devices preserves the list');
+    assert.ok(await drawerElement.evaluate(element => element === document.querySelector('.console-device-drawer')), 'switching devices preserves the open drawer');
+    await page.goBack();
+    await drawer.locator('h2').filter({ hasText: 'Amsterdam gateway' }).waitFor();
+    assert.ok(await drawerElement.evaluate(element => element === document.querySelector('.console-device-drawer')), 'history navigation preserves the open drawer');
 });
 
 test('device list card view toggle renders cards and persists across reload', async t => {
@@ -313,6 +350,17 @@ test('network tabs preserve gateway settings and unsaved input across polling', 
     await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm', exact: true }).click();
     await page.waitForURL('**/#/h/networks');
     assert.equal(state.networks.length, 2);
+});
+
+test('switching central networks resets the settings form to the selected network', async t => {
+    const { page, state } = await open(t, '/h/networks/network-0');
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    await page.locator('#settings-display-name').fill('Engineering draft');
+    await page.locator('.console-sidebar a[href="#/h/networks/network-1"]').click();
+    await page.getByRole('heading', { name: 'Home lab', exact: true }).waitFor();
+    await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+    assert.equal(await page.locator('#settings-display-name').inputValue(), 'Home lab');
+    assert.equal(state.writes.length, 0);
 });
 
 test('ACL rules and network secrets use secure randomness without randomUUID', async t => {

@@ -332,7 +332,9 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
             </header>
             <main ref="mainContent" id="main-content" class="console-content" tabindex="-1">
                 <RouterView v-slot="{ Component }">
-                    <component :is="Component" :key="`${api.persistenceScope}:${route.fullPath}`" :api="api" :central-enabled="centralEnabled" />
+                    <!-- Keep the device list and drawer mounted when selecting devices or instances.
+                         Central network details still need fresh state when switching networks. -->
+                    <component :is="Component" :key="`${api.persistenceScope}:${route.params.networkId ?? ''}`" :api="api" :central-enabled="centralEnabled" />
                 </RouterView>
             </main>
         </div>

@@ -359,9 +359,9 @@ function revisionApi() {
     },
   }
 }
-async function openRevision(api: any, instanceId: string | undefined = INSTANCE_ID, newConfigGenerator?: () => NetworkConfig) {
+async function openRevision(api: any, instanceId: string | null = INSTANCE_ID, newConfigGenerator?: () => NetworkConfig) {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-  const wrapper = mount(RemoteManagement, { props: { api, instanceId, newConfigGenerator }, global: {
+  const wrapper = mount(RemoteManagement, { props: { api, instanceId: instanceId ?? undefined, newConfigGenerator }, global: {
     stubs: { Config: RevisionConfigForm, ConfigEditDialog: true, Status: true },
   } })
   await vi.advanceTimersByTimeAsync(1)
@@ -385,6 +385,163 @@ async function editRunning(wrapper: Awaited<ReturnType<typeof openRevision>>) {
   await flushPromises()
   return wrapper.findComponent(RevisionConfigForm)
 }
+
+function legacyApi(running: boolean) {
+  const state = revisionApi()
+  state.snapshot.capabilities.length = 0
+  state.api.list_network_instance_ids.mockImplementation(async () => ({
+    running_inst_ids: running ? [INSTANCE_UUID] : [],
+    disabled_inst_ids: running ? [] : [INSTANCE_UUID],
+    runtime_capabilities: [],
+  }))
+  state.api.get_network_info.mockResolvedValue({ running: true })
+  state.api.run_network.mockImplementation(async () => { running = true })
+  state.api.update_network_instance_state.mockImplementation(async () => { running = true })
+  return state
+}
+
+describe('legacy RemoteManagement save and run', () => {
+  it('creates, selects, and runs a network when no instance was initially selected', async () => {
+    const { api, entry } = legacyApi(false)
+    api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: [] })
+    api.save_config.mockImplementation(async () => {
+      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID], runtime_capabilities: [] })
+    })
+    api.update_network_instance_state.mockImplementation(async () => {
+      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [], runtime_capabilities: [] })
+    })
+    const wrapper = await openRevision(api, null, () => entry.config)
+    try {
+      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
+      const form = wrapper.findComponent(RevisionConfigForm)
+      form.props('curNetwork').hostname = 'new-network-host'
+      form.vm.$emit('runNetwork', form.props('curNetwork'))
+      await flushPromises()
+
+      expect(api.save_config).toHaveBeenCalledTimes(2)
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false)
+      expect(wrapper.find('.network-status-container').exists()).toBe(true)
+      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
+      expect(wrapper.emitted('update')).toHaveLength(1)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it.each([false, true])('returns to network status after applying edits (initially running: %s)', async running => {
+    const { api } = legacyApi(running)
+    const wrapper = await openRevision(api)
+    try {
+      const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
+      form.props('curNetwork').hostname = 'applied-host'
+      await nextTick()
+      expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
+
+      form.vm.$emit('runNetwork', form.props('curNetwork'))
+      await flushPromises()
+
+      if (running) {
+        expect(api.run_network).toHaveBeenCalledWith(expect.objectContaining({ hostname: 'applied-host' }), true)
+        expect(api.save_config).not.toHaveBeenCalled()
+      } else {
+        expect(api.save_config).toHaveBeenCalledWith(expect.objectContaining({ hostname: 'applied-host' }))
+        expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false)
+        expect(api.run_network).not.toHaveBeenCalled()
+      }
+      expect(wrapper.find('.network-status-container').exists()).toBe(true)
+      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('web.local_configs.dirty_preserved')
+      expect(wrapper.emitted('update')).toHaveLength(1)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it.each(['save_config', 'update_network_instance_state', 'run_network'] as const)(
+    'keeps the dirty form when %s fails', async operation => {
+      const running = operation === 'run_network'
+      const { api } = legacyApi(running)
+      api[operation].mockRejectedValue(new Error('request failed'))
+      const wrapper = await openRevision(api)
+      try {
+        const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
+        form.props('curNetwork').hostname = 'unsaved-host'
+        form.vm.$emit('runNetwork', form.props('curNetwork'))
+        await flushPromises()
+        await vi.advanceTimersByTimeAsync(1_000)
+
+        expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('unsaved-host')
+        expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
+        expect(wrapper.find('.network-status-container').exists()).toBe(false)
+        expect(wrapper.emitted('update')).toBeUndefined()
+        if (operation === 'save_config') expect(api.update_network_instance_state).not.toHaveBeenCalled()
+      } finally { wrapper.unmount(); vi.useRealTimers() }
+    },
+  )
+
+  it.each([false, true])('retains edits made while the run request is pending (initially running: %s)', async running => {
+    const { api } = legacyApi(running)
+    let finish!: () => void
+    const operation = running ? api.run_network : api.update_network_instance_state
+    operation.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
+    const wrapper = await openRevision(api)
+    try {
+      const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
+      form.props('curNetwork').hostname = 'submitted-host'
+      form.vm.$emit('runNetwork', form.props('curNetwork'))
+      await flushPromises()
+      form.props('curNetwork').hostname = 'newer-edit'
+      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [], runtime_capabilities: [] })
+      finish()
+      await flushPromises()
+
+      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('newer-edit')
+      expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
+      expect(wrapper.find('.network-status-container').exists()).toBe(false)
+      const submitted = (running ? api.run_network : api.save_config).mock.calls[0][0]
+      expect(submitted.hostname).toBe('submitted-host')
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it.each(['save_config', 'run_network', 'get_network_metas'] as const)(
+    'does not restore the previous selection after a delayed %s response', async operation => {
+      const running = operation !== 'save_config'
+      const { api, entry } = legacyApi(running)
+      const nextId = '00000000-0000-0000-0000-000000000002'
+      const nextUuid = { ...INSTANCE_UUID, part4: 2 }
+      api.list_network_instance_ids.mockResolvedValue({
+        running_inst_ids: running ? [INSTANCE_UUID] : [],
+        disabled_inst_ids: running ? [nextUuid] : [INSTANCE_UUID, nextUuid],
+        runtime_capabilities: [],
+      })
+      api.get_network_config.mockImplementation(async (...args: string[]) => ({ ...entry.config, instance_id: args[0] }))
+      const wrapper = await openRevision(api)
+      try {
+        const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
+        form.props('curNetwork').hostname = 'submitted-host'
+        let finish!: () => void
+        api[operation].mockImplementationOnce(() => new Promise<any>(resolve => {
+          finish = () => resolve(operation === 'get_network_metas' ? { metas: {} } : undefined)
+        }))
+        form.vm.$emit('runNetwork', form.props('curNetwork'))
+        await flushPromises()
+
+        await wrapper.setProps({ instanceId: nextId })
+        await flushPromises()
+        const nextForm = wrapper.findComponent(RevisionConfigForm)
+        nextForm.props('curNetwork').hostname = 'new-network-edit'
+        finish()
+        await flushPromises()
+
+        expect(wrapper.findComponent({ name: 'Select' }).props('modelValue').uuid).toBe(nextId)
+        expect(nextForm.props('curNetwork').hostname).toBe('new-network-edit')
+        expect(nextForm.props('configInvalid')).toBe(false)
+        expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
+        expect(wrapper.emitted('update:instanceId')).toBeUndefined()
+        expect(wrapper.emitted('update')).toBeUndefined()
+        if (operation === 'save_config') expect(api.update_network_instance_state).not.toHaveBeenCalled()
+      } finally { wrapper.unmount(); vi.useRealTimers() }
+    },
+  )
+})
 
 describe('revision-aware RemoteManagement forms', () => {
   it('applies persisted changes after a running configuration is saved without further edits', async () => {
@@ -574,7 +731,7 @@ describe('revision-aware RemoteManagement forms', () => {
       api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [], runtime_capabilities: ['management:persisted-config-revision-v1'] })
       return { status: 0, entry }
     })
-    const wrapper = await openRevision(api, undefined, () => entry.config)
+    const wrapper = await openRevision(api, null, () => entry.config)
     try {
       await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
       await flushPromises()
