@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createFlowLabel, updateFlowLabel } from '../../frontend/src/modules/globeFlowLabel'
+import { createFlowLabel, updateFlowLabel } from '../src/modules/globeFlowLabel'
 
 describe('globe cross-shaped traffic labels', () => {
   it('keeps directional throughput around the endpoint row with RTT in a separate footer', () => {

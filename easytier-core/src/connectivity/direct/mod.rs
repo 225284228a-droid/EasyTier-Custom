@@ -1638,27 +1638,6 @@ mod tests {
     }
 
     #[test]
-    fn p2p_transport_preference_orders_disguised_listeners() {
-        // "udp" prefers HTTP3 over WSS, and both disguised transports win over
-        // the raw ones. Lower rank means tried earlier.
-        assert!(p2p_protocol_rank("udp", true, "http3") < p2p_protocol_rank("udp", true, "wss"));
-        assert!(p2p_protocol_rank("udp", true, "wss") < p2p_protocol_rank("udp", true, "udp"));
-        // "tcp" prefers WSS over HTTP3.
-        assert!(p2p_protocol_rank("tcp", true, "wss") < p2p_protocol_rank("tcp", true, "http3"));
-        // Raw transports keep following the configured preference.
-        assert!(p2p_protocol_rank("udp", false, "udp") < p2p_protocol_rank("udp", false, "tcp"));
-        assert!(p2p_protocol_rank("tcp", false, "tcp") < p2p_protocol_rank("tcp", false, "udp"));
-    }
-
-    #[test]
-    fn unknown_p2p_transport_preference_keeps_disguised_listeners_equal() {
-        assert_eq!(
-            p2p_protocol_rank("wg", true, "wss"),
-            p2p_protocol_rank("wg", true, "http3")
-        );
-    }
-
-    #[test]
     fn direct_listener_consumption_follows_protocol_preference() {
         for (default_protocol, use_disguise, expected) in [
             ("udp", true, vec!["http3", "wss", "udp", "udp", "tcp"]),

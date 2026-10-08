@@ -236,9 +236,15 @@ importers:
       '@vitejs/plugin-vue':
         specifier: ^5.1.4
         version: 5.2.4(vite@5.4.21(@types/node@22.18.1))(vue@3.5.21(typescript@5.6.3))
+      '@vue/test-utils':
+        specifier: ^2.4.11
+        version: 2.4.11(@vue/compiler-dom@3.5.21)(@vue/server-renderer@3.5.21(vue@3.5.21(typescript@5.6.3)))(vue@3.5.21(typescript@5.6.3))
       autoprefixer:
         specifier: ^10.4.20
         version: 10.4.21(postcss@8.5.6)
+      happy-dom:
+        specifier: 16.8.1
+        version: 16.8.1
       pngjs:
         specifier: 7.0.0
         version: 7.0.0
@@ -257,6 +263,9 @@ importers:
       vite-plugin-singlefile:
         specifier: ^2.0.3
         version: 2.3.0(rollup@4.50.1)(vite@5.4.21(@types/node@22.18.1))
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@22.18.1)(happy-dom@16.8.1)
       playwright:
         specifier: 1.61.0
         version: 1.61.0

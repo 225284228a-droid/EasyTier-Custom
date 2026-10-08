@@ -47,7 +47,10 @@ describe('Status traffic columns', () => {
   it('combines total traffic into two rows and keeps valid estimates across timer ticks', async () => {
     vi.useFakeTimers()
     const wrapper = mount(Status, {
-      props: { curNetworkInst: runningInstance(), api: {} as any },
+      props: {
+        curNetworkInst: runningInstance(),
+        api: { get_network_config: vi.fn(async () => ({})) } as any,
+      },
       global: {
         plugins: [PrimeVue],
         directives: { tooltip: () => {} },

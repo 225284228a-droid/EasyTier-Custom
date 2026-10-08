@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { createI18n } from '../../frontend/node_modules/vue-i18n'
-import Dashboard from '../../frontend/src/components/Dashboard.vue'
+import { createI18n } from 'vue-i18n'
+import Dashboard from '../src/components/Dashboard.vue'
 
 const machineId = '00000000-0000-0000-0000-000000000001'
 const instanceId = '00000000-0000-0000-0000-00000000000b'

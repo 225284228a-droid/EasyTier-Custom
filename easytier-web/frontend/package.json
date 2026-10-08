@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "pnpm --dir ../frontend-lib build && vite",
     "build": "pnpm --dir ../frontend-lib build && vue-tsc -b && vite build",
-    "test:dashboard": "node scripts/test-dashboard.mjs",
+    "test": "pnpm test:unit",
+    "test:unit": "pnpm --dir ../frontend-lib build && vitest run --config vitest.config.ts",
+    "test:dashboard": "pnpm build && node scripts/test-dashboard.mjs",
     "preview": "vite preview",
     "test:browser": "pnpm build && node --test tests/dashboard.test.mjs",
     "test:e2e": "pnpm build && cargo build -p easytier-web --features embed && node --test tests/central-e2e.test.mjs"
@@ -32,7 +34,9 @@
     "@types/node": "^22.8.6",
     "@types/three": "^0.186.0",
     "@vitejs/plugin-vue": "^5.1.4",
+    "@vue/test-utils": "^2.4.11",
     "autoprefixer": "^10.4.20",
+    "happy-dom": "16.8.1",
     "playwright": "1.61.0",
     "pngjs": "7.0.0",
     "postcss": "^8.4.47",
@@ -40,6 +44,7 @@
     "typescript": "~5.6.2",
     "vite": "^5.4.21",
     "vite-plugin-singlefile": "^2.0.3",
+    "vitest": "^2.1.9",
     "vue-tsc": "^2.1.10"
   }
 }

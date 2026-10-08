@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCloudPointPositions } from '../../frontend/src/modules/globePointCloud'
+import { buildCloudPointPositions } from '../src/modules/globePointCloud'
 
 describe('globe equal-area point cloud', () => {
   it.each([24_000, 96_000, 288_000])('retains every point at the %i-point detail level', (count) => {
@@ -17,16 +17,28 @@ describe('globe equal-area point cloud', () => {
   })
 
   it('places every point on the unit sphere with finite geographic coordinates', () => {
+    let geographicSamples = 0
+    let invalidGeographicCoordinates = 0
+    let invalidSphereCoordinates = 0
+    let maxUnitSphereError = 0
     const { ocean } = buildCloudPointPositions(24_000, (latitude, longitude) => {
-      expect(Number.isFinite(latitude)).toBe(true)
-      expect(Number.isFinite(longitude)).toBe(true)
-      expect(Math.abs(latitude)).toBeLessThanOrEqual(90)
-      expect(Math.abs(longitude)).toBeLessThanOrEqual(180)
+      geographicSamples++
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)
+        || Math.abs(latitude) > 90 || Math.abs(longitude) > 180)
+        invalidGeographicCoordinates++
       return false
     })
     for (let index = 0; index < ocean.length; index += 3) {
-      expect(Math.hypot(ocean[index], ocean[index + 1], ocean[index + 2])).toBeCloseTo(1, 12)
+      const radius = Math.hypot(ocean[index], ocean[index + 1], ocean[index + 2])
+      if (!Number.isFinite(radius))
+        invalidSphereCoordinates++
+      else
+        maxUnitSphereError = Math.max(maxUnitSphereError, Math.abs(radius - 1))
     }
+    expect(geographicSamples).toBe(24_000)
+    expect(invalidGeographicCoordinates).toBe(0)
+    expect(invalidSphereCoordinates).toBe(0)
+    expect(maxUnitSphereError).toBeLessThan(5e-13)
   })
 
   it('keeps comparable density across equal-area latitude and longitude sectors', () => {
@@ -42,7 +54,6 @@ describe('globe equal-area point cloud', () => {
     }
     expect(sectors.reduce((sum, count) => sum + count, 0)).toBe(24_000)
     const expected = 24_000 / sectors.length
-    for (const count of sectors)
-      expect(Math.abs(count - expected)).toBeLessThan(8)
+    expect(Math.max(...sectors.map(count => Math.abs(count - expected)))).toBeLessThan(8)
   })
 })

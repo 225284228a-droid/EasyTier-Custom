@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   arrangeGlobeLabels, MAX_NODE_LEADER_LENGTH, MAX_TRAFFIC_LEADER_LENGTH,
   type LayoutLabel, type LabelPlacement,
-} from '../../frontend/src/modules/globeLabelLayout'
+} from '../src/modules/globeLabelLayout'
 
 const label = (id: string, x = 300, y = 220): LayoutLabel => ({
   id, kind: 'traffic', priority: 1, width: 198, height: 56,

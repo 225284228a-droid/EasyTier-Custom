@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { URL as NodeURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { spherePosition, sphericalArc } from '../../frontend/src/modules/globeBoundaryGeometry'
+import { spherePosition, sphericalArc } from '../src/modules/globeBoundaryGeometry'
 
 function sourceVertices(filename: string) {
-  const data = JSON.parse(readFileSync(resolve(process.cwd(), '../frontend/src/assets', filename), 'utf8'))
+  const data = JSON.parse(readFileSync(new NodeURL(`../src/assets/${filename}`, import.meta.url), 'utf8'))
   const count = (coordinates: unknown): number => {
     if (!Array.isArray(coordinates))
       return 0

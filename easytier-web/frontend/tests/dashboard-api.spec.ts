@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import ApiClient from '../../frontend/src/modules/api'
-import { normalizeNetworkConfig } from '../src/types/network'
-import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../src/modules/capabilities'
+import ApiClient from '../src/modules/api'
+import { normalizeNetworkConfig } from '../../frontend-lib/src/types/network'
+import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../../frontend-lib/src/modules/capabilities'
 
 const client = vi.hoisted(() => ({
   get: vi.fn(),

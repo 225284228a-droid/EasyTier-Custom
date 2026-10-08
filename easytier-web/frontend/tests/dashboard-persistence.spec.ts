@@ -4,7 +4,7 @@ import {
   readGlobePreferences,
   saveGlobePreferences,
   type GlobePreferences,
-} from '../../frontend/src/modules/dashboardPersistence'
+} from '../src/modules/dashboardPersistence'
 
 const DAY = 24 * 60 * 60 * 1_000
 let cookies: Map<string, string>

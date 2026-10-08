@@ -418,8 +418,25 @@ mod preferred_disguised_scheme_tests {
             ("  ", true, ["wss", "http3", "tcp", "udp"]),
         ] {
             let ranks = order.map(|scheme| p2p_protocol_rank(preferred, use_disguise, scheme));
-            assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]));
-            assert!(ranks[0] < ranks[1]);
+            // Disguised preferences must beat both raw transports, rather
+            // than merely sorting before them by an incidental tie-breaker.
+            assert!(
+                ranks[0] < ranks[1],
+                "{preferred:?}, disguise={use_disguise}"
+            );
+            assert!(
+                ranks[1] < ranks[2],
+                "{preferred:?}, disguise={use_disguise}"
+            );
+            assert_eq!(
+                ranks[2].cmp(&ranks[3]),
+                if use_disguise {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                },
+                "{preferred:?}, disguise={use_disguise}"
+            );
         }
         assert_eq!(p2p_protocol_rank(" UDP ", true, "http-txt-http3"), 0);
         assert_eq!(p2p_protocol_rank("wg", false, "wg"), 0);

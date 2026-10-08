@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TrafficTracker, type TrafficLink, type TrafficObservation } from '../../frontend/src/modules/topologyTraffic'
+import { TrafficTracker, type TrafficLink, type TrafficObservation } from '../src/modules/topologyTraffic'
 
 const observation = (
   connId: string,

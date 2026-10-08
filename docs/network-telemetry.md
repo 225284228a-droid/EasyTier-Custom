@@ -165,9 +165,18 @@ do not show fabricated moving particles. Attribution is in the About dialog.
 - Node IP selection: `cargo test -p easytier-web node_public_ip`
 - GeoIP and location cache: `cargo test -p easytier-web location`
 - Online city cache: `cargo test -p easytier-web geolocation`
-- Frontend unit tests: `pnpm --dir easytier-web/frontend-lib test:config-ui`
+- All frontend and CI script unit tests: `pnpm test:unit`
+- Shared status/config unit tests: `pnpm --dir easytier-web/frontend-lib test:config-ui`
+- Web dashboard/globe unit tests: `pnpm --dir easytier-web/frontend test:unit`
+- GUI bridge/composable unit tests: `pnpm --dir easytier-gui test:unit`
 - Web build: `pnpm --dir easytier-web/frontend build`
-- Browser QA: start Vite, then run `pnpm --dir easytier-web/frontend test:dashboard`.
+- Browser QA (builds assets and starts a preview): `pnpm --dir easytier-web/frontend test:dashboard`.
+
+Install workspace dependencies with `pnpm install` before running frontend
+tests. The shared-library unit entrypoint generates the protobuf TypeScript
+bindings, and the Web and GUI entrypoints rebuild the shared library before
+importing its package exports. The root unit command runs these steps in
+sequence and does not require Chromium, a running server or a native GUI session.
 
 Browser QA requires Playwright, PNGJS and a Chromium installation. It can use
 bundled runtimes via `PLAYWRIGHT_MODULE`, `PNGJS_MODULE` and

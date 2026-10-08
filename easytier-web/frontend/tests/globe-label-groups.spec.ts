@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { linkLocationGroup, nodeLocationGroup } from '../../frontend/src/modules/globeLabelGroups'
-import type { LocatedNode } from '../../frontend/src/modules/globeGeography'
+import { linkLocationGroup, nodeLocationGroup } from '../src/modules/globeLabelGroups'
+import type { LocatedNode } from '../src/modules/globeGeography'
 
 const node = (id: string, city = 'Shanghai'): LocatedNode => ({
   id, peerId: 1, label: id, networkIdentity: 'mesh', managed: true, approximate: false,

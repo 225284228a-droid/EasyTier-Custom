@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TopologyAvailability } from '../../frontend/src/modules/topologyAvailability'
+import { TopologyAvailability } from '../src/modules/topologyAvailability'
 
 const device = (id: string, running = 1) => ({
   machine_id: id,

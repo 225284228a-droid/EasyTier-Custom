@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTopology } from '../../frontend/src/modules/networkTopology'
+import { buildTopology } from '../src/modules/networkTopology'
 
 const snapshot = (latency: unknown, stale = false, closed = false) => ({
   device: { machine_id: 'a', hostname: 'node-a' } as any,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   FlowEmitter, flowEmissionsPerSecond, flowTravelSeconds,
   MAX_FLOW_EMISSIONS_PER_SECOND, MAX_FLOW_PARTICLES,
-} from '../../frontend/src/modules/globeFlow'
+} from '../src/modules/globeFlow'
 
 describe('globe RTT travel speed', () => {
   it('preserves latency ratios instead of compressing low-latency differences', () => {

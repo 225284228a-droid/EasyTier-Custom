@@ -384,16 +384,15 @@ mod tests {
         },
         packet::ZCPacket,
         socket::SocketListener,
-        socket::udp::{
-            UdpBindOptions, UdpSessionAcceptKind, UdpSessionLayer, UdpSessionListenRequest,
-            UdpSessionProtocol, VirtualUdpSocket, VirtualUdpSocketFactory,
-        },
+        socket::udp::{UdpBindOptions, UdpSessionLayer, VirtualUdpSocket, VirtualUdpSocketFactory},
     };
     use futures::{SinkExt, StreamExt};
 
-    use crate::{
-        common::netns::NetNS, host_runtime::native_host_runtime,
-        socket::udp::new_runtime_udp_session_listener, tunnel::common::tests::_tunnel_echo_server,
+    use crate::host_runtime::native_host_runtime;
+
+    use super::super::quic::session_tests::{
+        accept_two_connections_on_same_session, assert_second_connection_survives_first_close,
+        connected_udp_session_fixture,
     };
 
     use super::*;
@@ -512,28 +511,9 @@ mod tests {
         #[values(false, true)] enable_bbr: bool,
     ) {
         tokio::time::timeout(Duration::from_secs(10), async {
-            let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let mut listener = new_runtime_udp_session_listener(
-                format!("http3://{bind_addr}").parse().unwrap(),
-                UdpSessionListenRequest::new(
-                    UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false),
-                ),
-                UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
-                NetNS::new(None),
-            );
-            listener.listen().await.unwrap();
-            let remote_addr = listener.bound_socket().unwrap().local_addr().unwrap();
+            let (mut listener, connected, remote_addr) =
+                connected_udp_session_fixture("http3").await;
             let local_url = listener.local_url();
-
-            let connected = connect_udp(
-                native_host_runtime(),
-                remote_addr,
-                Vec::new(),
-                UdpBindOptions::direct_connect(),
-                UdpSessionMode::Classified(UdpSessionProtocol::Quic),
-            )
-            .await
-            .unwrap();
             let socket = Arc::new(Http3UdpSessionSocket::new(connected).unwrap());
             let runtime = default_runtime().unwrap();
             let mut endpoint =
@@ -548,66 +528,17 @@ mod tests {
                     .unwrap();
                 let mut accepted =
                     Http3AcceptedSession::new(session, local_url, admission, enable_bbr).unwrap();
-                let first = accepted.accept().await.unwrap();
-                let second = accepted.accept().await.unwrap();
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(50), listener.accept())
-                        .await
-                        .is_err(),
-                    "both http3 connections must use the first accepted UDP session"
-                );
-                (first, second)
+                accept_two_connections_on_same_session(&mut accepted, &mut listener).await
             });
 
-            let first_connection = endpoint
-                .connect(remote_addr, "localhost")
-                .unwrap()
-                .await
-                .unwrap();
-            super::super::quic::tests::assert_bbr_controller(&first_connection, enable_bbr);
-            let (first_write, first_read) = first_connection.open_bi().await.unwrap();
-            let mut first_send = FramedWriter::new(first_write);
-            first_send
-                .send(ZCPacket::new_with_payload(b"first http3 connection"))
-                .await
-                .unwrap();
-            let second_connection = endpoint
-                .connect(remote_addr, "localhost")
-                .unwrap()
-                .await
-                .unwrap();
-            let (second_write, second_read) = second_connection.open_bi().await.unwrap();
-            let mut second_send = FramedWriter::new(second_write);
-            second_send
-                .send(ZCPacket::new_with_payload(b"second http3 connection ready"))
-                .await
-                .unwrap();
-            let (first_server, second_server) = server_task.await.unwrap();
-
-            drop(first_send);
-            drop(first_read);
-            drop(first_server);
-            first_connection.close(0u32.into(), b"first connection done");
-
-            let echo_task = tokio::spawn(_tunnel_echo_server(second_server, false));
-            let mut recv = FramedReader::new(second_read, 4500);
-            let ready = recv.next().await.unwrap().unwrap();
-            assert_eq!(ready.payload(), b"second http3 connection ready".as_slice());
-            second_send
-                .send(ZCPacket::new_with_payload(
-                    b"second http3 connection after first closed",
-                ))
-                .await
-                .unwrap();
-            let packet = recv.next().await.unwrap().unwrap();
-            assert_eq!(
-                packet.payload(),
-                b"second http3 connection after first closed".as_slice()
-            );
-            let _ = second_send.close().await;
-            echo_task.await.unwrap();
-            second_connection.close(0u32.into(), b"second connection done");
-            endpoint.close(0u32.into(), b"test done");
+            assert_second_connection_survives_first_close(
+                endpoint,
+                remote_addr,
+                enable_bbr,
+                server_task,
+                "http3",
+            )
+            .await;
         })
         .await
         .unwrap();

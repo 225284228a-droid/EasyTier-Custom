@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildTopology, collectTopologySnapshotsWithRetry, TopologySnapshotCache } from '../../frontend/src/modules/networkTopology'
-import { TrafficTracker } from '../../frontend/src/modules/topologyTraffic'
-import { locateNode } from '../../frontend/src/modules/globeGeography'
+import { buildTopology, collectTopologySnapshotsWithRetry, TopologySnapshotCache } from '../src/modules/networkTopology'
+import { TrafficTracker } from '../src/modules/topologyTraffic'
+import { locateNode } from '../src/modules/globeGeography'
 
 const device = (id: string, instances: string[]) => ({
   machine_id: id,
@@ -57,6 +57,34 @@ const snapshot = (
 })
 
 describe('dashboard topology', () => {
+  it('keeps traffic rates and RTT separate when device pairs reuse a connection ID and coordinates', () => {
+    const snapshots = [1, 2, 3, 4].map(id => {
+      const connection = id % 2 ? peer(id + 1) : undefined
+      if (connection) {
+        Object.assign(connection.conns[0], {
+          conn_id: 'reused-channel-id',
+          my_peer_id: id,
+          stats: { tx_bytes: 0, rx_bytes: 0, latency_us: id === 1 ? 5_000 : 150_000 },
+        })
+      }
+      const instanceId = `instance-${id}`
+      const current = snapshot(device(`device-${id}`, [instanceId]), instanceId, id, [], connection ? [connection] : [])
+      current.detail.node_location = { country: 'Test', latitude: 1, longitude: id % 2 ? 10 : 20 }
+      return current
+    })
+    const tracker = new TrafficTracker()
+    buildTopology([], snapshots, tracker, 1_000)
+    Object.assign(snapshots[0].detail.peers[0].conns[0].stats, { tx_bytes: 250_000, rx_bytes: 125_000 })
+    Object.assign(snapshots[2].detail.peers[0].conns[0].stats, { tx_bytes: 2_500_000, rx_bytes: 25_000 })
+    const topology = buildTopology([], snapshots, tracker, 2_000)
+    expect(topology.nodes).toHaveLength(4)
+    expect(topology.links).toHaveLength(2)
+    expect(topology.links.find(link => link.source.endsWith(':peer:1')))
+      .toMatchObject({ txBps: 2_000_000, rxBps: 1_000_000, latencyMs: 5 })
+    expect(topology.links.find(link => link.source.endsWith(':peer:3')))
+      .toMatchObject({ txBps: 20_000_000, rxBps: 200_000, latencyMs: 150 })
+  })
+
   it('deduplicates reverse connections and uses runtime peer identities', () => {
     const a = device('a', ['instance-a'])
     const b = device('b', ['instance-b'])

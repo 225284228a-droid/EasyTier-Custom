@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { apiPersistenceScope } from '../../frontend/src/modules/persistenceScope'
+import { apiPersistenceScope } from '../src/modules/persistenceScope'
 
 describe('API and account persistence scope', () => {
   it('resolves an injected same-origin root to its actual origin and path', () => {
