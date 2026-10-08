@@ -96,9 +96,13 @@ type HeartbeatRequest struct {
 	FailedNetworkInstances  []*common.UUID         `protobuf:"bytes,10,rep,name=failed_network_instances,json=failedNetworkInstances,proto3" json:"failed_network_instances,omitempty"`
 	SupportHeartbeatPolicy  bool                   `protobuf:"varint,11,opt,name=support_heartbeat_policy,json=supportHeartbeatPolicy,proto3" json:"support_heartbeat_policy,omitempty"`
 	// Custom-only capability outside the upstream field range.
-	SupportLocalConfigs bool `protobuf:"varint,50001,opt,name=support_local_configs,json=supportLocalConfigs,proto3" json:"support_local_configs,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	SupportLocalConfigs          bool     `protobuf:"varint,50001,opt,name=support_local_configs,json=supportLocalConfigs,proto3" json:"support_local_configs,omitempty"`
+	SupportLocalConfigRevision   bool     `protobuf:"varint,50002,opt,name=support_local_config_revision,json=supportLocalConfigRevision,proto3" json:"support_local_config_revision,omitempty"`
+	LocalConfigCatalogEpoch      string   `protobuf:"bytes,50003,opt,name=local_config_catalog_epoch,json=localConfigCatalogEpoch,proto3" json:"local_config_catalog_epoch,omitempty"`
+	LocalConfigCatalogGeneration uint64   `protobuf:"varint,50004,opt,name=local_config_catalog_generation,json=localConfigCatalogGeneration,proto3" json:"local_config_catalog_generation,omitempty"`
+	RuntimeCapabilities          []string `protobuf:"bytes,50005,rep,name=runtime_capabilities,json=runtimeCapabilities,proto3" json:"runtime_capabilities,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *HeartbeatRequest) Reset() {
@@ -213,6 +217,34 @@ func (x *HeartbeatRequest) GetSupportLocalConfigs() bool {
 		return x.SupportLocalConfigs
 	}
 	return false
+}
+
+func (x *HeartbeatRequest) GetSupportLocalConfigRevision() bool {
+	if x != nil {
+		return x.SupportLocalConfigRevision
+	}
+	return false
+}
+
+func (x *HeartbeatRequest) GetLocalConfigCatalogEpoch() string {
+	if x != nil {
+		return x.LocalConfigCatalogEpoch
+	}
+	return ""
+}
+
+func (x *HeartbeatRequest) GetLocalConfigCatalogGeneration() uint64 {
+	if x != nil {
+		return x.LocalConfigCatalogGeneration
+	}
+	return 0
+}
+
+func (x *HeartbeatRequest) GetRuntimeCapabilities() []string {
+	if x != nil {
+		return x.RuntimeCapabilities
+	}
+	return nil
 }
 
 type HeartbeatResponse struct {
@@ -355,7 +387,7 @@ const file_web_proto_rawDesc = "" +
 	"\fDeviceOsInfo\x12\x17\n" +
 	"\aos_type\x18\x01 \x01(\tR\x06osType\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
-	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\xd3\x04\n" +
+	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\xd5\x06\n" +
 	"\x10HeartbeatRequest\x12+\n" +
 	"\n" +
 	"machine_id\x18\x01 \x01(\v2\f.common.UUIDR\tmachineId\x12%\n" +
@@ -372,7 +404,11 @@ const file_web_proto_rawDesc = "" +
 	"\x18failed_network_instances\x18\n" +
 	" \x03(\v2\f.common.UUIDR\x16failedNetworkInstances\x128\n" +
 	"\x18support_heartbeat_policy\x18\v \x01(\bR\x16supportHeartbeatPolicy\x124\n" +
-	"\x15support_local_configs\x18ц\x03 \x01(\bR\x13supportLocalConfigs\"\xb6\x01\n" +
+	"\x15support_local_configs\x18ц\x03 \x01(\bR\x13supportLocalConfigs\x12C\n" +
+	"\x1dsupport_local_config_revision\x18҆\x03 \x01(\bR\x1asupportLocalConfigRevision\x12=\n" +
+	"\x1alocal_config_catalog_epoch\x18ӆ\x03 \x01(\tR\x17localConfigCatalogEpoch\x12G\n" +
+	"\x1flocal_config_catalog_generation\x18Ԇ\x03 \x01(\x04R\x1clocalConfigCatalogGeneration\x123\n" +
+	"\x14runtime_capabilities\x18Ն\x03 \x03(\tR\x13runtimeCapabilities\"\xb6\x01\n" +
 	"\x11HeartbeatResponse\x127\n" +
 	"\x15heartbeat_interval_ms\x18\x01 \x01(\rH\x00R\x13heartbeatIntervalMs\x88\x01\x01\x125\n" +
 	"\x14heartbeat_timeout_ms\x18\x02 \x01(\rH\x01R\x12heartbeatTimeoutMs\x88\x01\x01B\x18\n" +

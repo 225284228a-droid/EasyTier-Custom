@@ -428,14 +428,20 @@ func (x *Status) GetMessage() string {
 }
 
 type PeerConnStats struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RxBytes       uint64                 `protobuf:"varint,1,opt,name=rx_bytes,json=rxBytes,proto3" json:"rx_bytes,omitempty"`
-	TxBytes       uint64                 `protobuf:"varint,2,opt,name=tx_bytes,json=txBytes,proto3" json:"tx_bytes,omitempty"`
-	RxPackets     uint64                 `protobuf:"varint,3,opt,name=rx_packets,json=rxPackets,proto3" json:"rx_packets,omitempty"`
-	TxPackets     uint64                 `protobuf:"varint,4,opt,name=tx_packets,json=txPackets,proto3" json:"tx_packets,omitempty"`
-	LatencyUs     uint64                 `protobuf:"varint,5,opt,name=latency_us,json=latencyUs,proto3" json:"latency_us,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RxBytes   uint64                 `protobuf:"varint,1,opt,name=rx_bytes,json=rxBytes,proto3" json:"rx_bytes,omitempty"`
+	TxBytes   uint64                 `protobuf:"varint,2,opt,name=tx_bytes,json=txBytes,proto3" json:"tx_bytes,omitempty"`
+	RxPackets uint64                 `protobuf:"varint,3,opt,name=rx_packets,json=rxPackets,proto3" json:"rx_packets,omitempty"`
+	TxPackets uint64                 `protobuf:"varint,4,opt,name=tx_packets,json=txPackets,proto3" json:"tx_packets,omitempty"`
+	LatencyUs uint64                 `protobuf:"varint,5,opt,name=latency_us,json=latencyUs,proto3" json:"latency_us,omitempty"`
+	// Actual transport sending-window/RTT estimates, in bit/s. RX is reported
+	// by the peer's sending transport. Zero means unknown, never a traffic rate.
+	EstimatedRxBps uint64 `protobuf:"varint,6,opt,name=estimated_rx_bps,json=estimatedRxBps,proto3" json:"estimated_rx_bps,omitempty"`
+	EstimatedTxBps uint64 `protobuf:"varint,7,opt,name=estimated_tx_bps,json=estimatedTxBps,proto3" json:"estimated_tx_bps,omitempty"`
+	// 1 = transmission-window formula. Missing/0 is the retired traffic estimator.
+	BandwidthEstimateVersion uint32 `protobuf:"varint,8,opt,name=bandwidth_estimate_version,json=bandwidthEstimateVersion,proto3" json:"bandwidth_estimate_version,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *PeerConnStats) Reset() {
@@ -499,6 +505,27 @@ func (x *PeerConnStats) GetTxPackets() uint64 {
 func (x *PeerConnStats) GetLatencyUs() uint64 {
 	if x != nil {
 		return x.LatencyUs
+	}
+	return 0
+}
+
+func (x *PeerConnStats) GetEstimatedRxBps() uint64 {
+	if x != nil {
+		return x.EstimatedRxBps
+	}
+	return 0
+}
+
+func (x *PeerConnStats) GetEstimatedTxBps() uint64 {
+	if x != nil {
+		return x.EstimatedTxBps
+	}
+	return 0
+}
+
+func (x *PeerConnStats) GetBandwidthEstimateVersion() uint32 {
+	if x != nil {
+		return x.BandwidthEstimateVersion
 	}
 	return 0
 }
@@ -3980,7 +4007,7 @@ const file_api_instance_proto_rawDesc = "" +
 	"\bselector\"6\n" +
 	"\x06Status\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xa2\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xb4\x02\n" +
 	"\rPeerConnStats\x12\x19\n" +
 	"\brx_bytes\x18\x01 \x01(\x04R\arxBytes\x12\x19\n" +
 	"\btx_bytes\x18\x02 \x01(\x04R\atxBytes\x12\x1d\n" +
@@ -3989,7 +4016,10 @@ const file_api_instance_proto_rawDesc = "" +
 	"\n" +
 	"tx_packets\x18\x04 \x01(\x04R\ttxPackets\x12\x1d\n" +
 	"\n" +
-	"latency_us\x18\x05 \x01(\x04R\tlatencyUs\"\xdc\x04\n" +
+	"latency_us\x18\x05 \x01(\x04R\tlatencyUs\x12(\n" +
+	"\x10estimated_rx_bps\x18\x06 \x01(\x04R\x0eestimatedRxBps\x12(\n" +
+	"\x10estimated_tx_bps\x18\a \x01(\x04R\x0eestimatedTxBps\x12<\n" +
+	"\x1abandwidth_estimate_version\x18\b \x01(\rR\x18bandwidthEstimateVersion\"\xdc\x04\n" +
 	"\fPeerConnInfo\x12\x17\n" +
 	"\aconn_id\x18\x01 \x01(\tR\x06connId\x12\x1c\n" +
 	"\n" +

@@ -1623,8 +1623,10 @@ type GetIpListResponse struct {
 	PublicIpv6     *common.Ipv6Addr       `protobuf:"bytes,3,opt,name=public_ipv6,json=publicIpv6,proto3" json:"public_ipv6,omitempty"`
 	InterfaceIpv6S []*common.Ipv6Addr     `protobuf:"bytes,4,rep,name=interface_ipv6s,json=interfaceIpv6s,proto3" json:"interface_ipv6s,omitempty"`
 	Listeners      []*common.Url          `protobuf:"bytes,5,rep,name=listeners,proto3" json:"listeners,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// HTTP3 aliases for UDP listeners accepting both protocols on the same socket.
+	UdpHttp3Listeners []*common.Url `protobuf:"bytes,6,rep,name=udp_http3_listeners,json=udpHttp3Listeners,proto3" json:"udp_http3_listeners,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetIpListResponse) Reset() {
@@ -1688,6 +1690,13 @@ func (x *GetIpListResponse) GetInterfaceIpv6S() []*common.Ipv6Addr {
 func (x *GetIpListResponse) GetListeners() []*common.Url {
 	if x != nil {
 		return x.Listeners
+	}
+	return nil
+}
+
+func (x *GetIpListResponse) GetUdpHttp3Listeners() []*common.Url {
+	if x != nil {
+		return x.UdpHttp3Listeners
 	}
 	return nil
 }
@@ -1764,8 +1773,12 @@ type SelectPunchListenerRequest struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	ForceNew          bool                   `protobuf:"varint,1,opt,name=force_new,json=forceNew,proto3" json:"force_new,omitempty"`
 	PreferPortMapping bool                   `protobuf:"varint,2,opt,name=prefer_port_mapping,json=preferPortMapping,proto3" json:"prefer_port_mapping,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Empty keeps the official raw-UDP punch protocol compatible.
+	Scheme string `protobuf:"bytes,3,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	// Only used with http3. Absent keeps legacy EasyTier UDP encapsulation.
+	NativeHttp3   bool `protobuf:"varint,4,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SelectPunchListenerRequest) Reset() {
@@ -1812,11 +1825,28 @@ func (x *SelectPunchListenerRequest) GetPreferPortMapping() bool {
 	return false
 }
 
+func (x *SelectPunchListenerRequest) GetScheme() string {
+	if x != nil {
+		return x.Scheme
+	}
+	return ""
+}
+
+func (x *SelectPunchListenerRequest) GetNativeHttp3() bool {
+	if x != nil {
+		return x.NativeHttp3
+	}
+	return false
+}
+
 type SelectPunchListenerResponse struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	ListenerMappedAddr *common.SocketAddr     `protobuf:"bytes,1,opt,name=listener_mapped_addr,json=listenerMappedAddr,proto3" json:"listener_mapped_addr,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Empty keeps the official raw-UDP punch protocol compatible.
+	Scheme        string `protobuf:"bytes,2,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	NativeHttp3   bool   `protobuf:"varint,3,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SelectPunchListenerResponse) Reset() {
@@ -1854,6 +1884,20 @@ func (x *SelectPunchListenerResponse) GetListenerMappedAddr() *common.SocketAddr
 		return x.ListenerMappedAddr
 	}
 	return nil
+}
+
+func (x *SelectPunchListenerResponse) GetScheme() string {
+	if x != nil {
+		return x.Scheme
+	}
+	return ""
+}
+
+func (x *SelectPunchListenerResponse) GetNativeHttp3() bool {
+	if x != nil {
+		return x.NativeHttp3
+	}
+	return false
 }
 
 type SendPunchPacketConeRequest struct {
@@ -2154,6 +2198,8 @@ type SendPunchPacketBothEasySymRequest struct {
 	TransactionId  uint32                 `protobuf:"varint,3,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
 	DstPortNum     uint32                 `protobuf:"varint,4,opt,name=dst_port_num,json=dstPortNum,proto3" json:"dst_port_num,omitempty"`
 	WaitTimeMs     uint32                 `protobuf:"varint,5,opt,name=wait_time_ms,json=waitTimeMs,proto3" json:"wait_time_ms,omitempty"`
+	Scheme         string                 `protobuf:"bytes,6,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	NativeHttp3    bool                   `protobuf:"varint,7,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2223,11 +2269,27 @@ func (x *SendPunchPacketBothEasySymRequest) GetWaitTimeMs() uint32 {
 	return 0
 }
 
+func (x *SendPunchPacketBothEasySymRequest) GetScheme() string {
+	if x != nil {
+		return x.Scheme
+	}
+	return ""
+}
+
+func (x *SendPunchPacketBothEasySymRequest) GetNativeHttp3() bool {
+	if x != nil {
+		return x.NativeHttp3
+	}
+	return false
+}
+
 type SendPunchPacketBothEasySymResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// is doing punch with other peer
 	IsBusy         bool               `protobuf:"varint,1,opt,name=is_busy,json=isBusy,proto3" json:"is_busy,omitempty"`
 	BaseMappedAddr *common.SocketAddr `protobuf:"bytes,2,opt,name=base_mapped_addr,json=baseMappedAddr,proto3" json:"base_mapped_addr,omitempty"`
+	Scheme         string             `protobuf:"bytes,3,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	NativeHttp3    bool               `protobuf:"varint,4,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2274,6 +2336,20 @@ func (x *SendPunchPacketBothEasySymResponse) GetBaseMappedAddr() *common.SocketA
 		return x.BaseMappedAddr
 	}
 	return nil
+}
+
+func (x *SendPunchPacketBothEasySymResponse) GetScheme() string {
+	if x != nil {
+		return x.Scheme
+	}
+	return ""
+}
+
+func (x *SendPunchPacketBothEasySymResponse) GetNativeHttp3() bool {
+	if x != nil {
+		return x.NativeHttp3
+	}
+	return false
 }
 
 // Port prediction window advertised by an easy-symmetric TCP hole-punch
@@ -3663,7 +3739,7 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\terror_msg\x18\a \x01(\tH\x00R\berrorMsg\x88\x01\x01B\f\n" +
 	"\n" +
 	"_error_msg\"\x12\n" +
-	"\x10GetIpListRequest\"\x9a\x02\n" +
+	"\x10GetIpListRequest\"\xd7\x02\n" +
 	"\x11GetIpListResponse\x121\n" +
 	"\vpublic_ipv4\x18\x01 \x01(\v2\x10.common.Ipv4AddrR\n" +
 	"publicIpv4\x129\n" +
@@ -3671,17 +3747,22 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\vpublic_ipv6\x18\x03 \x01(\v2\x10.common.Ipv6AddrR\n" +
 	"publicIpv6\x129\n" +
 	"\x0finterface_ipv6s\x18\x04 \x03(\v2\x10.common.Ipv6AddrR\x0einterfaceIpv6s\x12)\n" +
-	"\tlisteners\x18\x05 \x03(\v2\v.common.UrlR\tlisteners\"\xfc\x01\n" +
+	"\tlisteners\x18\x05 \x03(\v2\v.common.UrlR\tlisteners\x12;\n" +
+	"\x13udp_http3_listeners\x18\x06 \x03(\v2\v.common.UrlR\x11udpHttp3Listeners\"\xfc\x01\n" +
 	"\x1dSendUdpHolePunchPacketRequest\x129\n" +
 	"\x0econnector_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\rconnectorAddr\x12#\n" +
 	"\rlistener_port\x18\x02 \x01(\rR\flistenerPort\x12>\n" +
 	"\x12preferred_src_ipv6\x18\x03 \x01(\v2\x10.common.Ipv6AddrR\x10preferredSrcIpv6\x12;\n" +
-	"\x0fconnector_addrs\x18\x04 \x03(\v2\x12.common.SocketAddrR\x0econnectorAddrs\"i\n" +
+	"\x0fconnector_addrs\x18\x04 \x03(\v2\x12.common.SocketAddrR\x0econnectorAddrs\"\xa4\x01\n" +
 	"\x1aSelectPunchListenerRequest\x12\x1b\n" +
 	"\tforce_new\x18\x01 \x01(\bR\bforceNew\x12.\n" +
-	"\x13prefer_port_mapping\x18\x02 \x01(\bR\x11preferPortMapping\"c\n" +
+	"\x13prefer_port_mapping\x18\x02 \x01(\bR\x11preferPortMapping\x12\x16\n" +
+	"\x06scheme\x18\x03 \x01(\tR\x06scheme\x12!\n" +
+	"\fnative_http3\x18\x04 \x01(\bR\vnativeHttp3\"\x9e\x01\n" +
 	"\x1bSelectPunchListenerResponse\x12D\n" +
-	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\"\xcb\x02\n" +
+	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12\x16\n" +
+	"\x06scheme\x18\x02 \x01(\tR\x06scheme\x12!\n" +
+	"\fnative_http3\x18\x03 \x01(\bR\vnativeHttp3\"\xcb\x02\n" +
 	"\x1aSendPunchPacketConeRequest\x12D\n" +
 	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12/\n" +
 	"\tdest_addr\x18\x02 \x01(\v2\x12.common.SocketAddrR\bdestAddr\x12%\n" +
@@ -3707,7 +3788,7 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\rbase_port_num\x18\x04 \x01(\rR\vbasePortNum\x12 \n" +
 	"\fmax_port_num\x18\x05 \x01(\rR\n" +
 	"maxPortNum\x12%\n" +
-	"\x0eis_incremental\x18\x06 \x01(\bR\risIncremental\"\xe7\x01\n" +
+	"\x0eis_incremental\x18\x06 \x01(\bR\risIncremental\"\xa2\x02\n" +
 	"!SendPunchPacketBothEasySymRequest\x12(\n" +
 	"\x10udp_socket_count\x18\x01 \x01(\rR\x0eudpSocketCount\x12-\n" +
 	"\tpublic_ip\x18\x02 \x01(\v2\x10.common.Ipv4AddrR\bpublicIp\x12%\n" +
@@ -3715,10 +3796,14 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\fdst_port_num\x18\x04 \x01(\rR\n" +
 	"dstPortNum\x12 \n" +
 	"\fwait_time_ms\x18\x05 \x01(\rR\n" +
-	"waitTimeMs\"{\n" +
+	"waitTimeMs\x12\x16\n" +
+	"\x06scheme\x18\x06 \x01(\tR\x06scheme\x12!\n" +
+	"\fnative_http3\x18\a \x01(\bR\vnativeHttp3\"\xb6\x01\n" +
 	"\"SendPunchPacketBothEasySymResponse\x12\x17\n" +
 	"\ais_busy\x18\x01 \x01(\bR\x06isBusy\x12<\n" +
-	"\x10base_mapped_addr\x18\x02 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\"\xbb\x01\n" +
+	"\x10base_mapped_addr\x18\x02 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\x12\x16\n" +
+	"\x06scheme\x18\x03 \x01(\tR\x06scheme\x12!\n" +
+	"\fnative_http3\x18\x04 \x01(\bR\vnativeHttp3\"\xbb\x01\n" +
 	"\x1aTcpHolePunchPredictedPorts\x12<\n" +
 	"\x10base_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\x12 \n" +
 	"\fmax_port_num\x18\x02 \x01(\rR\n" +
@@ -3985,81 +4070,82 @@ var file_peer_rpc_proto_depIdxs = []int32{
 	65, // 34: peer_rpc.GetIpListResponse.public_ipv6:type_name -> common.Ipv6Addr
 	65, // 35: peer_rpc.GetIpListResponse.interface_ipv6s:type_name -> common.Ipv6Addr
 	66, // 36: peer_rpc.GetIpListResponse.listeners:type_name -> common.Url
-	67, // 37: peer_rpc.SendUdpHolePunchPacketRequest.connector_addr:type_name -> common.SocketAddr
-	65, // 38: peer_rpc.SendUdpHolePunchPacketRequest.preferred_src_ipv6:type_name -> common.Ipv6Addr
-	67, // 39: peer_rpc.SendUdpHolePunchPacketRequest.connector_addrs:type_name -> common.SocketAddr
-	67, // 40: peer_rpc.SelectPunchListenerResponse.listener_mapped_addr:type_name -> common.SocketAddr
-	67, // 41: peer_rpc.SendPunchPacketConeRequest.listener_mapped_addr:type_name -> common.SocketAddr
-	67, // 42: peer_rpc.SendPunchPacketConeRequest.dest_addr:type_name -> common.SocketAddr
-	67, // 43: peer_rpc.SendPunchPacketHardSymRequest.listener_mapped_addr:type_name -> common.SocketAddr
-	60, // 44: peer_rpc.SendPunchPacketHardSymRequest.public_ips:type_name -> common.Ipv4Addr
-	67, // 45: peer_rpc.SendPunchPacketEasySymRequest.listener_mapped_addr:type_name -> common.SocketAddr
-	60, // 46: peer_rpc.SendPunchPacketEasySymRequest.public_ips:type_name -> common.Ipv4Addr
-	60, // 47: peer_rpc.SendPunchPacketBothEasySymRequest.public_ip:type_name -> common.Ipv4Addr
-	67, // 48: peer_rpc.SendPunchPacketBothEasySymResponse.base_mapped_addr:type_name -> common.SocketAddr
-	67, // 49: peer_rpc.TcpHolePunchPredictedPorts.base_mapped_addr:type_name -> common.SocketAddr
-	1,  // 50: peer_rpc.TcpHolePunchPredictedPorts.direction:type_name -> peer_rpc.PortSequenceDirection
-	67, // 51: peer_rpc.TcpHolePunchRequest.connector_mapped_addr:type_name -> common.SocketAddr
-	67, // 52: peer_rpc.TcpHolePunchResponse.listener_mapped_addr:type_name -> common.SocketAddr
-	35, // 53: peer_rpc.TcpHolePunchResponse.predicted_ports:type_name -> peer_rpc.TcpHolePunchPredictedPorts
-	56, // 54: peer_rpc.PeerInfoForGlobalMap.direct_peers:type_name -> peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry
-	39, // 55: peer_rpc.ReportPeersRequest.peer_infos:type_name -> peer_rpc.PeerInfoForGlobalMap
-	57, // 56: peer_rpc.GlobalPeerMap.map:type_name -> peer_rpc.GlobalPeerMap.MapEntry
-	58, // 57: peer_rpc.GetGlobalPeerMapResponse.global_peer_map:type_name -> peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry
-	67, // 58: peer_rpc.KcpConnData.src:type_name -> common.SocketAddr
-	67, // 59: peer_rpc.KcpConnData.dst:type_name -> common.SocketAddr
-	59, // 60: peer_rpc.PeerConnNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
-	4,  // 61: peer_rpc.PeerConnNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
-	59, // 62: peer_rpc.PeerConnNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
-	59, // 63: peer_rpc.PeerConnNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
-	59, // 64: peer_rpc.RelayNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
-	4,  // 65: peer_rpc.RelayNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
-	59, // 66: peer_rpc.RelayNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
-	59, // 67: peer_rpc.RelayNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
-	59, // 68: peer_rpc.PeerConnNoiseMsg3Pb.a_conn_id_echo:type_name -> common.UUID
-	59, // 69: peer_rpc.PeerConnNoiseMsg3Pb.b_conn_id_echo:type_name -> common.UUID
-	8,  // 70: peer_rpc.RouteConnPeerList.PeerConnInfo.peer_id:type_name -> peer_rpc.PeerIdVersion
-	12, // 71: peer_rpc.RouteForeignNetworkInfos.Info.key:type_name -> peer_rpc.ForeignNetworkRouteInfoKey
-	13, // 72: peer_rpc.RouteForeignNetworkInfos.Info.value:type_name -> peer_rpc.ForeignNetworkRouteInfoEntry
-	54, // 73: peer_rpc.RouteForeignNetworkSummary.InfoMapEntry.value:type_name -> peer_rpc.RouteForeignNetworkSummary.Info
-	38, // 74: peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry.value:type_name -> peer_rpc.DirectConnectedPeerInfo
-	39, // 75: peer_rpc.GlobalPeerMap.MapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
-	39, // 76: peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
-	17, // 77: peer_rpc.OspfRouteRpc.SyncRouteInfo:input_type -> peer_rpc.SyncRouteInfoRequest
-	19, // 78: peer_rpc.PublicIpv6AddrRpc.AcquireLease:input_type -> peer_rpc.AcquireIpv6PublicAddrLeaseRequest
-	20, // 79: peer_rpc.PublicIpv6AddrRpc.RenewLease:input_type -> peer_rpc.RenewIpv6PublicAddrLeaseRequest
-	21, // 80: peer_rpc.PublicIpv6AddrRpc.ReleaseLease:input_type -> peer_rpc.ReleaseIpv6PublicAddrLeaseRequest
-	22, // 81: peer_rpc.PublicIpv6AddrRpc.GetLease:input_type -> peer_rpc.GetIpv6PublicAddrLeaseRequest
-	24, // 82: peer_rpc.DirectConnectorRpc.GetIpList:input_type -> peer_rpc.GetIpListRequest
-	26, // 83: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:input_type -> peer_rpc.SendUdpHolePunchPacketRequest
-	27, // 84: peer_rpc.UdpHolePunchRpc.SelectPunchListener:input_type -> peer_rpc.SelectPunchListenerRequest
-	29, // 85: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:input_type -> peer_rpc.SendPunchPacketConeRequest
-	30, // 86: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:input_type -> peer_rpc.SendPunchPacketHardSymRequest
-	32, // 87: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:input_type -> peer_rpc.SendPunchPacketEasySymRequest
-	33, // 88: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:input_type -> peer_rpc.SendPunchPacketBothEasySymRequest
-	36, // 89: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:input_type -> peer_rpc.TcpHolePunchRequest
-	40, // 90: peer_rpc.PeerCenterRpc.ReportPeers:input_type -> peer_rpc.ReportPeersRequest
-	43, // 91: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:input_type -> peer_rpc.GetGlobalPeerMapRequest
-	18, // 92: peer_rpc.OspfRouteRpc.SyncRouteInfo:output_type -> peer_rpc.SyncRouteInfoResponse
-	23, // 93: peer_rpc.PublicIpv6AddrRpc.AcquireLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
-	23, // 94: peer_rpc.PublicIpv6AddrRpc.RenewLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
-	68, // 95: peer_rpc.PublicIpv6AddrRpc.ReleaseLease:output_type -> common.Void
-	23, // 96: peer_rpc.PublicIpv6AddrRpc.GetLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
-	25, // 97: peer_rpc.DirectConnectorRpc.GetIpList:output_type -> peer_rpc.GetIpListResponse
-	68, // 98: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:output_type -> common.Void
-	28, // 99: peer_rpc.UdpHolePunchRpc.SelectPunchListener:output_type -> peer_rpc.SelectPunchListenerResponse
-	68, // 100: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:output_type -> common.Void
-	31, // 101: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:output_type -> peer_rpc.SendPunchPacketHardSymResponse
-	68, // 102: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:output_type -> common.Void
-	34, // 103: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:output_type -> peer_rpc.SendPunchPacketBothEasySymResponse
-	37, // 104: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:output_type -> peer_rpc.TcpHolePunchResponse
-	41, // 105: peer_rpc.PeerCenterRpc.ReportPeers:output_type -> peer_rpc.ReportPeersResponse
-	44, // 106: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:output_type -> peer_rpc.GetGlobalPeerMapResponse
-	92, // [92:107] is the sub-list for method output_type
-	77, // [77:92] is the sub-list for method input_type
-	77, // [77:77] is the sub-list for extension type_name
-	77, // [77:77] is the sub-list for extension extendee
-	0,  // [0:77] is the sub-list for field type_name
+	66, // 37: peer_rpc.GetIpListResponse.udp_http3_listeners:type_name -> common.Url
+	67, // 38: peer_rpc.SendUdpHolePunchPacketRequest.connector_addr:type_name -> common.SocketAddr
+	65, // 39: peer_rpc.SendUdpHolePunchPacketRequest.preferred_src_ipv6:type_name -> common.Ipv6Addr
+	67, // 40: peer_rpc.SendUdpHolePunchPacketRequest.connector_addrs:type_name -> common.SocketAddr
+	67, // 41: peer_rpc.SelectPunchListenerResponse.listener_mapped_addr:type_name -> common.SocketAddr
+	67, // 42: peer_rpc.SendPunchPacketConeRequest.listener_mapped_addr:type_name -> common.SocketAddr
+	67, // 43: peer_rpc.SendPunchPacketConeRequest.dest_addr:type_name -> common.SocketAddr
+	67, // 44: peer_rpc.SendPunchPacketHardSymRequest.listener_mapped_addr:type_name -> common.SocketAddr
+	60, // 45: peer_rpc.SendPunchPacketHardSymRequest.public_ips:type_name -> common.Ipv4Addr
+	67, // 46: peer_rpc.SendPunchPacketEasySymRequest.listener_mapped_addr:type_name -> common.SocketAddr
+	60, // 47: peer_rpc.SendPunchPacketEasySymRequest.public_ips:type_name -> common.Ipv4Addr
+	60, // 48: peer_rpc.SendPunchPacketBothEasySymRequest.public_ip:type_name -> common.Ipv4Addr
+	67, // 49: peer_rpc.SendPunchPacketBothEasySymResponse.base_mapped_addr:type_name -> common.SocketAddr
+	67, // 50: peer_rpc.TcpHolePunchPredictedPorts.base_mapped_addr:type_name -> common.SocketAddr
+	1,  // 51: peer_rpc.TcpHolePunchPredictedPorts.direction:type_name -> peer_rpc.PortSequenceDirection
+	67, // 52: peer_rpc.TcpHolePunchRequest.connector_mapped_addr:type_name -> common.SocketAddr
+	67, // 53: peer_rpc.TcpHolePunchResponse.listener_mapped_addr:type_name -> common.SocketAddr
+	35, // 54: peer_rpc.TcpHolePunchResponse.predicted_ports:type_name -> peer_rpc.TcpHolePunchPredictedPorts
+	56, // 55: peer_rpc.PeerInfoForGlobalMap.direct_peers:type_name -> peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry
+	39, // 56: peer_rpc.ReportPeersRequest.peer_infos:type_name -> peer_rpc.PeerInfoForGlobalMap
+	57, // 57: peer_rpc.GlobalPeerMap.map:type_name -> peer_rpc.GlobalPeerMap.MapEntry
+	58, // 58: peer_rpc.GetGlobalPeerMapResponse.global_peer_map:type_name -> peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry
+	67, // 59: peer_rpc.KcpConnData.src:type_name -> common.SocketAddr
+	67, // 60: peer_rpc.KcpConnData.dst:type_name -> common.SocketAddr
+	59, // 61: peer_rpc.PeerConnNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
+	4,  // 62: peer_rpc.PeerConnNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
+	59, // 63: peer_rpc.PeerConnNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
+	59, // 64: peer_rpc.PeerConnNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
+	59, // 65: peer_rpc.RelayNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
+	4,  // 66: peer_rpc.RelayNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
+	59, // 67: peer_rpc.RelayNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
+	59, // 68: peer_rpc.RelayNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
+	59, // 69: peer_rpc.PeerConnNoiseMsg3Pb.a_conn_id_echo:type_name -> common.UUID
+	59, // 70: peer_rpc.PeerConnNoiseMsg3Pb.b_conn_id_echo:type_name -> common.UUID
+	8,  // 71: peer_rpc.RouteConnPeerList.PeerConnInfo.peer_id:type_name -> peer_rpc.PeerIdVersion
+	12, // 72: peer_rpc.RouteForeignNetworkInfos.Info.key:type_name -> peer_rpc.ForeignNetworkRouteInfoKey
+	13, // 73: peer_rpc.RouteForeignNetworkInfos.Info.value:type_name -> peer_rpc.ForeignNetworkRouteInfoEntry
+	54, // 74: peer_rpc.RouteForeignNetworkSummary.InfoMapEntry.value:type_name -> peer_rpc.RouteForeignNetworkSummary.Info
+	38, // 75: peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry.value:type_name -> peer_rpc.DirectConnectedPeerInfo
+	39, // 76: peer_rpc.GlobalPeerMap.MapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
+	39, // 77: peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
+	17, // 78: peer_rpc.OspfRouteRpc.SyncRouteInfo:input_type -> peer_rpc.SyncRouteInfoRequest
+	19, // 79: peer_rpc.PublicIpv6AddrRpc.AcquireLease:input_type -> peer_rpc.AcquireIpv6PublicAddrLeaseRequest
+	20, // 80: peer_rpc.PublicIpv6AddrRpc.RenewLease:input_type -> peer_rpc.RenewIpv6PublicAddrLeaseRequest
+	21, // 81: peer_rpc.PublicIpv6AddrRpc.ReleaseLease:input_type -> peer_rpc.ReleaseIpv6PublicAddrLeaseRequest
+	22, // 82: peer_rpc.PublicIpv6AddrRpc.GetLease:input_type -> peer_rpc.GetIpv6PublicAddrLeaseRequest
+	24, // 83: peer_rpc.DirectConnectorRpc.GetIpList:input_type -> peer_rpc.GetIpListRequest
+	26, // 84: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:input_type -> peer_rpc.SendUdpHolePunchPacketRequest
+	27, // 85: peer_rpc.UdpHolePunchRpc.SelectPunchListener:input_type -> peer_rpc.SelectPunchListenerRequest
+	29, // 86: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:input_type -> peer_rpc.SendPunchPacketConeRequest
+	30, // 87: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:input_type -> peer_rpc.SendPunchPacketHardSymRequest
+	32, // 88: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:input_type -> peer_rpc.SendPunchPacketEasySymRequest
+	33, // 89: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:input_type -> peer_rpc.SendPunchPacketBothEasySymRequest
+	36, // 90: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:input_type -> peer_rpc.TcpHolePunchRequest
+	40, // 91: peer_rpc.PeerCenterRpc.ReportPeers:input_type -> peer_rpc.ReportPeersRequest
+	43, // 92: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:input_type -> peer_rpc.GetGlobalPeerMapRequest
+	18, // 93: peer_rpc.OspfRouteRpc.SyncRouteInfo:output_type -> peer_rpc.SyncRouteInfoResponse
+	23, // 94: peer_rpc.PublicIpv6AddrRpc.AcquireLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
+	23, // 95: peer_rpc.PublicIpv6AddrRpc.RenewLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
+	68, // 96: peer_rpc.PublicIpv6AddrRpc.ReleaseLease:output_type -> common.Void
+	23, // 97: peer_rpc.PublicIpv6AddrRpc.GetLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
+	25, // 98: peer_rpc.DirectConnectorRpc.GetIpList:output_type -> peer_rpc.GetIpListResponse
+	68, // 99: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:output_type -> common.Void
+	28, // 100: peer_rpc.UdpHolePunchRpc.SelectPunchListener:output_type -> peer_rpc.SelectPunchListenerResponse
+	68, // 101: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:output_type -> common.Void
+	31, // 102: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:output_type -> peer_rpc.SendPunchPacketHardSymResponse
+	68, // 103: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:output_type -> common.Void
+	34, // 104: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:output_type -> peer_rpc.SendPunchPacketBothEasySymResponse
+	37, // 105: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:output_type -> peer_rpc.TcpHolePunchResponse
+	41, // 106: peer_rpc.PeerCenterRpc.ReportPeers:output_type -> peer_rpc.ReportPeersResponse
+	44, // 107: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:output_type -> peer_rpc.GetGlobalPeerMapResponse
+	93, // [93:108] is the sub-list for method output_type
+	78, // [78:93] is the sub-list for method input_type
+	78, // [78:78] is the sub-list for extension type_name
+	78, // [78:78] is the sub-list for extension extendee
+	0,  // [0:78] is the sub-list for field type_name
 }
 
 func init() { file_peer_rpc_proto_init() }

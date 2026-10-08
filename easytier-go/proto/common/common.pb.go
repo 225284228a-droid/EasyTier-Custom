@@ -270,10 +270,9 @@ type FlagsInConfig struct {
 	// CUBIC) and estimates the available bandwidth automatically from ACK
 	// delivery-rate samples; there is no (and need be no) max-bandwidth knob.
 	EnableBbr bool `protobuf:"varint,48,opt,name=enable_bbr,json=enableBbr,proto3" json:"enable_bbr,omitempty"`
-	// Once a disguised (WSS/HTTP3) connection to a peer is up, close the
-	// automatically established non-disguised connections to the same peer.
-	// Manually configured peers and inbound connections are kept, so this only
-	// removes redundant transports that P2P discovered on its own.
+	// Once a preferred connection is usable, close lower-ranked automatic P2P
+	// connections to the same peer according to disguise and protocol policy.
+	// Manual, ordinary inbound, attached, and equally ranked connections remain.
 	CloseRedundantConnsWhenDisguised bool `protobuf:"varint,49,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3" json:"close_redundant_conns_when_disguised,omitempty"`
 	unknownFields                    protoimpl.UnknownFields
 	sizeCache                        protoimpl.SizeCache
