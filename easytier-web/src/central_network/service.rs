@@ -468,9 +468,13 @@ impl CentralNetworkService {
         block: bool,
     ) -> Result<bool, CentralNetworkServiceError> {
         let _mutation = self.mutation_lock.lock().await;
-        if let Some(session) = self
+        if !self
             .client_manager
-            .get_session_by_machine_id(user_id, &machine_id)
+            .supports_local_configs(&(user_id, machine_id))
+            .await
+            && let Some(session) = self
+                .client_manager
+                .get_session_by_machine_id(user_id, &machine_id)
         {
             let owned = self
                 .db
@@ -583,6 +587,15 @@ impl CentralNetworkService {
             let device_id = Uuid::parse_str(&raw_device_id).map_err(|_| {
                 CentralNetworkServiceError::Invalid(format!("invalid device id: {raw_device_id}"))
             })?;
+            if self
+                .client_manager
+                .supports_local_configs(&(user_id, device_id))
+                .await
+            {
+                return Err(CentralNetworkServiceError::Conflict(
+                    "node owns local TOML; edit its local networks online".into(),
+                ));
+            }
             if self.db.get_device((user_id, device_id)).await?.is_none() {
                 return Err(CentralNetworkServiceError::NotFound(raw_device_id));
             }
@@ -1109,6 +1122,13 @@ impl CentralNetworkService {
             }
         }
         for (device_id, configs) in configs_by_device {
+            if self
+                .client_manager
+                .supports_local_configs(&(user_id, device_id))
+                .await
+            {
+                continue;
+            }
             match self
                 .db
                 .publish_central_device_configs(user_id, device_id, configs)
@@ -1883,12 +1903,15 @@ mod tests {
         let core = Arc::new(native_instance_manager());
         let _client = WebClient::new(
             runtime_udp_tunnel_dialer(url),
-            "delete-owner",
-            device,
-            "delete-test",
-            false,
+            easytier::web_client::WebClientOptions {
+                token: "delete-owner".into(),
+                machine_id: device,
+                hostname: "delete-test".into(),
+                secure_mode: false,
+            },
             core.clone(),
             None,
+            Arc::new(easytier_core::management::InstanceStateStore::in_memory()),
         );
         wait_for(|| core.config(network_id).is_some()).await;
         sqlx::query("CREATE TRIGGER fail_device_delete BEFORE DELETE ON devices BEGIN SELECT RAISE(ABORT, 'forced deletion failure'); END")

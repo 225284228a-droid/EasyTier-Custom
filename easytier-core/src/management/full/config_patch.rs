@@ -20,6 +20,22 @@ use crate::{
 #[async_trait::async_trait]
 pub trait ConfigPatchPersistence: Send + Sync {
     async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()>;
+
+    async fn read_config(
+        &self,
+        _instance_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<(TomlConfig, String)>> {
+        Ok(None)
+    }
+
+    async fn rollback(
+        &self,
+        instance_id: uuid::Uuid,
+        previous: &TomlConfig,
+        _written: &TomlConfig,
+    ) -> anyhow::Result<()> {
+        self.persist(instance_id, previous).await
+    }
 }
 
 pub async fn apply_config_patch<H>(
@@ -142,8 +158,9 @@ where
                     .await
                 {
                     if let Some(persistence) = persistence
-                        && let Err(rollback_error) =
-                            persistence.persist(instance.instance_id(), &previous).await
+                        && let Err(rollback_error) = persistence
+                            .rollback(instance.instance_id(), &previous, &candidate)
+                            .await
                     {
                         return Err(error.context(format!(
                             "failed to restore durable configuration after VPN portal update: \
@@ -168,22 +185,9 @@ where
             // lock across the await. Dropping the replacement before install
             // releases the reservation.
             //
-            // Accepted consistency limits:
-            //
-            // 1. A persistence implementation may finish its write after this
-            //    RPC future is cancelled. The reservation is then released and
-            //    the running instance keeps its previous credentials even if
-            //    the durable file contains the replacement. A retry, controller
-            //    reconcile, or restart is required to converge; until then a
-            //    removed credential may remain trusted by the running instance.
-            //
-            // 2. This instance operation is not serialized with a process-level
-            //    instance overwrite. The built-in web reconciler serializes its
-            //    own actions, but independently concurrent admin RPCs are
-            //    last-writer-wins and may leave the running instance and durable
-            //    file on different config generations. A restart aligns runtime
-            //    with the file; controller reconcile is required to restore its
-            //    desired generation.
+            // Remote handlers retain an owned task and the process coordinator
+            // through durable write and install, then release instance.operation.
+            // Direct callers must provide the same ownership/lock ordering.
             let credential_manager = instance.credential_manager();
             let entries = managed
                 .entries

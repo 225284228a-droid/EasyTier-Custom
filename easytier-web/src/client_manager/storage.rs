@@ -43,6 +43,7 @@ pub struct StorageInner {
     user_clients_map: DashMap<UserIdInDb, DashMap<uuid::Uuid, ClientInfo>>,
     managed_runtime_states: DashMap<(UserIdInDb, uuid::Uuid), ManagedRuntimeContinuity>,
     pub db: Db,
+    pub(super) local_observer_epoch: uuid::Uuid,
 }
 
 impl StorageInner {
@@ -116,6 +117,7 @@ impl Storage {
             user_clients_map: DashMap::new(),
             managed_runtime_states: DashMap::new(),
             db,
+            local_observer_epoch: uuid::Uuid::new_v4(),
         }))
     }
 

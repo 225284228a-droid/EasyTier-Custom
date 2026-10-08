@@ -244,6 +244,7 @@ where
         Ok(ListNetworkInstanceIdsJsonResp {
             running_inst_ids,
             disabled_inst_ids,
+            runtime_capabilities: ret.runtime_capabilities,
         })
     }
 
@@ -268,6 +269,7 @@ where
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: inst_ids.into_iter().map(|id| id.into()).collect(),
+                    expected_revision: None,
                 },
             )
             .await?;
@@ -305,6 +307,7 @@ where
                     BaseController::default(),
                     DeleteNetworkInstanceRequest {
                         inst_ids: vec![inst_id.into()],
+                        expected_revision: None,
                     },
                 )
                 .await?;
@@ -490,6 +493,8 @@ pub enum ListNetworkProps {
 pub struct ListNetworkInstanceIdsJsonResp {
     pub running_inst_ids: Vec<easytier_proto::common::Uuid>,
     pub disabled_inst_ids: Vec<easytier_proto::common::Uuid>,
+    #[serde(default)]
+    pub runtime_capabilities: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

@@ -282,6 +282,7 @@ mod portable_runtime {
     };
 
     use tokio::sync::Notify;
+    #[cfg(unix)]
     use tokio_util::task::AbortOnDropHandle;
 
     #[cfg(feature = "proxy-packet")]
@@ -1699,6 +1700,7 @@ virtual_ip = "10.82.0.2/24"
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: vec![instance_id.into()],
+                    expected_revision: None,
                 },
             )
             .await
@@ -1845,6 +1847,7 @@ virtual_ip = "10.82.0.2/24"
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: vec![created],
+                    expected_revision: None,
                 },
             )
             .await

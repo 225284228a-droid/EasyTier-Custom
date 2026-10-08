@@ -3,6 +3,7 @@ mod central_intent;
 mod devices;
 #[allow(unused_imports)]
 pub mod entity;
+pub(crate) mod local_config_mirror;
 
 pub(crate) use central_intent::{CentralIntentError, CentralOwnedRuntimeConfig};
 pub use devices::DeviceHeartbeatRecord;

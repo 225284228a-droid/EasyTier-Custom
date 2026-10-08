@@ -168,6 +168,14 @@ pub(crate) trait WebClientBackend: Send + Sync + 'static {
 
     fn failed_instance_ids(&self) -> Vec<uuid::Uuid>;
 
+    fn runtime_capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn local_config_catalog_version(&self) -> Option<(String, u64)> {
+        None
+    }
+
     fn instance_state_generation(&self) -> usize {
         0
     }
@@ -222,6 +230,18 @@ where
 
     fn failed_instance_ids(&self) -> Vec<uuid::Uuid> {
         self.instances.failed_instance_ids()
+    }
+
+    fn runtime_capabilities(&self) -> Vec<String> {
+        self.instances.management_capabilities()
+    }
+
+    fn local_config_catalog_version(&self) -> Option<(String, u64)> {
+        #[cfg(feature = "management")]
+        if self.instances.local_config_catalog().supports_revision() {
+            return Some(self.instances.local_config_catalog().version());
+        }
+        None
     }
 
     fn instance_state_generation(&self) -> usize {
@@ -448,6 +468,10 @@ fn build_heartbeat_request(
         device_os: Some(config.device_os.clone()),
         support_config_source: true,
         support_local_configs: config.support_local_configs,
+        support_local_config_revision: false,
+        local_config_catalog_epoch: String::new(),
+        local_config_catalog_generation: 0,
+        runtime_capabilities: Vec::new(),
         running_network_instances: running_network_instances
             .into_iter()
             .map(Into::into)
@@ -528,12 +552,19 @@ impl WebClientSession {
                         break;
                     }
                 };
-                let request = build_heartbeat_request(
+                let mut request = build_heartbeat_request(
                     &controller.config,
                     controller.runtime_id,
                     running_network_instances,
                     failed_network_instances,
                 );
+                request.runtime_capabilities = controller.backend.runtime_capabilities();
+                if let Some((epoch, generation)) = controller.backend.local_config_catalog_version()
+                {
+                    request.support_local_config_revision = true;
+                    request.local_config_catalog_epoch = epoch;
+                    request.local_config_catalog_generation = generation;
+                }
 
                 let response = client
                     .heartbeat(heartbeat_policy.controller(), request)

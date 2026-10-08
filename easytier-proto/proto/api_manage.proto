@@ -240,9 +240,13 @@ message ListNetworkInstanceResponse {
   repeated common.UUID inst_ids = 1;
   repeated common.UUID disabled_inst_ids = 2;
   optional bool supports_persisted_config_management = 3;
+  repeated string runtime_capabilities = 50005;
 }
 
-message DeleteNetworkInstanceRequest { repeated common.UUID inst_ids = 1; }
+message DeleteNetworkInstanceRequest {
+  repeated common.UUID inst_ids = 1;
+  optional string expected_revision = 50001;
+}
 
 message DeleteNetworkInstanceResponse {
   repeated common.UUID remain_inst_ids = 1;
@@ -270,16 +274,83 @@ message SaveNetworkInstanceConfigResponse {}
 message SetNetworkInstanceEnabledRequest {
   common.UUID inst_id = 1;
   bool enabled = 2;
+  optional string expected_revision = 50001;
 }
 
 message SetNetworkInstanceEnabledResponse {}
 
 message RemoveNetworkInstanceConfigRequest {
   repeated common.UUID inst_ids = 1;
+  optional string expected_revision = 50001;
 }
 
 message RemoveNetworkInstanceConfigResponse {
   repeated common.UUID remain_inst_ids = 1;
+}
+
+message ObserveConfigsRequest {}
+
+message ObserveConfigsResponse {
+  string catalog_epoch = 1;
+  uint64 catalog_generation = 2;
+  repeated PersistedConfigEntry entries = 3;
+}
+
+// One captured entry from the node-owned configuration directory. Protected
+// or invalid entries carry metadata only, with no config or original TOML.
+message PersistedConfigEntry {
+  string entry_key = 1;
+  common.UUID inst_id = 2;
+  string revision = 3;
+  optional string persisted_toml = 4;
+  NetworkConfig config = 5;
+  uint32 config_permission = 6;
+  bool enabled = 7;
+  bool running = 8;
+  string persisted_raw_hash = 9;
+  optional string active_raw_hash = 10;
+  bool pending_apply = 11;
+  string status = 12;
+  string network_name = 13;
+  ConfigSource source = 14;
+}
+
+enum PersistedConfigApplyMode {
+  SaveAndApply = 0;
+  PersistOnly = 1;
+}
+
+enum PersistedConfigMutationStatus {
+  Success = 0;
+  Conflict = 1;
+  Protected = 2;
+  Invalid = 3;
+  NotFound = 4;
+  ApplyFailed = 5;
+  Unsupported = 6;
+}
+
+message PatchPersistedConfigRequest {
+  common.UUID inst_id = 1;
+  // Empty permits creation only when both identity and target file are absent.
+  string expected_revision = 2;
+  NetworkConfig config = 3;
+  // Snake-case typed paths. Repeated fields are replaced atomically.
+  repeated string field_mask = 4;
+  PersistedConfigApplyMode apply_mode = 5;
+}
+
+message PatchPersistedConfigResponse {
+  PersistedConfigMutationStatus status = 1;
+  optional string message = 2;
+  PersistedConfigEntry entry = 3;
+  string catalog_epoch = 4;
+  uint64 catalog_generation = 5;
+}
+
+service PersistedConfigService {
+  rpc ObserveConfigs(ObserveConfigsRequest) returns (ObserveConfigsResponse) {}
+  rpc PatchConfig(PatchPersistedConfigRequest) returns (PatchPersistedConfigResponse) {}
 }
 
 service WebClientService {

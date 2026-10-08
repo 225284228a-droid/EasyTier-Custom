@@ -19,6 +19,29 @@ impl NativeConfigFileStorage {
 
 #[async_trait::async_trait]
 impl ConfigFileStorage for NativeConfigFileStorage {
+    fn supports_catalog(&self) -> bool {
+        true
+    }
+
+    async fn list_configs(&self, directory: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+        super::persisted_config_policy::list_configs(directory).await
+    }
+
+    async fn inspect_raw_config(
+        &self,
+        path: &Path,
+        contents: &[u8],
+        config_dir: &Path,
+    ) -> anyhow::Result<ConfigFileControl> {
+        super::persisted_config_policy::inspect_raw(
+            path,
+            contents,
+            config_dir,
+            self.disable_env_parsing,
+        )
+        .await
+    }
+
     async fn inspect(&self, path: &Path) -> ConfigFileControl {
         let permission = match tokio::fs::metadata(path).await {
             Ok(metadata) if metadata.permissions().readonly() => {
@@ -37,6 +60,12 @@ impl ConfigFileStorage for NativeConfigFileStorage {
     }
 
     async fn read(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+        if tokio::fs::symlink_metadata(path)
+            .await
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            anyhow::bail!("symbolic configuration links are protected");
+        }
         match tokio::fs::read(path).await {
             Ok(contents) => Ok(Some(contents)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -49,6 +78,18 @@ impl ConfigFileStorage for NativeConfigFileStorage {
         path: &Path,
         config_dir: Option<&Path>,
     ) -> anyhow::Result<Option<(easytier_core::config::toml::TomlConfig, ConfigFileControl)>> {
+        let Some(raw) = self.read(path).await? else {
+            return Ok(None);
+        };
+        let raw_control = super::persisted_config_policy::inspect_raw(
+            path,
+            &raw,
+            config_dir
+                .or_else(|| path.parent())
+                .unwrap_or(Path::new("")),
+            self.disable_env_parsing,
+        )
+        .await?;
         match crate::common::config::load_config_from_file(
             &path.to_path_buf(),
             config_dir.map(Path::to_path_buf).as_ref(),
@@ -56,7 +97,12 @@ impl ConfigFileStorage for NativeConfigFileStorage {
         )
         .await
         {
-            Ok(config) => Ok(Some(config)),
+            Ok((config, mut control)) => {
+                control.permission = ConfigFilePermission::from(
+                    u8::from(control.permission) | u8::from(raw_control.permission),
+                );
+                Ok(Some((config, control)))
+            }
             Err(error)
                 if error
                     .downcast_ref::<std::io::Error>()
@@ -64,7 +110,7 @@ impl ConfigFileStorage for NativeConfigFileStorage {
             {
                 Ok(None)
             }
-            Err(error) => Err(error),
+            Err(_) => anyhow::bail!("configuration could not be loaded"),
         }
     }
 

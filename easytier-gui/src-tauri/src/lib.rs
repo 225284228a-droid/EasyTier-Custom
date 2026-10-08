@@ -117,6 +117,8 @@ macro_rules! get_client_manager {
     }};
 }
 
+mod persisted_configs;
+
 #[tauri::command]
 fn easytier_version() -> Result<String, String> {
     Ok(easytier::VERSION.to_string())
@@ -285,7 +287,14 @@ async fn list_network_instance_ids(
 }
 
 #[tauri::command]
-async fn remove_network_instance(app: AppHandle, instance_id: String) -> Result<(), String> {
+async fn remove_network_instance(
+    app: AppHandle,
+    instance_id: String,
+    expected_revision: Option<String>,
+) -> Result<(), String> {
+    if let Some(revision) = expected_revision {
+        return persisted_configs::remove_local_config(instance_id, revision).await;
+    }
     let instance_id = instance_id
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
@@ -303,7 +312,11 @@ async fn update_network_config_state(
     app: AppHandle,
     instance_id: String,
     disabled: bool,
+    expected_revision: Option<String>,
 ) -> Result<(), String> {
+    if let Some(revision) = expected_revision {
+        return persisted_configs::set_local_config_enabled(instance_id, revision, !disabled).await;
+    }
     let instance_id = instance_id
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
@@ -1639,6 +1652,8 @@ mod manager {
                     BaseController::default(),
                     DeleteNetworkInstanceRequest {
                         inst_ids: ids.iter().copied().map(Into::into).collect(),
+
+                        ..Default::default()
                     },
                 )
                 .await?;
@@ -1655,6 +1670,8 @@ mod manager {
                         BaseController::default(),
                         RemoveNetworkInstanceConfigRequest {
                             inst_ids: removed.iter().copied().map(Into::into).collect(),
+
+                            ..Default::default()
                         },
                     ),
                 )
@@ -1734,6 +1751,18 @@ mod manager {
                     }
                     continue;
                 }
+                if !self.local {
+                    // Remote caches are display fallbacks, never desired state
+                    // to replay into an official or node-owned configuration.
+                    if self.capabilities.lock().unwrap().advertised != Some(true) {
+                        self.storage.fallback_configs.insert(id);
+                        self.storage.network_configs.insert(
+                            id,
+                            GUIConfig::new(id.to_string(), stored.config, stored.source),
+                        );
+                    }
+                    continue;
+                }
                 self.handle_save_network_config_with_source(
                     app.clone(),
                     id,
@@ -1753,6 +1782,8 @@ mod manager {
                             SetNetworkInstanceEnabledRequest {
                                 inst_id: Some(id.into()),
                                 enabled: true,
+
+                                ..Default::default()
                             },
                         )
                         .await?;
@@ -1890,6 +1921,7 @@ mod manager {
             Ok(ListNetworkInstanceIdsJsonResp {
                 running_inst_ids: response.inst_ids,
                 disabled_inst_ids: disabled,
+                runtime_capabilities: response.runtime_capabilities,
             })
         }
 
@@ -2072,6 +2104,8 @@ mod manager {
                     SetNetworkInstanceEnabledRequest {
                         inst_id: Some(inst_id.into()),
                         enabled: !disabled,
+
+                        ..Default::default()
                     },
                 ),
             )
@@ -2096,6 +2130,8 @@ mod manager {
                             BaseController::default(),
                             DeleteNetworkInstanceRequest {
                                 inst_ids: vec![inst_id.into()],
+
+                                ..Default::default()
                             },
                         )
                         .await?;
@@ -2199,6 +2235,8 @@ mod manager {
                         inst_ids: running.keys().copied().map(Into::into).collect(),
                         disabled_inst_ids: Vec::new(),
                         supports_persisted_config_management: None,
+
+                        ..Default::default()
                     }),
                     6 => {
                         let request: DeleteNetworkInstanceRequest = __rt::decode(input)?;
@@ -2344,7 +2382,8 @@ mod manager {
                         BaseController::default(),
                         SetNetworkInstanceEnabledRequest {
                             inst_id: Some(id.into()),
-                            enabled: false
+                            enabled: false,
+                            ..Default::default()
                         }
                     )
                 )
@@ -2357,6 +2396,8 @@ mod manager {
                     BaseController::default(),
                     DeleteNetworkInstanceRequest {
                         inst_ids: vec![id.into()],
+
+                        ..Default::default()
                     },
                 )
                 .await
@@ -2369,7 +2410,8 @@ mod manager {
                     client.remove_network_instance_config(
                         BaseController::default(),
                         RemoveNetworkInstanceConfigRequest {
-                            inst_ids: vec![id.into()]
+                            inst_ids: vec![id.into()],
+                            ..Default::default()
                         }
                     )
                 )
@@ -2859,6 +2901,10 @@ pub fn run_gui() -> std::process::ExitCode {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            persisted_configs::observe_local_configs,
+            persisted_configs::patch_local_config,
+            persisted_configs::set_local_config_enabled,
+            persisted_configs::remove_local_config,
             parse_network_config,
             generate_network_config,
             run_network_instance,

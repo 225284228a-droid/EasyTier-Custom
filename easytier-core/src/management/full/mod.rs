@@ -4,12 +4,20 @@ mod config_patch;
 mod config_state;
 mod instance_info;
 #[cfg(feature = "management")]
+mod local_catalog;
+#[cfg(feature = "management")]
 mod logger_rpc;
 #[cfg(feature = "management")]
 pub(super) mod packet_proxy;
+#[cfg(feature = "management")]
+mod persisted_merge;
+#[cfg(feature = "management")]
+mod persisted_rpc;
 mod process_rpc;
 #[cfg(feature = "management")]
 pub mod remote_client;
+#[cfg(feature = "management")]
+mod runtime_capabilities;
 mod web_client;
 
 use std::sync::Arc;
@@ -42,13 +50,23 @@ pub use config_patch::{ConfigPatchPersistence, apply_config_patch};
 pub use config_state::{InstanceStateStore, STATE_FILE_NAME};
 pub use instance_info::network_instance_running_info;
 #[cfg(feature = "management")]
+pub use local_catalog::LocalConfigCatalog;
+#[cfg(feature = "management")]
+pub(crate) use local_catalog::{
+    raw_hash as persisted_raw_hash, refresh_configs as refresh_local_configs,
+};
+#[cfg(feature = "management")]
 pub use logger_rpc::{
     LoggerControl, LoggerManagementRpc, UnsupportedLoggerControl, log_level_name, parse_log_level,
 };
+#[cfg(feature = "management")]
+pub(crate) use persisted_merge::merge_active_changes;
 pub use process_rpc::{
     ActiveInstanceForStart, ConfigFileStorage, InstanceMutationHooks, InstanceMutationResult,
     ProcessManagement, ProcessManagementRpc, UnsupportedConfigFileStorage,
 };
+#[cfg(feature = "management")]
+pub use runtime_capabilities::management_capabilities_for_host;
 #[cfg(target_os = "wasi")]
 pub(crate) use web_client::WebClientBackend;
 pub use web_client::{ConfigServerEndpoint, WebClient, WebClientConfig};
@@ -87,15 +105,12 @@ pub fn register_management_rpc<F, H>(
 {
     register_instance_management_rpc(instances.clone(), registry, storage.clone());
     registry.register(LoggerRpcServer::new(LoggerManagementRpc::new(logger)), "");
+    let process_rpc = ProcessManagementRpc::<F>::new(instances, hooks, storage, state_store);
     registry.register(
-        WebClientServiceServer::new(ProcessManagementRpc::<F>::new(
-            instances,
-            hooks,
-            storage,
-            state_store,
-        )),
+        easytier_proto::api::manage::PersistedConfigServiceServer::new(process_rpc.clone()),
         "",
     );
+    registry.register(WebClientServiceServer::new(process_rpc), "");
 }
 
 /// Registers the compact reverse-RPC surface required by easytier-web.

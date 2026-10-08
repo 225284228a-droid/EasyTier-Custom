@@ -28,6 +28,7 @@ use super::{
 use crate::FeatureFlags;
 use crate::webhook::SharedWebhookConfig;
 
+pub(crate) mod local_configs;
 mod runtime_revision;
 mod webhook_validation;
 
@@ -1007,7 +1008,12 @@ impl WebServerService for SessionRpcService {
             let data = self.data.read().await;
             should_delay_session_heartbeat_response(&data, support_heartbeat_policy)
         };
-        let ret = self.handle_heartbeat(req).await;
+        let mut ret = self.handle_heartbeat(req).await;
+        if ret.is_ok()
+            && let Err(error) = local_configs::persist_management_mode(&self.data).await
+        {
+            ret = Err(error.into());
+        }
         if ret.is_err() {
             tracing::warn!("Failed to handle heartbeat: {:?}", ret);
             // sleep for a while to avoid client busy loop
@@ -1041,6 +1047,7 @@ pub struct Session {
 
     webhook_validation_task: Option<AbortOnDropHandle<()>>,
     config_reconcile_task: Option<AbortOnDropHandle<()>>,
+    local_snapshot_task: Option<AbortOnDropHandle<()>>,
     route_ready: Arc<Notify>,
 }
 
@@ -1084,6 +1091,7 @@ impl Session {
             data,
             webhook_validation_task: None,
             config_reconcile_task: None,
+            local_snapshot_task: None,
             route_ready: Arc::new(Notify::new()),
         }
     }
@@ -1111,6 +1119,12 @@ impl Session {
                     self.scoped_config_client(),
                 ),
             )));
+        self.local_snapshot_task
+            .replace(AbortOnDropHandle::new(tokio::spawn(local_configs::worker(
+                Arc::downgrade(&self.data),
+                self.persisted_client(),
+                data.heartbeat_waiter(),
+            ))));
     }
 
     pub fn mark_route_ready(&self) {
@@ -1135,6 +1149,9 @@ impl Session {
             task.abort();
         }
         if let Some(task) = &self.config_reconcile_task {
+            task.abort();
+        }
+        if let Some(task) = &self.local_snapshot_task {
             task.abort();
         }
         self.rpc_mgr.stop().await;

@@ -43,7 +43,7 @@ impl GatewayConfig {
         })?;
         if !matches!(
             listener_scheme,
-            IpScheme::Tcp | IpScheme::Udp | IpScheme::Ws
+            IpScheme::Tcp | IpScheme::Udp | IpScheme::Ws | IpScheme::Wss
         ) {
             anyhow::bail!("unsupported config server protocol: {listener_protocol}");
         }
@@ -58,6 +58,17 @@ impl GatewayConfig {
             );
         }
         Ok(())
+    }
+
+    pub fn validate_listener_urls(&self, listeners: &[url::Url]) -> anyhow::Result<()> {
+        if listeners
+            .iter()
+            .any(|listener| self.validate(listener.scheme()).is_ok())
+        {
+            Ok(())
+        } else {
+            anyhow::bail!("gateway peer URL must match one configured listener protocol")
+        }
     }
 }
 
@@ -750,5 +761,17 @@ mod tests {
             relay_data: false,
         };
         assert!(secure_websocket.validate("ws").is_ok());
+        assert!(secure_websocket.validate("wss").is_ok());
+        assert!(
+            tcp.validate_listener_urls(&[
+                "udp://127.0.0.1:22020".parse().unwrap(),
+                "tcp://127.0.0.1:22021".parse().unwrap(),
+            ])
+            .is_ok()
+        );
+        assert!(
+            tcp.validate_listener_urls(&["wss://127.0.0.1:22022".parse().unwrap()])
+                .is_err()
+        );
     }
 }

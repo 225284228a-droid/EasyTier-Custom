@@ -7,6 +7,10 @@ pub(crate) mod config_storage;
 pub mod dns_server;
 pub mod factory;
 pub mod host;
+#[cfg(feature = "management")]
+mod persisted_config_policy;
+#[cfg(all(test, feature = "management"))]
+mod persisted_config_tests;
 pub(crate) mod runtime_host;
 #[cfg(test)]
 pub(crate) mod test_instance;

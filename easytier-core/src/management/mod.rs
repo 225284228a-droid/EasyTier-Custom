@@ -42,8 +42,9 @@ pub use full::{
 };
 #[cfg(feature = "management")]
 pub use full::{
-    LoggerControl, LoggerManagementRpc, UnsupportedLoggerControl, call_instance_json_rpc,
-    call_management_json_rpc, log_level_name, parse_log_level, register_instance_management_rpc,
+    LocalConfigCatalog, LoggerControl, LoggerManagementRpc, UnsupportedLoggerControl,
+    call_instance_json_rpc, call_management_json_rpc, log_level_name,
+    management_capabilities_for_host, parse_log_level, register_instance_management_rpc,
     register_management_rpc,
 };
 pub use instance_rpc::InstanceManagementRpc;

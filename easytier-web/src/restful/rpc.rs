@@ -515,6 +515,8 @@ mod tests {
                 "DeleteNetworkInstance",
                 serde_json::to_value(DeleteNetworkInstanceRequest {
                     inst_ids: vec![central_id.into()],
+
+                    ..Default::default()
                 })
                 .unwrap(),
                 true,
@@ -523,6 +525,8 @@ mod tests {
                 "DeleteNetworkInstance",
                 serde_json::to_value(DeleteNetworkInstanceRequest {
                     inst_ids: vec![other_id.into()],
+
+                    ..Default::default()
                 })
                 .unwrap(),
                 false,

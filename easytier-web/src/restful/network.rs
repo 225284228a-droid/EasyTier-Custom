@@ -4,7 +4,6 @@ use axum::extract::{DefaultBodyLimit, Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{delete, post, put};
 use axum::{Extension, Json, Router, extract::State, routing::get};
-use axum_login::AuthUser;
 use easytier::common::config::{
     ConfigSource as RuntimeConfigSource, NetworkConfig, config_source_from_rpc,
 };
@@ -121,6 +120,13 @@ struct CollectNetworkInfoJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct UpdateNetworkStateJsonReq {
     disabled: bool,
+    #[serde(default)]
+    expected_revision: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ExpectedLocalRevision {
+    expected_revision: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -387,8 +393,7 @@ impl NetworkApi {
                 Some(vec![inst_id]),
             )
             .await
-            .map_err(convert_error)?
-            .into();
+            .map_err(convert_error)?;
         Self::annotate_network_locations(
             &client_mgr,
             Self::get_user_id(&auth_session)?,
@@ -411,8 +416,7 @@ impl NetworkApi {
                 payload.inst_ids,
             )
             .await
-            .map_err(convert_error)?
-            .into();
+            .map_err(convert_error)?;
         Self::annotate_network_locations(
             &client_mgr,
             Self::get_user_id(&auth_session)?,
@@ -440,8 +444,16 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Extension(network_service): Extension<Arc<CentralNetworkService>>,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Query(revision): Query<ExpectedLocalRevision>,
     ) -> Result<(), HttpHandleError> {
         let user_id = Self::get_user_id(&auth_session)?;
+        if let Some(revision) = revision.expected_revision {
+            client_mgr
+                .mutate_local_config_lifecycle(user_id, machine_id, inst_id, revision, None)
+                .await
+                .map_err(super::local_configs::failure)?;
+            return Ok(());
+        }
         let _mutation = network_service.lock_mutations().await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
@@ -685,6 +697,19 @@ impl NetworkApi {
         };
 
         let user_id = Self::get_user_id(&auth_session)?;
+        if let Some(revision) = payload.expected_revision {
+            client_mgr
+                .mutate_local_config_lifecycle(
+                    user_id,
+                    machine_id,
+                    inst_id,
+                    revision,
+                    Some(!payload.disabled),
+                )
+                .await
+                .map_err(super::local_configs::failure)?;
+            return Ok(());
+        }
         let _mutation = network_service.lock_mutations().await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
@@ -913,8 +938,7 @@ impl NetworkApi {
         let mut response = client_mgr
             .handle_collect_network_info((user_id, machine_id), payload.inst_ids)
             .await
-            .map_err(convert_error)?
-            .into();
+            .map_err(convert_error)?;
         Self::annotate_network_locations(&client_mgr, user_id, machine_id, &mut response).await;
         Ok(Json(response))
     }
@@ -1124,12 +1148,15 @@ mod tests {
         let core = Arc::new(native_instance_manager());
         let client = WebClient::new(
             Dialer(connections),
-            "rest-revision",
-            machine_id,
-            "test-device",
-            false,
+            easytier::web_client::WebClientOptions {
+                token: "rest-revision".into(),
+                machine_id,
+                hostname: "test-device".into(),
+                secure_mode: false,
+            },
             core.clone(),
             None,
+            Arc::new(easytier_core::management::InstanceStateStore::in_memory()),
         );
         let desired = serde_json::json!({
             "instance_id": instance_id.to_string(),

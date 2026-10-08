@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod listener_tests;
+mod local_configs;
 mod managed_config;
 mod runtime_reconcile;
 pub mod session;
@@ -1019,6 +1020,7 @@ impl
             return Ok(ListNetworkInstanceIdsJsonResp {
                 running_inst_ids,
                 disabled_inst_ids,
+                runtime_capabilities: ret.runtime_capabilities,
             });
         }
 
@@ -1031,6 +1033,7 @@ impl
         Ok(ListNetworkInstanceIdsJsonResp {
             running_inst_ids: ret.inst_ids.into_iter().collect(),
             disabled_inst_ids: ret.disabled_inst_ids.into_iter().collect(),
+            runtime_capabilities: ret.runtime_capabilities,
         })
     }
 
@@ -1123,6 +1126,8 @@ impl
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
                     inst_ids: inst_ids.iter().copied().map(Into::into).collect(),
+
+                    ..Default::default()
                 },
             )
             .await?;
@@ -1145,7 +1150,10 @@ impl
                 let response = client
                     .remove_network_instance_config(
                         BaseController::default(),
-                        RemoveNetworkInstanceConfigRequest { inst_ids: stopped },
+                        RemoveNetworkInstanceConfigRequest {
+                            inst_ids: stopped,
+                            ..Default::default()
+                        },
                     )
                     .await?;
                 remaining.extend(response.remain_inst_ids.into_iter().map(Uuid::from));
@@ -1207,6 +1215,8 @@ impl
                         BaseController::default(),
                         DeleteNetworkInstanceRequest {
                             inst_ids: vec![inst_id.into()],
+
+                            ..Default::default()
                         },
                     )
                     .await?;
@@ -1243,6 +1253,8 @@ impl
                     SetNetworkInstanceEnabledRequest {
                         inst_id: Some(inst_id.into()),
                         enabled: false,
+
+                        ..Default::default()
                     },
                 )
                 .await?;
@@ -1258,6 +1270,8 @@ impl
                     SetNetworkInstanceEnabledRequest {
                         inst_id: Some(inst_id.into()),
                         enabled: true,
+
+                        ..Default::default()
                     },
                 )
                 .await?;
@@ -1440,10 +1454,23 @@ impl
 }
 
 impl ClientManager {
-    async fn supports_local_configs(&self, identify: &(UserIdInDb, uuid::Uuid)) -> bool {
+    pub(crate) async fn supports_local_configs(&self, identify: &(UserIdInDb, uuid::Uuid)) -> bool {
         let (user_id, machine_id) = *identify;
         let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) else {
-            return false;
+            // Remember legacy custom nodes too; an offline observation never
+            // becomes desired state for the official publisher.
+            return match self
+                .storage
+                .db()
+                .known_local_config_mode(user_id, machine_id)
+                .await
+            {
+                Ok(local) => local,
+                Err(error) => {
+                    tracing::warn!(%error, "node management mode unavailable; deferring managed publication");
+                    true
+                }
+            };
         };
         session.data().read().await.support_local_configs()
     }
@@ -2643,6 +2670,8 @@ mod tests {
                 Default::default(),
                 RemoveNetworkInstanceConfigRequest {
                     inst_ids: vec![protected_id.into()],
+
+                    ..Default::default()
                 },
             )
             .await

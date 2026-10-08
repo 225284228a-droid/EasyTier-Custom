@@ -566,7 +566,7 @@ async fn main() {
             relay_data: cli.gateway_relay_data,
         };
         config
-            .validate(&cli.config_server_protocol)
+            .validate_listener_urls(&listener_urls)
             .unwrap_or_else(|error| {
                 eprintln!("Invalid Gateway configuration: {error}");
                 std::process::exit(2);

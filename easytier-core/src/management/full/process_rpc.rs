@@ -87,6 +87,42 @@ impl InstanceMutationHooks for () {}
 /// Host Adapter for configuration-file effects used by process management.
 #[async_trait::async_trait]
 pub trait ConfigFileStorage: Send + Sync + 'static {
+    fn supports_catalog(&self) -> bool {
+        false
+    }
+
+    async fn list_configs(&self, _directory: &Path) -> anyhow::Result<Vec<PathBuf>> {
+        anyhow::bail!("configuration observation is unsupported by this Host")
+    }
+
+    /// Inspect original bytes without environment expansion. Native Hosts may
+    /// add stricter filesystem and environment-reference protection.
+    async fn inspect_raw_config(
+        &self,
+        path: &Path,
+        contents: &[u8],
+        config_dir: &Path,
+    ) -> anyhow::Result<ConfigFileControl> {
+        let mut control = self.inspect(path).await;
+        let identity = std::str::from_utf8(contents)
+            .ok()
+            .and_then(|text| toml::from_str::<toml::Table>(text).ok())
+            .and_then(|table| {
+                table
+                    .get("instance_id")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .and_then(|id| id.parse::<uuid::Uuid>().ok());
+        let managed = path.parent() == Some(config_dir)
+            && path.extension() == Some(std::ffi::OsStr::new("toml"))
+            && identity.is_some_and(|id| {
+                path.file_stem().and_then(|stem| stem.to_str()) == Some(id.to_string().as_str())
+            });
+        control.set_no_delete(control.is_read_only() || !managed);
+        Ok(control)
+    }
+
     async fn inspect(&self, path: &Path) -> ConfigFileControl;
 
     async fn read(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>>;
@@ -156,11 +192,11 @@ pub struct ProcessManagement<F>
 where
     F: InstanceFactory,
 {
-    instances: Arc<InstanceManager<F>>,
-    hooks: Arc<dyn InstanceMutationHooks>,
-    storage: Arc<dyn ConfigFileStorage>,
-    mutation_lock: Arc<tokio::sync::Mutex<()>>,
-    state_store: Arc<InstanceStateStore>,
+    pub(super) instances: Arc<InstanceManager<F>>,
+    pub(super) hooks: Arc<dyn InstanceMutationHooks>,
+    pub(super) storage: Arc<dyn ConfigFileStorage>,
+    pub(super) mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(super) state_store: Arc<InstanceStateStore>,
 }
 
 impl<F> Clone for ProcessManagement<F>
@@ -191,6 +227,16 @@ where
         state_store: Arc<InstanceStateStore>,
     ) -> Self {
         let mutation_lock = instances.mutation_lock();
+        #[cfg(feature = "management")]
+        let state_store = if instances.config_dir().is_some() && storage.supports_catalog() {
+            instances
+                .local_config_catalog()
+                .shared_state_store(state_store)
+        } else {
+            state_store
+        };
+        #[cfg(feature = "management")]
+        super::local_catalog::start_observer(&instances, storage.clone(), state_store.clone());
         Self {
             instances,
             hooks,
@@ -205,7 +251,7 @@ where
         self.state_store.clone()
     }
 
-    fn restore_enabled_state(
+    pub(super) fn restore_enabled_state(
         &self,
         instance_id: uuid::Uuid,
         previous: Option<bool>,
@@ -245,6 +291,30 @@ where
         Ok(())
     }
 
+    /// All remote form writes share the fresh directory identity policy,
+    /// including legacy clients that cannot supply a revision. The caller
+    /// already owns the process coordinator; do not acquire it again here.
+    #[cfg(feature = "management")]
+    async fn ensure_catalog_identity_locked(&self, instance_id: uuid::Uuid) -> anyhow::Result<()> {
+        if self.instances.config_dir().is_none() || !self.storage.supports_catalog() {
+            return Ok(());
+        }
+        let snapshot = self.refresh_local_configs_locked().await?;
+        let entries = snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.inst_id.map(uuid::Uuid::from) == Some(instance_id))
+            .collect::<Vec<_>>();
+        if entries.len() > 1
+            || entries
+                .first()
+                .is_some_and(|entry| entry.status == "identity_conflict")
+        {
+            anyhow::bail!("configuration identity is ambiguous");
+        }
+        Ok(())
+    }
+
     async fn load_saved_config(
         &self,
         instance_id: uuid::Uuid,
@@ -271,12 +341,46 @@ where
                 u8::from(control.permission) | u8::from(active.permission),
             );
         }
-        if let Some(registered) = self.instances.managed_config_control(instance_id) {
-            control.permission = ConfigFilePermission::from(
-                u8::from(control.permission) | u8::from(registered.permission),
-            );
-        }
         Ok(Some((config, control)))
+    }
+
+    /// A lifecycle operation changes enabled/runtime state itself. Fence the
+    /// captured file separately after host hooks, before starting or deleting.
+    /// No expected revision keeps the established non-CAS host flow.
+    #[cfg(feature = "management")]
+    async fn verify_lifecycle_file_locked(
+        &self,
+        path: &Path,
+        expected: &easytier_proto::api::manage::PersistedConfigEntry,
+    ) -> anyhow::Result<()> {
+        let contents = self
+            .storage
+            .read(path)
+            .await
+            .map_err(|_| anyhow::anyhow!("local_config_revision_conflict"))?;
+        let Some(contents) = contents else {
+            if expected.persisted_raw_hash.is_empty() {
+                return Ok(());
+            }
+            anyhow::bail!("local_config_revision_conflict");
+        };
+        if super::local_catalog::raw_hash(&contents) != expected.persisted_raw_hash {
+            anyhow::bail!("local_config_revision_conflict");
+        }
+        let directory = self
+            .instances
+            .config_dir()
+            .map(PathBuf::as_path)
+            .unwrap_or(Path::new(""));
+        let control = self
+            .storage
+            .inspect_raw_config(path, &contents, directory)
+            .await
+            .map_err(|_| anyhow::anyhow!("local_config_revision_conflict"))?;
+        if u32::from(u8::from(control.permission)) != expected.config_permission {
+            anyhow::bail!("local_config_revision_conflict");
+        }
+        Ok(())
     }
 
     async fn stop_instances_locked(
@@ -381,6 +485,8 @@ where
         control: &ConfigFileControl,
         require_deletable: bool,
     ) -> anyhow::Result<()> {
+        #[cfg(feature = "management")]
+        self.ensure_catalog_identity_locked(instance_id).await?;
         if control.is_read_only() {
             anyhow::bail!("instance {instance_id} is read-only, cannot be overwritten");
         }
@@ -416,9 +522,39 @@ where
     }
 
     async fn apply_file_cleanup(&self, cleanup: ConfigFileCleanup) {
+        let (path, written) = match &cleanup {
+            ConfigFileCleanup::Remove { path, written }
+            | ConfigFileCleanup::Restore { path, written, .. } => (path, written),
+        };
+        if self.storage.read(path).await.ok().flatten().as_deref() != Some(written.as_slice()) {
+            tracing::warn!("configuration changed externally; preserving it during rollback");
+            return;
+        }
+        let directory = self
+            .instances
+            .config_dir()
+            .map(PathBuf::as_path)
+            .or_else(|| path.parent())
+            .unwrap_or(Path::new(""));
+        let control = self
+            .storage
+            .inspect_raw_config(path, written, directory)
+            .await;
+        let protected = match control {
+            Ok(control) => {
+                control.is_read_only()
+                    || (matches!(&cleanup, ConfigFileCleanup::Remove { .. })
+                        && !control.is_deletable())
+            }
+            Err(_) => true,
+        };
+        if protected {
+            tracing::warn!("configuration became protected; preserving it during rollback");
+            return;
+        }
         let result = match cleanup {
-            ConfigFileCleanup::Remove(path) => self.storage.remove(&path).await,
-            ConfigFileCleanup::Restore { path, contents } => {
+            ConfigFileCleanup::Remove { path, .. } => self.storage.remove(&path).await,
+            ConfigFileCleanup::Restore { path, contents, .. } => {
                 self.storage.write(&path, &contents).await
             }
         };
@@ -462,6 +598,11 @@ where
             config.set_id(instance_id);
         }
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
         self.run_network_instance_locked(config, instance_id, overwrite, requested_source)
             .await
     }
@@ -475,6 +616,26 @@ where
         instance_id: uuid::Uuid,
         overwrite: bool,
         requested_source: Option<ConfigSource>,
+    ) -> anyhow::Result<uuid::Uuid> {
+        self.run_network_instance_locked_with_contents(
+            config,
+            instance_id,
+            overwrite,
+            requested_source,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn run_network_instance_locked_with_contents(
+        &self,
+        config: TomlConfig,
+        instance_id: uuid::Uuid,
+        overwrite: bool,
+        requested_source: Option<ConfigSource>,
+        persisted_contents: Option<&[u8]>,
+        expected_revision: Option<&str>,
     ) -> anyhow::Result<uuid::Uuid> {
         let remote_managed = self.hooks.manages_remote_config_instances();
         let previous_enabled = self.state_store.enabled_state(&instance_id);
@@ -520,6 +681,21 @@ where
 
         self.ensure_overwritable(instance_id, &control, remote_managed)
             .await?;
+        #[cfg(feature = "management")]
+        let legacy_candidate = config.detached_snapshot();
+        #[cfg(feature = "management")]
+        if persisted_contents.is_none()
+            && let Some(path) = control.path.as_deref()
+            && let Some(original) = self.storage.read(path).await?
+        {
+            let text = std::str::from_utf8(&original)
+                .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
+            let merged =
+                super::persisted_merge::merge_legacy_form_changes(text, &legacy_candidate)?;
+            let merged = TomlConfig::new_from_str(&merged)
+                .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
+            config.replace_from_snapshot(&merged);
+        }
         if !replacing {
             self.state_store.set_enabled(instance_id, false)?;
         }
@@ -545,12 +721,51 @@ where
         if !control.is_read_only()
             && let Some(path) = control.path.as_deref()
         {
-            let cleanup = match self.storage.read(path).await {
+            #[cfg(feature = "management")]
+            self.verify_local_revision_locked(instance_id, expected_revision)
+                .await?;
+            let original = self.storage.read(path).await;
+            let mut written = config.dump().into_bytes();
+            #[cfg(feature = "management")]
+            if persisted_contents.is_none()
+                && let Ok(Some(original)) = &original
+            {
+                let merged = std::str::from_utf8(original)
+                    .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))
+                    .and_then(|text| {
+                        super::persisted_merge::merge_legacy_form_changes(text, &legacy_candidate)
+                    })
+                    .and_then(|merged| {
+                        let parsed = TomlConfig::new_from_str(&merged)
+                            .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
+                        Ok((merged, parsed))
+                    });
+                match merged {
+                    Ok((merged, merged_config)) => {
+                        config.replace_from_snapshot(&merged_config);
+                        written = merged.into_bytes();
+                    }
+                    Err(error) => {
+                        if !replacing {
+                            self.restore_enabled_state(instance_id, previous_enabled)?;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            if let Some(contents) = persisted_contents {
+                written = contents.to_vec();
+            }
+            let cleanup = match original {
                 Ok(Some(contents)) => Some(ConfigFileCleanup::Restore {
                     path: path.to_owned(),
                     contents,
+                    written: written.clone(),
                 }),
-                Ok(None) => Some(ConfigFileCleanup::Remove(path.to_owned())),
+                Ok(None) => Some(ConfigFileCleanup::Remove {
+                    path: path.to_owned(),
+                    written: written.clone(),
+                }),
                 Err(error) => {
                     if !replacing {
                         self.restore_enabled_state(instance_id, previous_enabled)?;
@@ -561,7 +776,7 @@ where
                     ));
                 }
             };
-            if let Err(error) = self.storage.write(path, config.dump().as_bytes()).await {
+            if let Err(error) = self.storage.write(path, &written).await {
                 if !replacing {
                     self.restore_enabled_state(instance_id, previous_enabled)?;
                 }
@@ -643,6 +858,11 @@ where
         retained: Vec<uuid::Uuid>,
     ) -> anyhow::Result<InstanceMutationResult> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
         self.retain_network_instances_locked(retained).await
     }
 
@@ -652,6 +872,11 @@ where
         retained_names: Vec<String>,
     ) -> anyhow::Result<InstanceMutationResult> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
         let retained = self.resolve_instance_ids_by_name(&retained_names)?;
         self.retain_network_instances_locked(retained).await
     }
@@ -706,7 +931,31 @@ where
         &self,
         requested: Vec<uuid::Uuid>,
     ) -> anyhow::Result<InstanceMutationResult> {
+        self.delete_network_instances_with_revision(requested, None)
+            .await
+    }
+
+    pub async fn delete_network_instances_with_revision(
+        &self,
+        requested: Vec<uuid::Uuid>,
+        expected_revision: Option<String>,
+    ) -> anyhow::Result<InstanceMutationResult> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
+        #[cfg(feature = "management")]
+        let expected_file = if let Some(expected) = expected_revision.as_deref() {
+            if requested.len() != 1 {
+                anyhow::bail!("revision requires one instance");
+            }
+            self.capture_local_revision_locked(requested[0], Some(expected))
+                .await?
+        } else {
+            None
+        };
         let requested = requested.into_iter().collect::<HashSet<_>>();
         let mut removed = Vec::new();
         for instance_id in &requested {
@@ -761,6 +1010,10 @@ where
                 }
             }
             if let Some(path) = path {
+                #[cfg(feature = "management")]
+                if let Some(expected) = &expected_file {
+                    self.verify_lifecycle_file_locked(&path, expected).await?;
+                }
                 let current = self.storage.inspect(&path).await;
                 if current.is_read_only() || !current.is_deletable() {
                     continue;
@@ -812,6 +1065,13 @@ where
             config.set_id(instance_id);
         }
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
+        #[cfg(feature = "management")]
+        self.ensure_catalog_identity_locked(instance_id).await?;
         // Instance names must be unique among *running* instances only, which
         // `set_network_instance_enabled` enforces when a saved config starts.
         // Rejecting the save itself would block adding a second network that
@@ -843,8 +1103,20 @@ where
         }
         config.set_network_config_source(requested_source.or(Some(ConfigSource::Web)));
         let previous_enabled = self.state_store.enabled_state(&instance_id);
+        let mut contents = config.dump().into_bytes();
+        #[cfg(feature = "management")]
+        if let Some(original) = self.storage.read(&path).await? {
+            contents = super::persisted_merge::merge_legacy_form_changes(
+                std::str::from_utf8(&original)
+                    .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?,
+                &config,
+            )?
+            .into_bytes();
+        }
+        #[cfg(feature = "management")]
+        self.ensure_catalog_identity_locked(instance_id).await?;
         self.state_store.set_enabled(instance_id, false)?;
-        if let Err(error) = self.storage.write(&path, config.dump().as_bytes()).await {
+        if let Err(error) = self.storage.write(&path, &contents).await {
             self.restore_enabled_state(instance_id, previous_enabled)?;
             return Err(anyhow::anyhow!("failed to save config file: {error}"));
         }
@@ -862,7 +1134,26 @@ where
         instance_id: uuid::Uuid,
         enabled: bool,
     ) -> anyhow::Result<()> {
+        self.set_network_instance_enabled_with_revision(instance_id, enabled, None)
+            .await
+    }
+
+    pub async fn set_network_instance_enabled_with_revision(
+        &self,
+        instance_id: uuid::Uuid,
+        enabled: bool,
+        expected_revision: Option<String>,
+    ) -> anyhow::Result<()> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
+        #[cfg(feature = "management")]
+        let expected_file = self
+            .capture_local_revision_locked(instance_id, expected_revision.as_deref())
+            .await?;
         self.ensure_config_identity(instance_id)?;
         if enabled {
             if self.instances.instance(instance_id).is_some() {
@@ -889,6 +1180,14 @@ where
                 .pre_run_network_instance(&config)
                 .await
                 .map_err(|error| anyhow::anyhow!("pre-run hook failed: {error}"))?;
+            #[cfg(feature = "management")]
+            if let Some(expected) = &expected_file {
+                let path = control
+                    .path
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("local_config_revision_conflict"))?;
+                self.verify_lifecycle_file_locked(path, expected).await?;
+            }
             self.instances
                 .register_managed_config(instance_id, control.clone())?;
             self.instances.run_network_instance(config, control)?;
@@ -918,7 +1217,31 @@ where
         &self,
         requested: &[uuid::Uuid],
     ) -> anyhow::Result<Vec<uuid::Uuid>> {
+        self.remove_network_instance_configs_with_revision(requested, None)
+            .await
+    }
+
+    pub async fn remove_network_instance_configs_with_revision(
+        &self,
+        requested: &[uuid::Uuid],
+        expected_revision: Option<String>,
+    ) -> anyhow::Result<Vec<uuid::Uuid>> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
+        #[cfg(feature = "management")]
+        let expected_file = if let Some(expected) = expected_revision.as_deref() {
+            if requested.len() != 1 {
+                anyhow::bail!("revision requires one instance");
+            }
+            self.capture_local_revision_locked(requested[0], Some(expected))
+                .await?
+        } else {
+            None
+        };
         let mut removed = Vec::new();
         for instance_id in requested {
             if self.instances.config_dir().is_none() {
@@ -943,6 +1266,10 @@ where
                     continue;
                 }
                 let path = control.path.expect("loaded config file has a path");
+                #[cfg(feature = "management")]
+                if let Some(expected) = &expected_file {
+                    self.verify_lifecycle_file_locked(&path, expected).await?;
+                }
                 match self.storage.remove(&path).await {
                     Ok(()) => {}
                     // The file may already be gone (deleted by hand while the
@@ -970,6 +1297,50 @@ where
         &self,
         instance_id: uuid::Uuid,
     ) -> anyhow::Result<Option<(NetworkConfig, ConfigSource)>> {
+        let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
+        #[cfg(feature = "management")]
+        if self.storage.supports_catalog() && self.instances.config_dir().is_some() {
+            let snapshot = self.refresh_local_configs_locked().await?;
+            let entries = snapshot
+                .entries
+                .into_iter()
+                .filter(|entry| entry.inst_id.map(uuid::Uuid::from) == Some(instance_id))
+                .collect::<Vec<_>>();
+            if entries.is_empty() {
+                return Ok(None);
+            }
+            if entries.len() != 1 || entries[0].status != "ready" {
+                anyhow::bail!("configuration is protected or unavailable");
+            }
+            let entry = entries.into_iter().next().unwrap();
+            return Ok(entry.config.map(|config| {
+                (
+                    config,
+                    config_source_from_rpc(entry.source).unwrap_or(ConfigSource::User),
+                )
+            }));
+        }
+        #[cfg(feature = "management")]
+        if self.storage.supports_catalog() {
+            let original = super::super::instance_rpc::persisted::read_original_config(
+                &self.instances,
+                self.storage.as_ref(),
+                instance_id,
+            )
+            .await?;
+            return Ok(original.map(|(config, _)| {
+                let source = self
+                    .instances
+                    .config_source(instance_id)
+                    .unwrap_or(config.get_network_config_source());
+                (network_config_from_toml(&config), source)
+            }));
+        }
         if self
             .instances
             .managed_config_control(instance_id)
@@ -994,6 +1365,11 @@ where
         control: ConfigFileControl,
     ) -> anyhow::Result<uuid::Uuid> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
         let instance_id = config.get_id();
         if self.instances.instance(instance_id).is_some() {
             anyhow::bail!("instance {instance_id} already exists");
@@ -1022,6 +1398,11 @@ where
         select: impl FnOnce() -> Vec<uuid::Uuid>,
     ) -> anyhow::Result<InstanceMutationResult> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
         let requested = select();
         self.delete_owned_network_instances_locked(requested).await
     }
@@ -1032,6 +1413,11 @@ where
         requested_names: Vec<String>,
     ) -> anyhow::Result<InstanceMutationResult> {
         let _mutation = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        let _refresh = self
+            .instances
+            .local_config_catalog()
+            .refresh_after_mutation();
         let requested = self.resolve_instance_ids_by_name(&requested_names)?;
         self.delete_owned_network_instances_locked(requested).await
     }
@@ -1077,8 +1463,15 @@ where
 }
 
 enum ConfigFileCleanup {
-    Remove(PathBuf),
-    Restore { path: PathBuf, contents: Vec<u8> },
+    Remove {
+        path: PathBuf,
+        written: Vec<u8>,
+    },
+    Restore {
+        path: PathBuf,
+        contents: Vec<u8>,
+        written: Vec<u8>,
+    },
 }
 
 /// Protobuf projection over transport-independent process management.
@@ -1086,7 +1479,7 @@ pub struct ProcessManagementRpc<F>
 where
     F: InstanceFactory,
 {
-    management: ProcessManagement<F>,
+    pub(super) management: ProcessManagement<F>,
 }
 
 impl<F> Clone for ProcessManagementRpc<F>
@@ -1238,6 +1631,7 @@ where
                 .map(Into::into)
                 .collect(),
             supports_persisted_config_management: Some(true),
+            runtime_capabilities: self.management.instances.management_capabilities(),
         })
     }
 
@@ -1248,10 +1642,13 @@ where
     ) -> rpc_types::error::Result<DeleteNetworkInstanceResponse> {
         let requested = request.inst_ids.into_iter().map(Into::into).collect();
         let management = self.management.clone();
-        let result =
-            tokio::spawn(async move { management.delete_network_instances(requested).await })
+        let result = tokio::spawn(async move {
+            management
+                .delete_network_instances_with_revision(requested, request.expected_revision)
                 .await
-                .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
         Ok(DeleteNetworkInstanceResponse {
             remain_inst_ids: result
                 .remaining_instance_ids
@@ -1270,6 +1667,18 @@ where
             .inst_id
             .ok_or_else(|| anyhow::anyhow!("instance id is required"))?
             .into();
+        #[cfg(feature = "management")]
+        if self.management.storage.supports_catalog()
+            && let Some((config, source)) = self
+                .management
+                .get_network_instance_config_from_file(instance_id)
+                .await?
+        {
+            return Ok(GetNetworkInstanceConfigResponse {
+                config: Some(config),
+                source: config_source_to_rpc(source),
+            });
+        }
         if let Some(control) = self.management.instances.config_control(instance_id) {
             if control.is_read_only() {
                 return Err(anyhow::anyhow!(
@@ -1393,7 +1802,11 @@ where
         let management = self.management.clone();
         tokio::spawn(async move {
             management
-                .set_network_instance_enabled(instance_id, request.enabled)
+                .set_network_instance_enabled_with_revision(
+                    instance_id,
+                    request.enabled,
+                    request.expected_revision,
+                )
                 .await
         })
         .await
@@ -1413,12 +1826,16 @@ where
             .collect::<Vec<_>>();
         let to_remove = requested.clone();
         let management = self.management.clone();
-        let removed =
-            tokio::spawn(
-                async move { management.remove_network_instance_configs(&to_remove).await },
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
+        let removed = tokio::spawn(async move {
+            management
+                .remove_network_instance_configs_with_revision(
+                    &to_remove,
+                    request.expected_revision,
+                )
+                .await
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("instance mutation task failed: {error}"))??;
         Ok(RemoveNetworkInstanceConfigResponse {
             remain_inst_ids: requested
                 .into_iter()

@@ -38,11 +38,28 @@ mod config;
 pub(super) mod full;
 #[cfg(all(feature = "management", feature = "proxy-packet"))]
 pub(super) mod packet_proxy;
+#[cfg(feature = "management")]
+pub(crate) mod persisted;
 mod projection;
 
 #[doc(hidden)]
 pub trait ReadOnlyInstanceResolver: Clone + Send + Sync + 'static {
     type Host: CoreInstanceHost;
+
+    fn mutation_lock(&self) -> Option<Arc<tokio::sync::Mutex<()>>> {
+        None
+    }
+
+    fn config_control(
+        &self,
+        _id: uuid::Uuid,
+    ) -> Option<crate::instance::manager::ConfigFileControl> {
+        None
+    }
+
+    fn requires_persisted_read(&self) -> bool {
+        false
+    }
 
     fn resolve(
         &self,
@@ -76,6 +93,46 @@ where
     H: CoreInstanceHost,
 {
     type Host = H;
+
+    fn mutation_lock(&self) -> Option<Arc<tokio::sync::Mutex<()>>> {
+        Some(self.manager.mutation_lock())
+    }
+
+    fn config_control(
+        &self,
+        id: uuid::Uuid,
+    ) -> Option<crate::instance::manager::ConfigFileControl> {
+        let mut control = self
+            .manager
+            .config_control(id)
+            .or_else(|| self.manager.managed_config_control(id));
+        #[cfg(feature = "management")]
+        if self
+            .manager
+            .local_config_catalog()
+            .snapshot()
+            .entries
+            .iter()
+            .any(|entry| entry.inst_id.map(uuid::Uuid::from) == Some(id) && entry.status != "ready")
+            && let Some(control) = control.as_mut()
+        {
+            control.set_read_only(true);
+        }
+        control
+    }
+
+    fn requires_persisted_read(&self) -> bool {
+        #[cfg(feature = "management")]
+        {
+            // A local-directory read must never fall back to active TOML
+            // merely because no observer/storage adapter was registered.
+            self.manager.config_dir().is_some()
+        }
+        #[cfg(not(feature = "management"))]
+        {
+            false
+        }
+    }
 
     fn resolve(
         &self,
@@ -181,6 +238,8 @@ where
         let persistence = Arc::new(ManagerConfigPatchPersistence {
             manager: manager.clone(),
             storage,
+            #[cfg(feature = "management")]
+            last_written: std::sync::Mutex::new(std::collections::HashMap::new()),
             _host: std::marker::PhantomData,
         });
         Self {
@@ -228,6 +287,8 @@ where
 {
     manager: Arc<InstanceManager<F>>,
     storage: Arc<dyn ConfigFileStorage>,
+    #[cfg(feature = "management")]
+    last_written: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, String>>,
     _host: std::marker::PhantomData<fn() -> H>,
 }
 
@@ -260,11 +321,68 @@ where
     H: CoreInstanceHost,
 {
     async fn persist(&self, instance_id: uuid::Uuid, config: &TomlConfig) -> anyhow::Result<()> {
-        let control = self
-            .manager
-            .config_control(instance_id)
-            .ok_or_else(|| anyhow::anyhow!("configuration file control is unavailable"))?;
-        persist_config_patch(self.storage.as_ref(), &control, config).await
+        #[cfg(feature = "management")]
+        {
+            if !self.storage.supports_catalog() {
+                let control = self
+                    .manager
+                    .config_control(instance_id)
+                    .ok_or_else(|| anyhow::anyhow!("configuration control is unavailable"))?;
+                return persist_config_patch(self.storage.as_ref(), &control, config).await;
+            }
+            if let Some(hash) = persisted::persist_active_changes(
+                &self.manager,
+                self.storage.as_ref(),
+                instance_id,
+                config,
+            )
+            .await?
+            {
+                self.last_written.lock().unwrap().insert(instance_id, hash);
+            }
+            return Ok(());
+        }
+        #[cfg(not(feature = "management"))]
+        {
+            let control = self
+                .manager
+                .config_control(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("configuration file control is unavailable"))?;
+            persist_config_patch(self.storage.as_ref(), &control, config).await
+        }
+    }
+
+    #[cfg(feature = "management")]
+    async fn read_config(
+        &self,
+        instance_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<(TomlConfig, String)>> {
+        if !self.storage.supports_catalog() {
+            return Ok(None);
+        }
+        persisted::read_original_config(&self.manager, self.storage.as_ref(), instance_id).await
+    }
+
+    #[cfg(feature = "management")]
+    async fn rollback(
+        &self,
+        instance_id: uuid::Uuid,
+        previous: &TomlConfig,
+        written: &TomlConfig,
+    ) -> anyhow::Result<()> {
+        if !self.storage.supports_catalog() {
+            return self.persist(instance_id, previous).await;
+        }
+        let expected = self.last_written.lock().unwrap().get(&instance_id).cloned();
+        persisted::rollback_active_changes(
+            &self.manager,
+            self.storage.as_ref(),
+            instance_id,
+            previous,
+            written,
+            expected.as_deref(),
+        )
+        .await
     }
 }
 

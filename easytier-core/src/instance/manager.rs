@@ -45,6 +45,11 @@ pub trait InstanceFactory: Send + Sync + 'static {
     type CreateContext;
     type Error;
 
+    /// Capabilities of this concrete Host and its registered transports.
+    fn management_capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     fn create(
         &self,
         config: TomlConfig,
@@ -259,6 +264,8 @@ pub struct InstanceManager<F: InstanceFactory> {
     runtime_handle: Option<tokio::runtime::Handle>,
     active_stops: Arc<AtomicUsize>,
     instance_state_changes: Arc<InstanceStateChanges>,
+    #[cfg(feature = "management")]
+    local_config_catalog: Arc<crate::management::LocalConfigCatalog>,
 }
 
 impl<F: InstanceFactory> InstanceManager<F> {
@@ -275,6 +282,8 @@ impl<F: InstanceFactory> InstanceManager<F> {
             runtime_handle,
             active_stops: Arc::new(AtomicUsize::new(0)),
             instance_state_changes: Arc::new(InstanceStateChanges::default()),
+            #[cfg(feature = "management")]
+            local_config_catalog: Arc::new(crate::management::LocalConfigCatalog::default()),
         }
     }
 
@@ -392,6 +401,27 @@ impl<F: InstanceFactory> InstanceManager<F> {
         self.mutation_lock.clone()
     }
 
+    #[cfg(feature = "management")]
+    pub fn local_config_catalog(&self) -> &Arc<crate::management::LocalConfigCatalog> {
+        &self.local_config_catalog
+    }
+
+    #[cfg(feature = "management")]
+    pub(crate) fn notify_local_config_change(&self) {
+        self.instance_state_changes.mark_changed();
+    }
+
+    pub fn management_capabilities(&self) -> Vec<String> {
+        let mut capabilities = self.factory.management_capabilities();
+        #[cfg(feature = "management")]
+        if self.local_config_catalog.supports_revision() {
+            capabilities.push("management:persisted-config-revision-v1".into());
+        }
+        capabilities.sort();
+        capabilities.dedup();
+        capabilities
+    }
+
     pub fn config_dir(&self) -> Option<&PathBuf> {
         self.config_dir.as_ref()
     }
@@ -499,7 +529,15 @@ where
             .collect::<Vec<_>>();
         self.delete_network_instances(removed).await
     }
+}
 
+// Read-only access does not construct an instance and therefore does not
+// depend on the factory's creation context or construction error type.
+impl<F, H> InstanceManager<F>
+where
+    F: InstanceFactory<Instance = CoreInstance<H>>,
+    H: CoreInstanceHost,
+{
     pub fn instance_ids(&self) -> Vec<Uuid> {
         self.list()
             .into_iter()
@@ -685,6 +723,8 @@ mod instance_state_change_tests {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "management"))]
+    use crate::config::toml::ConfigLoader as _;
     use std::{
         sync::{
             Arc,

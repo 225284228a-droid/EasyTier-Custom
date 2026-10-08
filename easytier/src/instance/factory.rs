@@ -151,6 +151,22 @@ impl InstanceFactory for NativeInstanceFactory {
     type CreateContext = ();
     type Error = anyhow::Error;
 
+    fn management_capabilities(&self) -> Vec<String> {
+        #[cfg(feature = "management")]
+        {
+            let host = if self.compact_runtime {
+                super::config::compact_runtime_core_host_config()
+            } else {
+                super::config::runtime_core_host_config()
+            };
+            easytier_core::management::management_capabilities_for_host(&host)
+        }
+        #[cfg(not(feature = "management"))]
+        {
+            Vec::new()
+        }
+    }
+
     fn create(
         &self,
         config: TomlConfig,

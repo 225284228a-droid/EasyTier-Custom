@@ -64,6 +64,7 @@ thiserror.workspace = true
 tracing.workspace = true
 strum = { workspace = true, features = ["derive"] }
 toml.workspace = true
+toml_edit = { version = "0.25", optional = true }
 tokio = { workspace = true, features = [
     "rt",
     "time",
@@ -124,7 +125,7 @@ extended-services = [
     "proxy-cidr-monitor",
 ]
 web-client = ["management-rpc", "config-write"]
-management = ["web-client", "extended-services", "rich-config-errors", "easytier-proto/json-rpc"]
+management = ["web-client", "extended-services", "rich-config-errors", "easytier-proto/json-rpc", "dep:toml_edit"]
 management-rpc = ["easytier-proto/api"]
 proxy-cidr-monitor = []
 rich-config-errors = ["dep:ariadne"]

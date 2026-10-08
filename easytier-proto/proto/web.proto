@@ -26,6 +26,10 @@ message HeartbeatRequest {
   bool support_heartbeat_policy = 11;
   // Custom-only capability outside the upstream field range.
   bool support_local_configs = 50001;
+  bool support_local_config_revision = 50002;
+  string local_config_catalog_epoch = 50003;
+  uint64 local_config_catalog_generation = 50004;
+  repeated string runtime_capabilities = 50005;
 }
 
 message HeartbeatResponse {

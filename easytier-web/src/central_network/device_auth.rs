@@ -148,12 +148,15 @@ mod tests {
         let (manager, url) = start_config_server(db.clone()).await;
         let client = WebClient::new(
             runtime_udp_tunnel_dialer(url),
-            "local-owner",
-            machine_id,
-            "local-device",
-            false,
+            easytier::web_client::WebClientOptions {
+                token: "local-owner".into(),
+                machine_id,
+                hostname: "local-device".into(),
+                secure_mode: false,
+            },
             core.clone(),
             None,
+            Arc::new(easytier_core::management::InstanceStateStore::in_memory()),
         );
         wait_until(|| async {
             db.get_device((user_id, machine_id))
@@ -217,12 +220,15 @@ mod tests {
         let (manager, url) = start_config_server(db.clone()).await;
         let _blocked_client = WebClient::new(
             runtime_udp_tunnel_dialer(url),
-            "local-owner",
-            machine_id,
-            "blocked-device",
-            false,
+            easytier::web_client::WebClientOptions {
+                token: "local-owner".into(),
+                machine_id,
+                hostname: "blocked-device".into(),
+                secure_mode: false,
+            },
             Arc::new(native_instance_manager()),
             None,
+            Arc::new(easytier_core::management::InstanceStateStore::in_memory()),
         );
         // A second validation comes from another reconnect after the first
         // rejected session fails its next heartbeat.
