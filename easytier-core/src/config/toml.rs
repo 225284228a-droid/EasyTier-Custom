@@ -29,7 +29,7 @@ pub(crate) fn default_instance_name() -> String {
 pub fn gen_default_flags() -> Flags {
     #[allow(deprecated)]
     Flags {
-        default_protocol: "udp".to_string(),
+        default_protocol: super::DEFAULT_PROTOCOL.to_string(),
         dev_name: "".to_string(),
         enable_encryption: true,
         enable_ipv6: true,
@@ -768,7 +768,11 @@ impl TomlConfig {
             _ => serde_json::Map::new(),
         };
         merged_hashmap.extend(flags_hashmap);
-        serde_json::from_value(serde_json::Value::Object(merged_hashmap))
+        let mut flags: Flags = serde_json::from_value(serde_json::Value::Object(merged_hashmap))?;
+        if flags.default_protocol.trim().is_empty() {
+            flags.default_protocol = super::DEFAULT_PROTOCOL.to_owned();
+        }
+        Ok(flags)
     }
 }
 
@@ -1234,6 +1238,38 @@ pub type TomlConfigLoader = TomlConfig;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn omitted_or_empty_protocol_uses_tcp_and_keeps_cleanup_disabled() {
+        for input in [
+            "",
+            "[flags]",
+            "[flags]\ndefault_protocol = \"\"",
+            "[flags]\ndefault_protocol = \"  \"",
+        ] {
+            let config = TomlConfigLoader::new_from_str(input).unwrap();
+            assert_eq!(config.get_flags().default_protocol, "tcp", "{input}");
+            assert!(!config.get_flags().close_redundant_conns_when_disguised);
+        }
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn explicit_protocol_survives_config_dump_and_reload() {
+        for protocol in ["udp", "tcp"] {
+            let config = TomlConfigLoader::new_from_str(&format!(
+                "[flags]\ndefault_protocol = \"{protocol}\"\n"
+            ))
+            .unwrap();
+            assert_eq!(config.get_flags().default_protocol, protocol);
+            let dumped = config.dump();
+            if protocol == "udp" {
+                assert!(dumped.contains("default_protocol = \"udp\""));
+            }
+            let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+            assert_eq!(reloaded.get_flags().default_protocol, protocol);
+        }
+    }
 
     #[test]
     fn parse_error_preserves_source_and_location() {

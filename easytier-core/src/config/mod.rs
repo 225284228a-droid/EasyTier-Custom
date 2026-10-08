@@ -20,6 +20,8 @@ pub use encryption::EncryptionAlgorithm;
 
 use crate::proto::common::PeerFeatureFlag;
 
+pub(crate) const DEFAULT_PROTOCOL: &str = "tcp";
+
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
     "txt:stun.easytier.cn",
     "stun.miwifi.com",
@@ -349,11 +351,20 @@ impl P2pPolicyFlags {
     }
 }
 
+fn normalized_p2p_protocol(default_protocol: &str) -> String {
+    let protocol = default_protocol.trim().to_ascii_lowercase();
+    if protocol.is_empty() {
+        DEFAULT_PROTOCOL.to_owned()
+    } else {
+        protocol
+    }
+}
+
 /// Disguised transport matching the configured P2P transport preference.
 /// This ranks existing HTTP3/WSS paths; it does not upgrade raw UDP/TCP paths.
 /// Other transports keep both disguised options at equal priority.
 pub(crate) fn preferred_disguised_scheme(default_protocol: &str) -> Option<&'static str> {
-    match default_protocol.trim().to_ascii_lowercase().as_str() {
+    match normalized_p2p_protocol(default_protocol).as_str() {
         "udp" => Some("http3"),
         "tcp" => Some("wss"),
         _ => None,
@@ -363,7 +374,7 @@ pub(crate) fn preferred_disguised_scheme(default_protocol: &str) -> Option<&'sta
 /// Common ordering for automatic connection attempts and existing peer paths.
 /// A lower rank is preferred; resolution prefixes on tunnel types are ignored.
 pub(crate) fn p2p_protocol_rank(default_protocol: &str, use_disguise: bool, scheme: &str) -> u8 {
-    let default_protocol = default_protocol.trim().to_ascii_lowercase();
+    let default_protocol = normalized_p2p_protocol(default_protocol);
     let scheme = scheme.rsplit('-').next().unwrap_or(scheme);
     if use_disguise && matches!(scheme, "wss" | "http3") {
         return match preferred_disguised_scheme(&default_protocol) {
@@ -392,7 +403,8 @@ mod preferred_disguised_scheme_tests {
         assert_eq!(preferred_disguised_scheme("UDP"), Some("http3"));
         assert_eq!(preferred_disguised_scheme(" tcp "), Some("wss"));
         assert_eq!(preferred_disguised_scheme("wg"), None);
-        assert_eq!(preferred_disguised_scheme(""), None);
+        assert_eq!(preferred_disguised_scheme(""), Some("wss"));
+        assert_eq!(preferred_disguised_scheme("  "), Some("wss"));
     }
 
     #[test]
@@ -402,6 +414,8 @@ mod preferred_disguised_scheme_tests {
             ("tcp", true, ["wss", "http3", "tcp", "udp"]),
             ("udp", false, ["udp", "tcp", "wss", "http3"]),
             ("tcp", false, ["tcp", "udp", "wss", "http3"]),
+            ("", false, ["tcp", "udp", "wss", "http3"]),
+            ("  ", true, ["wss", "http3", "tcp", "udp"]),
         ] {
             let ranks = order.map(|scheme| p2p_protocol_rank(preferred, use_disguise, scheme));
             assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]));

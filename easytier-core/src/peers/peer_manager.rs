@@ -222,6 +222,7 @@ impl PortablePeerManagerConfig {
         let policy = &runtime.core.peer_policy;
         let traffic = &runtime.core.traffic;
         let flags = FlagsInConfig {
+            default_protocol: crate::config::DEFAULT_PROTOCOL.to_owned(),
             enable_encryption: policy.encryption_required,
             encryption_algorithm: crate::config::EncryptionAlgorithm::default().to_string(),
             disable_p2p: !policy.p2p_enabled,
@@ -3694,6 +3695,15 @@ mod tests {
     ) -> anyhow::Result<PeerManagerCore> {
         let (packet_tx, _packet_rx) = host_packet_channel();
         PeerManagerCore::new_portable_for_test(config, packet_tx)
+    }
+
+    #[test]
+    fn portable_config_prefers_tcp_without_changing_other_zero_flags() {
+        let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
+        assert_eq!(config.snapshot.flags.default_protocol, "tcp");
+        assert_eq!(config.foreign_context_default_flags.default_protocol, "tcp");
+        assert_eq!(config.snapshot.flags.mtu, 0);
+        assert!(!config.snapshot.flags.close_redundant_conns_when_disguised);
     }
 
     #[tokio::test]

@@ -133,7 +133,7 @@ pub struct DirectConnectorOptions {
 impl Default for DirectConnectorOptions {
     fn default() -> Self {
         Self {
-            default_protocol: "udp".to_owned(),
+            default_protocol: crate::config::DEFAULT_PROTOCOL.to_owned(),
             enable_ipv6: true,
             allow_public_server: false,
             bind_device: false,
@@ -566,9 +566,7 @@ where
                 .await;
             }
             let _ = tasks.join_all().await;
-            if self
-                .connection_satisfies_policy(dst_peer_id, peer_policy_opt.as_ref())
-            {
+            if self.connection_satisfies_policy(dst_peer_id, peer_policy_opt.as_ref()) {
                 return Ok(());
             }
         }
@@ -599,11 +597,9 @@ where
         let is_udp = protocol_uses_udp(listener.scheme());
         let local_listeners = self.running_listeners.local_listener_urls();
         let should_deny_target = |target: &SocketAddr| {
-            let port_is_protected = port_in_use_by_local_listener(
-                &local_listeners,
-                target.port(),
-                is_udp,
-            ) || (!is_udp && self.protected_tcp_ports.contains(target.port()));
+            let port_is_protected =
+                port_in_use_by_local_listener(&local_listeners, target.port(), is_udp)
+                    || (!is_udp && self.protected_tcp_ports.contains(target.port()));
             port_is_protected && self.host.is_local_ip(&target.ip())
         };
 
@@ -636,9 +632,7 @@ where
                     candidates.into_iter().map(IpAddr::V6).collect()
                 }
             },
-            IpAddr::V6(ip)
-                if self.peer_manager.is_easytier_managed_ipv6(&ip).await =>
-            {
+            IpAddr::V6(ip) if self.peer_manager.is_easytier_managed_ipv6(&ip).await => {
                 tracing::debug!(?listener, "skip managed IPv6 direct target");
                 return;
             }
@@ -862,7 +856,8 @@ where
             .remote_send_udp_hole_punch_packet(dst_peer_id, vec![connector_addr], None, url)
             .await;
         let remote_addr = resolve_literal_url(url, IpVersion::V4)?;
-        let connected = udp::connect_with_socket(self.host.clone(), socket, remote_addr, url).await?;
+        let connected =
+            udp::connect_with_socket(self.host.clone(), socket, remote_addr, url).await?;
         let tunnel = self
             .protocol
             .upgrade_client(ConnectedTransport::Udp(connected), url.clone())
@@ -905,7 +900,8 @@ where
                 .await;
         }
         let remote_addr = resolve_literal_url(url, IpVersion::V6)?;
-        let connected = udp::connect_with_socket(self.host.clone(), socket, remote_addr, url).await?;
+        let connected =
+            udp::connect_with_socket(self.host.clone(), socket, remote_addr, url).await?;
         let tunnel = self
             .protocol
             .upgrade_client(ConnectedTransport::Udp(connected), url.clone())
@@ -1505,13 +1501,21 @@ mod tests {
         };
 
         for (default_protocol, strict_disguise, expected_ports) in [
-            ("tcp", false, [11010, 11011]),
-            ("udp", false, [11011, 11010]),
-            ("tcp", true, [11012, 11014]),
-            ("udp", true, [11014, 11012]),
+            (Some("tcp"), false, [11010, 11011]),
+            (Some("udp"), false, [11011, 11010]),
+            (Some("tcp"), true, [11012, 11014]),
+            (Some("udp"), true, [11014, 11012]),
+            (None, false, [11010, 11011]),
+            (None, true, [11012, 11014]),
+            (Some(""), false, [11010, 11011]),
+            (Some("  "), true, [11012, 11014]),
         ] {
             let mut config = PortablePeerManagerConfig::new(PeerRuntimeSnapshot::default().runtime);
-            config.snapshot.flags.default_protocol = default_protocol.to_owned();
+            let mut options = DirectConnectorOptions::default();
+            if let Some(default_protocol) = default_protocol {
+                config.snapshot.flags.default_protocol = default_protocol.to_owned();
+                options.default_protocol = default_protocol.to_owned();
+            }
             config.snapshot.flags.only_use_wss_http3_for_hole_punching = strict_disguise;
             let (packet_tx, _packet_rx) = host_packet_channel();
             let peers =
@@ -1525,10 +1529,7 @@ mod tests {
                 Arc::new(NoLocalListeners),
                 Arc::new(TestDns),
                 host.clone(),
-                DirectConnectorOptions {
-                    default_protocol: default_protocol.to_owned(),
-                    ..Default::default()
-                },
+                options,
             );
             let listeners = [
                 "udp://192.168.1.2:11011",
@@ -1561,7 +1562,7 @@ mod tests {
             assert_eq!(
                 *host.attempts.lock().unwrap(),
                 expected,
-                "{default_protocol}, strict_disguise={strict_disguise}"
+                "{default_protocol:?}, strict_disguise={strict_disguise}"
             );
             peers.clear_resources().await;
         }
@@ -1640,24 +1641,13 @@ mod tests {
     fn p2p_transport_preference_orders_disguised_listeners() {
         // "udp" prefers HTTP3 over WSS, and both disguised transports win over
         // the raw ones. Lower rank means tried earlier.
-        assert!(
-            p2p_protocol_rank("udp", true, "http3")
-                < p2p_protocol_rank("udp", true, "wss")
-        );
-        assert!(
-            p2p_protocol_rank("udp", true, "wss") < p2p_protocol_rank("udp", true, "udp")
-        );
+        assert!(p2p_protocol_rank("udp", true, "http3") < p2p_protocol_rank("udp", true, "wss"));
+        assert!(p2p_protocol_rank("udp", true, "wss") < p2p_protocol_rank("udp", true, "udp"));
         // "tcp" prefers WSS over HTTP3.
-        assert!(
-            p2p_protocol_rank("tcp", true, "wss") < p2p_protocol_rank("tcp", true, "http3")
-        );
+        assert!(p2p_protocol_rank("tcp", true, "wss") < p2p_protocol_rank("tcp", true, "http3"));
         // Raw transports keep following the configured preference.
-        assert!(
-            p2p_protocol_rank("udp", false, "udp") < p2p_protocol_rank("udp", false, "tcp")
-        );
-        assert!(
-            p2p_protocol_rank("tcp", false, "tcp") < p2p_protocol_rank("tcp", false, "udp")
-        );
+        assert!(p2p_protocol_rank("udp", false, "udp") < p2p_protocol_rank("udp", false, "tcp"));
+        assert!(p2p_protocol_rank("tcp", false, "tcp") < p2p_protocol_rank("tcp", false, "udp"));
     }
 
     #[test]
@@ -1708,9 +1698,7 @@ mod tests {
         assert!(!transport.supports_interface_bind());
         assert!(!transport.is_udp());
         // Byte-stream endpoints are not direct-dialable and must be rejected.
-        assert!(
-            direct_transport_from_url(&"ring://local".parse().unwrap()).is_err()
-        );
+        assert!(direct_transport_from_url(&"ring://local".parse().unwrap()).is_err());
     }
 
     #[test]
@@ -1748,9 +1736,7 @@ mod tests {
             lazy_p2p: true,
             ..Default::default()
         };
-        let allowed = |has_recent_traffic: bool,
-                       has_direct_connection: bool,
-                       satisfied: bool| {
+        let allowed = |has_recent_traffic: bool, has_direct_connection: bool, satisfied: bool| {
             should_collect_direct_peer(
                 false,
                 false,

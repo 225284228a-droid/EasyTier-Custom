@@ -553,7 +553,10 @@ pub(crate) trait PeerContext: Send + Sync {
     }
 
     fn flags(&self) -> FlagsInConfig {
-        FlagsInConfig::default()
+        FlagsInConfig {
+            default_protocol: crate::config::DEFAULT_PROTOCOL.to_owned(),
+            ..Default::default()
+        }
     }
 
     fn packet_policy(&self) -> PeerPacketPolicy {
@@ -1040,6 +1043,22 @@ pub(crate) mod tests {
     use crate::config::runtime::{CoreRuntimeConfig, CoreRuntimeConfigStore};
     use crate::peers::test_support::{NoopPeerContext, PeerContextTestExt};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn default_context_prefers_tcp_without_changing_other_zero_flags() {
+        struct DefaultContext;
+
+        impl PeerContext for DefaultContext {
+            fn network_identity(&self) -> NetworkIdentity {
+                NetworkIdentity::default()
+            }
+        }
+
+        let flags = DefaultContext.flags();
+        assert_eq!(flags.default_protocol, "tcp");
+        assert_eq!(flags.mtu, 0);
+        assert!(!flags.close_redundant_conns_when_disguised);
+    }
 
     impl PeerRuntimeSnapshot {
         pub(crate) fn set_acl_groups(&mut self, acl: Option<&Acl>) {

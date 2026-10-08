@@ -274,7 +274,10 @@ impl Default for PeerRuntimeSnapshot {
                 secure_mode: None,
                 host_routing: HostRoutingPolicy::default(),
             },
-            FlagsInConfig::default(),
+            FlagsInConfig {
+                default_protocol: super::DEFAULT_PROTOCOL.to_owned(),
+                ..Default::default()
+            },
         )
     }
 }
@@ -288,6 +291,14 @@ pub struct PeerGroupIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_snapshot_prefers_tcp_without_changing_other_zero_flags() {
+        let snapshot = PeerRuntimeSnapshot::default();
+        assert_eq!(snapshot.flags.default_protocol, "tcp");
+        assert_eq!(snapshot.flags.mtu, 0);
+        assert!(!snapshot.flags.close_redundant_conns_when_disguised);
+    }
 
     #[test]
     fn whitelist_rules_are_built_in_core() {
