@@ -1355,6 +1355,218 @@ mod tests {
     use super::*;
     use crate::config::P2pPolicyFlags;
 
+    #[derive(Default)]
+    struct FailingDialHost {
+        attempts: Arc<std::sync::Mutex<Vec<u16>>>,
+    }
+
+    struct FailingUdpSocket(Arc<std::sync::Mutex<Vec<u16>>>);
+
+    #[async_trait]
+    impl VirtualUdpSocket for FailingUdpSocket {
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            Ok("127.0.0.1:20000".parse().unwrap())
+        }
+
+        async fn send_to(&self, _data: &[u8], addr: SocketAddr) -> std::io::Result<usize> {
+            self.0.lock().unwrap().push(addr.port());
+            Err(std::io::Error::other("injected UDP dial failure"))
+        }
+
+        async fn recv_from(&self, _buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            std::future::pending().await
+        }
+    }
+
+    #[async_trait]
+    impl crate::socket::tcp::VirtualTcpSocketFactory for FailingDialHost {
+        type Socket = crate::host::testkit::TestTcpSocket;
+
+        async fn connect_tcp(
+            &self,
+            options: crate::socket::tcp::TcpConnectOptions,
+        ) -> anyhow::Result<Self::Socket> {
+            self.attempts
+                .lock()
+                .unwrap()
+                .push(options.remote_addr.port());
+            anyhow::bail!("injected TCP dial failure");
+        }
+    }
+
+    #[async_trait]
+    impl VirtualUdpSocketFactory for FailingDialHost {
+        type Socket = FailingUdpSocket;
+
+        async fn bind_udp(&self, _options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
+            Ok(Arc::new(FailingUdpSocket(self.attempts.clone())))
+        }
+    }
+
+    #[async_trait]
+    impl ManualConnectorHost for FailingDialHost {
+        async fn local_addr_for_remote(
+            &self,
+            _remote_addr: SocketAddr,
+            _context: SocketContext,
+        ) -> anyhow::Result<SocketAddr> {
+            Ok("127.0.0.1:0".parse().unwrap())
+        }
+
+        async fn interface_addrs(
+            &self,
+        ) -> anyhow::Result<super::super::manual::ManualInterfaceAddrs> {
+            Ok(super::super::manual::ManualInterfaceAddrs {
+                interface_ipv4s: Vec::new(),
+                interface_ipv6s: Vec::new(),
+                public_ipv6: None,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl DirectConnectorHost for FailingDialHost {
+        async fn collect_ip_addrs(&self, _context: &SocketContext) -> GetIpListResponse {
+            GetIpListResponse::default()
+        }
+
+        fn mapped_listeners(&self) -> Vec<Url> {
+            Vec::new()
+        }
+
+        fn is_local_ip(&self, _ip: &IpAddr) -> bool {
+            false
+        }
+
+        async fn preferred_ipv6_source(
+            &self,
+            _ip: Ipv6Addr,
+            _context: SocketContext,
+        ) -> Option<PreferredIpv6Source> {
+            None
+        }
+    }
+
+    #[async_trait]
+    impl StunInfoProvider for FailingDialHost {
+        fn get_stun_info(&self) -> crate::proto::common::StunInfo {
+            Default::default()
+        }
+
+        async fn get_udp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            panic!("private direct targets must not request STUN mappings")
+        }
+
+        async fn get_tcp_port_mapping(&self, _port: u16) -> anyhow::Result<SocketAddr> {
+            panic!("private direct targets must not request STUN mappings")
+        }
+
+        fn update_stun_info(&self) {}
+    }
+
+    #[async_trait]
+    impl StunSocketMapper<FailingUdpSocket> for FailingDialHost {
+        async fn get_udp_port_mapping_with_socket(
+            &self,
+            _socket: Arc<FailingUdpSocket>,
+        ) -> anyhow::Result<SocketAddr> {
+            panic!("private direct targets must not request STUN mappings")
+        }
+    }
+
+    #[async_trait]
+    impl ClientProtocolUpgrader<crate::host::testkit::TestTcpSocket> for FailingDialHost {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            matches!(scheme, "tcp" | "udp" | "wss" | "http3")
+        }
+
+        async fn upgrade_client(
+            &self,
+            _connected: ConnectedTransport<crate::host::testkit::TestTcpSocket>,
+            requested_url: Url,
+        ) -> anyhow::Result<Box<dyn Tunnel>> {
+            // HTTP3 opens a classified UDP session without a mux SYN, so its
+            // actual protocol dial begins here instead of at socket.send_to.
+            assert_eq!(requested_url.scheme(), "http3");
+            self.attempts
+                .lock()
+                .unwrap()
+                .push(requested_url.port().unwrap());
+            anyhow::bail!("injected HTTP3 dial failure");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn direct_connect_loop_dials_preferred_transport_before_failed_fallback() {
+        use crate::{
+            config::peers::PeerRuntimeSnapshot,
+            host::{packet::host_packet_channel, testkit::TestDns},
+            peers::peer_manager::PortablePeerManagerConfig,
+        };
+
+        for (default_protocol, strict_disguise, expected_ports) in [
+            ("tcp", false, [11010, 11011]),
+            ("udp", false, [11011, 11010]),
+            ("tcp", true, [11012, 11014]),
+            ("udp", true, [11014, 11012]),
+        ] {
+            let mut config = PortablePeerManagerConfig::new(PeerRuntimeSnapshot::default().runtime);
+            config.snapshot.flags.default_protocol = default_protocol.to_owned();
+            config.snapshot.flags.only_use_wss_http3_for_hole_punching = strict_disguise;
+            let (packet_tx, _packet_rx) = host_packet_channel();
+            let peers =
+                Arc::new(PeerManagerCore::new_portable_for_test(config, packet_tx).unwrap());
+            let host = Arc::new(FailingDialHost::default());
+            let manager = DirectConnectorManager::new_with_running_listeners(
+                peers.clone(),
+                host.clone(),
+                Arc::new(ProtectedTcpPortRegistry::default()),
+                host.clone(),
+                Arc::new(NoLocalListeners),
+                Arc::new(TestDns),
+                host.clone(),
+                DirectConnectorOptions {
+                    default_protocol: default_protocol.to_owned(),
+                    ..Default::default()
+                },
+            );
+            let listeners = [
+                "udp://192.168.1.2:11011",
+                "wss://192.168.1.2:11012",
+                "tcp://192.168.1.2:11010",
+                "tcp://192.168.1.2:11010",
+            ]
+            .into_iter()
+            .map(|url| url.parse().unwrap())
+            .collect();
+            manager
+                .data
+                .try_direct_connect_with_ip_list(
+                    2,
+                    GetIpListResponse {
+                        listeners,
+                        udp_http3_listeners: vec!["http3://192.168.1.2:11014".parse().unwrap()],
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            // Record real transport attempts, including all four failed
+            // retries, rather than reconstructing the sorted listener list.
+            let expected = expected_ports
+                .into_iter()
+                .flat_map(|port| std::iter::repeat_n(port, 4))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                *host.attempts.lock().unwrap(),
+                expected,
+                "{default_protocol}, strict_disguise={strict_disguise}"
+            );
+            peers.clear_resources().await;
+        }
+    }
+
     #[test]
     fn http3_aliases_preserve_mapped_ports_and_disappear_without_ready_udp() {
         let mapped = vec![

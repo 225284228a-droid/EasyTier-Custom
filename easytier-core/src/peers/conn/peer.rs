@@ -39,8 +39,8 @@ enum PeerConnCloseEvent {
 /// Shared revalidation for closing a redundant automatic connection in
 /// favor of `replacement`: the cleanup flag is on, the negotiated disguise
 /// preference has not drifted since the proposal, the replacement is alive
-/// and verified (its first ping answered), and the candidate is an
-/// automatic connection strictly worse than the replacement.
+/// and verified (its first ping answered), and the candidate is a
+/// direct or hole-punch connection strictly worse than the replacement.
 fn redundant_conn_eligible(
     conn: &PeerConn,
     replacement: &PeerConn,
@@ -616,7 +616,7 @@ mod tests {
         peers::{
             PeerConnectionOrigin,
             conn::{peer_conn::PeerConn, peer_session::PeerSessionStore},
-            context::ArcPeerContext,
+            context::{ArcPeerContext, NetworkIdentity, PeerContext},
             create_packet_recv_chan,
             test_support::NoopPeerContext,
         },
@@ -846,6 +846,159 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_punch_cleanup_requires_enabled_flag_and_a_verified_better_protocol() {
+        for cleanup_enabled in [false, true] {
+            for (default_protocol, use_disguise, fallback, origin, preferred) in [
+                (
+                    "udp",
+                    true,
+                    "wss",
+                    PeerConnectionOrigin::TcpHolePunch,
+                    "http3",
+                ),
+                (
+                    "tcp",
+                    true,
+                    "http3",
+                    PeerConnectionOrigin::UdpHolePunch,
+                    "wss",
+                ),
+                (
+                    "udp",
+                    false,
+                    "tcp",
+                    PeerConnectionOrigin::TcpHolePunch,
+                    "udp",
+                ),
+                (
+                    "tcp",
+                    false,
+                    "udp",
+                    PeerConnectionOrigin::UdpHolePunch,
+                    "tcp",
+                ),
+            ] {
+                let context: ArcPeerContext =
+                    Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                        default_protocol: default_protocol.to_owned(),
+                        prefer_wss_http3_for_p2p: use_disguise,
+                        close_redundant_conns_when_disguised: cleanup_enabled,
+                        ..Default::default()
+                    }));
+                let (local_tx, _local_rx) = create_packet_recv_chan();
+                let peer = Peer::new(2, local_tx, context.clone());
+                let (fallback_conn, mut fallback_remote) =
+                    handshaken_connection(context.clone(), fallback, origin, false).await;
+                let fallback_id = fallback_conn.get_conn_id();
+                let (fallback_tx, _fallback_rx) = create_packet_recv_chan();
+                fallback_remote.start_recv_loop(fallback_tx).await;
+                peer.add_peer_conn(fallback_conn).await.unwrap();
+                wait_until_latency_verified(&peer, &[fallback_id]).await;
+
+                let (preferred_conn, mut preferred_remote) =
+                    handshaken_connection(context, preferred, PeerConnectionOrigin::Direct, true)
+                        .await;
+                let preferred_id = preferred_conn.get_conn_id();
+                let (preferred_tx, mut preferred_rx) = create_packet_recv_chan();
+                // The lower-priority server survives before the replacement
+                // has responded to a ping, even with cleanup enabled.
+                peer.add_peer_conn(preferred_conn).await.unwrap();
+                peer.note_negotiated_disguise(use_disguise);
+                peer.reconcile_connections().await;
+                tokio::task::yield_now().await;
+                assert!(peer.conns.contains_key(&fallback_id));
+                preferred_remote.start_recv_loop(preferred_tx).await;
+                wait_until_latency_verified(&peer, &[preferred_id]).await;
+                peer.reconcile_connections().await;
+
+                if cleanup_enabled {
+                    tokio::time::timeout(Duration::from_secs(1), async {
+                        while peer.conns.contains_key(&fallback_id) {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                } else {
+                    tokio::task::yield_now().await;
+                    assert!(peer.conns.contains_key(&fallback_id));
+                }
+                assert!(peer.conns.contains_key(&preferred_id));
+                peer.send_msg(data_packet()).await.unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(1), preferred_rx.recv())
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+    }
+
+    struct MutableCleanupContext(std::sync::Mutex<FlagsInConfig>);
+
+    impl PeerContext for MutableCleanupContext {
+        fn network_identity(&self) -> NetworkIdentity {
+            NetworkIdentity::default()
+        }
+
+        fn flags(&self) -> FlagsInConfig {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_server_punch_cleanup_is_cancelled_when_the_flag_is_disabled() {
+        let context = Arc::new(MutableCleanupContext(std::sync::Mutex::new(
+            FlagsInConfig {
+                default_protocol: "udp".to_owned(),
+                close_redundant_conns_when_disguised: true,
+                ..Default::default()
+            },
+        )));
+        let (tx, _rx) = create_packet_recv_chan();
+        let peer = Peer::new(2, tx, context.clone());
+        let (fallback, mut fallback_remote) = handshaken_connection(
+            context.clone(),
+            "tcp",
+            PeerConnectionOrigin::TcpHolePunch,
+            false,
+        )
+        .await;
+        let fallback_id = fallback.get_conn_id();
+        let (fallback_tx, _fallback_rx) = create_packet_recv_chan();
+        fallback_remote.start_recv_loop(fallback_tx).await;
+        peer.add_peer_conn(fallback).await.unwrap();
+        let (preferred, mut preferred_remote) =
+            handshaken_connection(context.clone(), "udp", PeerConnectionOrigin::Direct, true).await;
+        let preferred_id = preferred.get_conn_id();
+        let (preferred_tx, _preferred_rx) = create_packet_recv_chan();
+        preferred_remote.start_recv_loop(preferred_tx).await;
+        peer.add_peer_conn(preferred).await.unwrap();
+        wait_until_latency_verified(&peer, &[fallback_id, preferred_id]).await;
+        peer.note_negotiated_disguise(false);
+
+        peer.close_event_sender
+            .try_send(PeerConnCloseEvent::Redundant {
+                conn_id: fallback_id,
+                replacement_id: preferred_id,
+                use_disguise: false,
+            })
+            .unwrap();
+        // No await between enqueue and this live config change: the close
+        // worker must re-read the flag before removing the server connection.
+        context
+            .0
+            .lock()
+            .unwrap()
+            .close_redundant_conns_when_disguised = false;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(peer.conns.contains_key(&fallback_id));
+        assert!(peer.conns.contains_key(&preferred_id));
+    }
+
+    #[tokio::test]
     async fn failed_unverified_preferred_path_keeps_working_fallback() {
         let context: ArcPeerContext =
             Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
@@ -856,8 +1009,13 @@ mod tests {
             }));
         let (local_tx, _local_rx) = create_packet_recv_chan();
         let peer = Peer::new(2, local_tx, context.clone());
-        let (fallback, mut fallback_remote) =
-            handshaken_connection(context.clone(), "wss", PeerConnectionOrigin::Direct, true).await;
+        let (fallback, mut fallback_remote) = handshaken_connection(
+            context.clone(),
+            "wss",
+            PeerConnectionOrigin::TcpHolePunch,
+            false,
+        )
+        .await;
         let fallback_id = fallback.get_conn_id();
         let (remote_tx, mut remote_rx) = create_packet_recv_chan();
         fallback_remote.start_recv_loop(remote_tx).await;
@@ -904,7 +1062,8 @@ mod tests {
                     .await;
             let udp_id = udp.get_conn_id();
             let (wss, mut wss_remote) =
-                handshaken_connection(context, "wss", PeerConnectionOrigin::Direct, true).await;
+                handshaken_connection(context, "wss", PeerConnectionOrigin::TcpHolePunch, false)
+                    .await;
             let wss_id = wss.get_conn_id();
             // Retiring a conn requires a verified replacement (first ping
             // answered), so let both conns run their ping round trips.
@@ -963,6 +1122,7 @@ mod tests {
             ("wss", PeerConnectionOrigin::Listener, false),
             ("udp", PeerConnectionOrigin::Direct, true),
             ("udp", PeerConnectionOrigin::Direct, true),
+            ("udp", PeerConnectionOrigin::UdpHolePunch, false),
             ("ring", PeerConnectionOrigin::Attached, true),
         ] {
             let (conn, mut remote) =

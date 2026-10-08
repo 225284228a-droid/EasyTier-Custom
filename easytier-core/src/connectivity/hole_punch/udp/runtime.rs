@@ -739,6 +739,100 @@ mod tests {
         assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 1);
     }
 
+    struct MockHttp3Acceptor(Option<Box<dyn Tunnel>>);
+
+    #[async_trait]
+    impl crate::connectivity::protocol::ServerTunnelAcceptor for MockHttp3Acceptor {
+        async fn accept(&mut self) -> anyhow::Result<Box<dyn Tunnel>> {
+            Ok(self.0.take().unwrap())
+        }
+    }
+
+    struct MockHttp3ServerProtocol {
+        use_acceptor: bool,
+        upgrades: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ServerProtocolUpgrader<()> for MockHttp3ServerProtocol {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            scheme == "http3"
+        }
+
+        async fn upgrade_tcp(
+            &self,
+            _socket: (),
+            _local_url: Url,
+        ) -> anyhow::Result<crate::connectivity::protocol::ServerProtocolUpgrade> {
+            anyhow::bail!("HTTP3 server must use UDP");
+        }
+
+        async fn upgrade_udp(
+            &self,
+            session: UdpSession,
+            local_url: Url,
+            admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
+        ) -> anyhow::Result<crate::connectivity::protocol::ServerProtocolUpgrade> {
+            use crate::connectivity::protocol::ServerProtocolUpgrade;
+
+            assert_eq!(session.kind(), UdpSessionKind::Quic);
+            assert_eq!(local_url.as_str(), "http3://127.0.0.1:1000");
+            assert!(admission.is_some());
+            self.upgrades.fetch_add(1, Ordering::Relaxed);
+            let (tunnel, _remote) = crate::tunnel::ring::create_ring_tunnel_pair();
+            Ok(if self.use_acceptor {
+                ServerProtocolUpgrade::Acceptor(Box::new(MockHttp3Acceptor(Some(tunnel))))
+            } else {
+                ServerProtocolUpgrade::Tunnel(tunnel)
+            })
+        }
+
+        async fn upgrade_byte_stream(
+            &self,
+            _socket: (),
+            _local_url: Url,
+            _remote_url: Option<Url>,
+        ) -> anyhow::Result<crate::connectivity::protocol::ServerProtocolUpgrade> {
+            anyhow::bail!("HTTP3 server must use UDP");
+        }
+    }
+
+    #[tokio::test]
+    async fn http3_server_upgrade_preserves_udp_hole_punch_origin_for_both_admission_paths() {
+        for use_acceptor in [false, true] {
+            let client_protocol = Arc::new(MockProtocol::default());
+            let server_protocol = Arc::new(MockHttp3ServerProtocol {
+                use_acceptor,
+                upgrades: AtomicUsize::new(0),
+            });
+            let tunnel_sink = Arc::new(MockTunnelSink::default());
+            let sink = ProtocolUdpHolePunchTransportSink::<(), _>::with_http3_server(
+                client_protocol.clone(),
+                server_protocol.clone(),
+                tunnel_sink.clone(),
+            );
+            let remote_addr = "203.0.113.1:2000".parse().unwrap();
+            let session = UdpSession::identity_standalone(
+                Arc::new(MockSocket {
+                    local_addr: "127.0.0.1:1000".parse().unwrap(),
+                }),
+                remote_addr,
+                UdpSessionKind::Quic,
+            )
+            .unwrap();
+            let (connected, url) =
+                UdpPunchSocket::new_with_scheme(session, remote_addr, (), "http3").into_connected();
+
+            sink.add_server_transport(connected, url).await.unwrap();
+
+            // MockTunnelSink asserts the official origin at actual admission.
+            assert_eq!(server_protocol.upgrades.load(Ordering::Relaxed), 1);
+            assert_eq!(client_protocol.upgrades.load(Ordering::Relaxed), 0);
+            assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 1);
+            assert_eq!(tunnel_sink.clients.load(Ordering::Relaxed), 0);
+        }
+    }
+
     #[tokio::test]
     async fn punched_socket_preserves_requested_and_resolved_addresses() {
         let local_addr = SocketAddr::from(([127, 0, 0, 1], 1000));

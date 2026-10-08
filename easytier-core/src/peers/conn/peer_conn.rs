@@ -469,11 +469,9 @@ impl PeerConn {
             PeerConnectionOrigin::Manual
             | PeerConnectionOrigin::Listener
             | PeerConnectionOrigin::Attached => false,
-            PeerConnectionOrigin::Direct => true,
-            PeerConnectionOrigin::TcpHolePunch | PeerConnectionOrigin::UdpHolePunch => {
-                // Keep the existing server protection while unifying origins.
-                self.is_client == Some(true)
-            }
+            PeerConnectionOrigin::Direct
+            | PeerConnectionOrigin::TcpHolePunch
+            | PeerConnectionOrigin::UdpHolePunch => true,
         }
     }
 
@@ -1607,7 +1605,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hole_punch_origins_preserve_client_and_server_cleanup_roles() {
+    async fn hole_punch_origins_allow_client_and_server_cleanup() {
         for origin in [
             PeerConnectionOrigin::TcpHolePunch,
             PeerConnectionOrigin::UdpHolePunch,
@@ -1638,7 +1636,7 @@ mod tests {
             server_result.unwrap();
 
             assert!(client.can_retire_as_redundant(), "{origin:?}");
-            assert!(!server.can_retire_as_redundant(), "{origin:?}");
+            assert!(server.can_retire_as_redundant(), "{origin:?}");
             assert!(client.is_hole_punched());
             assert!(server.is_hole_punched());
         }
