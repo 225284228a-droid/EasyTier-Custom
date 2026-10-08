@@ -101,6 +101,21 @@ fn direct_transport_from_url(url: &Url) -> anyhow::Result<IpTransport> {
         .ok_or_else(|| anyhow::anyhow!("unsupported direct transport scheme: {}", url.scheme()))
 }
 
+fn ordered_direct_listeners(
+    mut listeners: Vec<Url>,
+    default_protocol: &str,
+    use_disguise: bool,
+) -> impl Iterator<Item = Url> {
+    // Consume the ascending ranks from the front so the preferred protocol
+    // is attempted before any fallback.
+    listeners.sort_by_key(|listener| {
+        p2p_protocol_rank(default_protocol, use_disguise, listener.scheme())
+    });
+    let mut seen = HashSet::new();
+    listeners.retain(|listener| seen.insert(listener.clone()));
+    listeners.into_iter()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectConnectorOptions {
     pub default_protocol: String,
@@ -486,7 +501,7 @@ where
             );
             return Ok(());
         }
-        let mut available_listeners = ip_list
+        let available_listeners = ip_list
             .listeners
             .clone()
             .into_iter()
@@ -525,30 +540,20 @@ where
             anyhow::bail!("peer {dst_peer_id} has no valid listener");
         }
 
-        // Try listeners in protocol preference order: a lower p2p_protocol_rank
-        // is preferred (disguised transports first, then the default protocol).
-        available_listeners.sort_by_key(|listener| {
-            p2p_protocol_rank(
-                &self.options.default_protocol,
-                use_disguise_protocols,
-                listener.scheme(),
-            )
-        });
-        let mut seen = HashSet::new();
-        available_listeners.retain(|listener| seen.insert(listener.clone()));
-
-        while !available_listeners.is_empty() {
+        let mut available_listeners = ordered_direct_listeners(
+            available_listeners,
+            &self.options.default_protocol,
+            use_disguise_protocols,
+        )
+        .peekable();
+        while let Some(listener) = available_listeners.peek() {
             let mut tasks = JoinSet::new();
-            let current_scheme = available_listeners
-                .last()
-                .expect("non-empty listener list")
-                .scheme()
-                .to_owned();
+            let current_scheme = listener.scheme().to_owned();
             while available_listeners
-                .last()
+                .peek()
                 .is_some_and(|listener| listener.scheme() == current_scheme)
             {
-                let listener = available_listeners.pop().expect("listener should exist");
+                let listener = available_listeners.next().expect("listener should exist");
                 self.spawn_direct_connect_tasks(
                     dst_peer_id,
                     &ip_list,
@@ -1449,6 +1454,37 @@ mod tests {
             p2p_protocol_rank("wg", true, "wss"),
             p2p_protocol_rank("wg", true, "http3")
         );
+    }
+
+    #[test]
+    fn direct_listener_consumption_follows_protocol_preference() {
+        for (default_protocol, use_disguise, expected) in [
+            ("udp", true, vec!["http3", "wss", "udp", "udp", "tcp"]),
+            ("tcp", true, vec!["wss", "http3", "tcp", "udp", "udp"]),
+            ("udp", false, vec!["udp", "udp", "tcp"]),
+            ("tcp", false, vec!["tcp", "udp", "udp"]),
+        ] {
+            let listeners = [
+                "tcp://192.0.2.1:11010",
+                "http3://192.0.2.1:11014",
+                "udp://192.0.2.1:11010",
+                "wss://192.0.2.1:11012",
+                "udp://192.0.2.1:11011",
+                "udp://192.0.2.1:11010",
+            ]
+            .into_iter()
+            .map(|url| url.parse::<Url>().unwrap())
+            .filter(|url| use_disguise || matches!(url.scheme(), "tcp" | "udp"))
+            .collect();
+            let consumed = ordered_direct_listeners(listeners, default_protocol, use_disguise)
+                .map(|listener| listener.scheme().to_owned())
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                consumed, expected,
+                "{default_protocol}, disguise={use_disguise}"
+            );
+        }
     }
 
     #[test]
