@@ -412,7 +412,7 @@ async function setInput(wrapper: VueWrapper, selector: string, value: string) {
 }
 
 describe('Config.vue network config projection', () => {
-  it('shows passive disguise use and UDP for new and missing settings', async () => {
+  it('shows passive disguise use and TCP for new and missing settings', async () => {
     for (const legacy of [false, true]) {
       const config = DEFAULT_NETWORK_CONFIG()
       config.advanced_settings = true
@@ -423,7 +423,7 @@ describe('Config.vue network config projection', () => {
       const { wrapper } = mountConfig(config)
       await nextTick()
       expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('default')
-      expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('udp')
+      expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('tcp')
       wrapper.unmount()
     }
   })

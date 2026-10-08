@@ -16,22 +16,37 @@ const devices = ref<Utils.DeviceInfo[]>();
 const networks = ref<CentralNetworkSummary[]>();
 const loadError = ref(false);
 const refreshing = ref(false);
+let summaryGeneration = 0;
 
 const loadSummary = async () => {
     if (refreshing.value) return;
+    const api = props.api;
+    const scope = api.persistenceScope;
+    const generation = summaryGeneration;
+    const current = () => generation === summaryGeneration && api === props.api && scope === api.persistenceScope;
     refreshing.value = true;
     const results = await Promise.allSettled([
-        props.api.get_summary().then(value => { summary.value = value; }),
-        props.api.list_machines().then(value => { devices.value = value.map(Utils.buildDeviceInfo); }),
-        ...(props.centralEnabled ? [props.api.list_networks().then(value => { networks.value = value; })] : []),
+        api.get_summary().then(value => { if (current()) summary.value = value; }),
+        api.list_machines().then(value => { if (current()) devices.value = value.map(Utils.buildDeviceInfo); }),
+        ...(props.centralEnabled ? [api.list_networks().then(value => { if (current()) networks.value = value; })] : []),
     ]);
+    if (!current()) return;
     loadError.value = results.some(result => result.status === 'rejected');
     refreshing.value = false;
 };
 watch(() => props.centralEnabled, () => loadSummary());
+watch([() => props.api, () => props.api.persistenceScope], () => {
+    summaryGeneration++;
+    refreshing.value = false;
+    summary.value = undefined;
+    devices.value = undefined;
+    networks.value = undefined;
+    loadError.value = false;
+    void loadSummary();
+});
 const periodFunc = new Utils.PeriodicTask(loadSummary, 2000);
 onMounted(() => periodFunc.start());
-onUnmounted(() => periodFunc.stop());
+onUnmounted(() => { summaryGeneration++; periodFunc.stop(); });
 
 const devicePreview = computed(() => [...(devices.value ?? [])]
     .sort((a, b) => ((a.alias || a.hostname) ?? '').localeCompare((b.alias || b.hostname) ?? '')).slice(0, 5));

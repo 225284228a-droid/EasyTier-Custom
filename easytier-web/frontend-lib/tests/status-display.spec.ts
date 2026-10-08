@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { estimatedBandwidth, latencyMs, lossRate, udpNatTypeName } from '../src/modules/statusDisplay'
+import { estimatedBandwidth, estimatedConnectionBandwidth, totalTraffic, latencyMs, lossRate, udpNatTypeName } from '../src/modules/statusDisplay'
 import { ipv4ToString, ipv6ToString } from '../src/modules/utils'
 
 function peerRoutePair(conns: any[]) {
@@ -118,6 +118,21 @@ describe('status display helpers', () => {
     expect(estimatedBandwidth(peerRoutePair([{
       stats: { estimated_tx_bps: 0, estimated_rx_bps: '0' },
     }]))).toEqual({ upload: '--', download: '--' })
+  })
+
+  it('reuses valid directional estimates and traffic on central-node connection rows', () => {
+    const conn = { is_closed: false, stats: { bandwidth_estimate_version: '1', estimated_tx_bps: '1000000', tx_bytes: '2048', rx_bytes: '1024' } } as any
+    expect(estimatedConnectionBandwidth(conn)).toEqual({ upload: '1.00 Mbit/s', download: '--' })
+    expect(totalTraffic(peerRoutePair([conn]))).toEqual({ upload: '2.0 KiB', download: '1.0 KiB' })
+    expect(estimatedConnectionBandwidth({ ...conn, is_closed: true })).toEqual({ upload: '--', download: '--' })
+    expect(totalTraffic(peerRoutePair([]))).toEqual({ upload: '--', download: '--' })
+  })
+
+  it('accepts a string default connection ID from a JSON bridge', () => {
+    const info = peerRoutePair([{ conn_id: 'fallback', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 5_000_000 } },
+      { conn_id: 'default', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 1_000_000 } }])
+    info.peer.default_conn_id = 'default'
+    expect(estimatedBandwidth(info).upload).toBe('1.00 Mbit/s')
   })
 
   it('ignores the retired traffic estimator and unknown algorithm versions', () => {

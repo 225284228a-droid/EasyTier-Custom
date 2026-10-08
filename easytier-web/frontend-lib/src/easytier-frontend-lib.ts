@@ -1,7 +1,7 @@
 import './style.css'
 
 import type { App } from 'vue';
-import { Config, Status, ConfigEditDialog, RemoteManagement, UrlListInput } from "./components";
+import { Config, Status, ConfigEditDialog, RemoteManagement, UrlListInput, LocalConfigBatch } from "./components";
 import Aura from '@primeuix/themes/aura';
 import PrimeVue from 'primevue/config'
 
@@ -16,6 +16,9 @@ import { vTooltip } from 'floating-vue';
 
 import * as Api from './modules/api';
 import * as Utils from './modules/utils';
+import * as Capabilities from './modules/capabilities';
+import * as LocalConfigs from './modules/localConfigPatch';
+import * as StatusDisplay from './modules/statusDisplay';
 
 export interface FrontendLibOptions {
     /// Skip the built-in PrimeVue theme config so the host app can install
@@ -71,4 +74,4 @@ const EasytierFrontendLib: { install: (app: App, options?: FrontendLibOptions) =
 
 export default EasytierFrontendLib;
 
-export { Config, ConfigEditDialog, RemoteManagement, Status, UrlListInput, I18nUtils, NetworkTypes, Api, Utils };
+export { Config, ConfigEditDialog, RemoteManagement, Status, UrlListInput, LocalConfigBatch, I18nUtils, NetworkTypes, Api, Utils, Capabilities, LocalConfigs, StatusDisplay };

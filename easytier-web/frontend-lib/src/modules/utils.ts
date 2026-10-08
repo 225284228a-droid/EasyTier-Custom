@@ -55,10 +55,11 @@ export interface UUID {
     part4?: number;
 }
 
-export function UuidToStr(uuid: UUID | null | undefined): string {
+export function UuidToStr(uuid: UUID | string | null | undefined): string {
     if (!uuid) {
         return '';
     }
+    if (typeof uuid === 'string') return uuid;
     return uint32ToUuid(uuid.part1 ?? 0, uuid.part2 ?? 0, uuid.part3 ?? 0, uuid.part4 ?? 0);
 }
 
@@ -103,6 +104,8 @@ export interface DeviceInfo {
     networks?: Array<DeviceNetwork>;
     online?: boolean;
     last_seen?: string;
+    runtime_capabilities?: string[];
+    support_local_config_revision?: boolean;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
@@ -123,6 +126,8 @@ export function buildDeviceInfo(device: any): DeviceInfo {
         networks: device.networks ?? [],
         online: device.online ?? Boolean(device.info),
         last_seen: device.last_seen,
+        runtime_capabilities: device.info?.runtime_capabilities ?? device.runtime_capabilities ?? [],
+        support_local_config_revision: device.info?.support_local_config_revision ?? device.support_local_config_revision ?? false,
     };
 
     return dev_info;

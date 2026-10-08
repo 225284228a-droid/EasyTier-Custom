@@ -99,9 +99,10 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
     }
     const client = api.value
     const requestGeneration = generation
+    const requestScope = persistenceKey.value
     const controller = new AbortController()
     const isCurrent = () => mounted && requestGeneration === generation && client === api.value
-      && !controller.signal.aborted
+      && requestScope === persistenceKey.value && !controller.signal.aborted
     requestController = controller
     const requestOptions = { timeout: 8_000, signal: controller.signal }
     clearTimeout(timer)
@@ -187,8 +188,8 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
         updateWarning()
       }
     } finally {
-      if (requestController === controller)
-        requestController = undefined
+      if (requestController !== controller) return
+      requestController = undefined
       loading.value = false
       manualRefreshing.value = false
       if (mounted && api.value)
@@ -196,14 +197,18 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
     }
   }
 
-  watch(() => api.value, () => {
+  watch([api, persistenceKey], () => {
     generation++
     requestController?.abort()
+    requestController = undefined
+    loading.value = false
+    manualRefreshing.value = false
     clearTimeout(timer)
     clearTimeout(warningTimer)
     clearExpiryTimer()
     availability.clear(performance.now())
     authorizedDevices = []
+    archive?.clear()
     archive = persistenceKey.value ? new PersistentTopologyArchive(persistenceKey.value) : undefined
     lastFreshMachines.clear()
     snapshotCache.clear()
@@ -211,7 +216,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
     machines.value = []
     topology.value = buildTopology([], [])
     error.value = ''
-    if (mounted && !loading.value)
+    if (mounted)
       void loadTopology()
   })
 

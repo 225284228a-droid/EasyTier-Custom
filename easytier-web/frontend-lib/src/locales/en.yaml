@@ -262,7 +262,7 @@ p2p_disguise_mode_help: By default, do not initiate disguised P2P, but accept pe
 p2p_prefer_protocol: P2P Preferred Protocol
 p2p_prefer_protocol_tcp: Prefer TCP (WSS if available)
 p2p_prefer_protocol_udp: Prefer UDP (HTTP3 if available)
-p2p_prefer_protocol_help: Defaults to UDP. When disguise is negotiated, UDP prefers HTTP3 and TCP prefers WSS; otherwise the corresponding ordinary protocol is preferred. Nodes with HTTP3 support also accept HTTP3 on configured UDP listener ports, so automatic P2P needs no extra HTTP3 listener. Hole punching uses temporary listener ports. Existing fallback connections do not stop attempts to establish the preferred protocol.
+p2p_prefer_protocol_help: Defaults to TCP. When disguise is negotiated, UDP prefers HTTP3 and TCP prefers WSS; otherwise the corresponding ordinary protocol is preferred. Nodes with HTTP3 support also accept HTTP3 on configured UDP listener ports, so automatic P2P needs no extra HTTP3 listener. Hole punching uses temporary listener ports. Existing fallback connections do not stop attempts to establish the preferred protocol.
 
 close_redundant_conns_when_disguised: Close Redundant Connections on Preferred Transport
 close_redundant_conns_when_disguised_help: Once the preferred connection is usable, close lower-priority automatic P2P connections to the same peer. With UDP preferred, HTTP3 can replace WSS when disguise is negotiated; ordinary UDP can replace WSS when disguise is not initiated. Manual connections, ordinary inbound connections, and equally ranked connections are kept. Off by default.
@@ -374,6 +374,48 @@ event:
   UdpBroadcastRelayStartResult: UDP Broadcast Relay Start Result
 
 web:
+  local_configs:
+    title: Local configurations
+    description: Read local configurations from online devices and save selected fields individually. Offline snapshots are viewable and are never queued for delivery. Save and apply updates running instances; disabled instances require an explicit enable action.
+    save_apply: Save and apply
+    persist_only: Save only
+    select: Select
+    device: Device
+    state: State
+    actions: Actions
+    online: Online
+    offline: Offline
+    stale: Stale snapshot
+    ready: Editable
+    protected: Protected
+    invalid: Invalid configuration
+    missing: Missing file
+    identity_conflict: Conflicting instance ID
+    running: Running
+    stopped: Stopped
+    disabled: Disabled
+    pending_apply: Pending apply
+    empty: No local configuration snapshots available
+    edit_selected: Edit {count} selected configurations
+    editing: Editing {count} configurations
+    reread: Reread revisions
+    dirty_preserved: Refresh keeps unsaved edits. After a conflict, reread revisions, review your edits, and save again.
+    fields: Save only checked changed fields
+    no_changes: No fields changed
+    unavailable: This configuration cannot be written now. Check device connectivity, permissions, and its latest snapshot.
+    unsupported_fields: 'Unsupported fields skipped on this device: {fields}'
+    success: Success
+    partial: Partial success
+    failed: Failed
+    conflict: Configuration changed; reread its revision
+    not_found: Configuration not found
+    apply_failed: Saved; apply failed
+    unsupported: This management feature is unsupported
+    unknown: Save outcome unknown; reread to confirm
+    enable: Enable
+    disable: Disable
+    delete: Delete
+    confirm_delete: Confirm delete
   console:
     theme_mode: Theme (light / dark / system)
     location: "Location"
@@ -795,12 +837,12 @@ mode:
 config-server:
   title: Config Server
   address: Config Server Address
-  address_placeholder: "e.g.: udp://127.0.0.1:22020/admin, udp://backup.example.com:22020/admin"
+  address_placeholder: "e.g.: tcp://127.0.0.1:22020/admin, tcp://backup.example.com:22020/admin"
   description: |
     Config server address, allowed formats:
-    Full URL: udp://127.0.0.1:22020/admin
+    Full URL: tcp://127.0.0.1:22020/admin
     Username only: admin (uses official server)
-    Multiple addresses: separate them with commas, e.g. udp://a:22020/admin, udp://b:22020/admin; all config servers are connected concurrently
+    Multiple addresses: separate them with commas, e.g. tcp://a:22020/admin, tcp://b:22020/admin; all config servers are connected concurrently
     Leave blank: Don't connect to a config server
   connection_status: Connection Status
   connected: ": Connected"

@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Button, Column, ConfirmDialog, DataTable, Dialog, Drawer, InputSwitch, InputText, Message, ProgressSpinner, ScrollPanel, Select, SelectButton, Skeleton, Tab, TabList, TabPanel, TabPanels, Tabs, Tag, useConfirm, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import { Config, NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
+import { Config, NetworkTypes, UrlListInput, Utils, StatusDisplay } from 'easytier-frontend-lib';
 import AclPolicyTab from './AclPolicyTab.vue';
 import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
 
@@ -385,6 +385,7 @@ const configSaving = ref(false);
 const configLoaded = ref(false);
 const configMember = ref<CentralNetworkMember | null>(null);
 const configForm = ref<NetworkTypes.NetworkConfig>(NetworkTypes.DEFAULT_NETWORK_CONFIG());
+const configCapabilities = ref<string[]>([]);
 const configBaseline = ref<{ network_name: string; network_secret: string }>({ network_name: '', network_secret: '' });
 let configRequest = 0;
 
@@ -397,8 +398,12 @@ const loadMemberConfigForm = async (member: CentralNetworkMember) => {
     configMember.value = member;
     configLoaded.value = false;
     try {
-        const raw = await api?.get_member_config(networkId.value, member.device_id);
+        const [raw, capabilities] = await Promise.all([
+            api?.get_member_config(networkId.value, member.device_id),
+            api?.runtime_capabilities(member.device_id),
+        ]);
         if (request !== configRequest) return;
+        configCapabilities.value = capabilities ?? [];
         configForm.value = NetworkTypes.normalizeNetworkConfig(raw);
         configBaseline.value = {
             network_name: String(configForm.value.network_name ?? ''),
@@ -574,6 +579,16 @@ const closeNodeDetail = () => {
 const routeCostLabel = (cost: number) => cost === 1 ? 'p2p' : `relay(${cost})`;
 const latencyLabel = (latencyMs: number | undefined) =>
     latencyMs == null ? '—' : `${Math.round(latencyMs)} ms`;
+const peerTelemetry = (peer: NodePeerInfo) => {
+    const info = { peer } as unknown as NetworkTypes.PeerRoutePair;
+    return { bandwidth: StatusDisplay.estimatedBandwidth(info), traffic: StatusDisplay.totalTraffic(info) };
+};
+const connectionBandwidth = (conn: NodePeerInfo['conns'][number]) =>
+    StatusDisplay.estimatedConnectionBandwidth(conn as unknown as NetworkTypes.PeerConnInfo);
+const connectionLatency = (conn: NodePeerInfo['conns'][number]) => {
+    const microseconds = StatusDisplay.numericValue(conn.stats?.latency_us);
+    return microseconds === undefined ? undefined : microseconds / 1000;
+};
 
 // One row per known peer: route facts (hostname / IP / hop cost) merged
 // with its direct connections' protocols and best latency. Peers seen only
@@ -581,7 +596,7 @@ const latencyLabel = (latencyMs: number | undefined) =>
 const nodePeerRows = computed(() => {
     const connsByPeer = new Map<number, NodePeerInfo>();
     (nodePeers.value ?? []).forEach(peer => connsByPeer.set(peer.peer_id, peer));
-    const rows = new Map<number, { key: string; peer_id: number; hostname: string; ipv4: string; cost: number; protocols: string[]; latencyMs?: number }>();
+    const rows = new Map<number, { key: string; peer_id: number; hostname: string; ipv4: string; cost: number; protocols: string[]; latencyMs?: number; bandwidth: { upload: string; download: string }; traffic: { upload: string; download: string } }>();
     (nodeRoutes.value ?? []).forEach(route => {
         const addr = route.ipv4_addr;
         const ip = ipv4ToString(addr);
@@ -593,13 +608,16 @@ const nodePeerRows = computed(() => {
             cost: route.cost,
             protocols: [],
             latencyMs: route.path_latency,
+            bandwidth: { upload: '--', download: '--' },
+            traffic: { upload: '--', download: '--' },
         });
     });
     connsByPeer.forEach((peer, peer_id) => {
         const conns = peer.conns ?? [];
         const protocols = [...new Set(conns.map(conn => conn.tunnel?.tunnel_type).filter((v): v is string => !!v))];
         const bestLatency = conns
-            .map(conn => conn.stats?.latency_us ? conn.stats.latency_us / 1000 : undefined)
+            .map(conn => StatusDisplay.numericValue(conn.stats?.latency_us))
+            .map(value => value === undefined ? undefined : value / 1000)
             .filter((v): v is number => v != null)
             .sort((a, b) => a - b)[0];
         const row = rows.get(peer_id) ?? {
@@ -610,7 +628,10 @@ const nodePeerRows = computed(() => {
             cost: 1,
             protocols: [],
             latencyMs: undefined,
+            bandwidth: { upload: '--', download: '--' },
+            traffic: { upload: '--', download: '--' },
         };
+        Object.assign(row, peerTelemetry(peer));
         row.protocols = protocols;
         if (bestLatency != null && (row.latencyMs == null || bestLatency < row.latencyMs)) {
             row.latencyMs = bestLatency;
@@ -1297,6 +1318,7 @@ const switchTab = async (tab: string) => {
                     <TabPanel value="advanced">
                         <div v-if="!configLoaded" class="flex justify-center py-6"><ProgressSpinner /></div>
                         <Config v-else v-model:cur-network="configForm" :config-invalid="false" :hide-secure-mode="true"
+                            :runtime-capabilities="configCapabilities"
                             :edit-vpn-portal-clients="true" />
                     </TabPanel>
                 </TabPanels>
@@ -1446,6 +1468,14 @@ const switchTab = async (tab: string) => {
                             <Column :header="t('web.network_detail.path_latency')"><template #body="{ data }">
                                 {{ latencyLabel(data.latencyMs) }}
                             </template></Column>
+                            <Column :header="t('total_traffic')"><template #body="{ data }">
+                                <div class="font-mono text-xs">{{ t('upload') }}: {{ data.traffic.upload }}</div>
+                                <div class="font-mono text-xs">{{ t('download') }}: {{ data.traffic.download }}</div>
+                            </template></Column>
+                            <Column :header="t('estimated_bandwidth')"><template #body="{ data }">
+                                <div class="font-mono text-xs">{{ t('upload') }}: {{ data.bandwidth.upload }}</div>
+                                <div class="font-mono text-xs">{{ t('download') }}: {{ data.bandwidth.download }}</div>
+                            </template></Column>
                             </DataTable>
                             <div class="node-drawer-mobile-peers">
                                 <div v-for="peer in nodePeerRows" :key="peer.key" class="node-drawer-mobile-peer">
@@ -1458,6 +1488,8 @@ const switchTab = async (tab: string) => {
                                         <span>{{ peer.protocols.join(' / ') || '—' }}</span>
                                         <span>{{ latencyLabel(peer.latencyMs) }}</span>
                                     </div>
+                                    <div class="font-mono text-xs mt-2">{{ t('total_traffic') }}: {{ t('upload') }} {{ peer.traffic.upload }} / {{ t('download') }} {{ peer.traffic.download }}</div>
+                                    <div class="font-mono text-xs">{{ t('estimated_bandwidth') }}: {{ t('upload') }} {{ peer.bandwidth.upload }} / {{ t('download') }} {{ peer.bandwidth.download }}</div>
                                 </div>
                             </div>
                             </template>
@@ -1496,13 +1528,18 @@ const switchTab = async (tab: string) => {
                                 <span class="font-mono text-xs">{{ data.conn.tunnel?.remote_addr?.url ?? '—' }}</span>
                             </template></Column>
                             <Column :header="t('web.network_detail.path_latency')"><template #body="{ data }">
-                                {{ data.conn.stats ? latencyLabel(data.conn.stats.latency_us ? data.conn.stats.latency_us / 1000 : undefined) : '—' }}
+                                {{ latencyLabel(connectionLatency(data.conn)) }}
                             </template></Column>
                             <Column :header="t('web.network_detail.loss_rate')"><template #body="{ data }">
                                 {{ ((data.conn.loss_rate ?? 0) * 100).toFixed(1) + '%' }}
                             </template></Column>
                             <Column :header="t('web.network_detail.traffic')"><template #body="{ data }">
-                                <span class="font-mono text-xs">↓{{ ((data.conn.stats?.rx_bytes ?? 0) / 1024).toFixed(0) }}K ↑{{ ((data.conn.stats?.tx_bytes ?? 0) / 1024).toFixed(0) }}K</span>
+                                <div class="font-mono text-xs">{{ t('upload') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.tx_bytes) }}</div>
+                                <div class="font-mono text-xs">{{ t('download') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.rx_bytes) }}</div>
+                            </template></Column>
+                            <Column :header="t('estimated_bandwidth')"><template #body="{ data }">
+                                <div class="font-mono text-xs">{{ t('upload') }}: {{ connectionBandwidth(data.conn).upload }}</div>
+                                <div class="font-mono text-xs">{{ t('download') }}: {{ connectionBandwidth(data.conn).download }}</div>
                             </template></Column>
                         </DataTable>
                         </details>

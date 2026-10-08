@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import { nextTick } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import RemoteManagement from '../src/components/RemoteManagement.vue'
 import {
   DEFAULT_NETWORK_CONFIG,
@@ -173,7 +173,7 @@ describe('RemoteManagement config save', () => {
     const api = {
       delete_network: vi.fn(),
       generate_config: vi.fn(),
-      get_network_config: vi.fn(),
+      get_network_config: vi.fn(async () => cloneConfig(config)),
       get_network_info: vi.fn(),
       get_vpn_portal_info: vi.fn(),
       get_network_metas: vi.fn(async () => ({ metas: {} })),
@@ -329,5 +329,100 @@ describe('RemoteManagement config save', () => {
     } finally {
       wrapper.unmount()
     }
+  })
+})
+
+const RevisionConfigForm = defineComponent({
+  name: 'Config', props: ['curNetwork'], emits: ['runNetwork'], template: '<div class="revision-config-form" />',
+})
+function revisionApi() {
+  const config = { ...DEFAULT_NETWORK_CONFIG(), instance_id: INSTANCE_ID, hostname: 'original-host' }
+  const entry = { entry_key: 'mesh.toml', inst_id: INSTANCE_ID, revision: 'revision-a', config,
+    config_permission: 0, enabled: false, running: false, persisted_raw_hash: 'a', pending_apply: false,
+    status: 'ready', network_name: 'mesh', source: 1 }
+  const snapshot = { catalog_epoch: 'boot-a', catalog_generation: 1, entries: [entry], online: true,
+    capabilities: ['management:persisted-config-revision-v1'] }
+  return {
+    entry, snapshot,
+    api: {
+      scope: 'connection-a',
+      list_network_instance_ids: vi.fn(async () => ({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [],
+        runtime_capabilities: snapshot.capabilities })),
+      get_network_metas: vi.fn(async () => ({ metas: { [INSTANCE_ID]: { network_name: 'mesh', config_permission: 0 } } })),
+      get_network_config: vi.fn(async () => config), get_network_info: vi.fn(), get_vpn_portal_info: vi.fn(),
+      observe_local_configs: vi.fn(async () => snapshot),
+      patch_local_config: vi.fn(async () => ({ status: 0, entry: { ...entry, revision: 'revision-b' } })),
+      save_config: vi.fn(), run_network: vi.fn(), delete_network: vi.fn(), update_network_instance_state: vi.fn(),
+      validate_config: vi.fn(), generate_config: vi.fn(), parse_config: vi.fn(),
+    },
+  }
+}
+async function openRevision(api: any, instanceId: string | undefined = INSTANCE_ID, newConfigGenerator?: () => NetworkConfig) {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  const wrapper = mount(RemoteManagement, { props: { api, instanceId, newConfigGenerator }, global: {
+    stubs: { Config: RevisionConfigForm, ConfigEditDialog: true, Status: true },
+  } })
+  await vi.advanceTimersByTimeAsync(1)
+  await flushPromises()
+  return wrapper
+}
+
+describe('revision-aware RemoteManagement forms', () => {
+  it('saves dirty fields only and keeps edits/revision on conflict and status refresh', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname = 'unsaved-host'
+      await nextTick()
+      api.patch_local_config.mockRejectedValue({ response: { status: 409, data: { message: 'revision conflict' } } })
+      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[0][0]).toMatchObject({ expected_revision: 'revision-a', field_mask: ['hostname'], config: { hostname: 'unsaved-host' }, apply_mode: 1 })
+      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [], runtime_capabilities: ['management:persisted-config-revision-v1'] })
+      await vi.advanceTimersByTimeAsync(1000)
+      entry.revision = 'remote-revision'
+      entry.config.hostname = 'remote-host'
+      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID], runtime_capabilities: ['management:persisted-config-revision-v1'] })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('unsaved-host')
+      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[1][0].expected_revision).toBe('revision-a')
+      expect(api.save_config).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('starts a disabled configuration only after patch success with the returned revision', async () => {
+    const { api } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      const form = wrapper.findComponent(RevisionConfigForm)
+      form.props('curNetwork').hostname = 'saved-host'
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[0][0].apply_mode).toBe(0)
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-b')
+      expect(api.save_config).not.toHaveBeenCalled()
+      expect(api.run_network).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('creates revision-capable configurations through an empty-revision CAS and leaves them disabled', async () => {
+    const { api, entry } = revisionApi()
+    api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [], runtime_capabilities: ['management:persisted-config-revision-v1'] })
+    api.patch_local_config.mockImplementation(async () => {
+      api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [], runtime_capabilities: ['management:persisted-config-revision-v1'] })
+      return { status: 0, entry }
+    })
+    const wrapper = await openRevision(api, undefined, () => entry.config)
+    try {
+      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[0][0]).toMatchObject({ expected_revision: '', apply_mode: 1 })
+      expect(api.patch_local_config.mock.calls[0][0].field_mask).not.toContain('instance_id')
+      expect(api.patch_local_config.mock.calls[0][0].config).not.toHaveProperty('enable_bbr')
+      expect(api.save_config).not.toHaveBeenCalled()
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
   })
 })

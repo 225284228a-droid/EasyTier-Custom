@@ -6,6 +6,12 @@ import * as Api from '../modules/api';
 import * as Utils from '../modules/utils';
 import * as NetworkTypes from '../types/network';
 import { type MenuItem } from 'primevue/menuitem';
+import { LOCAL_CONFIG_REVISION_CAPABILITY } from '../modules/capabilities';
+import {
+    buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, cloneEditableConfig, localConfigEditable,
+    localConfigInstanceId, LocalConfigApplyMode, patchStatusName,
+    type LocalConfigEntry, type LocalConfigPatchResult, type LocalConfigSnapshot,
+} from '../modules/localConfigPatch';
 
 const { t } = useI18n()
 
@@ -13,6 +19,7 @@ const props = defineProps<{
     api: Api.RemoteClient;
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
     pauseAutoRefresh?: boolean;
+    scopeKey?: string;
 }>();
 
 const instanceId = defineModel('instanceId', {
@@ -47,8 +54,32 @@ const curNetworkInfo = ref<NetworkTypes.NetworkInstance | null>(null);
 const showConfigEditDialog = ref(false);
 const isEditingNetwork = ref(false); // Flag to indicate if we're in network editing mode
 const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefined);
+const configBaseline = ref<NetworkTypes.NetworkConfig>();
+const editingEntry = ref<LocalConfigEntry>();
+const scope = computed(() => props.scopeKey ?? props.api.scope ?? '');
+let generation = 0;
+let configRequest = 0;
+const dirtyFields = computed(() => currentNetworkConfig.value && configBaseline.value
+    ? changedConfigFields(configBaseline.value, currentNetworkConfig.value) : []);
+const dirty = computed(() => dirtyFields.value.length > 0);
+const clearConfig = () => {
+    configRequest++;
+    currentNetworkConfig.value = undefined;
+    configBaseline.value = undefined;
+    editingEntry.value = undefined;
+};
+const requestContext = () => {
+    const api = props.api;
+    const requestScope = scope.value;
+    const requestGeneration = generation;
+    return { api, current: () => api === props.api && requestScope === scope.value && requestGeneration === generation };
+};
 
 const listInstanceIdResponse = ref<Api.ListNetworkInstanceIdResponse | undefined>(undefined);
+const runtimeCapabilities = computed(() => listInstanceIdResponse.value?.runtime_capabilities ?? []);
+const revisionSupported = computed(() => !!props.api.observe_local_configs && !!props.api.patch_local_config
+    && (listInstanceIdResponse.value?.support_local_config_revision === true
+        || runtimeCapabilities.value.includes(LOCAL_CONFIG_REVISION_CAPABILITY)));
 
 const isRunning = (instanceId: string) => {
     return (listInstanceIdResponse.value?.running_inst_ids ?? []).map(Utils.UuidToStr).includes(instanceId);
@@ -61,7 +92,9 @@ const loadNetworkMetas = async (instanceIds: string[]) => {
     if (missingIds.length === 0) return;
 
     try {
-        const response = await props.api.get_network_metas(missingIds);
+        const context = requestContext();
+        const response = await context.api.get_network_metas(missingIds);
+        if (!context.current()) return;
         Object.assign(networkMetaCache.value, response.metas ?? {});
     } catch (e) {
         console.error("Failed to load network metas", e);
@@ -137,11 +170,16 @@ const selectedInstanceId = computed({
     }
 });
 watch(selectedInstanceId, async (newVal, oldVal) => {
-    if (newVal?.uuid !== oldVal?.uuid && (networkIsDisabled.value || isEditingNetwork.value)) {
-        await loadCurrentNetworkConfig();
-    } else {
-        await loadCurrentNetworkInfo();
+    if (newVal?.uuid !== oldVal?.uuid) {
+        clearConfig();
+        isEditingNetwork.value = false;
+        showConfigEditDialog.value = false;
+        if (networkIsDisabled.value) {
+            try { await loadCurrentNetworkConfig(); }
+            catch (error) { toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 }); }
+        }
     }
+    await loadCurrentNetworkInfo();
 
     if (newVal?.uuid && !networkMetaCache.value[newVal.uuid]) {
         await loadNetworkMetas([newVal.uuid]);
@@ -157,7 +195,7 @@ const needShowNetworkStatus = computed(() => {
         // network is disabled
         return false;
     }
-    if (isEditingNetwork.value) {
+    if (isEditingNetwork.value || dirty.value) {
         // editing network
         return false;
     }
@@ -172,20 +210,83 @@ const networkIsDisabled = computed(() => {
 });
 watch(networkIsDisabled, async (newVal, oldVal) => {
     if (newVal !== oldVal && newVal === true) {
-        await loadCurrentNetworkConfig();
+        try { await loadCurrentNetworkConfig(); }
+        catch (error) { toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 }); }
     }
 });
 
-const loadCurrentNetworkConfig = async () => {
-    currentNetworkConfig.value = undefined;
-
-    if (!selectedInstanceId.value) {
-        return;
+const loadCurrentNetworkConfig = async (force = false) => {
+    if (dirty.value && !force) return;
+    const selected = selectedInstanceId.value?.uuid;
+    if (!selected) { clearConfig(); return; }
+    const context = requestContext();
+    const request = ++configRequest;
+    let config: NetworkTypes.NetworkConfig;
+    let entry: LocalConfigEntry | undefined;
+    if (revisionSupported.value) {
+        const snapshot = await context.api.observe_local_configs!();
+        entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
+        if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
+        config = entry.config!;
+    } else {
+        config = await context.api.get_network_config(selected);
     }
-
-    let ret = await props.api.get_network_config(selectedInstanceId.value!.uuid);
-    currentNetworkConfig.value = ret;
+    if (!context.current() || request !== configRequest || selectedInstanceId.value?.uuid !== selected) return;
+    currentNetworkConfig.value = cloneEditableConfig(config);
+    configBaseline.value = cloneEditableConfig(config);
+    editingEntry.value = entry ? { ...entry } : undefined;
 }
+
+const lifecycleRevision = async (api: Api.RemoteClient, selected: string): Promise<string | undefined> => {
+    if (!revisionSupported.value) return undefined;
+    const snapshot = await api.observe_local_configs!();
+    const entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
+    if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
+    return entry.revision;
+};
+
+const saveEditedConfig = async (config: NetworkTypes.NetworkConfig, mode: LocalConfigApplyMode): Promise<LocalConfigEntry | undefined> => {
+    if (!editingEntry.value) {
+        if (revisionSupported.value) throw new Error(t('web.local_configs.reread'));
+        return undefined;
+    }
+    if (!configBaseline.value) throw new Error(t('web.local_configs.reread'));
+    const fields = changedConfigFields(configBaseline.value, config);
+    if (!fields.length) return editingEntry.value;
+    const context = requestContext();
+    const selected = localConfigInstanceId(editingEntry.value);
+    const request = buildLocalConfigPatch(editingEntry.value, config, fields, runtimeCapabilities.value, mode);
+    const response = await context.api.patch_local_config!(request);
+    if (!context.current() || instanceId.value !== selected) throw new Error('Management connection changed');
+    const result = response as LocalConfigPatchResult;
+    const status = patchStatusName(result.status);
+    if (status !== 'success') throw new Error(result.message || t(`web.local_configs.${status}`));
+    const snapshot = 'entries' in response ? response as LocalConfigSnapshot : result.snapshot;
+    const entry = result.entry ?? snapshot?.entries.find(entry => localConfigInstanceId(entry) === selected);
+    if (!entry?.revision) throw new Error(t('web.local_configs.reread'));
+    editingEntry.value = { ...entry };
+    configBaseline.value = cloneEditableConfig(config);
+    return entry;
+};
+
+const rereadEditingRevision = async () => {
+    const selected = instanceId.value;
+    if (!selected || !revisionSupported.value) return;
+    const context = requestContext();
+    try {
+        const snapshot = await context.api.observe_local_configs!();
+        if (!context.current() || instanceId.value !== selected) return;
+        const entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
+        if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
+        editingEntry.value = { ...entry };
+        if (!dirty.value) {
+            currentNetworkConfig.value = cloneEditableConfig(entry.config!);
+            configBaseline.value = cloneEditableConfig(entry.config!);
+        }
+    } catch (error) {
+        if (context.current()) toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 });
+    }
+};
 
 const stopNetwork = async () => {
     if (!selectedInstanceId.value) {
@@ -193,7 +294,12 @@ const stopNetwork = async () => {
     }
 
     try {
-        await props.api.update_network_instance_state(selectedInstanceId.value.uuid, true);
+        const context = requestContext();
+        const selected = selectedInstanceId.value.uuid;
+        const revision = await lifecycleRevision(context.api, selected);
+        if (!context.current() || selectedInstanceId.value?.uuid !== selected) return;
+        if (revision) await context.api.update_network_instance_state(selected, true, revision);
+        else await context.api.update_network_instance_state(selected, true);
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.disable_network_failed", { error: formatError(e) }), life: 5000 });
@@ -204,6 +310,9 @@ const stopNetwork = async () => {
 
 const confirm = useConfirm();
 const confirmDeleteNetwork = (event: any) => {
+    const selected = instanceId.value;
+    if (!selected) return;
+    const context = requestContext();
     confirm.require({
         target: event.currentTarget,
         message: 'Do you want to delete this network?',
@@ -219,7 +328,11 @@ const confirmDeleteNetwork = (event: any) => {
         },
         accept: async () => {
             try {
-                await props.api.delete_network(instanceId.value!);
+                if (!context.current() || instanceId.value !== selected) return;
+                const revision = await lifecycleRevision(context.api, selected);
+                if (!context.current() || instanceId.value !== selected) return;
+                if (revision) await context.api.delete_network(selected, revision);
+                else await context.api.delete_network(selected);
             } catch (e: any) {
                 console.error(e);
                 toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.delete_network_failed", { error: formatError(e) }), life: 5000 });
@@ -245,12 +358,20 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
     }
 
     try {
-        if (networkIsDisabled.value) {
-            await props.api.save_config(cfg);
-            await props.api.update_network_instance_state(cfg.instance_id, false);
+        const context = requestContext();
+        const disabled = networkIsDisabled.value;
+        if (revisionSupported.value) {
+            const entry = await saveEditedConfig(cfg, LocalConfigApplyMode.SaveAndApply);
+            if (!context.current()) return;
+            if (disabled) await context.api.update_network_instance_state(cfg.instance_id, false, entry!.revision);
+        } else if (disabled) {
+            await context.api.save_config(cfg);
+            if (!context.current()) return;
+            await context.api.update_network_instance_state(cfg.instance_id, false);
         } else {
-            await props.api.run_network(cfg, currentNetworkControl.remoteSave.value);
+            await context.api.run_network(cfg, currentNetworkControl.remoteSave.value);
         }
+        if (!context.current()) return;
 
         delete networkMetaCache.value[cfg.instance_id];
         await loadNetworkMetas([cfg.instance_id]);
@@ -273,7 +394,8 @@ const saveNetworkConfig = async () => {
         return;
     }
     try {
-        await props.api.save_config(currentNetworkConfig.value);
+        if (revisionSupported.value) await saveEditedConfig(currentNetworkConfig.value, LocalConfigApplyMode.PersistOnly);
+        else await props.api.save_config(currentNetworkConfig.value);
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.save_config_failed", { error: formatError(e) }), life: 5000 });
@@ -291,7 +413,13 @@ const newNetwork = async () => {
     // console may reject the new config (e.g. read-only config dir or a name
     // collision with a running instance).
     try {
-        await props.api.save_config(newNetworkConfig);
+        const context = requestContext();
+        if (revisionSupported.value) {
+            const response = await context.api.patch_local_config!(buildLocalConfigCreatePatch(newNetworkConfig, runtimeCapabilities.value));
+            const result = response as LocalConfigPatchResult;
+            if (patchStatusName(result.status) !== 'success') throw new Error(result.message || t(`web.local_configs.${patchStatusName(result.status)}`));
+        } else await context.api.save_config(newNetworkConfig);
+        if (!context.current()) return;
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: t("web.common.error"), detail: t("web.device_management.create_network_failed", { error: formatError(e) }), life: 5000 });
@@ -304,10 +432,12 @@ const newNetwork = async () => {
         loadNetworkMetas([newNetworkConfig.instance_id]),
         loadNetworkInstanceIds(),
     ]);
+    await loadCurrentNetworkConfig(true);
 }
 
 const cancelEditNetwork = () => {
     isEditingNetwork.value = false;
+    clearConfig();
 }
 
 const editNetwork = async () => {
@@ -317,19 +447,19 @@ const editNetwork = async () => {
     }
 
     try {
-        let ret = await props.api.get_network_config(instanceId.value!);
-        console.debug("editNetwork", ret);
-        currentNetworkConfig.value = ret;
+        await loadCurrentNetworkConfig(true);
         isEditingNetwork.value = true; // Switch to editing mode instead
     } catch (e: any) {
         console.error(e);
-        toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to edit network, error: ' + JSON.stringify(e.response.data), life: 2000 });
+        toast.add({ severity: 'error', summary: t('web.common.error'), detail: formatError(e), life: 5000 });
         return;
     }
 }
 
 const loadNetworkInstanceIds = async () => {
-    listInstanceIdResponse.value = await props.api.list_network_instance_ids();
+    const context = requestContext();
+    const response = await context.api.list_network_instance_ids();
+    if (context.current()) listInstanceIdResponse.value = response;
 }
 
 const loadCurrentNetworkInfo = async () => {
@@ -346,8 +476,9 @@ const loadCurrentNetworkInfo = async () => {
         curNetworkInfo.value = null;
     }
 
-    let network_info = await props.api.get_network_info(selected);
-    if (selectedInstanceId.value?.uuid !== selected) {
+    const context = requestContext();
+    let network_info = await context.api.get_network_info(selected);
+    if (!context.current() || selectedInstanceId.value?.uuid !== selected) {
         return;
     }
 
@@ -494,6 +625,18 @@ let periodFunc = new Utils.PeriodicTask(async () => {
     }
 }, 1000);
 
+watch([() => props.api, scope], () => {
+    generation++;
+    clearConfig();
+    isEditingNetwork.value = false;
+    showConfigEditDialog.value = false;
+    curNetworkInfo.value = null;
+    listInstanceIdResponse.value = undefined;
+    networkMetaCache.value = {};
+    instanceList.value = [];
+    void loadNetworkInstanceIds().catch(console.debug);
+});
+
 onMounted(async () => {
     periodFunc.start();
 
@@ -502,6 +645,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+    generation++;
+    clearConfig();
     periodFunc.stop();
 
     // 移除屏幕尺寸监听
@@ -604,25 +749,30 @@ onUnmounted(() => {
         <!-- Main Content Area -->
         <div class="network-content">
             <!-- Network Creation Form -->
-            <div v-if="isEditingNetwork || networkIsDisabled" class="network-creation-container">
+            <div v-if="isEditingNetwork || networkIsDisabled || dirty" class="network-creation-container">
                 <div class="network-creation-header flex items-center gap-2 mb-3">
                     <i class="pi pi-plus-circle text-primary text-xl"></i>
                     <h2 class="text-xl font-medium">{{ t('web.device_management.edit_network') }}</h2>
                 </div>
 
                 <div class="w-full flex gap-2 flex-wrap justify-start mb-3">
+                    <Button v-if="editingEntry" @click="rereadEditingRevision" icon="pi pi-refresh"
+                        :label="t('web.local_configs.reread')" severity="secondary" outlined />
                     <Button @click="showConfigEditDialog = true" icon="pi pi-file-edit"
                         :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" />
-                    <Button v-if="networkIsDisabled" @click="saveNetworkConfig" :disabled="!currentNetworkConfig"
+                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig"
                         icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
                         severity="success" />
                 </div>
 
                 <Divider />
 
+                <Message v-if="dirty" severity="info" :closable="false" class="mb-3">{{ t('web.local_configs.dirty_preserved') }}</Message>
+
                 <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig"
+                    :runtime-capabilities="runtimeCapabilities"
                     @run-network="saveAndRunNewNetwork"></Config>
             </div>
 

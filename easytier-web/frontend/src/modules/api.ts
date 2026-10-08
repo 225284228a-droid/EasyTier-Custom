@@ -1,6 +1,8 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig, type AxiosRequestConfig } from 'axios';
-import { type Api, NetworkTypes, Utils } from 'easytier-frontend-lib';
+import { type Api, NetworkTypes, Utils, Capabilities, LocalConfigs } from 'easytier-frontend-lib';
 import { Md5 } from 'ts-md5';
+import { ref } from 'vue';
+import { apiPersistenceScope } from './persistenceScope';
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -39,6 +41,8 @@ export interface Summary {
 export interface ListNetworkInstanceIdResponse {
     running_inst_ids: Array<Utils.UUID>,
     disabled_inst_ids: Array<Utils.UUID>,
+    runtime_capabilities?: string[],
+    support_local_config_revision?: boolean,
 }
 
 export interface GenerateConfigRequest {
@@ -129,7 +133,8 @@ export interface NodeRouteInfo {
 export interface NodePeerConn {
     conn_id: string;
     tunnel?: { tunnel_type?: string, local_addr?: any, remote_addr?: any } | null;
-    stats?: { latency_us?: number, rx_bytes?: number, tx_bytes?: number } | null;
+    stats?: { latency_us?: number | string, rx_bytes?: number | string, tx_bytes?: number | string,
+        estimated_rx_bps?: number | string, estimated_tx_bps?: number | string, bandwidth_estimate_version?: number | string } | null;
     loss_rate?: number;
     is_closed?: boolean;
 }
@@ -137,6 +142,7 @@ export interface NodePeerConn {
 export interface NodePeerInfo {
     peer_id: number;
     conns: NodePeerConn[];
+    default_conn_id?: Utils.UUID | string;
 }
 
 export interface NodeAclRuleStat {
@@ -214,10 +220,19 @@ export interface AclPolicyInfo {
 export class ApiClient {
     private client: AxiosInstance;
     private authFailedCb: Function | undefined;
-    public readonly persistenceScope: string;
+    private account = ref<string>();
+    private apiRoot: string;
+    private machineCapabilities = new Map<string, string[]>();
+    public get persistenceScope(): string {
+        return apiPersistenceScope(this.apiRoot, this.account.value, typeof location === 'undefined' ? 'http://localhost/' : location.href);
+    }
+    public set_authenticated_account(username?: string): void {
+        if (this.account.value !== username) this.machineCapabilities.clear();
+        this.account.value = username;
+    }
 
     constructor(baseUrl: string, authFailedCb: Function | undefined = undefined) {
-        this.persistenceScope = baseUrl.replace(/\/+$/, '');
+        this.apiRoot = baseUrl.replace(/\/+$/, '') + '/api/v1';
         this.client = axios.create({
             baseURL: baseUrl.replace(/\/+$/, '') + '/api/v1',
             withCredentials: true, // 如果需要支持跨域携带cookie
@@ -241,9 +256,10 @@ export class ApiClient {
         }, (error: any) => {
             if (error.response) {
                 let response: AxiosResponse = error.response;
-                if (response.status == 401 && this.authFailedCb) {
+                if (response.status == 401) {
+                    this.set_authenticated_account();
                     console.error('Unauthorized:', response.data);
-                    this.authFailedCb();
+                    this.authFailedCb?.();
                 } else {
                     // 请求已发出，但是服务器响应的状态码不在2xx范围
                     console.error('Response Error:', error.response.data);
@@ -295,6 +311,7 @@ export class ApiClient {
 
     public async logout() {
         await this.client.get('/auth/logout');
+        this.set_authenticated_account();
         if (this.authFailedCb) {
             this.authFailedCb();
         }
@@ -319,7 +336,12 @@ export class ApiClient {
     }
 
     public async list_machines(options?: ReadRequestOptions): Promise<Array<any>> {
+        const scope = this.persistenceScope;
         const response = await this.client.get<any, Record<string, Array<any>>>('/machines', options);
+        for (const machine of scope === this.persistenceScope ? response.machines : []) {
+            const id = Utils.UuidToStr(machine.info?.machine_id ?? machine.machine_id);
+            this.machineCapabilities.set(id, machine.info?.runtime_capabilities ?? machine.runtime_capabilities ?? []);
+        }
         return response.machines;
     }
 
@@ -342,6 +364,7 @@ export class ApiClient {
 
     public async get_console_info(): Promise<ConsoleInfo> {
         const response = await this.client.get<any, ConsoleInfo>('/console-info');
+        this.set_authenticated_account(response.username);
         return response;
     }
 
@@ -449,7 +472,10 @@ export class ApiClient {
     }
 
     public async set_member_config(network_id: string, device_id: string, config: object): Promise<CentralNetworkMember> {
-        return await this.client.put(`/networks/${network_id}/members/${device_id}/config`, { config });
+        const scope = this.persistenceScope;
+        const capabilities = await this.runtime_capabilities(device_id);
+        if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
+        return await this.client.put(`/networks/${network_id}/members/${device_id}/config`, { config: Capabilities.filterConfigPayload(config, capabilities) });
     }
 
     public async clear_member_config(network_id: string, device_id: string): Promise<undefined> {
@@ -540,8 +566,50 @@ export class ApiClient {
         return this.client.defaults.baseURL + '/auth/oidc/login';
     }
 
+    public async runtime_capabilities(machine_id: string): Promise<string[]> {
+        const scope = this.persistenceScope;
+        if (!this.machineCapabilities.has(machine_id)) await this.list_machines({ timeout: 8_000 });
+        if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
+        return this.machineCapabilities.get(machine_id) ?? [];
+    }
+    public async list_local_configs(): Promise<LocalConfigs.LocalConfigMachine[]> {
+        const scope = this.persistenceScope;
+        const [snapshot, devices] = await Promise.allSettled([
+            this.client.get<any, { machines: LocalConfigs.LocalConfigMachine[] }>('/local-configs'),
+            this.list_machines({ timeout: 8_000 }),
+        ]);
+        if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
+        if (snapshot.status === 'rejected') throw snapshot.reason;
+        const names = new Map(devices.status === 'fulfilled' ? devices.value.map(device => [
+            Utils.UuidToStr(device.info?.machine_id ?? device.machine_id), device.alias || device.info?.hostname,
+        ]) : []);
+        return snapshot.value.machines.map(machine => ({ ...machine, hostname: machine.hostname || names.get(machine.machine_id) }));
+    }
+    public async observe_local_configs(machine_id: string): Promise<LocalConfigs.LocalConfigSnapshot> {
+        const scope = this.persistenceScope;
+        const response = await this.client.get<any, LocalConfigs.LocalConfigSnapshot>(`/machines/${machine_id}/local-configs`);
+        if (scope !== this.persistenceScope) throw new Error('Connection scope changed');
+        this.machineCapabilities.set(machine_id, response.capabilities ?? []);
+        return response;
+    }
+    public async patch_local_config(machine_id: string, request: LocalConfigs.LocalConfigPatchRequest): Promise<LocalConfigs.LocalConfigSnapshot | LocalConfigs.LocalConfigPatchResult> {
+        return await this.client.post(`/machines/${machine_id}/local-configs/patch`, { ...request, inst_id: Utils.StrToUuid(request.inst_id) });
+    }
+    public get_local_config_client(): LocalConfigs.LocalConfigClient {
+        const api = this;
+        const scope = api.persistenceScope;
+        const ensureScope = () => { if (scope !== api.persistenceScope) throw new Error('Connection scope changed'); };
+        return {
+            get scope() { return api.persistenceScope; },
+            list: () => api.list_local_configs(),
+            observe: id => api.observe_local_configs(id),
+            patch: (id, request) => { ensureScope(); return api.patch_local_config(id, request); },
+            setEnabled: async (id, instanceId, expected_revision, enabled) => { ensureScope(); return await api.client.post(`/machines/${id}/local-configs/${instanceId}/enabled`, { expected_revision, enabled }); },
+            remove: async (id, instanceId, expected_revision) => { ensureScope(); return await api.client.delete(`/machines/${id}/local-configs/${instanceId}`, { data: { expected_revision } }); },
+        };
+    }
     public get_remote_client(machine_id: string): Api.RemoteClient {
-        return new WebRemoteClient(machine_id, this.client);
+        return new WebRemoteClient(machine_id, this.client, () => this.runtime_capabilities(machine_id), () => this.persistenceScope);
     }
 }
 
@@ -549,19 +617,47 @@ class WebRemoteClient implements Api.RemoteClient {
     private machine_id: string;
     private client: AxiosInstance;
 
-    constructor(machine_id: string, client: AxiosInstance) {
+    private capabilities?: string[];
+    private readonly persistedConfigs = new Map<string, NetworkTypes.NetworkConfig>();
+    private knownInstanceIds = new Set<string>();
+    private readonly boundScope: string;
+    public get scope(): string { return this.scopeSource(); }
+    constructor(machine_id: string, client: AxiosInstance, private capabilitySource: () => Promise<string[]>, private scopeSource: () => string) {
         this.machine_id = machine_id;
         this.client = client;
+        this.boundScope = this.scope;
+    }
+    private ensureScope(): void {
+        if (this.boundScope !== this.scope) throw new Error('Connection scope changed');
+    }
+    private async config_payload(config: NetworkTypes.NetworkConfig, writing = false): Promise<NetworkTypes.NetworkConfig> {
+        const scope = this.scope;
+        this.ensureScope();
+        if (this.capabilities === undefined) await this.list_network_instance_ids();
+        if (writing && this.knownInstanceIds.has(config.instance_id) && !this.persistedConfigs.has(config.instance_id)) {
+            await this.get_network_config(config.instance_id);
+        }
+        if (scope !== this.scope) throw new Error('Connection scope changed');
+        if (writing) Capabilities.assertLegacyConfigPreservable(this.persistedConfigs.get(config.instance_id), this.capabilities ?? []);
+        return NetworkTypes.toBackendNetworkConfig(config, this.capabilities ?? []);
+    }
+    async observe_local_configs(): Promise<LocalConfigs.LocalConfigSnapshot> {
+        return await this.client.get(`/machines/${this.machine_id}/local-configs`);
+    }
+    async patch_local_config(request: LocalConfigs.LocalConfigPatchRequest): Promise<LocalConfigs.LocalConfigSnapshot | LocalConfigs.LocalConfigPatchResult> {
+        this.ensureScope();
+        Capabilities.assertPatchCapabilities(request.config, request.field_mask, this.capabilities ?? []);
+        return await this.client.post(`/machines/${this.machine_id}/local-configs/patch`, { ...request, inst_id: Utils.StrToUuid(request.inst_id) });
     }
     async validate_config(config: NetworkTypes.NetworkConfig): Promise<Api.ValidateConfigResponse> {
         const response = await this.client.post<NetworkTypes.NetworkConfig, ValidateConfigResponse>(`/machines/${this.machine_id}/validate-config`, {
-            config: NetworkTypes.toBackendNetworkConfig(config),
+            config: await this.config_payload(config),
         });
         return response;
     }
     async run_network(config: NetworkTypes.NetworkConfig, save: boolean): Promise<undefined> {
         await this.client.post<string>(`/machines/${this.machine_id}/networks`, {
-            config: NetworkTypes.toBackendNetworkConfig(config),
+            config: await this.config_payload(config, true),
             save: save
         });
     }
@@ -587,6 +683,7 @@ class WebRemoteClient implements Api.RemoteClient {
             : undefined;
     }
     async patch_vpn_portal_clients(inst_id: string, patches: Array<Record<string, any>>): Promise<undefined> {
+        this.ensureScope();
         await this.client.patch(
             `/machines/${this.machine_id}/networks/${inst_id}/vpn-portal-clients`,
             { patches },
@@ -608,30 +705,41 @@ class WebRemoteClient implements Api.RemoteClient {
         await this.patch_vpn_portal_clients(inst_id, [{ action: 'CLEAR' }]);
     }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
+        const scope = this.scope;
         const response = await this.client.get<any, ListNetworkInstanceIdResponse>('/machines/' + this.machine_id + '/networks');
-        return response;
+        const capabilities = response.runtime_capabilities ?? await this.capabilitySource();
+        if (scope !== this.scope) throw new Error('Connection scope changed');
+        this.capabilities = capabilities;
+        this.knownInstanceIds = new Set([...(response.running_inst_ids ?? []), ...(response.disabled_inst_ids ?? [])].map(id => typeof id === 'string' ? id : Utils.UuidToStr(id)));
+        return { ...response, runtime_capabilities: this.capabilities };
     }
-    async delete_network(inst_id: string): Promise<undefined> {
-        await this.client.delete<string>(`/machines/${this.machine_id}/networks/${inst_id}`);
+    async delete_network(inst_id: string, expectedRevision?: string): Promise<undefined> {
+        this.ensureScope();
+        await this.client.delete<string>(`/machines/${this.machine_id}/networks/${inst_id}`, { params: { expected_revision: expectedRevision } });
     }
-    async update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined> {
+    async update_network_instance_state(inst_id: string, disabled: boolean, expectedRevision?: string): Promise<undefined> {
+        this.ensureScope();
         await this.client.put<string>('/machines/' + this.machine_id + '/networks/' + inst_id, {
             disabled: disabled,
+            expected_revision: expectedRevision,
         });
     }
     async save_config(config: NetworkTypes.NetworkConfig): Promise<undefined> {
         await this.client.put(`/machines/${this.machine_id}/networks/config/${config.instance_id}`, {
-            config: NetworkTypes.toBackendNetworkConfig(config)
+            config: await this.config_payload(config, true)
         });
     }
     async get_network_config(inst_id: string): Promise<NetworkTypes.NetworkConfig> {
+        const scope = this.scope;
         const response = await this.client.get<any, NetworkTypes.NetworkConfig>('/machines/' + this.machine_id + '/networks/config/' + inst_id);
+        if (scope !== this.scope) throw new Error('Connection scope changed');
+        this.persistedConfigs.set(inst_id, structuredClone(response));
         return NetworkTypes.normalizeNetworkConfig(response);
     }
     async generate_config(config: NetworkTypes.NetworkConfig): Promise<Api.GenerateConfigResponse> {
         try {
             const response = await this.client.post<any, GenerateConfigResponse>('/generate-config', {
-                config: NetworkTypes.toBackendNetworkConfig(config)
+                config: await this.config_payload(config)
             });
             return response;
         } catch (error) {

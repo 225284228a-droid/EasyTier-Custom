@@ -1,5 +1,6 @@
 import { UUID } from './utils';
 import { NetworkConfig, NetworkInstanceRunningInfo, VpnPortalInfo } from '../types/network';
+import type { LocalConfigSnapshot, LocalConfigPatchRequest, LocalConfigPatchResult } from './localConfigPatch';
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -8,6 +9,8 @@ export interface ValidateConfigResponse {
 export interface ListNetworkInstanceIdResponse {
     running_inst_ids: Array<UUID>,
     disabled_inst_ids: Array<UUID>,
+    runtime_capabilities?: string[],
+    support_local_config_revision?: boolean,
 }
 
 export interface GenerateConfigResponse {
@@ -54,6 +57,9 @@ export interface GetNetworkMetasResponse {
 }
 
 export interface RemoteClient {
+    readonly scope?: string;
+    observe_local_configs?(): Promise<LocalConfigSnapshot>;
+    patch_local_config?(request: LocalConfigPatchRequest): Promise<LocalConfigPatchResult | LocalConfigSnapshot>;
     validate_config(config: NetworkConfig): Promise<ValidateConfigResponse>;
     run_network(config: NetworkConfig, save: boolean): Promise<undefined>;
     get_network_info(inst_id: string): Promise<NetworkInstanceRunningInfo | undefined>;
@@ -62,8 +68,8 @@ export interface RemoteClient {
     remove_vpn_portal_client(inst_id: string, name: string): Promise<undefined>;
     clear_vpn_portal_clients(inst_id: string): Promise<undefined>;
     list_network_instance_ids(): Promise<ListNetworkInstanceIdResponse>;
-    delete_network(inst_id: string): Promise<undefined>;
-    update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined>;
+    delete_network(inst_id: string, expectedRevision?: string): Promise<undefined>;
+    update_network_instance_state(inst_id: string, disabled: boolean, expectedRevision?: string): Promise<undefined>;
     save_config(config: NetworkConfig): Promise<undefined>;
     get_network_config(inst_id: string): Promise<NetworkConfig>;
     generate_config(config: NetworkConfig): Promise<GenerateConfigResponse>;

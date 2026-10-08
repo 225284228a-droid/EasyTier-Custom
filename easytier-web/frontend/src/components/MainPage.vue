@@ -168,6 +168,7 @@ type NavItem = {
 const workspaceNavigation = computed<NavItem[]>(() => [
     { key: 'dashboard', label: t('web.main.dashboard'), icon: 'pi pi-chart-pie', to: { name: 'dashboard' } },
     { key: 'deviceList', label: t('web.main.device_list'), icon: 'pi pi-server', to: { name: 'deviceList' } },
+    { key: 'localConfigs', label: t('web.local_configs.title'), icon: 'pi pi-file-edit', to: { name: 'localConfigs' } },
 ]);
 const networkNavigation = computed<NavItem[]>(() => [
     { key: 'networkList', label: t('web.main.network_list'), icon: 'pi pi-globe', to: { name: 'networkList' } },
@@ -332,7 +333,7 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
             </header>
             <main ref="mainContent" id="main-content" class="console-content" tabindex="-1">
                 <RouterView v-slot="{ Component }">
-                    <component :is="Component" :api="api" :central-enabled="centralEnabled" :key="route.name === 'networkDetail' ? String(route.params.networkId) : undefined" />
+                    <component :is="Component" :key="`${api.persistenceScope}:${route.fullPath}`" :api="api" :central-enabled="centralEnabled" />
                 </RouterView>
             </main>
         </div>

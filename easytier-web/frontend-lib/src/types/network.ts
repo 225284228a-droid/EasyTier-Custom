@@ -32,6 +32,7 @@ import {
   type SecureModeConfig,
 } from '../generated/proto/common'
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
+import { filterConfigPayload } from '../modules/capabilities'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
 export { VpnPortalClientState }
@@ -141,7 +142,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     only_use_wss_http3_for_hole_punching: false,
     prefer_wss_http3_for_p2p: false,
     disable_wss_http3_for_p2p: false,
-    p2p_prefer_protocol: 'udp',
+    p2p_prefer_protocol: 'tcp',
     close_redundant_conns_when_disguised: false,
     disable_upnp: false,
     enable_udp_broadcast_relay: false,
@@ -330,7 +331,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.prefer_wss_http3_for_p2p ??= false
   normalized.disable_wss_http3_for_p2p ??= false
   normalized.only_use_wss_http3_for_hole_punching ??= false
-  normalized.p2p_prefer_protocol ??= 'udp'
+  normalized.p2p_prefer_protocol ??= 'tcp'
   normalized.close_redundant_conns_when_disguised ??= false
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
@@ -352,7 +353,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   return normalized
 }
 
-export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
+export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: readonly string[]): NetworkConfig {
   const backend = NetworkConfigPb.fromJson(prepareNetworkConfigForProtoJson(config) as any, {
     ignoreUnknownFields: true,
   })
@@ -373,9 +374,10 @@ export function toBackendNetworkConfig(config: NetworkConfig): NetworkConfig {
     backend.secure_mode = { enabled: true, local_private_key: credentialSecret }
   }
 
-  return NetworkConfigPb.toJson(backend, {
+  const json = NetworkConfigPb.toJson(backend, {
     useProtoFieldName: true,
   }) as unknown as NetworkConfig
+  return capabilities === undefined ? json : filterConfigPayload(json, capabilities)
 }
 
 export function normalizeVpnPortalInfo(info: unknown): VpnPortalInfo {
@@ -482,7 +484,7 @@ export interface Route {
 export interface PeerInfo {
   peer_id: number
   conns: PeerConnInfo[]
-  default_conn_id?: CommonUuid
+  default_conn_id?: CommonUuid | string
 }
 
 export interface PeerConnInfo {

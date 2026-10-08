@@ -32,6 +32,8 @@ function defaultConnId(info: PeerRoutePair) {
   const defaultConn = info.peer?.default_conn_id
   if (!defaultConn)
     return undefined
+  if (typeof defaultConn === 'string')
+    return defaultConn === '00000000-0000-0000-0000-000000000000' ? undefined : defaultConn
 
   const part1 = defaultConn.part1 ?? 0
   const part2 = defaultConn.part2 ?? 0
@@ -131,6 +133,33 @@ export function estimatedBandwidth(info: PeerRoutePair): { upload: string, downl
     upload: upload === undefined ? '--' : formatBitRate(upload),
     download: download === undefined ? '--' : formatBitRate(download),
   }
+}
+
+export function estimatedConnectionBandwidth(conn: ReturnType<typeof peerConns>[number]) {
+  const upload = connectionBandwidth(conn, 'tx')
+  const download = connectionBandwidth(conn, 'rx')
+  return {
+    upload: upload === undefined ? '--' : formatBitRate(upload),
+    download: download === undefined ? '--' : formatBitRate(download),
+  }
+}
+
+export function trafficBytes(value: unknown): string {
+  let bytes = numericValue(value)
+  if (bytes === undefined || bytes < 0) return '--'
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB']
+  let unit = -1
+  do { bytes /= 1024; unit++ } while (bytes >= 1024 && unit < units.length - 1)
+  return `${bytes.toFixed(1)} ${units[unit]}`
+}
+
+export function totalTraffic(info: PeerRoutePair) {
+  const sum = (direction: 'tx_bytes' | 'rx_bytes') => {
+    const values = peerConns(info).map(conn => numericValue(conn.stats?.[direction])).filter((value): value is number => value !== undefined)
+    return values.length ? values.reduce((total, value) => total + value, 0) : undefined
+  }
+  return { upload: trafficBytes(sum('tx_bytes')), download: trafficBytes(sum('rx_bytes')) }
 }
 
 export function udpNatTypeName(stunInfo: StunInfo | undefined) {

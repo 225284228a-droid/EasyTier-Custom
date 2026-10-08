@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { Api, NetworkTypes } from 'easytier-frontend-lib'
-import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
+import { Api, NetworkTypes, LocalConfigs, Utils } from 'easytier-frontend-lib'
 import { type ConfigSource, normalizeConfigSource } from './config_source'
 import { readRemoteConfigs } from './remote_configs'
 
@@ -50,8 +49,8 @@ function parseStoredConfigs(raw: string | null): StoredGuiConfig[] {
   })
 }
 
-export async function parseNetworkConfig(cfg: NetworkConfig) {
-  return invoke<string>('parse_network_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
+export async function parseNetworkConfig(cfg: NetworkConfig, capabilities?: readonly string[]) {
+  return invoke<string>('parse_network_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg, capabilities) })
 }
 
 export async function generateNetworkConfig(tomlConfig: string) {
@@ -59,8 +58,8 @@ export async function generateNetworkConfig(tomlConfig: string) {
   return NetworkTypes.normalizeNetworkConfig(config)
 }
 
-export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
-  return invoke('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg), save })
+export async function runNetworkInstance(cfg: NetworkConfig, save: boolean, capabilities?: readonly string[]) {
+  return invoke('run_network_instance', { cfg: NetworkTypes.toBackendNetworkConfig(cfg, capabilities), save })
 }
 
 export async function collectNetworkInfo(instanceId: string) {
@@ -100,25 +99,41 @@ export async function listNetworkInstanceIds() {
   return await invoke<ListNetworkInstanceIdResponse>('list_network_instance_ids')
 }
 
-export async function deleteNetworkInstance(instanceId: string) {
-  return await invoke('remove_network_instance', { instanceId })
+export async function deleteNetworkInstance(instanceId: string, expectedRevision?: string) {
+  return await invoke('remove_network_instance', { instanceId, expectedRevision })
 }
 
-export async function updateNetworkConfigState(instanceId: string, disabled: boolean) {
-  return await invoke('update_network_config_state', { instanceId, disabled })
+export async function updateNetworkConfigState(instanceId: string, disabled: boolean, expectedRevision?: string) {
+  return await invoke('update_network_config_state', { instanceId, disabled, expectedRevision })
 }
 
-export async function saveNetworkConfig(cfg: NetworkConfig) {
-  return await invoke('save_network_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
+export async function saveNetworkConfig(cfg: NetworkConfig, capabilities?: readonly string[]) {
+  return await invoke('save_network_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg, capabilities) })
 }
 
-export async function validateConfig(cfg: NetworkConfig) {
-  return await invoke<ValidateConfigResponse>('validate_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg) })
+export async function validateConfig(cfg: NetworkConfig, capabilities?: readonly string[]) {
+  return await invoke<ValidateConfigResponse>('validate_config', { cfg: NetworkTypes.toBackendNetworkConfig(cfg, capabilities) })
 }
 
-export async function getConfig(instanceId: string) {
+export async function observeLocalConfigs() {
+  return invoke<Omit<LocalConfigs.LocalConfigSnapshot, 'online' | 'capabilities'>>('observe_local_configs')
+}
+
+export async function patchLocalConfig(request: LocalConfigs.LocalConfigPatchRequest) {
+  return invoke<LocalConfigs.LocalConfigPatchResult>('patch_local_config', { request: { ...request, inst_id: Utils.StrToUuid(request.inst_id) } })
+}
+
+export async function setLocalConfigEnabled(instanceId: string, expectedRevision: string, enabled: boolean) {
+  return invoke<void>('set_local_config_enabled', { instanceId, expectedRevision, enabled })
+}
+
+export async function removeLocalConfig(instanceId: string, expectedRevision: string) {
+  return invoke<void>('remove_local_config', { instanceId, expectedRevision })
+}
+
+export async function getConfig(instanceId: string, normalize = true) {
   const config = await invoke<NetworkConfig>('get_config', { instanceId })
-  return NetworkTypes.normalizeNetworkConfig(config)
+  return normalize ? NetworkTypes.normalizeNetworkConfig(config) : config
 }
 
 export async function sendConfigs(enabledNetworks: string[], migrationKey?: string) {
@@ -144,7 +159,7 @@ export async function syncConfigsFromCore(remoteRpcUrl?: string) {
 }
 
 export async function getNetworkMetas(instanceIds: string[]) {
-  return await invoke<GetNetworkMetasResponse>('get_network_metas', { instanceIds })
+  return await invoke<Api.GetNetworkMetasResponse>('get_network_metas', { instanceIds })
 }
 
 export async function initService(opts?: ServiceOptions) {

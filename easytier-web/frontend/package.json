@@ -27,13 +27,14 @@
     "vue-router": "4"
   },
   "devDependencies": {
-    "playwright": "1.61.0",
     "@primevue/auto-import-resolver": "4.3.9",
     "@types/d3-geo": "^3.1.1",
     "@types/node": "^22.8.6",
     "@types/three": "^0.186.0",
     "@vitejs/plugin-vue": "^5.1.4",
     "autoprefixer": "^10.4.20",
+    "playwright": "1.61.0",
+    "pngjs": "7.0.0",
     "postcss": "^8.4.47",
     "tailwindcss": "=3.4.17",
     "typescript": "~5.6.2",

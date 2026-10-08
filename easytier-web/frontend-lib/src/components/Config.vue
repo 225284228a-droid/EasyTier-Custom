@@ -14,6 +14,7 @@ import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
+import { configFieldSupported, HTTP3_CAPABILITY } from '../modules/capabilities'
 import { createVpnPortalConfig } from '../modules/vpnPortal'
 import type { VpnPortalClientConfig } from '../types/network'
 
@@ -27,6 +28,7 @@ const props = defineProps<{
   hideSecureMode?: boolean
   /// Central members save their clients through the configuration owner.
   editVpnPortalClients?: boolean
+  runtimeCapabilities?: readonly string[]
 }>()
 
 defineEmits(['runNetwork'])
@@ -82,7 +84,7 @@ const secureModeEnabled = computed({
 
 const { t } = useI18n()
 
-const protos: { [proto: string]: number } = {
+const allProtos: { [proto: string]: number } = {
   tcp: 11010,
   udp: 11010,
   wg: 11011,
@@ -98,9 +100,12 @@ const protos: { [proto: string]: number } = {
 }
 
 const listenerExcludedProtos = new Set(['http', 'https', 'txt', 'srv'])
-const listenerProtos: { [proto: string]: number } = Object.fromEntries(
-  Object.entries(protos).filter(([proto]) => !listenerExcludedProtos.has(proto))
-)
+const protos = computed(() => Object.fromEntries(Object.entries(allProtos).filter(([proto]) =>
+  proto !== 'http3' || props.runtimeCapabilities === undefined || props.runtimeCapabilities.includes(HTTP3_CAPABILITY))))
+const listenerProtos = computed(() => Object.fromEntries(
+  Object.entries(protos.value).filter(([proto]) => !listenerExcludedProtos.has(proto))))
+const extensionEditable = (field: string) => props.runtimeCapabilities === undefined || configFieldSupported(field, props.runtimeCapabilities)
+const disguiseEditable = computed(() => ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'].every(extensionEditable))
 
 const inetSuggestions = ref([''])
 
@@ -201,7 +206,7 @@ type P2pPreferProtocol = 'tcp' | 'udp'
 // "tcp" prefers WSS.
 const p2pPreferProtocol = computed<P2pPreferProtocol>({
   get() {
-    return (curNetwork.value.p2p_prefer_protocol ?? 'udp') === 'udp' ? 'udp' : 'tcp'
+    return (curNetwork.value.p2p_prefer_protocol ?? 'tcp') === 'udp' ? 'udp' : 'tcp'
   },
   set(value: P2pPreferProtocol) {
     curNetwork.value.p2p_prefer_protocol = value
@@ -442,7 +447,7 @@ function removeVpnPortalClient(index: number) {
                   <div class="flex flex-row flex-wrap">
 
                     <div class="basis-[20rem] flex items-center" v-for="flag in bool_flags">
-                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" />
+                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" :disabled="!extensionEditable(flag.field)" />
                       <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
                     </div>
@@ -465,7 +470,7 @@ function removeVpnPortalClient(index: number) {
                     <label for="p2p_prefer_protocol">{{ t('p2p_prefer_protocol') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_prefer_protocol_help')"></span>
                   </div>
-                  <SelectButton id="p2p_prefer_protocol" v-model="p2pPreferProtocol"
+                  <SelectButton id="p2p_prefer_protocol" v-model="p2pPreferProtocol" :disabled="!extensionEditable('p2p_prefer_protocol')"
                     :options="p2pPreferProtocolOptions" option-label="label" option-value="value" fluid />
                 </div>
 
@@ -474,7 +479,7 @@ function removeVpnPortalClient(index: number) {
                     <label for="p2p_disguise_mode">{{ t('p2p_disguise_mode') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_disguise_mode_help')"></span>
                   </div>
-                  <SelectButton id="p2p_disguise_mode" v-model="disguisedP2pMode"
+                  <SelectButton id="p2p_disguise_mode" v-model="disguisedP2pMode" :disabled="!disguiseEditable"
                     :options="disguisedP2pModeOptions" option-label="label" option-value="value" fluid />
                 </div>
               </div>
@@ -482,7 +487,7 @@ function removeVpnPortalClient(index: number) {
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="sni">{{ t('sni') }}</label>
-                  <InputText id="sni" v-model="curNetwork.sni" aria-describedby="sni-help" :format="true"
+                  <InputText id="sni" v-model="curNetwork.sni" :disabled="!extensionEditable('sni')" aria-describedby="sni-help" :format="true"
                     :placeholder="t('sni_placeholder')" />
                 </div>
               </div>

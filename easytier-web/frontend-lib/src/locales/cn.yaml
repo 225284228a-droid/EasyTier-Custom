@@ -263,7 +263,7 @@ p2p_disguise_mode_help: 默认不主动使用伪装协议，但响应需要伪�
 p2p_prefer_protocol: P2P 优先协议
 p2p_prefer_protocol_tcp: 优先 TCP（可用时 WSS）
 p2p_prefer_protocol_udp: 优先 UDP（可用时 HTTP3）
-p2p_prefer_protocol_help: 默认优先 UDP。协商使用伪装时，选 UDP 优先 HTTP3，选 TCP 优先 WSS；不主动使用伪装时则优先对应的普通协议。支持 HTTP3 的节点会在已配置的 UDP 监听端口同时接受 HTTP3，自动P2P无需另加 HTTP3 监听；打洞使用临时监听端口。已有回退连接时仍会尝试首选协议。
+p2p_prefer_protocol_help: 默认优先 TCP。协商使用伪装时，选 UDP 优先 HTTP3，选 TCP 优先 WSS；不主动使用伪装时则优先对应的普通协议。支持 HTTP3 的节点会在已配置的 UDP 监听端口同时接受 HTTP3，自动P2P无需另加 HTTP3 监听；打洞使用临时监听端口。已有回退连接时仍会尝试首选协议。
 
 close_redundant_conns_when_disguised: 首选连接建立后断开多余连接
 close_redundant_conns_when_disguised_help: 首选连接可用后，断开同一对等节点由自动P2P建立的较低优先级连接。协商使用伪装且优先 UDP 时，HTTP3 可替换 WSS；不主动使用伪装且优先 UDP 时，UDP 可替换 WSS。手动连接、普通入站连接和同级连接会保留。默认关闭。
@@ -374,6 +374,48 @@ event:
   UdpBroadcastRelayStartResult: UDP广播中继启动结果
 
 web:
+  local_configs:
+    title: 本地配置
+    description: 在线读取设备的本地配置，按所选字段逐个保存。离线设备仅供查看，不会排队下发。保存并应用只应用正在运行的实例；停用实例须明确启用。
+    save_apply: 保存并应用
+    persist_only: 仅保存
+    select: 选择
+    device: 设备
+    state: 状态
+    actions: 操作
+    online: 在线
+    offline: 离线
+    stale: 缓存过期
+    ready: 可编辑
+    protected: 受保护
+    invalid: 配置无效
+    missing: 文件缺失
+    identity_conflict: 实例 ID 冲突
+    running: 运行中
+    stopped: 已停止
+    disabled: 已停用
+    pending_apply: 尚未应用
+    empty: 没有可用的本地配置快照
+    edit_selected: 编辑已选的 {count} 项
+    editing: 正在编辑 {count} 项
+    reread: 重新读取 revision
+    dirty_preserved: 刷新不会覆盖未保存的修改。遇到冲突时请重新读取 revision，核对修改后再次保存。
+    fields: 只保存勾选的改动字段
+    no_changes: 尚未修改字段
+    unavailable: 配置当前不可写，请确认设备在线、权限及最新快照。
+    unsupported_fields: '设备不支持这些字段，已跳过：{fields}'
+    success: 成功
+    partial: 部分成功
+    failed: 失败
+    conflict: 配置已变化，请重新读取 revision
+    not_found: 配置不存在
+    apply_failed: 已保存，应用失败
+    unsupported: 设备不支持此管理功能
+    unknown: 保存结果未知，请重新读取确认
+    enable: 启用
+    disable: 停用
+    delete: 删除
+    confirm_delete: 确认删除
   console:
     theme_mode: 主题（浅色 / 深色 / 跟随系统）
     location: "位置"
@@ -795,12 +837,12 @@ mode:
 config-server:
   title: 配置服务器
   address: 配置服务器地址
-  address_placeholder: "例如：udp://127.0.0.1:22020/admin, udp://backup.example.com:22020/admin"
+  address_placeholder: "例如：tcp://127.0.0.1:22020/admin, tcp://backup.example.com:22020/admin"
   description: |
     配置服务器地址，支持以下格式：
-    完整URL：udp://127.0.0.1:22020/admin
+    完整URL：tcp://127.0.0.1:22020/admin
     仅用户名：admin（使用官方服务器）
-    多个地址：用英文逗号分隔，例如 udp://a:22020/admin, udp://b:22020/admin，将同时连接所有配置服务器
+    多个地址：用英文逗号分隔，例如 tcp://a:22020/admin, tcp://b:22020/admin，将同时连接所有配置服务器
     留空：不连接配置服务器
   connection_status: 连接状态
   connected: ": 已连接"

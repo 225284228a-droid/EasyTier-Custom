@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright')
@@ -27,6 +28,8 @@ let trafficScale = 1
 let collectionDelay = 0
 const machineItems = locations.map((location, index) => ({
   client_url: `tcp://198.51.100.${index + 1}:11010`,
+  public_ip: `203.0.113.${index + 1}`,
+  online: true,
   location,
   info: {
     machine_id: uuid(index + 1),
@@ -116,22 +119,47 @@ async function assertLocalLabelLayout(page, name) {
   return layout
 }
 
+let previewServer
+if (!process.env.DASHBOARD_URL) {
+  previewServer = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '5187', '--strictPort'], { stdio: 'pipe' })
+  let ready = false
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (previewServer.exitCode !== null) throw new Error('Vite exited before starting the globe preview')
+    if (await fetch(baseUrl).then(response => response.ok).catch(() => false)) { ready = true; break }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  if (!ready) { previewServer.kill(); throw new Error('Globe preview did not start') }
+}
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_EXECUTABLE || undefined,
   headless: true,
-  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+  args: ['--use-gl=angle', `--use-angle=${process.env.CHROMIUM_ANGLE_BACKEND || 'swiftshader'}`, '--enable-unsafe-swiftshader'],
 })
 const errors = []
+const detailAssets = []
 let page
 try {
   page = await browser.newPage()
+  // Software WebGL can take several frames to settle during native build load.
+  page.setDefaultTimeout(60_000)
   page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { if (message.text().includes('globe geography detail')) console.error(message.text()) })
+  for (const event of ['request', 'requestfinished', 'requestfailed']) {
+    page.on(event, request => {
+      if (request.url().includes('world-boundaries'))
+        detailAssets.push({ event, url: request.url(), error: request.failure()?.errorText, at: Date.now() })
+    })
+  }
   let empty = false
   await page.route('**/api/v1/**', async route => {
     const pathname = new URL(route.request().url()).pathname
     let body = {}
     if (pathname.endsWith('/machines')) {
       body = { machines: empty ? [] : machineItems }
+    } else if (pathname.endsWith('/console-info')) {
+      body = { username: 'globe-qa', webhook_auth: true, config_server_protocol: 'tcp', config_server_port: 22020 }
+    } else if (pathname.endsWith('/summary')) {
+      body = { device_count: empty ? 0 : machineItems.length }
     } else if (pathname.endsWith('/networks/info')) {
       assert.equal(route.request().method(), 'POST')
       const id = Number.parseInt(pathname.match(/machines\/([^/]+)/)[1].replaceAll('-', ''), 16)
@@ -153,8 +181,17 @@ try {
   await page.addInitScript(() => {
     if (location.protocol === 'http:' || location.protocol === 'https:')
       localStorage.setItem('lang', 'en')
+    const firstFrame = new MutationObserver(() => {
+      const canvas = document.querySelector('.globe-stage canvas')
+      const azimuth = canvas?.getAttribute('data-globe-azimuth')
+      if (azimuth !== null && azimuth !== undefined) {
+        window.__globeQaInitialAzimuth = Number(azimuth)
+        firstFrame.disconnect()
+      }
+    })
+    firstFrame.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-globe-azimuth'] })
   })
-  const dashboardUrl = `${baseUrl}/#/h/${btoa(baseUrl)}`
+  const dashboardUrl = `${baseUrl}/#/h`
   for (const [name, viewport] of [
     ['desktop', { width: 1440, height: 1000 }],
     ['mobile', { width: 390, height: 844 }],
@@ -163,18 +200,19 @@ try {
     await page.context().clearCookies()
     await page.setViewportSize(viewport)
     await page.goto(dashboardUrl)
-    await page.reload()
     const canvas = page.locator('.globe-stage canvas')
-    await canvas.waitFor()
-    await page.locator('.node-row').first().waitFor()
+    await canvas.waitFor({ timeout: 60_000 })
+    await canvas.scrollIntoViewIfNeeded()
     const defaultLongitude = 114.17 * Math.PI / 180
     await page.waitForFunction(() => document.querySelector('.globe-stage canvas')?.hasAttribute('data-globe-azimuth'))
-    const initialAzimuth = Number(await canvas.getAttribute('data-globe-azimuth'))
+    const initialAzimuth = await page.evaluate(() => window.__globeQaInitialAzimuth)
     assert.ok(Math.abs(Math.atan2(Math.sin(initialAzimuth - defaultLongitude),
       Math.cos(initialAzimuth - defaultLongitude))) < 0.08,
-    `${name}: default globe view is not centered near Hong Kong`)
+    `${name}: default globe view is not centered near Hong Kong (${initialAzimuth})`)
+    await page.locator('.node-row').first().waitFor()
     const summaries = await page.locator('.dashboard-summary strong').allTextContents()
-    assert.deepEqual(summaries, ['4', '1', '6'], `${name}: machines sharing a mesh must count as one network`)
+    assert.deepEqual(summaries, ['1', '6'], `${name}: machines sharing a mesh must count as one network`)
+    assert.deepEqual(await page.locator('.summary-strip .summary-value').allTextContents().then(values => values.map(value => value.trim())), ['4', '4', '4'], `${name}: official summary retains device and instance counts`)
     const globeControls = await canvas.evaluate((element) => ({
       rotateSpeed: Number(element.dataset.globeRotateSpeed),
       zoomSpeed: Number(element.dataset.globeZoomSpeed),
@@ -195,6 +233,16 @@ try {
     assert.match(globeControls.aspectRatio, new RegExp(expectedAspect),
       `${name}: globe stage should keep its responsive aspect ratio`)
     await page.waitForTimeout(800)
+    const canvasSize = await canvas.evaluate(element => ({
+      width: element.clientWidth, height: element.clientHeight,
+      backingWidth: element.width, backingHeight: element.height,
+      renderer: (() => {
+        const gl = element.getContext('webgl2') || element.getContext('webgl')
+        const extension = gl?.getExtension('WEBGL_debug_renderer_info')
+        return extension && gl.getParameter(extension.UNMASKED_RENDERER_WEBGL)
+      })(),
+    }))
+    console.log(`${name}: canvas ${JSON.stringify(canvasSize)}`)
     const first = await canvas.screenshot()
     const image = PNG.sync.read(first)
     let landPixels = 0
@@ -241,6 +289,7 @@ try {
     assert.equal(await page.locator('footer.geoip-attribution').count(), 0,
       `${name}: geolocation source notice should not remain on the dashboard`)
     await page.getByRole('button', { name: 'Pause Rotation', exact: true }).click()
+    await canvas.scrollIntoViewIfNeeded()
     const box = await canvas.boundingBox()
     const azimuthBefore = await canvas.getAttribute('data-globe-azimuth')
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
@@ -258,14 +307,16 @@ try {
     assert.equal(await canvas.getAttribute('data-globe-azimuth'), azimuthAfter,
       `${name}: globe continued spinning after a manual drag`)
     const motionBefore = PNG.sync.read(await canvas.screenshot())
-    await page.waitForTimeout(200)
-    const motionAfter = PNG.sync.read(await canvas.screenshot())
     let movingWhitePixels = 0
-    for (let i = 0; i < motionBefore.data.length; i += 4) {
-      const before = motionBefore.data[i] > 230 && motionBefore.data[i + 1] > 230 && motionBefore.data[i + 2] > 230
-      const after = motionAfter.data[i] > 230 && motionAfter.data[i + 1] > 230 && motionAfter.data[i + 2] > 230
-      if (before !== after)
-        movingWhitePixels++
+    for (let attempt = 0; attempt < 6 && movingWhitePixels <= 2; attempt++) {
+      await page.waitForTimeout(250)
+      const motionAfter = PNG.sync.read(await canvas.screenshot())
+      movingWhitePixels = 0
+      for (let i = 0; i < motionBefore.data.length; i += 4) {
+        const before = motionBefore.data[i] > 230 && motionBefore.data[i + 1] > 230 && motionBefore.data[i + 2] > 230
+        const after = motionAfter.data[i] > 230 && motionAfter.data[i + 1] > 230 && motionAfter.data[i + 2] > 230
+        if (before !== after) movingWhitePixels++
+      }
     }
     assert.ok(movingWhitePixels > 2, `${name}: particle pixels did not move on the paused globe`)
     const beforeCancellation = await canvas.getAttribute('data-globe-azimuth')
@@ -279,7 +330,10 @@ try {
       `${name}: canceling a node unexpectedly moved the camera`)
     await page.locator('.node-row').filter({ hasText: 'Auckland' }).click()
     assert.equal(await page.locator('.node-row').filter({ hasText: 'Auckland' }).getAttribute('aria-pressed'), 'true')
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await canvas.scrollIntoViewIfNeeded()
+    const intermediateZoomBox = await canvas.boundingBox()
+    await page.mouse.move(intermediateZoomBox.x + intermediateZoomBox.width * 0.15,
+      intermediateZoomBox.y + intermediateZoomBox.height * 0.15)
     for (let i = 0; i < 15 && Number(await canvas.getAttribute('data-globe-distance')) > 2.75; i++) {
       await page.mouse.wheel(0, -150)
       await page.waitForTimeout(50)
@@ -292,10 +346,13 @@ try {
     assert.ok(await page.locator('.globe-traffic-label').evaluateAll(elements =>
       elements.every(element => getComputedStyle(element).display === 'none')),
     `${name}: traffic labels became visible too early`)
+    const zoomBox = await canvas.boundingBox()
+    await page.mouse.move(zoomBox.x + zoomBox.width * 0.15, zoomBox.y + zoomBox.height * 0.15)
     await page.mouse.wheel(0, -2500)
+    await page.waitForFunction(() => Number(document.querySelector('.globe-stage canvas')?.getAttribute('data-globe-distance')) <= 1.55)
     await page.waitForFunction(() =>
       document.querySelector('.globe-stage canvas')?.getAttribute('data-globe-cloud-level') === '2',
-    undefined, { timeout: 30_000 })
+    undefined, { timeout: 60_000 })
     assert.equal(await canvas.getAttribute('data-globe-cloud-level'), '2',
       `${name}: close zoom did not select the dense point cloud`)
     assert.equal(await canvas.getAttribute('data-globe-boundary-scale'), '10m',
@@ -427,9 +484,10 @@ try {
   await page.waitForTimeout(3500)
   await page.locator('.node-row .node-name').filter({ hasText: 'Shanghai' }).click()
   const overlappingCanvas = page.locator('.globe-stage canvas')
+  await overlappingCanvas.scrollIntoViewIfNeeded()
   const overlappingBounds = await overlappingCanvas.boundingBox()
-  await page.mouse.move(overlappingBounds.x + overlappingBounds.width / 2,
-    overlappingBounds.y + overlappingBounds.height / 2)
+  await page.mouse.move(overlappingBounds.x + overlappingBounds.width * 0.15,
+    overlappingBounds.y + overlappingBounds.height * 0.15)
   await page.mouse.wheel(0, -2500)
   await page.waitForFunction(() =>
     document.querySelector('.globe-labels')?.getAttribute('data-traffic-labels-visible') === 'true')
@@ -490,8 +548,14 @@ try {
   assert.deepEqual(errors, [])
   console.log(`Empty state and browser errors passed. Screenshots: ${output}`)
 } catch (error) {
+  const canvasState = await page?.locator('.globe-stage canvas').evaluate(element => ({
+    width: element.clientWidth, height: element.clientHeight,
+    distance: element.dataset.globeDistance, cloudLevel: element.dataset.globeCloudLevel,
+  })).catch(() => undefined)
+  console.error('Globe QA failed:', { url: page?.url(), errors, detailAssets, canvasState })
   await page?.screenshot({ path: join(output, 'failure.png'), fullPage: true }).catch(() => {})
   throw error
 } finally {
   await browser.close()
+  previewServer?.kill()
 }
