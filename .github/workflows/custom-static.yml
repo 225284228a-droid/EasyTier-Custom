@@ -137,6 +137,9 @@ jobs:
           }
 
       - name: Package with checksums and preserve Unix executable permissions
+        id: package
+        env:
+          ARTIFACT_NAME: custom-static-${{ matrix.name }}
         run: |
           set -euo pipefail
           printf '%s\n' "$GITHUB_SHA" > artifacts/COMMIT.txt
@@ -146,17 +149,20 @@ jobs:
           (cd artifacts && shopt -s nullglob && sha256sum easytier-* *.dll *.sys COMMIT.txt > SHA256SUMS)
           mkdir -p dist
           if [[ "$RUNNER_OS" == Linux ]]; then
-            tar -czf "dist/easytier-$TARGET.tar.gz" -C artifacts .
+            ARCHIVE="dist/$ARTIFACT_NAME.tar.gz"
+            tar -czf "$ARCHIVE" -C artifacts .
           else
-            7z a "dist/easytier-$TARGET.zip" ./artifacts/*
+            ARCHIVE="dist/$ARTIFACT_NAME.zip"
+            7z a "$ARCHIVE" ./artifacts/*
           fi
+          printf 'archive=%s\n' "$ARCHIVE" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v5
+      - name: Upload the archive without an extra ZIP wrapper
+        uses: actions/upload-artifact@v7
         with:
-          name: custom-static-${{ matrix.name }}
-          path: dist/*
+          path: ${{ steps.package.outputs.archive }}
+          archive: false
           if-no-files-found: error
-          compression-level: 0
           retention-days: 7
 
   cleanup:

@@ -10,10 +10,16 @@ only the latest pending run when several updates arrive during a build.
 
 | Artifact | Contents |
 | --- | --- |
-| `custom-static-linux-x86_64` | core, cli, web-embed, mini (musl) |
-| `custom-static-windows-x86_64` | gui NSIS installer, core, cli, web-embed, network DLLs/drivers |
+| `custom-static-linux-x86_64.tar.gz` | core, cli, web-embed, mini (musl) |
+| `custom-static-windows-x86_64.zip` | gui NSIS installer, core, cli, web-embed, network DLLs/drivers |
 
-Linux archives preserve executable permissions. Each archive contains the source
+The Actions artifact download is the archive itself, with no additional ZIP
+wrapper. Extract it once to access the programs, installer, and drivers.
+The upload uses `actions/upload-artifact@v7` with `archive: false` and the exact
+single-file path produced by the packaging step; the filename becomes the
+artifact name.
+
+Linux tar archives preserve executable permissions. Each archive contains the source
 commit and SHA-256 checksums. The embedded web server includes the dashboard and
 config generator. Mini uses its own size-optimized Cargo profile and a separate
 invocation to avoid feature unification with the full binaries.
