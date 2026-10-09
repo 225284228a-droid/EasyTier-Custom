@@ -149,6 +149,7 @@ jobs:
           (cd artifacts && shopt -s nullglob && sha256sum easytier-* *.dll *.sys COMMIT.txt > SHA256SUMS)
           mkdir -p dist
           if [[ "$RUNNER_OS" == Linux ]]; then
+            chmod 744 artifacts/easytier-*
             ARCHIVE="dist/$ARTIFACT_NAME.tar.gz"
             tar -czf "$ARCHIVE" -C artifacts .
           else
