@@ -9,7 +9,7 @@ import { locateNode, worldGeography, type LocatedNode } from '../modules/globeGe
 import { spherePosition as position, sphericalArc } from '../modules/globeBoundaryGeometry'
 import { FlowEmitter, flowEmissionsPerSecond, flowTravelSeconds, MAX_FLOW_PARTICLES } from '../modules/globeFlow'
 import { createFlowLabel, updateFlowLabel, type FlowLabelInput } from '../modules/globeFlowLabel'
-import { arrangeGlobeLabels, type LabelChoice, type LayoutLabel } from '../modules/globeLabelLayout'
+import { arrangeGlobeLabels, LABEL_STACK_GAP, type LabelChoice, type LayoutLabel } from '../modules/globeLabelLayout'
 import { linkLocationGroup, nodeLocationGroup } from '../modules/globeLabelGroups'
 import { loadGlobeMapDetail } from '../modules/globeMapDetail'
 import { buildCloudPointPositions } from '../modules/globePointCloud'
@@ -48,13 +48,14 @@ let topologyGroup: THREE.Group | undefined
 let globeSurface: THREE.Mesh | undefined
 let boundaryMaterial: THREE.LineBasicMaterial | undefined
 const cloudLevels: { group?: THREE.Group, maxDistance: number, count: number, angularStep: number }[] = [
-  { maxDistance: Number.POSITIVE_INFINITY, count: 24_000, angularStep: 0.045 },
+  { maxDistance: Number.POSITIVE_INFINITY, count: 48_000, angularStep: 0.02 },
   { maxDistance: 2.45, count: 96_000, angularStep: 0.012 },
   { maxDistance: 1.55, count: 288_000, angularStep: 0.003 },
 ]
 const boundaryLevels: (THREE.LineSegments | undefined)[] = []
 const detailRequests: (Promise<void> | undefined)[] = []
 const detailRetryAt: number[] = []
+let baseGeographyReady = false
 let disposed = false
 let restoringView = false
 let viewSaveTimer: ReturnType<typeof setTimeout> | undefined
@@ -80,7 +81,9 @@ let flows: {
 interface GlobeLabel {
   id: string
   kind: 'node' | 'traffic'
-  element: HTMLDivElement
+  content: string | FlowLabelInput
+  stale?: boolean
+  element?: HTMLDivElement
   stackId: string
   anchors: { point: THREE.Vector3, tangentPoints?: [THREE.Vector3, THREE.Vector3] }[]
   priority: number
@@ -96,6 +99,7 @@ interface GlobeLabelStack {
 }
 const labels = new Map<string, GlobeLabel>()
 const labelStacks = new Map<string, GlobeLabelStack>()
+let trafficLabelSize: GlobeLabel['size']
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
 const markerViewPosition = new THREE.Vector3()
@@ -225,8 +229,8 @@ function buildPointCloud(
   })
   const group = new THREE.Group()
   for (const [points, role, size] of [
-    [land, 'land', count > 100_000 ? 0.0035 : count > 30_000 ? 0.006 : 0.011],
-    [ocean, 'ocean', count > 100_000 ? 0.002 : count > 30_000 ? 0.0035 : 0.006],
+    [land, 'land', count > 100_000 ? 0.0035 : count > 60_000 ? 0.006 : 0.008],
+    [ocean, 'ocean', count > 100_000 ? 0.002 : count > 60_000 ? 0.0035 : 0.0045],
   ] as const) {
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
@@ -238,7 +242,7 @@ function buildPointCloud(
   return group
 }
 
-function buildGeographyLevel(level: number, geography: typeof worldGeography) {
+function buildGeographyLevel(level: number, geography: typeof worldGeography, scale = level === 2 ? '10m' : '50m') {
   const map = document.createElement('canvas')
   map.width = 2048
   map.height = 1024
@@ -254,21 +258,35 @@ function buildGeographyLevel(level: number, geography: typeof worldGeography) {
   const pixels = context.getImageData(0, 0, map.width, map.height).data
   const config = cloudLevels[level]
   const cloud = buildPointCloud(map, pixels, config.count)
-  cloud.visible = false
+  cloud.visible = level === activeCloudLevel
+  if (config.group) {
+    scene.remove(config.group)
+    disposeGroup(config.group)
+  }
   config.group = cloud
   const boundaries = buildCountryBoundaries(geography, config.angularStep)
-  boundaries.visible = false
+  boundaries.visible = level === activeBoundaryLevel
+  boundaries.userData.sourceScale = scale
+  const previousBoundaries = boundaryLevels[level]
+  if (previousBoundaries) {
+    scene.remove(previousBoundaries)
+    previousBoundaries.geometry.dispose()
+  }
   boundaryLevels[level] = boundaries
   scene.add(cloud, boundaries)
 }
 
-function requestGeographyLevel(level: 1 | 2) {
-  if (cloudLevels[level].group || detailRequests[level] || performance.now() < (detailRetryAt[level] ?? 0))
+function requestGeographyLevel(level: 0 | 1 | 2) {
+  if ((level === 0 ? baseGeographyReady : cloudLevels[level].group)
+    || detailRequests[level] || performance.now() < (detailRetryAt[level] ?? 0))
     return
-  detailRequests[level] = loadGlobeMapDetail(level)
+  detailRequests[level] = loadGlobeMapDetail(level === 0 ? 1 : level)
     .then(geography => {
-      if (!disposed)
+      if (!disposed) {
         buildGeographyLevel(level, geography)
+        if (level === 0)
+          baseGeographyReady = true
+      }
     })
     .catch(error => {
       detailRetryAt[level] = performance.now() + 30_000
@@ -285,7 +303,8 @@ function buildCloud() {
     opacity: 0.38,
     depthWrite: false,
   }), 'boundary')
-  buildGeographyLevel(0, worldGeography)
+  // Draw immediately, then replace the coarse fallback with the 50m map.
+  buildGeographyLevel(0, worldGeography, '110m')
   globeSurface = new THREE.Mesh(
     new THREE.SphereGeometry(0.994, 64, 32),
     themedMaterial(new THREE.MeshBasicMaterial(), 'surface'),
@@ -306,6 +325,7 @@ function updateCloudDetail() {
   )
   const requestedLevel = distance <= cloudLevels[2].maxDistance ? 2
     : distance <= cloudLevels[1].maxDistance ? 1 : 0
+  requestGeographyLevel(0)
   if (distance <= NODE_LABEL_MAX_DISTANCE)
     requestGeographyLevel(1)
   if (distance <= 1.9)
@@ -332,7 +352,7 @@ function updateCloudDetail() {
     renderer.domElement.dataset.globeDistance = String(distance)
     renderer.domElement.dataset.globeCloudLevel = String(nextLevel)
     renderer.domElement.dataset.globeBoundaryLevel = String(nextLevel)
-    renderer.domElement.dataset.globeBoundaryScale = ['110m', '50m', '10m'][nextLevel]
+    renderer.domElement.dataset.globeBoundaryScale = boundaryLevels[nextLevel]?.userData.sourceScale ?? '110m'
     renderer.domElement.dataset.globeBoundarySourceVertices = String(boundaryLevels[nextLevel]?.userData.sourceVertices ?? 0)
     renderer.domElement.dataset.globeBoundaryAngularStep = String(cloudLevels[nextLevel].angularStep)
     renderer.domElement.dataset.globeAzimuth = String(controls.getAzimuthalAngle())
@@ -358,23 +378,29 @@ function addLabel(id: string, content: string | FlowLabelInput, kind: 'node' | '
     return
   let label = labels.get(id)
   if (!label) {
-    const element = document.createElement('div')
-    element.dataset.labelId = id
-    element.style.display = 'none'
-    label = { id, kind, element, stackId, anchors, priority }
+    label = { id, kind, content, stackId, anchors, priority }
     labels.set(id, label)
   }
-  const { element } = label
-  element.className = `globe-${kind}-label${stale ? ' is-stale' : ''}`
+  if (typeof content === 'string' && label.content !== content)
+    label.size = undefined
+  label.content = content
+  label.stale = stale
   label.anchors = anchors
   label.priority = priority
   label.stackId = stackId
-  element.dataset.labelGroup = stackId
+  updateLabelElement(label)
+}
+
+function updateLabelElement(label: GlobeLabel) {
+  const { element, content } = label
+  if (!element)
+    return
+  element.className = `globe-${label.kind}-label${label.stale ? ' is-stale' : ''}`
+  element.dataset.labelId = label.id
+  element.dataset.labelGroup = label.stackId
   if (typeof content === 'string') {
-    if (element.textContent !== content) {
+    if (element.textContent !== content)
       element.textContent = content
-      label.size = undefined
-    }
   } else {
     const cross = element.firstElementChild as HTMLDivElement | null
     if (cross)
@@ -386,30 +412,45 @@ function addLabel(id: string, content: string | FlowLabelInput, kind: 'node' | '
   }
 }
 
+function measureLabel(label: GlobeLabel) {
+  if (label.size)
+    return label.size
+  if (label.kind === 'traffic' && trafficLabelSize)
+    return label.size = trafficLabelSize
+  // Measure a temporary sample; actual cards are only created after placement.
+  const sample = document.createElement('div')
+  sample.className = `globe-${label.kind}-label`
+  sample.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none'
+  if (typeof label.content === 'string')
+    sample.textContent = label.content
+  else
+    sample.append(createFlowLabel({ sourceLabel: 'M', targetLabel: 'M' }))
+  labelLayer.value!.append(sample)
+  const { width, height } = sample.getBoundingClientRect()
+  label.size = { width, height }
+  sample.remove()
+  if (label.kind === 'traffic')
+    trafficLabelSize = label.size
+  return label.size
+}
+
 function syncLabelStacks() {
   if (!labelLayer.value)
     return
   labelStacks.forEach(stack => { stack.labels = [] })
-  for (const label of [...labels.values()].sort((left, right) => left.id.localeCompare(right.id))) {
+  for (const label of [...labels.values()].sort((left, right) => right.priority - left.priority || left.id.localeCompare(right.id))) {
     let stack = labelStacks.get(label.stackId)
     if (!stack) {
       const element = document.createElement('div')
       element.className = `globe-label-stack globe-${label.kind}-stack`
       element.dataset.stackId = label.stackId
-      element.style.display = 'none'
-      element.addEventListener('wheel', event => event.stopPropagation())
       element.addEventListener('pointerdown', event => event.stopPropagation())
       const leader = document.createElement('div')
       leader.className = `globe-label-leader globe-${label.kind}-leader`
-      leader.style.display = 'none'
-      labelLayer.value.append(leader, element)
       stack = { id: label.stackId, kind: label.kind, element, leader, labels: [] }
       labelStacks.set(label.stackId, stack)
     }
-    const index = stack.labels.length
     stack.labels.push(label)
-    if (stack.element.children[index] !== label.element)
-      stack.element.insertBefore(label.element, stack.element.children[index] ?? null)
   }
   for (const [id, stack] of labelStacks) {
     if (!stack.labels.length) {
@@ -469,29 +510,13 @@ function updateLabels() {
     })
     if (!anchors.length)
       continue
-    const previousDisplay = stack.element.style.display
-    stack.element.style.display = 'flex'
-    for (const label of stack.labels) {
-      label.element.style.display = 'block'
-      if (!label.size)
-        label.size = { width: label.element.offsetWidth, height: label.element.offsetHeight }
-    }
-    const stackWidth = Math.max(...stack.labels.map(label => label.size!.width)) + 8
-    let stackHeight = 0
-    const heights = stack.labels.flatMap((label, index) => {
-      stackHeight += label.size!.height + (index ? 4 : 0)
-      return stackHeight <= height - 39 ? [stackHeight] : []
-    }).reverse()
-    stack.element.style.width = `${stackWidth}px`
-    stack.element.style.display = previousDisplay
-    if (!heights.length)
-      continue
+    const rows = stack.labels.map(measureLabel)
     pending.push({
       id: stack.id, kind: stack.kind, anchors,
-      priority: Math.max(...stack.labels.map(label => label.priority)),
-      width: stackWidth, height: heights[0], previous: stack.choice,
+      priority: stack.labels[0].priority,
+      width: rows[0].width, height: rows[0].height, previous: stack.choice,
       stacked: stack.labels.length > 1,
-      heights: stack.labels.length > 1 ? heights : undefined,
+      rows,
     })
   }
   const markers = markerMeshes.flatMap(mesh => {
@@ -499,15 +524,26 @@ function updateLabels() {
     return anchor ? [{ x: anchor.x - 7, y: anchor.y - 7, width: 14, height: 14 }] : []
   })
   const visibleIds = new Set<string>()
+  const visibleLabelIds = new Set<string>()
   for (const placement of arrangeGlobeLabels(pending, width, height, markers)) {
     const stack = labelStacks.get(placement.id)!
     visibleIds.add(placement.id)
     stack.choice = placement.choice
-    stack.element.style.display = 'flex'
+    for (const [index, label] of stack.labels.slice(0, placement.labelCount).entries()) {
+      visibleLabelIds.add(label.id)
+      if (!label.element) {
+        label.element = document.createElement('div')
+        updateLabelElement(label)
+      }
+      if (stack.element.children[index] !== label.element)
+        stack.element.insertBefore(label.element, stack.element.children[index] ?? null)
+    }
+    if (!stack.element.isConnected)
+      labelLayer.value.append(stack.leader, stack.element)
     stack.element.style.left = `${placement.x}px`
     stack.element.style.top = `${placement.y}px`
+    stack.element.style.width = `${placement.width}px`
     stack.element.style.height = `${placement.height}px`
-    stack.leader.style.display = 'block'
     stack.leader.style.left = `${placement.anchor.x}px`
     stack.leader.style.top = `${placement.anchor.y}px`
     stack.leader.style.width = `${placement.leaderLength}px`
@@ -517,9 +553,14 @@ function updateLabels() {
   }
   for (const stack of labelStacks.values()) {
     if (!visibleIds.has(stack.id)) {
-      stack.element.style.display = 'none'
-      stack.leader.style.display = 'none'
-      stack.labels.forEach(label => { label.element.style.display = 'none' })
+      stack.element.remove()
+      stack.leader.remove()
+    }
+  }
+  for (const label of labels.values()) {
+    if (!visibleLabelIds.has(label.id) && label.element) {
+      label.element.remove()
+      label.element = undefined
     }
   }
 }
@@ -680,7 +721,7 @@ function rebuildTopology() {
   }
   for (const [id, label] of labels) {
     if (!activeLabelIds.has(id)) {
-      label.element.remove()
+      label.element?.remove()
       labels.delete(id)
     }
   }
@@ -771,7 +812,7 @@ function scheduleZoomSave() {
 }
 
 function pickNode(event: MouseEvent) {
-  if (!renderer || dragged)
+  if (!renderer || dragged || (event.target !== renderer.domElement && event.target !== stage.value))
     return
   const bounds = renderer.domElement.getBoundingClientRect()
   pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1,
@@ -838,9 +879,9 @@ onMounted(() => {
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.domElement.setAttribute('aria-label', t('web.dashboard.topology'))
-    renderer.domElement.addEventListener('click', pickNode)
+    stage.value.addEventListener('click', pickNode)
     stage.value.appendChild(renderer.domElement)
-    controls = new OrbitControls(camera, renderer.domElement)
+    controls = new OrbitControls(camera, stage.value)
     controls.enablePan = false
     controls.enableDamping = false
     controls.rotateSpeed = controlsConfig.rotateSpeed
@@ -852,10 +893,10 @@ onMounted(() => {
     renderer.domElement.dataset.globeZoomSpeed = String(controlsConfig.zoomSpeed)
     renderer.domElement.dataset.globeMinDistance = String(controlsConfig.minDistance)
     renderer.domElement.dataset.globeMaxDistance = String(controlsConfig.maxDistance)
-    renderer.domElement.dataset.globeCloudLevels = '24000,96000,288000'
+    renderer.domElement.dataset.globeCloudLevels = cloudLevels.map(level => level.count).join(',')
     renderer.domElement.dataset.globePauseOnInteraction = 'true'
-    renderer.domElement.addEventListener('pointerdown', beginInteraction)
-    renderer.domElement.addEventListener('pointermove', moveInteraction)
+    stage.value.addEventListener('pointerdown', beginInteraction)
+    stage.value.addEventListener('pointermove', moveInteraction)
     window.addEventListener('pointerup', endInteraction)
     window.addEventListener('pointercancel', endInteraction)
     window.addEventListener('pagehide', saveView)
@@ -895,12 +936,12 @@ onUnmounted(() => {
   themeObserver?.disconnect()
   controls?.removeEventListener('change', scheduleZoomSave)
   controls?.dispose()
-  renderer?.domElement.removeEventListener('pointerdown', beginInteraction)
-  renderer?.domElement.removeEventListener('pointermove', moveInteraction)
+  stage.value?.removeEventListener('pointerdown', beginInteraction)
+  stage.value?.removeEventListener('pointermove', moveInteraction)
   window.removeEventListener('pointerup', endInteraction)
   window.removeEventListener('pointercancel', endInteraction)
   window.removeEventListener('pagehide', saveView)
-  renderer?.domElement.removeEventListener('click', pickNode)
+  stage.value?.removeEventListener('click', pickNode)
   if (scene)
     disposeGroup(scene)
   renderer?.dispose()
@@ -983,7 +1024,6 @@ onUnmounted(() => {
   --globe-leader: rgba(68, 101, 110, 0.46);
   --globe-traffic-leader: rgba(68, 101, 110, 0.82);
   --globe-legend-text: #37515d;
-  --globe-scrollbar: #728b91;
   min-width: 0;
 }
 .topology:where(.app-dark *) {
@@ -1014,9 +1054,7 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: var(--globe-surface); overflow: hidden; }
 .globe-stage :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }
 .globe-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
-.globe-labels :deep(.globe-label-stack) { position: absolute; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--globe-scrollbar) transparent; pointer-events: auto; }
-.globe-labels :deep(.globe-label-stack::-webkit-scrollbar) { width: 6px; }
-.globe-labels :deep(.globe-label-stack::-webkit-scrollbar-thumb) { background: var(--globe-scrollbar); border-radius: 3px; }
+.globe-labels :deep(.globe-label-stack) { position: absolute; display: flex; flex-direction: column; gap: v-bind('`${LABEL_STACK_GAP}px`'); box-sizing: border-box; pointer-events: auto; }
 .globe-labels :deep(.globe-node-label), .globe-labels :deep(.globe-traffic-label) {
   position: relative; flex-shrink: 0; align-self: flex-start; padding: 3px 5px; max-width: 220px; box-sizing: border-box;
   border-radius: 3px; background: var(--globe-label-background); color: var(--globe-label-text);

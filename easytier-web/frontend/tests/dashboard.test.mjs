@@ -315,7 +315,7 @@ test('dashboard topology shares the panel heading inset and documentation links 
     }
 });
 
-test('dashboard globe wheel stays local at zoom and label scroll limits', async t => {
+test('dashboard globe cards zoom without scrolling and load only complete rows', async t => {
     const { page, state } = await open(t, '/h', {}, state => {
         state.machines = state.machines.slice(0, 1);
         state.machines[0].online = true;
@@ -364,20 +364,72 @@ test('dashboard globe wheel stays local at zoom and label scroll limits', async 
 
     const stack = page.locator('.globe-node-stack:visible');
     await stack.waitFor();
-    assert.ok(await stack.evaluate(element => element.scrollHeight > element.clientHeight), 'the fixture has a scrollable label group');
-    await stack.evaluate(element => { element.scrollTop = 0; });
-    await stack.hover();
+    const assertCompleteCards = async () => {
+        const cards = await page.locator('.globe-labels').evaluate(layer => {
+            const stacks = [...layer.querySelectorAll('.globe-label-stack')];
+            return { count: layer.querySelectorAll('.globe-node-label').length,
+                diagnostics: stacks.map(element => {
+                    const outer = element.getBoundingClientRect();
+                    return { bounds: outer.toJSON(), scrollHeight: element.scrollHeight, clientHeight: element.clientHeight,
+                        clipped: [...element.children].flatMap(child => {
+                            const row = child.getBoundingClientRect();
+                            return row.top < outer.top - 0.1 || row.bottom > outer.bottom + 0.1
+                                || row.left < outer.left - 0.1 || row.right > outer.right + 0.1
+                                ? [{ text: child.textContent, bounds: row.toJSON() }] : [];
+                        }).slice(0, 3) };
+                }),
+                complete: [...layer.querySelectorAll('.globe-node-label, .globe-traffic-label')]
+                    .every(card => getComputedStyle(card).display !== 'none' && card.closest('.globe-label-stack'))
+                    && stacks.every(element => {
+                    const outer = element.getBoundingClientRect();
+                    return getComputedStyle(element).display !== 'none'
+                        && element.scrollHeight <= element.clientHeight
+                        && [...element.children].every(child => {
+                            const row = child.getBoundingClientRect();
+                            return getComputedStyle(child).display !== 'none' && row.height > 0
+                                && row.top >= outer.top - 0.1 && row.bottom <= outer.bottom + 0.1
+                                && row.left >= outer.left - 0.1 && row.right <= outer.right + 0.1;
+                        });
+                }) };
+        });
+        assert.ok(cards.complete, `every mounted card fits completely without internal scrolling or hidden cards: ${JSON.stringify(cards.diagnostics)}`);
+        return cards.count;
+    };
+    await assertCompleteCards();
+    const card = stack.locator('.globe-node-label').first();
+    await card.hover();
+    const cardLimitScroll = await scrollY();
     await page.mouse.wheel(0, -300);
     await settleWheel();
-    assert.equal(await scrollY(), initialScroll, 'scrolling upward at the label top does not scroll the page');
+    assert.equal(await scrollY(), cardLimitScroll, 'card zoom-in at the minimum does not scroll the page');
+    assert.ok(Math.abs(await distance() - minimum) < 1e-6);
+    await card.hover();
+    const cardOutScroll = await scrollY();
     await page.mouse.wheel(0, 120);
-    await page.waitForFunction(() => [...document.querySelectorAll('.globe-node-stack')].some(element => element.scrollTop > 0));
-    assert.equal(await scrollY(), initialScroll, 'labels keep their own scrolling');
-    assert.ok(Math.abs(await distance() - minimum) < 1e-6, 'scrolling labels does not zoom the globe');
-    await stack.evaluate(element => { element.scrollTop = element.scrollHeight; });
-    await page.mouse.wheel(0, 300);
-    await settleWheel();
-    assert.equal(await scrollY(), initialScroll, 'scrolling downward at the label bottom does not scroll the page');
+    await page.waitForFunction(min => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) > min, minimum);
+    const cardDistance = await distance();
+    assert.equal(await scrollY(), cardOutScroll, 'node card zoom-out does not scroll the page');
+    await card.hover();
+    const cardInScroll = await scrollY();
+    await page.mouse.wheel(0, -120);
+    await page.waitForFunction(before => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) < before, cardDistance);
+    assert.equal(await scrollY(), cardInScroll, 'node card zoom-in does not scroll the page');
+
+    await hoverCanvas();
+    await page.mouse.wheel(0, -5000);
+    await page.waitForFunction(min => Math.abs(Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) - min) < 1e-6, minimum);
+    const desktopCount = await assertCompleteCards();
+    await page.setViewportSize({ width: 390, height: 960 });
+    await page.waitForFunction(previous => document.querySelectorAll('.globe-node-label').length < previous, desktopCount);
+    const mobileCount = await assertCompleteCards();
+    assert.ok(mobileCount > 0 && mobileCount < 24, 'crowded mobile labels load a complete subset of the fixture');
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.waitForFunction(previous => document.querySelectorAll('.globe-node-label').length > previous, mobileCount);
+    await assertCompleteCards();
+    await page.evaluate(() => {
+        const stage = document.querySelector('.globe-stage').getBoundingClientRect();
+        window.scrollTo(0, stage.top + window.scrollY - 400);
+    });
 
     state.machines[0].info.running_network_instances = [uuid(100)];
     state.machineNetworkInfo = { [id(100)]: state.machineNetworkInfo[id(100)] };
@@ -385,24 +437,26 @@ test('dashboard globe wheel stays local at zoom and label scroll limits', async 
         const stack = document.querySelector('.globe-node-stack');
         return stack?.children.length === 1 && stack.scrollHeight === stack.clientHeight;
     });
-    await stack.hover();
-    for (const delta of [-300, 300]) {
-        await page.mouse.wheel(0, delta);
-        await settleWheel();
-        assert.equal(await scrollY(), initialScroll, 'a label without overflow does not scroll the page');
-    }
+    await assertCompleteCards();
+    await stack.locator('.globe-node-label').hover();
+    const singleDistance = await distance();
+    const singleScroll = await scrollY();
+    await page.mouse.wheel(0, 120);
+    await page.waitForFunction(before => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) > before, singleDistance);
+    assert.equal(await scrollY(), singleScroll, 'a single card zooms without scrolling the page');
 
     await hoverCanvas();
+    const limitScroll = await scrollY();
     await page.mouse.wheel(0, 5000);
     await page.waitForFunction(max => Math.abs(Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) - max) < 1e-6, maximum);
     await page.mouse.wheel(0, 300);
     await settleWheel();
-    assert.equal(await scrollY(), initialScroll, 'further zoom-out at the canvas limit does not scroll the page');
+    assert.equal(await scrollY(), limitScroll, 'further zoom-out at the canvas limit does not scroll the page');
     assert.ok(Math.abs(await distance() - maximum) < 1e-6);
     const canvasBounds = await canvas.boundingBox();
     await page.mouse.move(canvasBounds.x - 12, canvasBounds.y + 40);
     await page.mouse.wheel(0, -250);
-    await page.waitForFunction(before => window.scrollY < before, initialScroll);
+    await page.waitForFunction(before => window.scrollY < before, limitScroll);
     assert.ok(Math.abs(await distance() - maximum) < 1e-6, 'scrolling outside the globe leaves the zoom unchanged');
 });
 

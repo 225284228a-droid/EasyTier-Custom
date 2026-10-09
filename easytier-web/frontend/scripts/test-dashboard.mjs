@@ -71,6 +71,9 @@ const snapshot = (index) => ({
 async function assertLocalLabelLayout(page, name) {
   const layout = await page.locator('.globe-labels').evaluate(element => {
     const stage = element.getBoundingClientRect()
+    if ([...element.querySelectorAll('.globe-label-stack, .globe-node-label, .globe-traffic-label')]
+      .some(card => getComputedStyle(card).display === 'none'))
+      throw new Error('Unplaced globe cards remain mounted with display:none')
     return [...element.querySelectorAll('.globe-label-stack')]
       .filter(stack => getComputedStyle(stack).display !== 'none')
       .map(stack => {
@@ -80,12 +83,15 @@ async function assertLocalLabelLayout(page, name) {
           traffic: stack.classList.contains('globe-traffic-stack'),
           x: rect.x - stage.x, y: rect.y - stage.y,
           width: rect.width, height: rect.height,
+          scrollHeight: stack.scrollHeight, clientHeight: stack.clientHeight,
           stageWidth: stage.width, stageHeight: stage.height,
           leaderLength: Number.parseFloat(stack.previousElementSibling.style.width),
           leaderThickness: Number.parseFloat(getComputedStyle(stack.previousElementSibling).height),
           rows: [...stack.children].map(label => {
             const row = label.getBoundingClientRect()
-            return { id: label.getAttribute('data-label-id'), x: row.x, y: row.y, height: row.height }
+            return { id: label.getAttribute('data-label-id'), x: row.x, y: row.y, height: row.height,
+              contained: row.height > 0 && row.left >= rect.left - 0.1 && row.right <= rect.right + 0.1
+                && row.top >= rect.top - 0.1 && row.bottom <= rect.bottom + 0.1 }
           }),
         }
       })
@@ -94,7 +100,9 @@ async function assertLocalLabelLayout(page, name) {
   const ids = layout.flatMap(stack => stack.rows.map(row => row.id))
   assert.equal(new Set(ids).size, ids.length, `${name}: grouped labels merged or duplicated device links`)
   layout.forEach((label, index) => {
+    assert.ok(label.scrollHeight <= label.clientHeight, `${name}: a mounted stack requires internal scrolling`)
     label.rows.forEach((row, rowIndex) => {
+      assert.ok(row.contained, `${name}: a mounted card is clipped by its stack`)
       assert.ok(Math.abs(row.x - label.rows[0].x) < 0.1, `${name}: grouped labels are not vertically aligned`)
       if (rowIndex) {
         const previous = label.rows[rowIndex - 1]
@@ -117,6 +125,27 @@ async function assertLocalLabelLayout(page, name) {
     }
   })
   return layout
+}
+
+async function assertTrafficCardWheel(page, canvas, name) {
+  const distance = () => canvas.evaluate(element => Number(element.dataset.globeDistance))
+  for (const selector of ['.globe-flow-source-stat', '.globe-flow-target-stat',
+    '.globe-flow-latency-value', '.globe-flow-source', '.globe-flow-target']) {
+    const cardPart = page.locator(`.globe-traffic-label ${selector}`).first()
+    await cardPart.waitFor({ state: 'visible' })
+    assert.ok(await cardPart.getAttribute('title'), `${name}: ${selector} lost its hover title`)
+    await cardPart.hover()
+    const before = await distance()
+    const scroll = await page.evaluate(() => scrollY)
+    await page.mouse.wheel(0, 40)
+    await page.waitForFunction(previous => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) > previous, before)
+    const farther = await distance()
+    assert.equal(await page.evaluate(() => scrollY), scroll, `${name}: ${selector} zoom-out scrolled the page`)
+    await cardPart.hover()
+    await page.mouse.wheel(0, -40)
+    await page.waitForFunction(previous => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) < previous, farther)
+    assert.equal(await page.evaluate(() => scrollY), scroll, `${name}: ${selector} zoom-in scrolled the page`)
+  }
 }
 
 async function selectTheme(page, mode) {
@@ -336,7 +365,7 @@ try {
       `${name}: wheel/pinch zoom should not use an aggressive default speed`)
     assert.ok(globeControls.minDistance < 1.7 && globeControls.maxDistance > 5,
       `${name}: globe zoom range should expose a closer high-detail view`)
-    assert.equal(globeControls.cloudLevels, '24000,96000,288000',
+    assert.equal(globeControls.cloudLevels, '48000,96000,288000',
       `${name}: globe should advertise adaptive point cloud levels`)
     const expectedAspect = name === 'desktop' ? '1.618' : '1.18'
     assert.match(globeControls.aspectRatio, new RegExp(expectedAspect),
@@ -352,7 +381,13 @@ try {
       })(),
     }))
     console.log(`${name}: canvas ${JSON.stringify(canvasSize)}`)
-    const first = await canvas.screenshot()
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('.globe-stage canvas')
+      return canvas?.dataset.globeBoundaryScale === '50m' && canvas.dataset.globeCloudLevel === '0'
+    }, undefined, { timeout: 60_000 })
+    assert.ok(Number(await canvas.getAttribute('data-globe-distance')) > 2.8,
+      `${name}: the default view must load the medium-resolution map without zooming`)
+    const first = await canvas.screenshot({ path: join(output, `${name}-default.png`) })
     const image = PNG.sync.read(first)
     let landPixels = 0
     for (let i = 0; i < image.data.length; i += 4) {
@@ -506,7 +541,8 @@ try {
       state.frame = requestAnimationFrame(sample)
       return state
     })
-    collectionDelay = 400
+    // Keep the manual loading state observable even with software WebGL rendering.
+    collectionDelay = 2000
     const refreshButton = page.getByRole('button', { name: 'Refresh Topology', exact: true })
     const automaticResponse = page.waitForResponse(response =>
       response.url().includes('/networks/info') && response.status() === 200)
@@ -517,8 +553,10 @@ try {
     await page.waitForTimeout(700)
     const manualResponse = page.waitForResponse(response =>
       response.url().includes('/networks/info') && response.status() === 200)
-    await refreshButton.click()
-    await refreshButton.locator('[data-pc-section="loadingicon"]').waitFor()
+    await Promise.all([
+      refreshButton.locator('[data-pc-section="loadingicon"]').waitFor(),
+      refreshButton.click(),
+    ])
     await manualResponse
     await page.waitForTimeout(700)
     assert.equal(await refreshButton.locator('[data-pc-section="loadingicon"]').count(), 0,
@@ -631,38 +669,31 @@ try {
     'Crowded-link validation did not display any traffic labels')
   assert.equal(await page.locator('.globe-node-stack:visible').count(), 1,
     'Devices in the same city split into several scattered name groups')
-  assert.equal(await page.locator('.globe-node-stack .globe-node-label').count(), 4,
-    'A city group lost individual device names')
+  const mobileNodes = await page.locator('.globe-node-stack .globe-node-label').count()
+  assert.ok(mobileNodes > 0 && mobileNodes <= 4, 'The city group must load complete individual device cards')
   const routeStack = page.locator('.globe-traffic-stack:visible')
   assert.equal(await routeStack.count(), 1, 'Overlapping geographic links split into separate label groups')
-  assert.equal(await routeStack.locator('.globe-traffic-label').count(), 6,
-    'A route group merged or discarded the separate device-link measurements')
-  assert.ok(await routeStack.evaluate(element => element.scrollHeight > element.clientHeight),
-    'Crowded mobile route groups should scroll internally')
-  const distanceBeforeScrolling = await overlappingCanvas.getAttribute('data-globe-distance')
-  await routeStack.hover()
-  await page.mouse.wheel(0, 1200)
-  await page.waitForFunction(() => {
-    const stack = [...document.querySelectorAll('.globe-traffic-stack')]
-      .find(element => getComputedStyle(element).display !== 'none')
-    return stack?.scrollTop > 0
-  })
-  assert.ok(await routeStack.evaluate(element => element.scrollTop > 0),
-    'The grouped route column cannot be scrolled')
-  assert.equal(await overlappingCanvas.getAttribute('data-globe-distance'), distanceBeforeScrolling,
-    'Scrolling a label column also zoomed the globe')
+  const mobileRoutes = await routeStack.locator('.globe-traffic-label').count()
+  assert.ok(mobileRoutes > 0 && mobileRoutes < 6,
+    'Crowded mobile routes should load only the individual measurements that fit')
+  await assertTrafficCardWheel(page, overlappingCanvas, 'overlapping mobile')
+  await assertLocalLabelLayout(page, 'overlapping mobile after card zoom')
   await page.screenshot({ path: join(output, 'mobile-overlapping.png'), fullPage: true })
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.waitForFunction(() => document.querySelector('.globe-stage canvas')?.clientWidth > 800)
   await page.waitForTimeout(300)
-  await routeStack.evaluate(element => { element.scrollTop = 0 })
+  await page.waitForFunction(previous => document.querySelectorAll('.globe-traffic-label').length > previous, mobileRoutes)
   const desktopStacks = await assertLocalLabelLayout(page, 'overlapping desktop')
   const expandedRoutes = desktopStacks.find(stack => stack.traffic)
-  assert.ok(expandedRoutes && expandedRoutes.height > expandedRoutes.rows[0].height * 2,
-    'The desktop route group did not expand to multiple stacked rows')
+  assert.ok(expandedRoutes && expandedRoutes.rows.length > mobileRoutes && expandedRoutes.rows.length <= 6,
+    'A larger viewport did not load more complete route cards')
   assert.equal(await page.locator('.globe-node-stack:visible').count(), 1)
-  assert.equal(await routeStack.locator('.globe-traffic-label').count(), 6)
+  const desktopRoutes = expandedRoutes.rows.length
+  await assertTrafficCardWheel(page, overlappingCanvas, 'overlapping desktop')
   await page.screenshot({ path: join(output, 'desktop-overlapping.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 960 })
+  await page.waitForFunction(previous => document.querySelectorAll('.globe-traffic-label').length < previous, desktopRoutes)
+  await assertLocalLabelLayout(page, 'overlapping mobile after resize')
   empty = true
   await page.goto(dashboardUrl)
   await page.reload()

@@ -106,35 +106,56 @@ describe('local globe label distribution', () => {
   })
 
   it('places an entire vertical stack beside its shared route with one short connector', () => {
-    const stack = { ...label('stack'), stacked: true, height: 176, heights: [176, 116, 56] }
+    const stack = { ...label('stack'), stacked: true,
+      rows: Array.from({ length: 3 }, () => ({ width: 198, height: 56 })) }
     const placed = arrangeGlobeLabels([stack], 800, 500)
     expect(placed).toHaveLength(1)
     expect(placed[0].height).toBe(176)
+    expect(placed[0].labelCount).toBe(3)
     expect(placed[0].leaderLength).toBeCloseTo(12)
     verify(placed)
   })
 
-  it('shrinks a scrollable stack by whole rows when the full column would cover a marker', () => {
-    const stack = { ...label('stack', 160, 150), stacked: true, height: 220, heights: [220, 148, 72] }
+  it('loads only complete rows when the full column would cover a marker', () => {
+    const stack = { ...label('stack', 160, 150), stacked: true,
+      rows: Array.from({ length: 3 }, () => ({ width: 198, height: 72 })) }
     const placed = arrangeGlobeLabels([stack], 329, 300,
       [{ x: 153, y: 143, width: 14, height: 14 }])
     expect(placed).toHaveLength(1)
     expect(placed[0].height).toBe(72)
+    expect(placed[0].labelCount).toBe(1)
     verify(placed, 329, 300)
   })
 
   it('keeps a city column and its overlapping route column visible on mobile', () => {
     const city: LayoutLabel = {
       id: 'city', kind: 'node', stacked: true, priority: 10,
-      width: 80, height: 100, heights: [100, 74, 48, 22],
+      width: 80, height: 100, rows: Array.from({ length: 4 }, () => ({ width: 80, height: 22 })),
       anchors: [{ x: 160, y: 150, index: 0 }],
     }
-    const routes = { ...label('routes', 160, 250), width: 206, stacked: true,
-      height: 220, heights: [220, 148, 72] }
+    const routes = { ...label('routes', 160, 250), stacked: true,
+      rows: Array.from({ length: 3 }, () => ({ width: 198, height: 72 })) }
     const placed = arrangeGlobeLabels([routes, city], 329, 300,
       [{ x: 153, y: 143, width: 14, height: 14 }])
     expect(placed).toHaveLength(2)
     expect(placed.find(placement => placement.id === 'city')!.y).toBeLessThan(150)
     verify(placed, 329, 300)
+  })
+
+  it('does not reserve space for rows that cannot be loaded and restores them when space returns', () => {
+    const stack: LayoutLabel = {
+      id: 'city', kind: 'node', stacked: true, priority: 10, width: 80, height: 22,
+      rows: [{ width: 80, height: 22 }, { width: 174, height: 22 }],
+      anchors: [{ x: 60, y: 50, index: 0 }],
+    }
+    const narrow = arrangeGlobeLabels([stack], 120, 150)
+    expect(narrow).toHaveLength(1)
+    expect(narrow[0]).toMatchObject({ labelCount: 1, width: 80, height: 22 })
+    verify(narrow, 120, 150)
+    const wide = arrangeGlobeLabels([stack], 400, 300)
+    expect(wide).toHaveLength(1)
+    expect(wide[0]).toMatchObject({ labelCount: 2, width: 174, height: 48 })
+    verify(wide, 400, 300)
+    expect(arrangeGlobeLabels([stack], 70, 150)).toEqual([])
   })
 })

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { buildCloudPointPositions } from '../src/modules/globePointCloud'
 
 describe('globe equal-area point cloud', () => {
-  it.each([24_000, 96_000, 288_000])('retains every point at the %i-point detail level', (count) => {
+  it.each([48_000, 96_000, 288_000])('retains every point at the %i-point detail level', (count) => {
     const { land, ocean } = buildCloudPointPositions(count, latitude => latitude >= 0)
     expect(land.length).toBe(count / 2 * 3)
     expect(ocean.length).toBe(count / 2 * 3)

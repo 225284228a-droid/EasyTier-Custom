@@ -27,7 +27,7 @@ export interface LayoutLabel {
   anchors: LabelAnchor[]
   previous?: LabelChoice
   stacked?: boolean
-  heights?: number[]
+  rows?: { width: number, height: number }[]
 }
 
 export interface LabelPlacement extends LabelRect {
@@ -36,10 +36,12 @@ export interface LabelPlacement extends LabelRect {
   leaderEnd: ScreenPoint
   leaderLength: number
   choice: LabelChoice
+  labelCount: number
 }
 
 export const MAX_TRAFFIC_LEADER_LENGTH = 48
 export const MAX_NODE_LEADER_LENGTH = 32
+export const LABEL_STACK_GAP = 4
 const LABEL_GAP = 12
 const COLLISION_PADDING = 4
 
@@ -80,10 +82,18 @@ function candidates(label: LayoutLabel, width: number, height: number): {
   placement: LabelPlacement
   score: number
 }[] {
-  if (label.heights?.length) {
-    return label.heights.flatMap((stackHeight, index) =>
-      candidates({ ...label, height: stackHeight, heights: undefined }, width, height)
-        .map(candidate => ({ ...candidate, score: candidate.score + index * 40 })))
+  if (label.rows?.length) {
+    let stackWidth = 0
+    let stackHeight = 0
+    return label.rows.flatMap((row, index) => {
+      stackWidth = Math.max(stackWidth, row.width)
+      stackHeight += row.height + (index ? LABEL_STACK_GAP : 0)
+      return candidates({ ...label, width: stackWidth, height: stackHeight, rows: undefined }, width, height)
+        .map(candidate => ({
+          placement: { ...candidate.placement, labelCount: index + 1 },
+          score: candidate.score + (label.rows!.length - index - 1) * 40,
+        }))
+    })
       .sort((left, right) => left.score - right.score)
   }
   const result: { placement: LabelPlacement, score: number }[] = []
@@ -144,7 +154,7 @@ function candidates(label: LayoutLabel, width: number, height: number): {
           const unchanged = label.previous?.anchorIndex === choice.anchorIndex
             && label.previous.direction === choice.direction
           result.push({
-            placement: { id: label.id, ...rect, anchor, leaderEnd, leaderLength, choice },
+            placement: { id: label.id, ...rect, anchor, leaderEnd, leaderLength, choice, labelCount: 1 },
             score: leaderLength + anchor.index * 2 + side * 2 + Number(corner) * 3
               + Math.hypot(x - desiredX, y - desiredY) * 0.25 - (unchanged ? 24 : 0),
           })
