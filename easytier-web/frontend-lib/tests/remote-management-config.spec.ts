@@ -901,7 +901,7 @@ describe('revision-aware RemoteManagement forms', () => {
       await flushPromises()
       expect(api.patch_local_config.mock.calls[0][0]).toMatchObject({ expected_revision: '', apply_mode: 1 })
       expect(api.patch_local_config.mock.calls[0][0].field_mask).not.toContain('instance_id')
-      expect(api.patch_local_config.mock.calls[0][0].config).not.toHaveProperty('enable_bbr')
+      expect(api.patch_local_config.mock.calls[0][0].config).not.toHaveProperty('close_redundant_conns_when_disguised')
       expect(api.save_config).not.toHaveBeenCalled()
       expect(api.update_network_instance_state).not.toHaveBeenCalled()
     } finally { wrapper.unmount(); vi.useRealTimers() }

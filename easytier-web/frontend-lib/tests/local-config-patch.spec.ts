@@ -24,17 +24,17 @@ describe('online local configuration patches', () => {
 
   it('sends only changed fields with the target revision and retains explicit false and deletion', () => {
     const source = entry()
-    source.config!.enable_bbr = true
+    source.config!.close_redundant_conns_when_disguised = true
     source.config!.vpn_portal_config = { enabled: true, wireguard_listen: '0.0.0.0:22022', clients: [] }
     const edited = normalizeNetworkConfig(source.config!)
-    edited.enable_bbr = false
+    edited.close_redundant_conns_when_disguised = false
     edited.vpn_portal_config = undefined
     const mask = changedConfigFields(source.config!, edited)
-    expect(mask).toEqual(expect.arrayContaining(['enable_bbr', 'vpn_portal_config']))
-    const patch = buildLocalConfigPatch(source, edited, mask, ['config:enable_bbr'])
+    expect(mask).toEqual(expect.arrayContaining(['close_redundant_conns_when_disguised', 'vpn_portal_config']))
+    const patch = buildLocalConfigPatch(source, edited, mask, ['config:close_redundant_conns_when_disguised'])
     expect(patch.expected_revision).toBe('revision-a')
     expect(patch.apply_mode).toBe(0)
-    expect(patch.config.enable_bbr).toBe(false)
+    expect(patch.config.close_redundant_conns_when_disguised).toBe(false)
     expect(patch.config).not.toHaveProperty('vpn_portal_config')
     expect(patch.config).not.toHaveProperty('network_secret')
     expect(patch.config).not.toHaveProperty('persisted_toml')
@@ -65,10 +65,10 @@ describe('online local configuration patches', () => {
 
   it('creates with an empty revision, persist-only and individually supported fields', () => {
     const config = DEFAULT_NETWORK_CONFIG()
-    const patch = buildLocalConfigCreatePatch(config, ['config:enable_bbr'])
+    const patch = buildLocalConfigCreatePatch(config, ['config:close_redundant_conns_when_disguised'])
     expect(patch.expected_revision).toBe('')
     expect(patch.apply_mode).toBe(1)
-    expect(patch.field_mask).toContain('enable_bbr')
+    expect(patch.field_mask).toContain('close_redundant_conns_when_disguised')
     expect(patch.field_mask).not.toContain('sni')
     expect(patch.field_mask).not.toContain('instance_id')
     expect(patch.config).not.toHaveProperty('instance_id')

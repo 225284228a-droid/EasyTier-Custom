@@ -78,7 +78,6 @@ pub(crate) async fn accept_two_connections_on_same_session(
 pub(crate) async fn assert_second_connection_survives_first_close(
     endpoint: Endpoint,
     remote_addr: SocketAddr,
-    enable_bbr: bool,
     server_task: JoinHandle<(Box<dyn Tunnel>, Box<dyn Tunnel>)>,
     protocol_name: &str,
 ) {
@@ -87,7 +86,7 @@ pub(crate) async fn assert_second_connection_survives_first_close(
         .unwrap()
         .await
         .unwrap();
-    super::tests::assert_bbr_controller(&first_connection, enable_bbr);
+    super::tests::assert_bbr_controller(&first_connection);
     let (first_write, first_read) = first_connection.open_bi().await.unwrap();
     let mut first_send = FramedWriter::new(first_write);
     first_send

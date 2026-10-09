@@ -452,11 +452,11 @@ async fn late_observation_cannot_replace_a_reconnected_session_snapshot() {
 fn masked_extensions_require_capability_even_when_false_or_empty() {
     let request = PatchPersistedConfigRequest {
         config: Some(NetworkConfig {
-            enable_bbr: Some(false),
+            close_redundant_conns_when_disguised: Some(false),
             sni: Some(String::new()),
             ..Default::default()
         }),
-        field_mask: vec!["enable_bbr".into(), "sni".into()],
+        field_mask: vec!["close_redundant_conns_when_disguised".into(), "sni".into()],
         ..Default::default()
     };
     assert!(matches!(
@@ -467,8 +467,14 @@ fn masked_extensions_require_capability_even_when_false_or_empty() {
     unselected.field_mask = vec!["hostname".into()];
     assert!(validate_capability_mask(&unselected, &[]).is_ok());
     assert!(
-        validate_capability_mask(&request, &["config:enable_bbr".into(), "config:sni".into()])
-            .is_ok()
+        validate_capability_mask(
+            &request,
+            &[
+                "config:close_redundant_conns_when_disguised".into(),
+                "config:sni".into()
+            ]
+        )
+        .is_ok()
     );
 }
 

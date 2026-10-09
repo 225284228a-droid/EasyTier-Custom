@@ -110,8 +110,6 @@ message NetworkConfig {
   optional bool only_use_wss_http3_for_hole_punching = 74;
   optional bool prefer_wss_http3_for_p2p = 75;
   optional bool disable_wss_http3_for_p2p = 76;
-  // use BBR congestion control for local QUIC/HTTP3 sending, including QUIC proxy
-  optional bool enable_bbr = 77;
 
   // Preferred underlay transport for automatic P2P connect attempts: "tcp" or
   // "udp". When WSS/HTTP3 is in use it also picks the disguised transport -

@@ -47,7 +47,6 @@ const BOOLEAN_CONFIG_FIELDS = [
   'enable_magic_dns',
   'enable_private_mode',
   'enable_quic_proxy',
-  'enable_bbr',
   'disable_quic_input',
   'disable_sym_hole_punching',
   'p2p_only',

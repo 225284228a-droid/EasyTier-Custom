@@ -116,7 +116,6 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         disable_udp_hole_punching: config.disable_udp_hole_punching,
         mtu: config.mtu,
         enable_private_mode: config.enable_private_mode,
-        enable_bbr: config.enable_bbr,
         disable_sym_hole_punching: config.disable_sym_hole_punching,
         p2p_only: config.p2p_only,
         disable_tcp_hole_punching: config.disable_tcp_hole_punching,

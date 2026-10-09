@@ -76,12 +76,7 @@
 - TCP 打洞 Ping 最大间隔采用官方 1 秒限制，保留带宽 Ping/Pong 扩展；清理队列在入队与出队时复核开关、协议偏好和可用替代连接，关闭网络连接发生在锁外。
 - 修复升序排序后从末尾消费导致的拨号偏好颠倒，并验证实际消费顺序。
 
-### 5. 可选 BBR
-
-- 增加 `enable_bbr` 开关，用于本地 QUIC/HTTP3 发送端和 QUIC 代理的拥塞控制，默认关闭。
-- 该选项不是修改系统 TCP 拥塞控制，也不需要配置最大带宽；关闭时保留 Quinn 的默认控制器。
-
-### 6. 实验性 TCP 对称 NAT 打洞增强
+### 5. 实验性 TCP 对称 NAT 打洞增强
 
 - TCP STUN 增加额外绑定探测，识别端口递增/递减的容易预测的对称 NAT。
 - TCP 探测结果未知时借用 UDP NAT 类型作为近似值；这不等同于成功完成 TCP 探测。
@@ -92,7 +87,7 @@
 
 相关代码：`easytier-core/src/connectivity/hole_punch/tcp.rs`、`connectivity/stun/`、`easytier-proto/proto/peer_rpc.proto`、`easytier/src/socket/tcp.rs`。
 
-### 7. 流量、带宽与地理展示
+### 6. 流量、带宽与地理展示
 
 - 保留带宽 Ping/Pong 扩展、双向流量统计、城市缓存及地球展示，组合到官方导航、主题、设备和网络页面。
 - 带宽窗口与估计值的中性类型放在 `easytier-core/src/foundation/bandwidth.rs`，socket 与 tunnel 共用基础类型；ETBW 线格式编解码仍由 tunnel 负责。
@@ -113,7 +108,6 @@
 | `[flags] disable_wss_http3_for_p2p` | `false` | 禁止自动 P2P 使用 WSS/HTTP3 |
 | `[flags] only_use_wss_http3_for_hole_punching` | `false` | 限制自动 P2P/打洞使用伪装传输 |
 | `[flags] close_redundant_conns_when_disguised` | `false` | 首选连接可用后清理较低优先级的自动P2P连接 |
-| `[flags] enable_bbr` | `false` | 为 QUIC/HTTP3 发送端启用 BBR |
 
 这些策略受本机构建能力和对端能力影响。与原版混用时不要假定扩展功能全部可用；强制仅使用 WSS/HTTP3 可能减少可连接路径。启用互相冲突的策略可能使连接无法建立。
 
@@ -146,7 +140,7 @@ cargo build --release --locked -p easytier
 - 原生持久化配置事务测试 20 项通过，覆盖停用状态、仅保存后热修改、取消中的写入、外部修改后的拒绝及回滚保护；双服务器镜像与版本校验测试 9 项通过，包括两个独立数据库同时修改同一版本和手改后 10 秒内刷新。
 - 配置目录启动修复的 4 项定向测试与真实 CLI 基本启动验证通过：非法/重复身份配置隔离、停用状态保留、只读/环境变量/旧无 UUID 配置正常加载，不自动创建替代网络。
 - 两个真实 Web 服务、两个独立 SQLite 数据库和两个浏览器会话的基本验收通过：网页保存后两侧页面最慢 4.215 秒刷新，稳定手改后最慢 5.027 秒刷新；同版本同时提交仅一侧成功，另一侧返回 409 并保留草稿。断线时镜像可读、写入被拒绝，重连无写入重放；账号隔离、原始注释和非表单字段保留也通过。
-- WS/WSS 协商测试 20 项通过，覆盖实际 Upgrade 请求与响应、缺少能力头和未知 token 的 binary 回退、配置服务器首个 RPC；原生 QUIC 的 BBR 开关四种组合通过。
+- WS/WSS 协商测试 20 项通过，覆盖实际 Upgrade 请求与响应、缺少能力头和未知 token 的 binary 回退、配置服务器首个 RPC。
 - 使用固定官方 `4837468d` 源码独立构建的真实进程执行 5 项互通测试，全部通过：WS/WSS × 双向 × 两种 padding 配置的 8 组 peer 连接、2 组管理连接及反向 RPC、2 组官方端拒绝未协商文本 padding 的探针。回环测试显式关闭设备绑定，不修改产品的设备绑定策略。
 - 共享前端最终完整运行 31 个测试文件、282 项测试及 GUI 前端 24 项测试通过；配置导出测试 10 项通过，共享前端与 GUI/Web 的类型检查和生产构建通过。
 - 官方控制台浏览器场景和定制地球/流量完整浏览器验收通过。地球使用本机 Intel GPU 的 ANGLE D3D11，覆盖桌面和手机尺寸、10m 高精度地图、双向流量/RTT、暂停与拖拽、缩放和标签布局；SwiftShader 软件渲染会显著拖慢地图读取，不据此降低地图精度或验收断言。可用 `CHROMIUM_ANGLE_BACKEND=d3d11` 选择同一验收路径。

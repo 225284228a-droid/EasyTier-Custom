@@ -67,7 +67,7 @@ describe('dashboard API request limits', () => {
     client.get.mockImplementation(async path => path === '/machines'
       ? { machines: [{ info: { machine_id: id, runtime_capabilities: ['config:sni'] } }] } : {})
     await api.set_member_config('mesh', id, {
-      sni: 'example.com', enable_bbr: false, p2p_prefer_protocol: 'tcp',
+      sni: 'example.com', close_redundant_conns_when_disguised: false, p2p_prefer_protocol: 'tcp',
       listener_urls: ['ws://0.0.0.0:1', 'wss://0.0.0.0:2', 'http3://0.0.0.0:3'],
     })
     expect(client.put.mock.calls[0][1].config).toEqual({ sni: 'example.com', listener_urls: ['ws://0.0.0.0:1', 'wss://0.0.0.0:2'] })
@@ -75,7 +75,7 @@ describe('dashboard API request limits', () => {
   })
 
   it.each([
-    { enable_bbr: false },
+    { close_redundant_conns_when_disguised: false },
     { sni: '' },
     { p2p_prefer_protocol: 'udp' },
     { peer_urls: ['http3://saved.example:443'] },
@@ -92,9 +92,9 @@ describe('dashboard API request limits', () => {
   it('keeps explicitly supported false/empty overrides in a central replacement', async () => {
     const api = new ApiClient('http://localhost')
     const id = '00000000-0000-0000-0000-000000000001'
-    const existing = { enable_bbr: false, sni: '' }
+    const existing = { close_redundant_conns_when_disguised: false, sni: '' }
     client.get.mockImplementation(async path => path === '/machines'
-      ? { machines: [{ info: { machine_id: id, runtime_capabilities: ['config:enable_bbr', 'config:sni'] } }] } : existing)
+      ? { machines: [{ info: { machine_id: id, runtime_capabilities: ['config:close_redundant_conns_when_disguised', 'config:sni'] } }] } : existing)
     await api.set_member_config('mesh', id, { ...existing, hostname: 'edited' })
     expect(client.put.mock.calls[0][1].config).toEqual({ ...existing, hostname: 'edited' })
   })

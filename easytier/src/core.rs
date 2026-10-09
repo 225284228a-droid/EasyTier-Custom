@@ -655,15 +655,6 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_ENABLE_BBR",
-        help = t!("core_clap.enable_bbr").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    enable_bbr: Option<bool>,
-
-    #[arg(
-        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
@@ -1365,7 +1356,6 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
-        f.enable_bbr = self.enable_bbr.unwrap_or(f.enable_bbr);
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
@@ -2347,28 +2337,6 @@ mod tests {
         assert_eq!(cli.config_dir, Some(expected));
         let cli = Cli::try_parse_from(["easytier-core", "--config-dir", "custom-configs"]).unwrap();
         assert_eq!(cli.config_dir, Some(PathBuf::from("custom-configs")));
-    }
-
-    #[test]
-    fn bbr_cli_preserves_config_unless_explicitly_overridden() {
-        for args in [vec![], vec!["--enable-bbr"], vec!["--enable-bbr", "false"]] {
-            let expected = match args.as_slice() {
-                [] => None,
-                ["--enable-bbr"] => Some(true),
-                _ => Some(false),
-            };
-            let cli = Cli::try_parse_from(std::iter::once("easytier-core").chain(args)).unwrap();
-            assert_eq!(cli.network_options.enable_bbr, expected);
-            for initial in [false, true] {
-                let config = TomlConfigLoader::default();
-                let mut flags = config.get_flags();
-                flags.enable_bbr = initial;
-                config.set_flags(flags);
-                cli.network_options.merge_into(&config).unwrap();
-                assert_eq!(config.get_flags().enable_bbr, expected.unwrap_or(initial));
-                assert!(!config.get_flags().enable_quic_proxy);
-            }
-        }
     }
 
     #[test]

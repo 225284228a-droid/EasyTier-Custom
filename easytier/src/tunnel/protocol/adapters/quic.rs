@@ -22,20 +22,14 @@ use crate::{
 use super::{ClientAdapter, ServerAdapter};
 
 #[derive(Default)]
-struct QuicAdapter {
-    enable_bbr: bool,
+struct QuicAdapter;
+
+pub(super) fn client_adapter(_global_ctx: &ArcGlobalCtx) -> ClientAdapter {
+    Arc::new(QuicAdapter)
 }
 
-pub(super) fn client_adapter(global_ctx: &ArcGlobalCtx) -> ClientAdapter {
-    Arc::new(QuicAdapter {
-        enable_bbr: global_ctx.get_flags().enable_bbr,
-    })
-}
-
-pub(super) fn server_adapter(global_ctx: &ArcGlobalCtx) -> ServerAdapter {
-    Arc::new(QuicAdapter {
-        enable_bbr: global_ctx.get_flags().enable_bbr,
-    })
+pub(super) fn server_adapter(_global_ctx: &ArcGlobalCtx) -> ServerAdapter {
+    Arc::new(QuicAdapter)
 }
 
 #[async_trait]
@@ -52,7 +46,7 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for QuicAdapter {
         let ConnectedTransport::Udp(session) = connected else {
             anyhow::bail!("QUIC protocol requires a UDP session");
         };
-        Ok(upgrade_connected(session, requested_url, self.enable_bbr).await?)
+        Ok(upgrade_connected(session, requested_url).await?)
     }
 }
 
@@ -79,7 +73,7 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for QuicAdapter {
         let admission =
             admission.ok_or_else(|| anyhow::anyhow!("QUIC server admission permit is missing"))?;
         Ok(ServerProtocolUpgrade::Acceptor(Box::new(
-            QuicAcceptedSession::new(session, local_url, admission, self.enable_bbr)?,
+            QuicAcceptedSession::new(session, local_url, admission)?,
         )))
     }
 

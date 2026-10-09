@@ -152,7 +152,6 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
   { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
   { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
-  { field: 'enable_bbr', help: 'enable_bbr_help' },
   { field: 'close_redundant_conns_when_disguised', help: 'close_redundant_conns_when_disguised_help' },
   { field: 'disable_quic_input', help: 'disable_quic_input_help' },
   { field: 'disable_p2p', help: 'disable_p2p_help' },

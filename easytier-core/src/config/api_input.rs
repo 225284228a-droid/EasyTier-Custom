@@ -513,10 +513,6 @@ impl NetworkConfigExt for NetworkConfig {
             flags.enable_quic_proxy = enable_quic_proxy;
         }
 
-        if let Some(enable_bbr) = self.enable_bbr {
-            flags.enable_bbr = enable_bbr;
-        }
-
         if let Some(disable_quic_input) = self.disable_quic_input {
             flags.disable_quic_input = disable_quic_input;
         }
@@ -804,7 +800,6 @@ impl NetworkConfigExt for NetworkConfig {
         result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
         result.disable_kcp_input = Some(flags.disable_kcp_input);
         result.enable_quic_proxy = Some(flags.enable_quic_proxy);
-        result.enable_bbr = Some(flags.enable_bbr);
         result.disable_quic_input = Some(flags.disable_quic_input);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
@@ -940,35 +935,6 @@ mod tests {
                     Some(expected_protocol)
                 );
             }
-        }
-    }
-
-    #[test]
-    fn bbr_defaults_off_and_round_trips_independently_of_quic_proxy() {
-        for value in [None, Some(false), Some(true)] {
-            let input = NetworkConfig {
-                enable_bbr: value,
-                ..standalone_config()
-            };
-            let config = input.gen_config().unwrap();
-            let expected = value.unwrap_or(false);
-            assert_eq!(config.get_flags().enable_bbr, expected);
-            assert!(!config.get_flags().enable_quic_proxy);
-            let dumped = config.dump();
-            assert_eq!(dumped.contains("enable_bbr = true"), expected);
-            let restored = TomlConfigLoader::new_from_str(&dumped).unwrap();
-            assert_eq!(restored.get_flags().enable_bbr, expected);
-            assert_eq!(
-                NetworkConfig::new_from_config(&restored)
-                    .unwrap()
-                    .enable_bbr,
-                Some(expected)
-            );
-            #[cfg(feature = "web-client")]
-            assert_eq!(
-                crate::config::api::network_config_from_toml(&restored).enable_bbr,
-                Some(expected)
-            );
         }
     }
 

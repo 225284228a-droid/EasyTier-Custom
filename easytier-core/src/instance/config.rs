@@ -133,7 +133,6 @@ impl CoreInstanceHostConfig {
             flags.enable_relay_foreign_network_kcp = false;
         }
         if !self.quic_enabled {
-            flags.enable_bbr = false;
             flags.enable_quic_proxy = false;
             flags.disable_quic_input = true;
             flags.disable_relay_quic = true;
@@ -718,7 +717,7 @@ uri = "quic://127.0.0.1:11011"
 [flags]
 enable_exit_node = true
 enable_kcp_proxy = true
-enable_bbr = true
+enable_quic_proxy = true
 accept_dns = true
 encryption_algorithm = "chacha20"
 data_compress_algo = "Zstd"
@@ -779,8 +778,8 @@ data_compress_algo = "Zstd"
         );
         let flags = &normalized.peer.snapshot.flags;
         assert!(!flags.enable_kcp_proxy);
-        assert!(!flags.enable_bbr);
-        assert!(config.get_flags().enable_bbr);
+        assert!(!flags.enable_quic_proxy);
+        assert!(config.get_flags().enable_quic_proxy);
         assert!(flags.disable_kcp_input);
         assert!(!flags.accept_dns);
         let expected_encryption = if algorithm_is_available(EncryptionAlgorithm::ChaCha20) {

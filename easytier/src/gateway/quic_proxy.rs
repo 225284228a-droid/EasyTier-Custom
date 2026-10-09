@@ -253,7 +253,6 @@ const LEGACY_VERSION_TTL: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, Clone)]
 pub struct NatDstQuicConnector {
-    enable_bbr: bool,
     pub(crate) endpoint: Endpoint,
     pub(crate) conn_map: Cache<PeerId, Connection>,
     /// Peers that recently rejected `QUIC_VERSION_ETQ1` via version
@@ -269,7 +268,6 @@ impl NatDstQuicConnector {
         version: u32,
     ) -> impl Future<Output = Result<Connection, ErrorCollection<anyhow::Error>>> + '_ {
         let endpoint = self.endpoint.clone();
-        let enable_bbr = self.enable_bbr;
         let legacy_version_peers = self.legacy_version_peers.clone();
         (0..5)
             .map(move |_| {
@@ -277,9 +275,9 @@ impl NatDstQuicConnector {
                 let legacy_version_peers = legacy_version_peers.clone();
                 async move {
                     let config = if version == QUIC_VERSION_ETQ1 {
-                        etq1_client_config(enable_bbr)
+                        etq1_client_config()
                     } else {
-                        client_config(enable_bbr)
+                        client_config()
                     };
                     let ret = endpoint
                         .connect_with(
@@ -638,7 +636,6 @@ impl QuicStreamReceiver {
 }
 
 pub struct QuicProxy {
-    enable_bbr: bool,
     endpoint: Option<Endpoint>,
     input_tx: Option<Arc<Sender<QuicPacket>>>,
 
@@ -651,9 +648,8 @@ pub struct QuicProxy {
 }
 
 impl QuicProxy {
-    pub fn new(enable_bbr: bool) -> Self {
+    pub fn new() -> Self {
         Self {
-            enable_bbr,
             endpoint: None,
             input_tx: None,
             source_connector: None,
@@ -704,7 +700,7 @@ impl QuicProxy {
 
         let mut endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
-            Some(server_config(self.enable_bbr)),
+            Some(server_config()),
             Arc::new(socket),
             default_runtime().unwrap(),
         )
@@ -712,7 +708,7 @@ impl QuicProxy {
         // Default stays on legacy version 1; ETQ1 is negotiated per attempt in
         // NatDstQuicConnector so that peers which only speak version 1 keep
         // working.
-        endpoint.set_default_client_config(client_config(self.enable_bbr));
+        endpoint.set_default_client_config(client_config());
         self.endpoint = Some(endpoint.clone());
 
         self.tasks.spawn(
@@ -733,7 +729,6 @@ impl QuicProxy {
             }
 
             self.source_connector = Some(NatDstQuicConnector {
-                enable_bbr: self.enable_bbr,
                 endpoint: endpoint.clone(),
                 conn_map: Cache::builder()
                     .max_capacity(u8::MAX.into()) // cf. quinn transport config (max_concurrent_bidi_streams)
@@ -786,14 +781,12 @@ impl QuicProxy {
 }
 
 pub struct QuicProxyService {
-    enable_bbr: bool,
     state: Mutex<Option<QuicProxy>>,
 }
 
 impl QuicProxyService {
-    pub fn new(enable_bbr: bool) -> Self {
+    pub fn new() -> Self {
         Self {
-            enable_bbr,
             state: Mutex::new(None),
         }
     }
@@ -817,7 +810,7 @@ impl WrappedTransportEngine for QuicProxyService {
             None
         };
 
-        let mut proxy = QuicProxy::new(self.enable_bbr);
+        let mut proxy = QuicProxy::new();
         if directions.source || directions.destination {
             proxy
                 .prepare(
@@ -938,10 +931,6 @@ mod tests {
     }
 
     fn endpoint() -> (Endpoint, Endpoint) {
-        endpoint_with_bbr(false, false)
-    }
-
-    fn endpoint_with_bbr(client_bbr: bool, server_bbr: bool) -> (Endpoint, Endpoint) {
         let endpoint_config = endpoint_config();
 
         // 1. Create an in-memory Socket pair
@@ -952,22 +941,22 @@ mod tests {
         // 3. Configure Client Endpoint
         let mut client_endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config.clone(),
-            Some(server_config(client_bbr)),
+            Some(server_config()),
             socket_client.clone(),
             default_runtime().unwrap(),
         )
         .unwrap();
-        client_endpoint.set_default_client_config(client_config(client_bbr));
+        client_endpoint.set_default_client_config(client_config());
 
         // 2. Configure Server Endpoint
         let mut server_endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config.clone(),
-            Some(server_config(server_bbr)),
+            Some(server_config()),
             socket_server.clone(),
             default_runtime().unwrap(),
         )
         .unwrap();
-        server_endpoint.set_default_client_config(client_config(server_bbr));
+        server_endpoint.set_default_client_config(client_config());
 
         (client_endpoint, server_endpoint)
     }
@@ -1005,13 +994,9 @@ mod tests {
         });
     }
 
-    #[rstest::rstest]
     #[tokio::test]
-    async fn test_ping(
-        #[values(false, true)] client_bbr: bool,
-        #[values(false, true)] server_bbr: bool,
-    ) -> anyhow::Result<()> {
-        let (client_endpoint, server_endpoint) = endpoint_with_bbr(client_bbr, server_bbr);
+    async fn test_ping() -> anyhow::Result<()> {
+        let (client_endpoint, server_endpoint) = endpoint();
         let server_addr = server_endpoint.local_addr()?;
 
         // 4. Server receive task
@@ -1019,7 +1004,7 @@ mod tests {
             println!("Server: Waiting for connection...");
             if let Some(conn) = server_endpoint.accept().await {
                 let connection = conn.await.unwrap();
-                crate::tunnel::quic::tests::assert_bbr_controller(&connection, server_bbr);
+                crate::tunnel::quic::tests::assert_bbr_controller(&connection);
                 println!(
                     "Server: Connection accepted from {}",
                     connection.remote_address()
@@ -1046,7 +1031,7 @@ mod tests {
         // Note: The connect address here must be V4, because try_send is limited to SocketAddr::V4
         println!("Client: Connecting...");
         let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
-        crate::tunnel::quic::tests::assert_bbr_controller(&connection, client_bbr);
+        crate::tunnel::quic::tests::assert_bbr_controller(&connection);
         println!("Client: Connected!");
 
         // Open a stream and send data
@@ -1330,8 +1315,8 @@ mod tests {
         client_endpoint_config: EndpointConfig,
         server_endpoint_config: EndpointConfig,
     ) -> (Endpoint, Endpoint) {
-        let server_config = server_config(false);
-        let client_config = client_config(false);
+        let server_config = server_config();
+        let client_config = client_config();
 
         let (socket_client, socket_server) = make_socket_pair();
 
@@ -1357,6 +1342,7 @@ mod tests {
     }
 
     async fn assert_stream_roundtrip(connection: &Connection) -> anyhow::Result<()> {
+        crate::tunnel::quic::tests::assert_bbr_controller(connection);
         let (mut send, mut recv) = connection.open_bi().await?;
         send.write_all(b"ping").await?;
         send.finish()?;
@@ -1366,11 +1352,8 @@ mod tests {
         Ok(())
     }
 
-    #[rstest::rstest]
     #[tokio::test]
-    async fn etq1_handshake_streams_both_ways(
-        #[values(false, true)] enable_bbr: bool,
-    ) -> anyhow::Result<()> {
+    async fn etq1_handshake_streams_both_ways() -> anyhow::Result<()> {
         // New client and new server negotiate ETQ1 and echo a stream in both
         // directions, exercising the packet-number-bound checksum on
         // Initial, Handshake and 1-RTT packets.
@@ -1383,6 +1366,7 @@ mod tests {
                 panic!("no incoming connection");
             };
             let connection = incoming.await.unwrap();
+            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
             let (mut send, mut recv) = connection.accept_bi().await.unwrap();
             let mut buf = vec![0u8; 4];
             recv.read_exact(&mut buf).await.unwrap();
@@ -1392,10 +1376,10 @@ mod tests {
         });
 
         let connection = client_endpoint
-            .connect_with(etq1_client_config(enable_bbr), server_addr, "localhost")?
+            .connect_with(etq1_client_config(), server_addr, "localhost")?
             .await?;
 
-        crate::tunnel::quic::tests::assert_bbr_controller(&connection, enable_bbr);
+        crate::tunnel::quic::tests::assert_bbr_controller(&connection);
         let (mut send, mut recv) = connection.open_bi().await?;
         send.write_all(b"ping").await?;
         send.finish()?;
@@ -1404,7 +1388,7 @@ mod tests {
         assert_eq!(&buf, b"ping");
 
         connection.close(0u32.into(), b"done");
-        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        tokio::time::timeout(Duration::from_secs(2), server).await??;
         Ok(())
     }
 
@@ -1422,6 +1406,7 @@ mod tests {
                 return;
             };
             let connection = incoming.await.unwrap();
+            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
             if let Ok((mut send, mut recv)) = connection.accept_bi().await {
                 let mut buf = vec![0u8; 4];
                 recv.read_exact(&mut buf).await.unwrap();
@@ -1432,7 +1417,7 @@ mod tests {
         });
 
         let err = client_endpoint
-            .connect_with(etq1_client_config(false), server_addr, "localhost")?
+            .connect_with(etq1_client_config(), server_addr, "localhost")?
             .await
             .expect_err("legacy server must reject ETQ1");
         assert!(
@@ -1441,12 +1426,12 @@ mod tests {
         );
 
         let connection = client_endpoint
-            .connect_with(client_config(false), server_addr, "localhost")?
+            .connect_with(client_config(), server_addr, "localhost")?
             .await?;
         assert_stream_roundtrip(&connection).await?;
 
         connection.close(0u32.into(), b"done");
-        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        tokio::time::timeout(Duration::from_secs(2), server).await??;
         Ok(())
     }
 
@@ -1462,6 +1447,7 @@ mod tests {
                 return;
             };
             let connection = incoming.await.unwrap();
+            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
             if let Ok((mut send, mut recv)) = connection.accept_bi().await {
                 let mut buf = vec![0u8; 4];
                 recv.read_exact(&mut buf).await.unwrap();
@@ -1475,7 +1461,7 @@ mod tests {
         assert_stream_roundtrip(&connection).await?;
 
         connection.close(0u32.into(), b"done");
-        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        tokio::time::timeout(Duration::from_secs(2), server).await??;
         Ok(())
     }
     #[tokio::test]
@@ -1492,6 +1478,7 @@ mod tests {
                 return;
             };
             let connection = incoming.await.unwrap();
+            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
             if let Ok((mut send, mut recv)) = connection.accept_bi().await {
                 let mut buf = vec![0u8; 4];
                 recv.read_exact(&mut buf).await.unwrap();
@@ -1501,12 +1488,11 @@ mod tests {
             let _ = connection.closed().await;
         });
 
-        let connection =
-            connect_with_etq1(&client_endpoint, server_addr, "localhost", false).await?;
+        let connection = connect_with_etq1(&client_endpoint, server_addr, "localhost").await?;
         assert_stream_roundtrip(&connection).await?;
 
         connection.close(0u32.into(), b"done");
-        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        tokio::time::timeout(Duration::from_secs(2), server).await??;
         Ok(())
     }
 }

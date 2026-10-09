@@ -12,7 +12,6 @@ export function assertLocalConfigApplyCapability(capabilities: readonly string[]
 
 export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = {
   sni: 'config:sni',
-  enable_bbr: 'config:enable_bbr',
   p2p_prefer_protocol: 'config:p2p_prefer_protocol',
   only_use_wss_http3_for_hole_punching: 'config:only_use_wss_http3_for_hole_punching',
   prefer_wss_http3_for_p2p: 'config:prefer_wss_http3_for_p2p',

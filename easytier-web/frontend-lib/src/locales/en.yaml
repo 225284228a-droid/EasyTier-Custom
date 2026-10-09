@@ -205,8 +205,6 @@ enable_quic_proxy_help: Convert TCP traffic to QUIC traffic to reduce latency an
 disable_quic_input: Disable QUIC Input
 disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
 
-enable_bbr: Enable BBR Loss-Tolerant Congestion Control
-enable_bbr_help: Enable BBR congestion control for this node's QUIC/HTTP3 sending connections, including QUIC proxy. BBR estimates the available bandwidth automatically from ACK delivery-rate samples and adapts its pace; it is loss-tolerant (loss does not collapse the rate like CUBIC), so there is no max-bandwidth field to fill in. Disabled by default and requires a network instance restart; it does not enable QUIC proxy automatically.
 
 disable_p2p: Disable P2P
 disable_p2p_help: Disable ordinary automatic P2P. This node neither initiates nor accepts hole punching from ordinary peers; peers with need-p2p enabled can still establish P2P with this node. Existing connections are not torn down.

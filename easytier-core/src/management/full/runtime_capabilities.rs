@@ -24,9 +24,6 @@ pub fn management_capabilities_for_host(host: &CoreInstanceHostConfig) -> Vec<St
     if supports("wss") || supports("http3") {
         capabilities.push("config:sni".into());
     }
-    if host.quic_enabled || supports("http3") {
-        capabilities.push("config:enable_bbr".into());
-    }
     if host.wss_http3_supported && (supports("wss") || supports("http3")) {
         for field in [
             "only_use_wss_http3_for_hole_punching",
@@ -70,6 +67,6 @@ mod tests {
         let capabilities = management_capabilities_for_host(&host);
         assert!(capabilities.contains(&"transport:http3-framed-v1".into()));
         assert!(!capabilities.contains(&"transport:wss".into()));
-        assert!(capabilities.contains(&"config:enable_bbr".into()));
+        assert!(capabilities.contains(&"config:sni".into()));
     }
 }

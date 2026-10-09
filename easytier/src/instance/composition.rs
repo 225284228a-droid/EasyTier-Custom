@@ -154,9 +154,7 @@ impl CoreEventSink for GlobalCtx {
 #[cfg(feature = "wrapped-transport")]
 fn runtime_wrapped_transport_engines(
     config: &easytier_core::instance::CoreInstanceHostConfig,
-    enable_bbr: bool,
 ) -> WrappedTransportEngines {
-    let _ = enable_bbr;
     #[cfg(feature = "kcp")]
     let kcp = config
         .kcp_enabled
@@ -166,7 +164,7 @@ fn runtime_wrapped_transport_engines(
     #[cfg(feature = "quic")]
     let quic = config
         .quic_enabled
-        .then(|| Arc::new(QuicProxyService::new(enable_bbr)) as Arc<dyn WrappedTransportEngine>);
+        .then(|| Arc::new(QuicProxyService::new()) as Arc<dyn WrappedTransportEngine>);
     #[cfg(not(feature = "quic"))]
     let quic = None;
 
@@ -227,8 +225,7 @@ fn configure_runtime_core_host_adapters(
     adapters.events = global_ctx.clone();
     #[cfg(feature = "wrapped-transport")]
     {
-        adapters.wrapped_transports =
-            runtime_wrapped_transport_engines(&host_config, global_ctx.get_flags().enable_bbr);
+        adapters.wrapped_transports = runtime_wrapped_transport_engines(&host_config);
     }
     adapters.protocol = Some(runtime_client_protocol_upgrader(global_ctx.clone()));
     adapters.external_listener_factory = Some(Arc::new(RuntimeExternalListenerFactory));

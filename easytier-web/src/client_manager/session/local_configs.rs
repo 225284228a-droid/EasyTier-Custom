@@ -378,7 +378,6 @@ fn validate_capability_mask(
     }
     const EXTENSIONS: &[&str] = &[
         "sni",
-        "enable_bbr",
         "p2p_prefer_protocol",
         "only_use_wss_http3_for_hole_punching",
         "prefer_wss_http3_for_p2p",

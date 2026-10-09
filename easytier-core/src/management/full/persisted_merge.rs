@@ -112,7 +112,6 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         }
         "prefer_wss_http3_for_p2p" => vec!["flags.prefer_wss_http3_for_p2p"],
         "disable_wss_http3_for_p2p" => vec!["flags.disable_wss_http3_for_p2p"],
-        "enable_bbr" => vec!["flags.enable_bbr"],
         "close_redundant_conns_when_disguised" => {
             vec!["flags.close_redundant_conns_when_disguised"]
         }
@@ -124,7 +123,6 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
 pub(super) fn required_capability(field: &str) -> Option<String> {
     match field.split('.').next().unwrap_or_default() {
         field @ ("sni"
-        | "enable_bbr"
         | "p2p_prefer_protocol"
         | "only_use_wss_http3_for_hole_punching"
         | "prefer_wss_http3_for_p2p"

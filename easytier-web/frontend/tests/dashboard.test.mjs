@@ -124,6 +124,7 @@ async function open(t, route = '/h', options = {}, configure = () => {}) {
             else if (payload.method_name === 'set_logger_config') state.loggerConfig = { level: ['DISABLED', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'TRACE'][payload.payload.level] };
             else if (payload.method_name === 'show_node_info') result = { node_info: { config: '[instance]\nname = "Engineering"' } };
         } else if (/\/machines\/[^/]+\/networks$/.test(path)) result = { running_inst_ids: [uuid(100)], disabled_inst_ids: [] };
+        else if (path.endsWith('/networks/info')) result = { info: { map: state.machineNetworkInfo ?? {} } };
         else if (path.endsWith('/networks/metas')) result = { metas: { [id(100)]: { network_name: 'Engineering', config_permission: 7 } } };
         else if (path.includes('/networks/info/')) result = { info: { map: { [id(100)]: { error_msg: 'Test device is reconnecting' } } } };
         else if (path.includes('/networks/config/')) result = { instance_id: id(100), network_name: 'Engineering', hostname: 'Amsterdam gateway', networking_method: 'Standalone' };
@@ -145,10 +146,10 @@ test('overview uses real counts and recovers from partial refresh failures', asy
     state.machines[0].online = true;
     await refresh(page);
     await page.waitForFunction(() => document.querySelectorAll('.summary-value')[1]?.textContent.trim() === '1');
-    assert.equal(await page.locator('.dashboard-device-card').count(), 5);
+    assert.equal(await page.locator('.dashboard-device-card').count(), 6);
     state.failures.add('/networks');
     state.machines.pop();
-    await refresh(page);
+    // Exercise a partial failure during the next automatic refresh.
     await page.getByText('Unable to refresh data.', { exact: false }).waitFor();
     assert.equal((await page.locator('.summary-value').nth(2).textContent()).trim(), '3');
     await page.waitForFunction(() => document.querySelector('.summary-value')?.textContent.trim() === '5');
@@ -165,8 +166,8 @@ test('dashboard devices default to compact cards, retain list choice and open th
     const rows = devicePanel.locator('.preview-row');
     const view = devicePanel.locator('.dashboard-device-view');
     await cards.first().waitFor();
-    assert.equal(await cards.count(), 5);
-    const names = state.machines.slice(0, 5).map(machine => machine.info.hostname);
+    assert.equal(await cards.count(), 6);
+    const names = state.machines.map(machine => machine.info.hostname);
     assert.deepEqual(await cards.locator('.preview-name').allTextContents(), names);
     for (let index = 0; index < names.length; index++) {
         assert.equal((await cards.nth(index).innerText()).replace(/\s+/g, ' ').trim(),
@@ -177,7 +178,7 @@ test('dashboard devices default to compact cards, retain list choice and open th
     await rows.first().waitFor();
     assert.equal(await cards.count(), 0);
     assert.deepEqual(await rows.locator('.preview-name').allTextContents(), names);
-    assert.equal(await rows.locator('.preview-number').count(), 5, 'list mode retains instance counts');
+    assert.equal(await rows.locator('.preview-number').count(), 6, 'list mode retains instance counts');
     await page.reload();
     await rows.first().waitFor();
     assert.deepEqual(await rows.locator('.preview-name').allTextContents(), names, 'list choice survives reload');
@@ -190,6 +191,102 @@ test('dashboard devices default to compact cards, retain list choice and open th
     await page.goBack();
     await cards.first().waitFor();
     assert.deepEqual(await cards.locator('.preview-name').allTextContents(), names, 'returning to the dashboard retains cards');
+});
+
+test('dashboard limits device previews to six list entries or five responsive card rows', async t => {
+    const { page, state } = await open(t, '/h', {}, state => {
+        const machine = state.machines[0];
+        state.machines = Array.from({ length: 100 }, (_, index) => ({
+            ...machine,
+            public_ip: `192.0.2.${index + 1}`,
+            info: { ...machine.info, hostname: `Device ${String(index + 1).padStart(3, '0')}`,
+                machine_id: uuid(index + 1), running_network_instances: [] },
+        }));
+    });
+    const devicePanel = page.locator('.overview-columns > section').first();
+    const view = devicePanel.locator('.dashboard-device-view');
+    const rows = devicePanel.locator('.preview-row');
+    const expectedNames = state.machines.map(machine => machine.info.hostname);
+    const assertCards = async width => {
+        await page.waitForFunction(total => {
+            const grid = document.querySelector('.dashboard-device-grid');
+            if (!grid) return false;
+            const columns = getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length;
+            return grid.children.length === Math.min(total, columns * 5);
+        }, state.machines.length);
+        const layout = await devicePanel.evaluate(panel => {
+            const grid = panel.querySelector('.dashboard-device-grid');
+            const cards = [...grid.children];
+            const panelBounds = panel.getBoundingClientRect();
+            return {
+                columns: getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length,
+                rows: new Set(cards.map(card => Math.round(card.getBoundingClientRect().top))).size,
+                names: cards.map(card => card.querySelector('.preview-name').textContent),
+                contained: cards.every(card => {
+                    const bounds = card.getBoundingClientRect();
+                    return bounds.left >= panelBounds.left && bounds.right <= panelBounds.right
+                        && bounds.bottom <= panelBounds.bottom;
+                }),
+            };
+        });
+        assert.equal(layout.rows, 5, `${width}: card preview fills exactly five rows`);
+        assert.deepEqual(layout.names, expectedNames.slice(0, layout.columns * 5), `${width}: cards retain the sorted prefix`);
+        assert.ok(layout.contained, `${width}: every card is inside its panel`);
+    };
+    for (const width of [1440, 1101, 1100, 1024, 390, 280, 1440]) {
+        await page.setViewportSize({ width, height: 960 });
+        await assertCards(width);
+        const [devices, networks] = await page.locator('.overview-columns > section').evaluateAll(panels => panels.map(panel => {
+            const bounds = panel.getBoundingClientRect();
+            return { top: bounds.top, bottom: bounds.bottom, left: bounds.left, width: bounds.width };
+        }));
+        if (width > 1100) {
+            assert.ok(Math.abs(devices.bottom - networks.bottom) <= 1, `${width}: panel bottoms align`);
+            assert.ok(Math.abs(devices.width - networks.width * 1.5) <= 1, `${width}: device panel is three fifths of the available width`);
+        } else {
+            assert.ok(networks.top > devices.bottom, `${width}: panels stack vertically`);
+            assert.ok(Math.abs(devices.left - networks.left) <= 1 && Math.abs(devices.width - networks.width) <= 1,
+                `${width}: stacked panels use the same width`);
+        }
+    }
+    await view.getByRole('button', { name: 'List view', exact: true }).click();
+    await rows.first().waitFor();
+    assert.deepEqual(await rows.locator('.preview-name').allTextContents(), expectedNames.slice(0, 6));
+    const bottoms = await page.locator('.overview-columns > section').evaluateAll(panels => panels.map(panel => panel.getBoundingClientRect().bottom));
+    assert.ok(Math.abs(bottoms[0] - bottoms[1]) <= 1, 'list mode keeps panel bottoms aligned');
+    await page.setViewportSize({ width: 390, height: 960 });
+    assert.equal(await rows.count(), 6, 'list limit is independent of the available width');
+    await view.getByRole('button', { name: 'Card view', exact: true }).click();
+    await assertCards(390);
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await assertCards(1440);
+    assert.equal(await devicePanel.getByRole('link', { name: 'View all', exact: true }).count(), 1);
+});
+
+test('dashboard panels stay aligned with empty or short device and network previews', async t => {
+    const { page, state } = await open(t);
+    await page.locator('.dashboard-device-card').first().waitFor();
+    const machines = state.machines;
+    const networks = state.networks;
+    for (const [deviceCount, networkCount] of [[0, 0], [2, 0], [0, 3]]) {
+        state.machines = machines.slice(0, deviceCount);
+        state.networks = networks.slice(0, networkCount);
+        await refresh(page);
+        await page.waitForFunction(({ deviceCount, networkCount }) => {
+            const panels = document.querySelectorAll('.overview-columns > section');
+            return panels.length === 2
+                && panels[0].querySelectorAll('.dashboard-device-card').length === deviceCount
+                && panels[1].querySelectorAll('.preview-row').length === networkCount
+                && panels[0].querySelectorAll('.console-empty-state').length === Number(deviceCount === 0)
+                && panels[1].querySelectorAll('.console-empty-state').length === Number(networkCount === 0);
+        }, { deviceCount, networkCount });
+        const layout = await page.locator('.overview-columns > section').evaluateAll(panels => panels.map(panel => {
+            const bounds = panel.getBoundingClientRect();
+            return { bottom: bounds.bottom, contained: [...panel.children].every(child => child.getBoundingClientRect().bottom <= bounds.bottom) };
+        }));
+        assert.ok(Math.abs(layout[0].bottom - layout[1].bottom) <= 1, `${deviceCount}/${networkCount}: panel bottoms align`);
+        assert.ok(layout.every(panel => panel.contained), `${deviceCount}/${networkCount}: panel content is not clipped`);
+    }
 });
 
 test('dashboard topology shares the panel heading inset and documentation links open this fork', async t => {
@@ -216,6 +313,97 @@ test('dashboard topology shares the panel heading inset and documentation links 
         assert.ok(bounds.summary.left > bounds.outer.left + 8 && bounds.summary.right < bounds.outer.right - 8,
             `${width}: topology content touches the panel edges`);
     }
+});
+
+test('dashboard globe wheel stays local at zoom and label scroll limits', async t => {
+    const { page, state } = await open(t, '/h', {}, state => {
+        state.machines = state.machines.slice(0, 1);
+        state.machines[0].online = true;
+        state.machines[0].info.running_network_instances = Array.from({ length: 24 }, (_, index) => uuid(100 + index));
+        state.machineNetworkInfo = Object.fromEntries(Array.from({ length: 24 }, (_, index) => [id(100 + index), {
+            running: true, network_name: 'wheel-test',
+            my_node_info: { peer_id: index + 1, hostname: `Globe node ${String(index + 1).padStart(2, '0')}` },
+            node_location: { country: 'China', city: 'Hong Kong', latitude: 22.3, longitude: 114.17 },
+            peers: [], routes: [],
+        }]));
+    });
+    page.setDefaultTimeout(60_000);
+    const canvas = page.locator('.globe-stage canvas');
+    await canvas.waitFor();
+    await page.waitForFunction(() => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) > 0);
+    await page.getByRole('button', { name: 'Pause Rotation', exact: true }).click();
+    await page.locator('.node-row').first().click();
+    await page.evaluate(() => {
+        const stage = document.querySelector('.globe-stage').getBoundingClientRect();
+        window.scrollTo(0, stage.top + window.scrollY - 400);
+    });
+    const settleWheel = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const distance = () => canvas.evaluate(element => Number(element.dataset.globeDistance));
+    const scrollY = () => page.evaluate(() => window.scrollY);
+    const hoverCanvas = () => canvas.hover({ position: { x: 20, y: 20 } });
+    const initialScroll = await scrollY();
+    const initialDistance = await distance();
+    const [minimum, maximum] = await canvas.evaluate(element => [Number(element.dataset.globeMinDistance), Number(element.dataset.globeMaxDistance)]);
+    assert.ok(initialScroll > 100, 'the page can scroll upward while the globe is visible');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollHeight - innerHeight - scrollY > 20),
+        'the page can also scroll downward while the globe is visible');
+    await hoverCanvas();
+    await page.mouse.wheel(0, -250);
+    await page.waitForFunction(before => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) < before, initialDistance);
+    const nearerDistance = await distance();
+    assert.ok(nearerDistance > minimum, 'ordinary zoom stays within the zoom range');
+    await page.mouse.wheel(0, 150);
+    await page.waitForFunction(before => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) > before, nearerDistance);
+    assert.equal(await scrollY(), initialScroll, 'ordinary globe zoom does not scroll the page');
+    await page.mouse.wheel(0, -5000);
+    await page.waitForFunction(min => Math.abs(Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) - min) < 1e-6, minimum);
+    await page.mouse.wheel(0, -300);
+    await settleWheel();
+    assert.equal(await scrollY(), initialScroll, 'further zoom-in at the canvas limit does not scroll the page');
+    assert.ok(Math.abs(await distance() - minimum) < 1e-6);
+
+    const stack = page.locator('.globe-node-stack:visible');
+    await stack.waitFor();
+    assert.ok(await stack.evaluate(element => element.scrollHeight > element.clientHeight), 'the fixture has a scrollable label group');
+    await stack.evaluate(element => { element.scrollTop = 0; });
+    await stack.hover();
+    await page.mouse.wheel(0, -300);
+    await settleWheel();
+    assert.equal(await scrollY(), initialScroll, 'scrolling upward at the label top does not scroll the page');
+    await page.mouse.wheel(0, 120);
+    await page.waitForFunction(() => [...document.querySelectorAll('.globe-node-stack')].some(element => element.scrollTop > 0));
+    assert.equal(await scrollY(), initialScroll, 'labels keep their own scrolling');
+    assert.ok(Math.abs(await distance() - minimum) < 1e-6, 'scrolling labels does not zoom the globe');
+    await stack.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await page.mouse.wheel(0, 300);
+    await settleWheel();
+    assert.equal(await scrollY(), initialScroll, 'scrolling downward at the label bottom does not scroll the page');
+
+    state.machines[0].info.running_network_instances = [uuid(100)];
+    state.machineNetworkInfo = { [id(100)]: state.machineNetworkInfo[id(100)] };
+    await page.waitForFunction(() => {
+        const stack = document.querySelector('.globe-node-stack');
+        return stack?.children.length === 1 && stack.scrollHeight === stack.clientHeight;
+    });
+    await stack.hover();
+    for (const delta of [-300, 300]) {
+        await page.mouse.wheel(0, delta);
+        await settleWheel();
+        assert.equal(await scrollY(), initialScroll, 'a label without overflow does not scroll the page');
+    }
+
+    await hoverCanvas();
+    await page.mouse.wheel(0, 5000);
+    await page.waitForFunction(max => Math.abs(Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) - max) < 1e-6, maximum);
+    await page.mouse.wheel(0, 300);
+    await settleWheel();
+    assert.equal(await scrollY(), initialScroll, 'further zoom-out at the canvas limit does not scroll the page');
+    assert.ok(Math.abs(await distance() - maximum) < 1e-6);
+    const canvasBounds = await canvas.boundingBox();
+    await page.mouse.move(canvasBounds.x - 12, canvasBounds.y + 40);
+    await page.mouse.wheel(0, -250);
+    await page.waitForFunction(before => window.scrollY < before, initialScroll);
+    assert.ok(Math.abs(await distance() - maximum) < 1e-6, 'scrolling outside the globe leaves the zoom unchanged');
 });
 
 test('removed local configuration page falls back to the dashboard without a navigation entry', async t => {
@@ -798,4 +986,13 @@ test('external Console keeps the device dashboard without central requests or na
     assert.equal(state.requests.some(request => request.path.startsWith('/networks')), false);
     assert.equal(await page.locator('a[href*="/networks"]').count(), 0);
     assert.equal(await page.locator('.p-message-warn').count(), 0);
+    for (const width of [1440, 1024, 390]) {
+        await page.setViewportSize({ width, height: 960 });
+        assert.equal(await page.locator('.overview-columns > section').count(), 1);
+        const bounds = await page.locator('.overview-columns').evaluate(overview => ({
+            outer: overview.getBoundingClientRect().width,
+            panel: overview.firstElementChild.getBoundingClientRect().width,
+        }));
+        assert.ok(Math.abs(bounds.outer - bounds.panel) <= 1, `${width}: the device panel fills the single-panel overview`);
+    }
 });

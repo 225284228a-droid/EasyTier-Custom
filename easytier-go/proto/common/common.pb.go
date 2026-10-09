@@ -265,11 +265,6 @@ type FlagsInConfig struct {
 	PreferWssHttp3ForP2P bool `protobuf:"varint,46,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
 	// Do not use WSS/HTTP3 for automatic P2P at all.
 	DisableWssHttp3ForP2P bool `protobuf:"varint,47,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
-	// Use BBR congestion control for local QUIC/HTTP3 sending, including QUIC proxy.
-	// BBR is loss-tolerant (packet loss does not collapse the send rate like
-	// CUBIC) and estimates the available bandwidth automatically from ACK
-	// delivery-rate samples; there is no (and need be no) max-bandwidth knob.
-	EnableBbr bool `protobuf:"varint,48,opt,name=enable_bbr,json=enableBbr,proto3" json:"enable_bbr,omitempty"`
 	// Once a preferred connection is usable, close lower-ranked automatic P2P
 	// connections to the same peer according to disguise and protocol policy.
 	// Manual, ordinary inbound, attached, and equally ranked connections remain.
@@ -627,13 +622,6 @@ func (x *FlagsInConfig) GetPreferWssHttp3ForP2P() bool {
 func (x *FlagsInConfig) GetDisableWssHttp3ForP2P() bool {
 	if x != nil {
 		return x.DisableWssHttp3ForP2P
-	}
-	return false
-}
-
-func (x *FlagsInConfig) GetEnableBbr() bool {
-	if x != nil {
-		return x.EnableBbr
 	}
 	return false
 }
@@ -2221,7 +2209,7 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\verror.proto\"\xa4\x11\n" +
+	"\fcommon.proto\x12\x06common\x1a\verror.proto\"\x85\x11\n" +
 	"\rFlagsInConfig\x12)\n" +
 	"\x10default_protocol\x18\x01 \x01(\tR\x0fdefaultProtocol\x12\x19\n" +
 	"\bdev_name\x18\x02 \x01(\tR\adevName\x12+\n" +
@@ -2276,9 +2264,7 @@ const file_common_proto_rawDesc = "" +
 	"\x11prefer_peer_relay\x18, \x01(\bR\x0fpreferPeerRelay\x12L\n" +
 	"$only_use_wss_http3_for_hole_punching\x18- \x01(\bR\x1eonlyUseWssHttp3ForHolePunching\x126\n" +
 	"\x18prefer_wss_http3_for_p2p\x18. \x01(\bR\x14preferWssHttp3ForP2p\x128\n" +
-	"\x19disable_wss_http3_for_p2p\x18/ \x01(\bR\x15disableWssHttp3ForP2p\x12\x1d\n" +
-	"\n" +
-	"enable_bbr\x180 \x01(\bR\tenableBbr\x12N\n" +
+	"\x19disable_wss_http3_for_p2p\x18/ \x01(\bR\x15disableWssHttp3ForP2p\x12N\n" +
 	"$close_redundant_conns_when_disguised\x181 \x01(\bR closeRedundantConnsWhenDisguisedB\x0e\n" +
 	"\f_socket_mark\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +

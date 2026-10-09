@@ -1014,7 +1014,7 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: var(--globe-surface); overflow: hidden; }
 .globe-stage :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }
 .globe-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
-.globe-labels :deep(.globe-label-stack) { position: absolute; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--globe-scrollbar) transparent; pointer-events: auto; }
+.globe-labels :deep(.globe-label-stack) { position: absolute; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--globe-scrollbar) transparent; pointer-events: auto; }
 .globe-labels :deep(.globe-label-stack::-webkit-scrollbar) { width: 6px; }
 .globe-labels :deep(.globe-label-stack::-webkit-scrollbar-thumb) { background: var(--globe-scrollbar); border-radius: 3px; }
 .globe-labels :deep(.globe-node-label), .globe-labels :deep(.globe-traffic-label) {

@@ -95,7 +95,8 @@
 .summary-label { display: flex; align-items: center; justify-content: space-between; color: var(--console-muted); font-size: 12px; gap: 8px; }
 .summary-value { font-size: 30px; font-weight: 550; letter-spacing: -1px; line-height: 1.25; margin: 10px 0 4px; }
 .summary-note { color: var(--console-muted); font-size: 12px; }
-.overview-columns { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; align-items: start; }
+.overview-columns { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 24px; align-items: stretch; }
+.overview-columns > .console-panel:only-child { grid-column: 1 / -1; }
 .preview-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--console-border); }
 .preview-row:last-child { border-bottom: 0; }
 .preview-row:hover { background: var(--p-content-hover-background); }

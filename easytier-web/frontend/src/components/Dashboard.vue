@@ -22,6 +22,23 @@ const deviceViewOptions = computed(() => [
     { value: 'card', icon: 'pi pi-th-large', label: t('web.console.view_card') },
 ]);
 watch(deviceViewMode, mode => localStorage.setItem('dashboard.devices.viewMode', mode));
+const deviceGrid = ref<HTMLElement>();
+const deviceCardColumns = ref(1);
+let deviceGridObserver: ResizeObserver | undefined;
+watch(deviceGrid, grid => {
+    deviceGridObserver?.disconnect();
+    deviceGridObserver = undefined;
+    deviceCardColumns.value = 1;
+    if (!grid) return;
+    const updateColumns = () => {
+        // Read the resolved tracks so the preview follows the grid's actual container width.
+        const tracks = getComputedStyle(grid).gridTemplateColumns.trim();
+        deviceCardColumns.value = tracks && tracks !== 'none' ? tracks.split(/\s+/).length : 1;
+    };
+    updateColumns();
+    deviceGridObserver = new ResizeObserver(updateColumns);
+    deviceGridObserver.observe(grid);
+}, { flush: 'post' });
 let summaryGeneration = 0;
 
 const loadSummary = async () => {
@@ -52,10 +69,11 @@ watch([() => props.api, () => props.api.persistenceScope], () => {
 });
 const periodFunc = new Utils.PeriodicTask(loadSummary, 2000);
 onMounted(() => periodFunc.start());
-onUnmounted(() => { summaryGeneration++; periodFunc.stop(); });
+onUnmounted(() => { summaryGeneration++; periodFunc.stop(); deviceGridObserver?.disconnect(); });
 
 const devicePreview = computed(() => [...(devices.value ?? [])]
-    .sort((a, b) => ((a.alias || a.hostname) ?? '').localeCompare((b.alias || b.hostname) ?? '')).slice(0, 5));
+    .sort((a, b) => ((a.alias || a.hostname) ?? '').localeCompare((b.alias || b.hostname) ?? ''))
+    .slice(0, deviceViewMode.value === 'list' ? 6 : deviceCardColumns.value * 5));
 const networkPreview = computed(() => [...(networks.value ?? [])]
     .sort((a, b) => a.display_name.localeCompare(b.display_name)).slice(0, 5));
 const stats = computed(() => [
@@ -101,7 +119,7 @@ const stats = computed(() => [
                     <i class="pi pi-server" aria-hidden="true"></i><h2>{{ t('web.console.devices_empty') }}</h2><p>{{ t('web.console.devices_empty_hint') }}</p>
                     <a href="https://github.com/225284228a-droid/EasyTier-Custom" target="_blank" rel="noopener noreferrer" class="entity-link">{{ t('web.console.documentation') }}<i class="pi pi-arrow-up-right" aria-hidden="true"></i></a>
                 </div>
-                <div v-else-if="deviceViewMode === 'card' && devicePreview.length" class="dashboard-device-grid">
+                <div v-else-if="deviceViewMode === 'card' && devicePreview.length" ref="deviceGrid" class="dashboard-device-grid">
                     <RouterLink v-for="device in devicePreview" :key="device.machine_id" class="dashboard-device-card"
                         :to="{ name: 'deviceManagement', params: { deviceId: device.machine_id, instanceId: device.running_network_instances?.[0] } }">
                         <span class="preview-name" :title="device.alias || device.hostname || device.machine_id">{{ device.alias || device.hostname || device.machine_id }}</span>

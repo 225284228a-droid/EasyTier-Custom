@@ -124,7 +124,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_kcp_proxy: false,
     disable_kcp_input: false,
     enable_quic_proxy: false,
-    enable_bbr: false,
     disable_quic_input: false,
     disable_p2p: false,
     p2p_only: false,
@@ -327,7 +326,6 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
-  normalized.enable_bbr ??= false
   normalized.prefer_wss_http3_for_p2p ??= false
   normalized.disable_wss_http3_for_p2p ??= false
   normalized.only_use_wss_http3_for_hole_punching ??= false

@@ -31,7 +31,7 @@ describe('GUI management bridge capabilities and revisions', () => {
       ? { running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: ['config:sni'] }
       : command === 'parse_network_config' ? 'network_name = "mesh"' : undefined)
     const api = new GUIRemoteClient()
-    const config = { ...NetworkTypes.DEFAULT_NETWORK_CONFIG(), sni: 'example.com', enable_bbr: true,
+    const config = { ...NetworkTypes.DEFAULT_NETWORK_CONFIG(), sni: 'example.com', close_redundant_conns_when_disguised: true,
       listener_urls: ['ws://0.0.0.0:1', 'wss://0.0.0.0:2', 'http3://0.0.0.0:3'] }
     await api.save_config(config)
     await api.validate_config(config)
@@ -39,7 +39,7 @@ describe('GUI management bridge capabilities and revisions', () => {
     await api.generate_config(config)
     for (const [command, args] of invoke.mock.calls.filter(([command]) => command !== 'list_network_instance_ids')) {
       expect(args.cfg.sni, command).toBe('example.com')
-      expect(args.cfg, command).not.toHaveProperty('enable_bbr')
+      expect(args.cfg, command).not.toHaveProperty('close_redundant_conns_when_disguised')
       expect(args.cfg, command).not.toHaveProperty('p2p_prefer_protocol')
       expect(args.cfg.listener_urls, command).toEqual(['ws://0.0.0.0:1', 'wss://0.0.0.0:2'])
     }
@@ -73,7 +73,7 @@ describe('GUI management bridge capabilities and revisions', () => {
     await expect(save).rejects.toThrow('Management connection changed')
     expect(invoke.mock.calls.map(([command]) => command)).toEqual(['list_network_instance_ids'])
     invoke.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: [] })
-    await expect(new GUIRemoteClient(() => scope).patch_local_config({ inst_id: id, expected_revision: 'revision-a', field_mask: ['enable_bbr'], config: { enable_bbr: true }, apply_mode: 0 })).rejects.toThrow('unsupported')
+    await expect(new GUIRemoteClient(() => scope).patch_local_config({ inst_id: id, expected_revision: 'revision-a', field_mask: ['close_redundant_conns_when_disguised'], config: { close_redundant_conns_when_disguised: true }, apply_mode: 0 })).rejects.toThrow('unsupported')
     expect(invoke.mock.calls.some(([command]) => command === 'patch_local_config')).toBe(false)
   })
 

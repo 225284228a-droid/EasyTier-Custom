@@ -311,8 +311,6 @@ type NetworkConfig struct {
 	OnlyUseWssHttp3ForHolePunching *bool                      `protobuf:"varint,74,opt,name=only_use_wss_http3_for_hole_punching,json=onlyUseWssHttp3ForHolePunching,proto3,oneof" json:"only_use_wss_http3_for_hole_punching,omitempty"`
 	PreferWssHttp3ForP2P           *bool                      `protobuf:"varint,75,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3,oneof" json:"prefer_wss_http3_for_p2p,omitempty"`
 	DisableWssHttp3ForP2P          *bool                      `protobuf:"varint,76,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3,oneof" json:"disable_wss_http3_for_p2p,omitempty"`
-	// use BBR congestion control for local QUIC/HTTP3 sending, including QUIC proxy
-	EnableBbr *bool `protobuf:"varint,77,opt,name=enable_bbr,json=enableBbr,proto3,oneof" json:"enable_bbr,omitempty"`
 	// Preferred underlay transport for automatic P2P connect attempts: "tcp" or
 	// "udp". When WSS/HTTP3 is in use it also picks the disguised transport -
 	// "udp" prefers HTTP3, "tcp" prefers WSS. Empty means "tcp".
@@ -867,13 +865,6 @@ func (x *NetworkConfig) GetPreferWssHttp3ForP2P() bool {
 func (x *NetworkConfig) GetDisableWssHttp3ForP2P() bool {
 	if x != nil && x.DisableWssHttp3ForP2P != nil {
 		return *x.DisableWssHttp3ForP2P
-	}
-	return false
-}
-
-func (x *NetworkConfig) GetEnableBbr() bool {
-	if x != nil && x.EnableBbr != nil {
-		return *x.EnableBbr
 	}
 	return false
 }
@@ -3168,7 +3159,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xd0(\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\x9d(\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3253,11 +3244,9 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x03sni\x18I \x01(\tH:R\x03sni\x88\x01\x01\x12Q\n" +
 	"$only_use_wss_http3_for_hole_punching\x18J \x01(\bH;R\x1eonlyUseWssHttp3ForHolePunching\x88\x01\x01\x12;\n" +
 	"\x18prefer_wss_http3_for_p2p\x18K \x01(\bH<R\x14preferWssHttp3ForP2p\x88\x01\x01\x12=\n" +
-	"\x19disable_wss_http3_for_p2p\x18L \x01(\bH=R\x15disableWssHttp3ForP2p\x88\x01\x01\x12\"\n" +
-	"\n" +
-	"enable_bbr\x18M \x01(\bH>R\tenableBbr\x88\x01\x01\x123\n" +
-	"\x13p2p_prefer_protocol\x18N \x01(\tH?R\x11p2pPreferProtocol\x88\x01\x01\x12S\n" +
-	"$close_redundant_conns_when_disguised\x18O \x01(\bH@R closeRedundantConnsWhenDisguised\x88\x01\x01B\x0e\n" +
+	"\x19disable_wss_http3_for_p2p\x18L \x01(\bH=R\x15disableWssHttp3ForP2p\x88\x01\x01\x123\n" +
+	"\x13p2p_prefer_protocol\x18N \x01(\tH>R\x11p2pPreferProtocol\x88\x01\x01\x12S\n" +
+	"$close_redundant_conns_when_disguised\x18O \x01(\bH?R closeRedundantConnsWhenDisguised\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3319,8 +3308,7 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x04_sniB'\n" +
 	"%_only_use_wss_http3_for_hole_punchingB\x1b\n" +
 	"\x19_prefer_wss_http3_for_p2pB\x1c\n" +
-	"\x1a_disable_wss_http3_for_p2pB\r\n" +
-	"\v_enable_bbrB\x16\n" +
+	"\x1a_disable_wss_http3_for_p2pB\x16\n" +
 	"\x14_p2p_prefer_protocolB'\n" +
 	"%_close_redundant_conns_when_disguised\"\xa3\x02\n" +
 	"\x17ManagedCredentialConfig\x12#\n" +

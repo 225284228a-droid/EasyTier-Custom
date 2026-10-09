@@ -140,7 +140,6 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
     result.disable_kcp_input = Some(flags.disable_kcp_input);
     result.enable_quic_proxy = Some(flags.enable_quic_proxy);
-    result.enable_bbr = Some(flags.enable_bbr);
     result.disable_quic_input = Some(flags.disable_quic_input);
     result.disable_p2p = Some(flags.disable_p2p);
     result.p2p_only = Some(flags.p2p_only);

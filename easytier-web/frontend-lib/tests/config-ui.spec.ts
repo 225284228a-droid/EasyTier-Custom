@@ -17,7 +17,6 @@ const CONFIG_FLAG_FIELDS = [
   'enable_kcp_proxy',
   'disable_kcp_input',
   'enable_quic_proxy',
-  'enable_bbr',
   'disable_quic_input',
   'disable_p2p',
   'p2p_only',
@@ -420,7 +419,7 @@ describe('Config.vue network config projection', () => {
     const { wrapper } = mountConfig()
     await nextTick()
 
-    for (const field of ['enable_bbr', 'close_redundant_conns_when_disguised', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
+    for (const field of ['close_redundant_conns_when_disguised', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
       expect(wrapper.find(`#${field}`).exists(), `${field} should be available for offline configuration`).toBe(true)
       expect(wrapper.find(`#${field}`).attributes('disabled')).toBeUndefined()
       expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(true)
@@ -433,17 +432,16 @@ describe('Config.vue network config projection', () => {
 
   it('removes unsupported custom controls, labels and help for official runtimes while keeping ordinary fields editable', async () => {
     const config = makeConfig()
-    config.enable_bbr = true
     config.close_redundant_conns_when_disguised = true
     const { curNetwork, wrapper } = mountConfig(config, [])
     await nextTick()
 
-    for (const field of ['enable_bbr', 'close_redundant_conns_when_disguised', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
+    for (const field of ['close_redundant_conns_when_disguised', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
       expect(wrapper.find(`#${field}`).exists(), `${field} should be absent for official runtimes`).toBe(false)
       expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(false)
       expect(wrapper.find(`[data-tooltip="${field}_help"]`).exists()).toBe(false)
     }
-    for (const field of CONFIG_FLAG_FIELDS.filter(field => field !== 'enable_bbr')) {
+    for (const field of CONFIG_FLAG_FIELDS) {
       expect(input(wrapper, `#${field}`).disabled, `${field} should remain editable`).toBe(false)
     }
     for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
@@ -455,17 +453,16 @@ describe('Config.vue network config projection', () => {
     expect(curNetwork.no_tun).toBe(false)
     expect(curNetwork.hostname).toBe('official-host')
     expect(curNetwork.sni).toBe('www.cloudflare.com')
-    expect(curNetwork.enable_bbr).toBe(true)
     expect(curNetwork.close_redundant_conns_when_disguised).toBe(true)
     wrapper.unmount()
   })
 
   it('shows individual supported extensions and updates the complete disguise selector when capabilities change', async () => {
-    const supported = ['config:sni', 'config:enable_bbr', 'config:p2p_prefer_protocol', 'config:prefer_wss_http3_for_p2p']
+    const supported = ['config:sni', 'config:p2p_prefer_protocol', 'config:prefer_wss_http3_for_p2p']
     const { curNetwork, wrapper } = mountConfig(makeConfig(), supported)
     await nextTick()
 
-    for (const field of ['sni', 'enable_bbr', 'p2p_prefer_protocol']) {
+    for (const field of ['sni', 'p2p_prefer_protocol']) {
       expect(wrapper.find(`#${field}`).exists()).toBe(true)
       expect(wrapper.find(`#${field}`).attributes('disabled')).toBeUndefined()
     }
@@ -495,7 +492,6 @@ describe('Config.vue network config projection', () => {
     await wrapper.setProps({ runtimeCapabilities: [] })
     expect(wrapper.find('#sni').exists()).toBe(false)
     expect(wrapper.find('#p2p_disguise_mode').exists()).toBe(false)
-    expect(wrapper.find('#enable_bbr').exists()).toBe(false)
     expect(wrapper.find('#close_redundant_conns_when_disguised').exists()).toBe(false)
     expect(curNetwork.sni).toBe('custom.example.com')
     wrapper.unmount()
