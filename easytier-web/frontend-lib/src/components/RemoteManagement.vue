@@ -57,18 +57,19 @@ const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefin
 const configBaseline = ref<NetworkTypes.NetworkConfig>();
 const editingEntry = ref<LocalConfigEntry>();
 const configSubmitting = ref(false);
-const rereadingRevision = ref(false);
+const openingConfigFile = ref(false);
 const scope = computed(() => props.scopeKey ?? props.api.scope ?? '');
 let generation = 0;
 let configRequest = 0;
-let rereadRequest = 0;
+let configFileRequest = 0;
 const dirtyFields = computed(() => currentNetworkConfig.value && configBaseline.value
     ? changedConfigFields(configBaseline.value, currentNetworkConfig.value) : []);
 const dirty = computed(() => dirtyFields.value.length > 0);
 const clearConfig = () => {
     configRequest++;
-    rereadRequest++;
-    rereadingRevision.value = false;
+    configFileRequest++;
+    openingConfigFile.value = false;
+    showConfigEditDialog.value = false;
     currentNetworkConfig.value = undefined;
     configBaseline.value = undefined;
     editingEntry.value = undefined;
@@ -225,7 +226,7 @@ watch(networkIsDisabled, async (newVal, oldVal) => {
 });
 
 const loadCurrentNetworkConfig = async (force = false) => {
-    if (dirty.value && !force) return;
+    if (openingConfigFile.value || showConfigEditDialog.value || (dirty.value && !force)) return;
     const selected = selectedInstanceId.value?.uuid;
     if (!selected) { clearConfig(); return; }
     const context = requestContext();
@@ -256,10 +257,10 @@ const lifecycleRevision = async (api: Api.RemoteClient, selected: string): Promi
 
 const saveEditedConfig = async (config: NetworkTypes.NetworkConfig, mode: LocalConfigApplyMode): Promise<LocalConfigEntry | undefined> => {
     if (!editingEntry.value) {
-        if (revisionSupported.value) throw new Error(t('web.local_configs.reread'));
+        if (revisionSupported.value) throw new Error(t('web.local_configs.reopen_editor'));
         return undefined;
     }
-    if (!configBaseline.value) throw new Error(t('web.local_configs.reread'));
+    if (!configBaseline.value) throw new Error(t('web.local_configs.reopen_editor'));
     const fields = changedConfigFields(configBaseline.value, config);
     const applyOnly = !fields.length && mode === LocalConfigApplyMode.SaveAndApply
         && editingEntry.value.running && editingEntry.value.pending_apply;
@@ -276,34 +277,45 @@ const saveEditedConfig = async (config: NetworkTypes.NetworkConfig, mode: LocalC
     if (status !== 'success') throw new Error(result.message || t(`web.local_configs.${status}`));
     const snapshot = 'entries' in response ? response as LocalConfigSnapshot : result.snapshot;
     const entry = result.entry ?? snapshot?.entries.find(entry => localConfigInstanceId(entry) === selected);
-    if (!entry?.revision) throw new Error(t('web.local_configs.reread'));
+    if (!entry?.revision) throw new Error(t('web.local_configs.reopen_editor'));
     editingEntry.value = { ...entry };
     configBaseline.value = cloneEditableConfig(config);
     return entry;
 };
 
-const rereadEditingRevision = async () => {
+const openConfigFileEditor = async () => {
     const selected = instanceId.value;
-    if (!selected || !revisionSupported.value || configSubmitting.value || rereadingRevision.value) return;
+    if (!selected || configSubmitting.value || openingConfigFile.value || showConfigEditDialog.value) return;
     const context = requestContext();
-    const request = ++rereadRequest;
-    rereadingRevision.value = true;
+    const request = ++configFileRequest;
+    const configLoadRequest = ++configRequest;
+    const current = () => context.current() && request === configFileRequest
+        && configLoadRequest === configRequest && instanceId.value === selected;
+    openingConfigFile.value = true;
     try {
-        const snapshot = await context.api.observe_local_configs!();
-        if (!context.current() || request !== rereadRequest || instanceId.value !== selected) return;
-        const entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
-        if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
-        editingEntry.value = { ...entry };
-        if (!dirty.value) {
-            currentNetworkConfig.value = cloneEditableConfig(entry.config!);
-            configBaseline.value = cloneEditableConfig(entry.config!);
+        let config: NetworkTypes.NetworkConfig;
+        let entry: LocalConfigEntry | undefined;
+        if (revisionSupported.value) {
+            const snapshot = await context.api.observe_local_configs!();
+            entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
+            if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
+            config = entry.config!;
+        } else {
+            config = await context.api.get_network_config(selected);
         }
+        if (!current()) return;
+        editingEntry.value = entry ? { ...entry } : undefined;
+        if (!dirty.value) {
+            currentNetworkConfig.value = cloneEditableConfig(config);
+            configBaseline.value = cloneEditableConfig(config);
+        }
+        showConfigEditDialog.value = true;
     } catch (error) {
-        if (context.current() && request === rereadRequest && instanceId.value === selected) {
+        if (current()) {
             toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 });
         }
     } finally {
-        if (request === rereadRequest) rereadingRevision.value = false;
+        if (request === configFileRequest) openingConfigFile.value = false;
     }
 };
 
@@ -366,7 +378,7 @@ const confirmDeleteNetwork = (event: any) => {
 };
 
 const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
-    if (configSubmitting.value || rereadingRevision.value) return;
+    if (configSubmitting.value || openingConfigFile.value) return;
     const editedConfig = config ?? currentNetworkConfig.value;
     if (!editedConfig) {
         return;
@@ -424,7 +436,7 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
 }
 
 const saveNetworkConfig = async () => {
-    if (!currentNetworkConfig.value || configSubmitting.value || rereadingRevision.value) {
+    if (!currentNetworkConfig.value || configSubmitting.value || openingConfigFile.value) {
         return;
     }
     const config = currentNetworkConfig.value;
@@ -797,15 +809,13 @@ onUnmounted(() => {
                 </div>
 
                 <div class="w-full flex gap-2 flex-wrap justify-start mb-3">
-                    <Button v-if="editingEntry" @click="rereadEditingRevision" icon="pi pi-refresh"
-                        :label="t('web.local_configs.reread')" severity="secondary" outlined
-                        :loading="rereadingRevision" loadingIcon="pi pi-refresh pi-spin" :aria-busy="rereadingRevision"
-                        :disabled="configSubmitting || rereadingRevision" />
-                    <Button @click="showConfigEditDialog = true" icon="pi pi-file-edit"
-                        :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" :disabled="configSubmitting" />
+                    <Button @click="openConfigFileEditor" icon="pi pi-file-edit"
+                        :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary"
+                        :loading="openingConfigFile" loadingIcon="pi pi-refresh pi-spin" :aria-busy="openingConfigFile"
+                        :disabled="configSubmitting || openingConfigFile" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" :disabled="configSubmitting" />
-                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting || rereadingRevision"
+                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting || openingConfigFile"
                         icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
                         severity="success" />
                 </div>
@@ -818,7 +828,7 @@ onUnmounted(() => {
                     <span v-if="applySavedConfig && !applySupported"> — {{ t('web.local_configs.apply_unsupported') }}</span>
                 </Message>
 
-                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig || configSubmitting || rereadingRevision"
+                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig || configSubmitting || openingConfigFile"
                     :runtime-capabilities="runtimeCapabilities" :action-label="configActionLabel"
                     @run-network="saveAndRunNewNetwork"></Config>
             </div>

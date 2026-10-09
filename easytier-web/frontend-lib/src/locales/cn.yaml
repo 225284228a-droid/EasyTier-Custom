@@ -381,15 +381,15 @@ web:
     protected: 受保护
     invalid: 配置无效
     pending_apply: 尚未应用
-    reread: 重新读取 revision
-    dirty_preserved: 刷新不会覆盖未保存的修改。遇到冲突时请重新读取 revision，核对修改后再次保存。
+    reopen_editor: 请重新打开“编辑为文件”以读取最新配置后重试。
+    dirty_preserved: 打开“编辑为文件”会自动读取最新配置并保留未保存的修改。遇到冲突时请重新打开，核对后再次保存。
     unavailable: 配置当前不可写，请确认设备在线、权限及最新快照。
     success: 成功
-    conflict: 配置已变化，请重新读取 revision
+    conflict: 配置已变化，请重新打开“编辑为文件”后重试
     not_found: 配置不存在
     apply_failed: 已保存，应用失败
     unsupported: 设备不支持此管理功能
-    unknown: 保存结果未知，请重新读取确认
+    unknown: 保存结果未知，请重新打开“编辑为文件”确认
   console:
     theme_mode: 主题（浅色 / 深色 / 跟随系统）
     location: "位置"

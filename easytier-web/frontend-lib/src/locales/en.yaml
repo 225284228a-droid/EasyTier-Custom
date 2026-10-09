@@ -381,15 +381,15 @@ web:
     protected: Protected
     invalid: Invalid configuration
     pending_apply: Pending apply
-    reread: Reread revisions
-    dirty_preserved: Refresh keeps unsaved edits. After a conflict, reread revisions, review your edits, and save again.
+    reopen_editor: Reopen Edit as File to read the latest configuration and try again.
+    dirty_preserved: Opening Edit as File refreshes the configuration version and keeps unsaved edits. After a conflict, reopen it, review your edits, and save again.
     unavailable: This configuration cannot be written now. Check device connectivity, permissions, and its latest snapshot.
     success: Success
-    conflict: Configuration changed; reread its revision
+    conflict: Configuration changed; reopen Edit as File to try again
     not_found: Configuration not found
     apply_failed: Saved; apply failed
     unsupported: This management feature is unsupported
-    unknown: Save outcome unknown; reread to confirm
+    unknown: Save outcome unknown; reopen Edit as File to confirm
   console:
     theme_mode: Theme (light / dark / system)
     location: "Location"
