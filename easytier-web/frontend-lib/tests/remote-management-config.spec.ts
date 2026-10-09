@@ -77,6 +77,8 @@ vi.mock('primevue', async () => {
       label: String,
       icon: String,
       disabled: Boolean,
+      loading: Boolean,
+      loadingIcon: String,
     },
     emits: ['click'],
     setup(props, { slots, emit }) {
@@ -544,6 +546,88 @@ describe('legacy RemoteManagement save and run', () => {
 })
 
 describe('revision-aware RemoteManagement forms', () => {
+  it.each(['success', 'failure'] as const)('spins during reread, prevents duplicate requests, and resets after %s', async outcome => {
+    const { api, entry, snapshot } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      let resolve!: (value: typeof snapshot) => void
+      let reject!: (error: unknown) => void
+      api.observe_local_configs.mockClear().mockImplementationOnce(() => new Promise((done, fail) => {
+        resolve = done
+        reject = fail
+      }))
+      toastSpy.add.mockClear()
+      const button = wrapper.findAllComponents({ name: 'Button' })
+        .find(component => component.props('label') === 'web.local_configs.reread')!
+      const saveButton = wrapper.findAllComponents({ name: 'Button' })
+        .find(component => component.props('label') === 'web.device_management.save_config')!
+      const form = wrapper.findComponent(RevisionConfigForm)
+      form.props('curNetwork').hostname = 'unsaved-host'
+      expect(button.props('loading')).toBe(false)
+      button.vm.$emit('click')
+      button.vm.$emit('click')
+      await nextTick()
+      expect(api.observe_local_configs).toHaveBeenCalledOnce()
+      expect(button.props('loading')).toBe(true)
+      expect(button.props('disabled')).toBe(true)
+      expect(button.props('loadingIcon')).toBe('pi pi-refresh pi-spin')
+      expect(saveButton.props('disabled')).toBe(true)
+      expect(form.props('configInvalid')).toBe(true)
+      saveButton.vm.$emit('click')
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config).not.toHaveBeenCalled()
+      expect(api.save_config).not.toHaveBeenCalled()
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
+      expect(api.run_network).not.toHaveBeenCalled()
+      if (outcome === 'success') {
+        entry.config.hostname = 'reread-host'
+        resolve(snapshot)
+      } else {
+        reject({ message: 'reread failed' })
+      }
+      await flushPromises()
+      expect(button.props('loading')).toBe(false)
+      expect(button.props('disabled')).toBe(false)
+      expect(saveButton.props('disabled')).toBe(false)
+      expect(form.props('configInvalid')).toBe(false)
+      if (outcome === 'success') {
+        expect(form.props('curNetwork').hostname).toBe('unsaved-host')
+        expect(toastSpy.add).not.toHaveBeenCalled()
+      } else {
+        expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({ severity: 'warn', detail: 'reread failed' }))
+      }
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('ignores a stale reread failure after changing the selected configuration', async () => {
+    const { api, snapshot } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      let rejectOld!: (error: unknown) => void
+      api.observe_local_configs.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject }))
+      await wrapper.find('button[data-label="web.local_configs.reread"]').trigger('click')
+      await wrapper.setProps({ instanceId: undefined })
+      await wrapper.setProps({ instanceId: INSTANCE_ID })
+      await flushPromises()
+
+      let resolveCurrent!: (value: typeof snapshot) => void
+      api.observe_local_configs.mockImplementationOnce(() => new Promise(resolve => { resolveCurrent = resolve }))
+      const button = wrapper.findAllComponents({ name: 'Button' })
+        .find(component => component.props('label') === 'web.local_configs.reread')!
+      await button.trigger('click')
+      expect(button.props('loading')).toBe(true)
+      toastSpy.add.mockClear()
+      rejectOld({ message: 'stale reread failed' })
+      await flushPromises()
+      expect(toastSpy.add).not.toHaveBeenCalled()
+      expect(button.props('loading')).toBe(true)
+      resolveCurrent(snapshot)
+      await flushPromises()
+      expect(button.props('loading')).toBe(false)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
   it('applies persisted changes after a running configuration is saved without further edits', async () => {
     const { api, entry } = runningRevision()
     api.patch_local_config.mockImplementation(async (...args: any[]) => {

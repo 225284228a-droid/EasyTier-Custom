@@ -235,7 +235,7 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                         </template>
                 </Menu>
             </nav>
-            <a href="https://easytier.cn" target="_blank" rel="noopener noreferrer" class="console-docs">
+            <a href="https://github.com/225284228a-droid/EasyTier-Custom" target="_blank" rel="noopener noreferrer" class="console-docs">
                 <i class="pi pi-book" aria-hidden="true"></i>{{ t('web.console.documentation') }}<i class="pi pi-arrow-up-right" aria-hidden="true"></i>
             </a>
         </aside>

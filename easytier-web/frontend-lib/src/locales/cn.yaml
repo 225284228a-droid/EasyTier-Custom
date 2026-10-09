@@ -453,6 +453,7 @@ web:
     loading: "加载中"
     instances: "个实例"
     view_table: "表格视图"
+    view_list: "列表视图"
     view_card: "卡片视图"
   login:
     title: 登录

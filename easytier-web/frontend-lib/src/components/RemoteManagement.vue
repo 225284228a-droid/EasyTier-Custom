@@ -57,14 +57,18 @@ const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefin
 const configBaseline = ref<NetworkTypes.NetworkConfig>();
 const editingEntry = ref<LocalConfigEntry>();
 const configSubmitting = ref(false);
+const rereadingRevision = ref(false);
 const scope = computed(() => props.scopeKey ?? props.api.scope ?? '');
 let generation = 0;
 let configRequest = 0;
+let rereadRequest = 0;
 const dirtyFields = computed(() => currentNetworkConfig.value && configBaseline.value
     ? changedConfigFields(configBaseline.value, currentNetworkConfig.value) : []);
 const dirty = computed(() => dirtyFields.value.length > 0);
 const clearConfig = () => {
     configRequest++;
+    rereadRequest++;
+    rereadingRevision.value = false;
     currentNetworkConfig.value = undefined;
     configBaseline.value = undefined;
     editingEntry.value = undefined;
@@ -280,11 +284,13 @@ const saveEditedConfig = async (config: NetworkTypes.NetworkConfig, mode: LocalC
 
 const rereadEditingRevision = async () => {
     const selected = instanceId.value;
-    if (!selected || !revisionSupported.value) return;
+    if (!selected || !revisionSupported.value || configSubmitting.value || rereadingRevision.value) return;
     const context = requestContext();
+    const request = ++rereadRequest;
+    rereadingRevision.value = true;
     try {
         const snapshot = await context.api.observe_local_configs!();
-        if (!context.current() || instanceId.value !== selected) return;
+        if (!context.current() || request !== rereadRequest || instanceId.value !== selected) return;
         const entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
         if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
         editingEntry.value = { ...entry };
@@ -293,7 +299,11 @@ const rereadEditingRevision = async () => {
             configBaseline.value = cloneEditableConfig(entry.config!);
         }
     } catch (error) {
-        if (context.current()) toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 });
+        if (context.current() && request === rereadRequest && instanceId.value === selected) {
+            toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 });
+        }
+    } finally {
+        if (request === rereadRequest) rereadingRevision.value = false;
     }
 };
 
@@ -356,7 +366,7 @@ const confirmDeleteNetwork = (event: any) => {
 };
 
 const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
-    if (configSubmitting.value) return;
+    if (configSubmitting.value || rereadingRevision.value) return;
     const editedConfig = config ?? currentNetworkConfig.value;
     if (!editedConfig) {
         return;
@@ -414,7 +424,7 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
 }
 
 const saveNetworkConfig = async () => {
-    if (!currentNetworkConfig.value || configSubmitting.value) {
+    if (!currentNetworkConfig.value || configSubmitting.value || rereadingRevision.value) {
         return;
     }
     const config = currentNetworkConfig.value;
@@ -788,12 +798,14 @@ onUnmounted(() => {
 
                 <div class="w-full flex gap-2 flex-wrap justify-start mb-3">
                     <Button v-if="editingEntry" @click="rereadEditingRevision" icon="pi pi-refresh"
-                        :label="t('web.local_configs.reread')" severity="secondary" outlined :disabled="configSubmitting" />
+                        :label="t('web.local_configs.reread')" severity="secondary" outlined
+                        :loading="rereadingRevision" loadingIcon="pi pi-refresh pi-spin" :aria-busy="rereadingRevision"
+                        :disabled="configSubmitting || rereadingRevision" />
                     <Button @click="showConfigEditDialog = true" icon="pi pi-file-edit"
                         :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" :disabled="configSubmitting" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" :disabled="configSubmitting" />
-                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting"
+                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting || rereadingRevision"
                         icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
                         severity="success" />
                 </div>
@@ -806,7 +818,7 @@ onUnmounted(() => {
                     <span v-if="applySavedConfig && !applySupported"> — {{ t('web.local_configs.apply_unsupported') }}</span>
                 </Message>
 
-                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig || configSubmitting"
+                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig || configSubmitting || rereadingRevision"
                     :runtime-capabilities="runtimeCapabilities" :action-label="configActionLabel"
                     @run-network="saveAndRunNewNetwork"></Config>
             </div>

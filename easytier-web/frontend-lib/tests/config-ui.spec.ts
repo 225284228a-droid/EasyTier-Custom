@@ -239,6 +239,7 @@ const UrlListInputStub = defineComponent({
     modelValue: Array,
     id: String,
     addLabel: String,
+    protos: Object,
   },
   emits: ['update:modelValue'],
   setup(props, { attrs, emit }) {
@@ -367,16 +368,19 @@ function makeConfig(): NetworkConfig {
   }
 }
 
-function mountConfig(config: NetworkConfig = makeConfig()) {
+function mountConfig(config: NetworkConfig = makeConfig(), runtimeCapabilities?: readonly string[]) {
   const curNetwork = reactive(config) as NetworkConfig
   const wrapper = mount(Config, {
     props: {
       curNetwork,
       hostname: 'host-from-prop',
+      runtimeCapabilities,
     },
     global: {
       directives: {
-        tooltip: () => {},
+        tooltip: (element: HTMLElement, binding: { value: string }) => {
+          element.setAttribute('data-tooltip', binding.value)
+        },
       },
       stubs: {
         AclManager: AclManagerStub,
@@ -412,6 +416,91 @@ async function setInput(wrapper: VueWrapper, selector: string, value: string) {
 }
 
 describe('Config.vue network config projection', () => {
+  it('keeps every custom setting available when no runtime capability filter is supplied', async () => {
+    const { wrapper } = mountConfig()
+    await nextTick()
+
+    for (const field of ['enable_bbr', 'close_redundant_conns_when_disguised', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
+      expect(wrapper.find(`#${field}`).exists(), `${field} should be available for offline configuration`).toBe(true)
+      expect(wrapper.find(`#${field}`).attributes('disabled')).toBeUndefined()
+      expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(true)
+    }
+    for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
+      expect(urls.props('protos')).toHaveProperty('http3')
+    }
+    wrapper.unmount()
+  })
+
+  it('removes unsupported custom controls, labels and help for official runtimes while keeping ordinary fields editable', async () => {
+    const config = makeConfig()
+    config.enable_bbr = true
+    config.close_redundant_conns_when_disguised = true
+    const { curNetwork, wrapper } = mountConfig(config, [])
+    await nextTick()
+
+    for (const field of ['enable_bbr', 'close_redundant_conns_when_disguised', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
+      expect(wrapper.find(`#${field}`).exists(), `${field} should be absent for official runtimes`).toBe(false)
+      expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(false)
+      expect(wrapper.find(`[data-tooltip="${field}_help"]`).exists()).toBe(false)
+    }
+    for (const field of CONFIG_FLAG_FIELDS.filter(field => field !== 'enable_bbr')) {
+      expect(input(wrapper, `#${field}`).disabled, `${field} should remain editable`).toBe(false)
+    }
+    for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
+      expect(urls.props('protos')).not.toHaveProperty('http3')
+      expect(urls.props('protos')).toHaveProperty('wss')
+    }
+    await wrapper.find('#no_tun').setValue(false)
+    await setInput(wrapper, '#hostname', 'official-host')
+    expect(curNetwork.no_tun).toBe(false)
+    expect(curNetwork.hostname).toBe('official-host')
+    expect(curNetwork.sni).toBe('www.cloudflare.com')
+    expect(curNetwork.enable_bbr).toBe(true)
+    expect(curNetwork.close_redundant_conns_when_disguised).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows individual supported extensions and updates the complete disguise selector when capabilities change', async () => {
+    const supported = ['config:sni', 'config:enable_bbr', 'config:p2p_prefer_protocol', 'config:prefer_wss_http3_for_p2p']
+    const { curNetwork, wrapper } = mountConfig(makeConfig(), supported)
+    await nextTick()
+
+    for (const field of ['sni', 'enable_bbr', 'p2p_prefer_protocol']) {
+      expect(wrapper.find(`#${field}`).exists()).toBe(true)
+      expect(wrapper.find(`#${field}`).attributes('disabled')).toBeUndefined()
+    }
+    expect(wrapper.find('#p2p_disguise_mode').exists()).toBe(false)
+    expect(wrapper.find('label[for="p2p_disguise_mode"]').exists()).toBe(false)
+    expect(wrapper.find('#close_redundant_conns_when_disguised').exists()).toBe(false)
+    await setInput(wrapper, '#sni', 'custom.example.com')
+    expect(curNetwork.sni).toBe('custom.example.com')
+
+    await wrapper.setProps({ runtimeCapabilities: [
+      ...supported,
+      'config:only_use_wss_http3_for_hole_punching',
+      'config:disable_wss_http3_for_p2p',
+      'config:close_redundant_conns_when_disguised',
+      'transport:http3-framed-v1',
+    ] })
+    expect(wrapper.find('#p2p_disguise_mode').exists()).toBe(true)
+    expect(wrapper.find('#close_redundant_conns_when_disguised').exists()).toBe(true)
+    expect(wrapper.find('[data-tooltip="p2p_disguise_mode_help"]').exists()).toBe(true)
+    await wrapper.find('#p2p_disguise_mode').setValue('prefer')
+    expect(curNetwork.prefer_wss_http3_for_p2p).toBe(true)
+    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBe(false)
+    for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
+      expect(urls.props('protos')).toHaveProperty('http3')
+    }
+
+    await wrapper.setProps({ runtimeCapabilities: [] })
+    expect(wrapper.find('#sni').exists()).toBe(false)
+    expect(wrapper.find('#p2p_disguise_mode').exists()).toBe(false)
+    expect(wrapper.find('#enable_bbr').exists()).toBe(false)
+    expect(wrapper.find('#close_redundant_conns_when_disguised').exists()).toBe(false)
+    expect(curNetwork.sni).toBe('custom.example.com')
+    wrapper.unmount()
+  })
+
   it('shows passive disguise use and TCP for new and missing settings', async () => {
     for (const legacy of [false, true]) {
       const config = DEFAULT_NETWORK_CONFIG()

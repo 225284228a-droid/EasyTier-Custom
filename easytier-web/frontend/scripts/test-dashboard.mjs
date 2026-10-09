@@ -119,6 +119,112 @@ async function assertLocalLabelLayout(page, name) {
   return layout
 }
 
+async function selectTheme(page, mode) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (await page.evaluate(() => localStorage.getItem('console-theme-mode')) === mode) break
+    await page.getByRole('button', { name: 'Theme (light / dark / system)', exact: true }).click()
+  }
+  assert.equal(await page.evaluate(() => localStorage.getItem('console-theme-mode')), mode)
+}
+
+async function canvasBrightness(canvas) {
+  const image = PNG.sync.read(await canvas.screenshot())
+  const median = (left, top, width, height) => {
+    const values = []
+    for (let y = Math.floor(image.height * top); y < image.height * (top + height); y++) {
+      for (let x = Math.floor(image.width * left); x < image.width * (left + width); x++) {
+        const offset = (y * image.width + x) * 4
+        values.push(image.data[offset] * 0.2126 + image.data[offset + 1] * 0.7152 + image.data[offset + 2] * 0.0722)
+      }
+    }
+    values.sort((a, b) => a - b)
+    return values[Math.floor(values.length / 2)]
+  }
+  return { background: median(0.02, 0.02, 0.05, 0.05), sphere: median(0.45, 0.45, 0.1, 0.1) }
+}
+
+async function assertMountedThemeChanges(page, canvas) {
+  const originalCanvas = await canvas.elementHandle()
+  const originalView = await canvas.evaluate(element => ({
+    distance: element.dataset.globeDistance, azimuth: element.dataset.globeAzimuth,
+  }))
+  const assertMode = async (dark, name) => {
+    await page.waitForFunction(expected => document.documentElement.classList.contains('app-dark') === expected, dark)
+    // CSS and the WebGL palette update on different callbacks; sample after both have rendered.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    const pixels = await canvasBrightness(canvas)
+    assert.ok(dark ? pixels.background < 100 : pixels.background > 180,
+      `${name}: canvas background did not adopt the theme (${pixels.background})`)
+    assert.ok(dark ? pixels.sphere < 100 : pixels.sphere > 160,
+      `${name}: globe sphere did not adopt the theme (${pixels.sphere})`)
+    assert.equal(await originalCanvas.evaluate(element => element === document.querySelector('.globe-stage canvas')), true,
+      `${name}: switching theme recreated the globe canvas`)
+    const view = await canvas.evaluate(element => ({
+      distance: element.dataset.globeDistance, azimuth: element.dataset.globeAzimuth,
+    }))
+    assert.deepEqual(view, originalView, `${name}: switching theme reset the camera`)
+    assert.equal(await page.locator('.node-row').filter({ hasText: 'Auckland' }).getAttribute('aria-pressed'), 'true',
+      `${name}: switching theme cleared the selected node`)
+    assert.equal(await page.getByRole('button', { name: 'Auto Rotate', exact: true }).count(), 1,
+      `${name}: switching theme resumed rotation`)
+  }
+  await assertMode(true, 'initial dark mode')
+  await selectTheme(page, 'light')
+  await assertMode(false, 'explicit light mode')
+  await page.locator('.console-page').screenshot({ path: join(output, 'desktop-light.png') })
+  await selectTheme(page, 'dark')
+  await assertMode(true, 'explicit dark mode')
+  await selectTheme(page, 'system')
+  await page.emulateMedia({ colorScheme: 'light' })
+  await assertMode(false, 'system light mode')
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await assertMode(true, 'system dark mode')
+  await selectTheme(page, 'dark')
+  await originalCanvas.dispose()
+  console.log('desktop: mounted globe follows explicit and system themes without resetting its view')
+}
+
+async function assertLightGlobeLabels(page) {
+  const colors = await page.locator('.globe-stage').evaluate(stage => {
+    const context = document.createElement('canvas').getContext('2d')
+    const rgba = color => {
+      context.clearRect(0, 0, 1, 1)
+      context.fillStyle = color
+      context.fillRect(0, 0, 1, 1)
+      return [...context.getImageData(0, 0, 1, 1).data]
+    }
+    const read = selector => {
+      const element = [...stage.querySelectorAll(selector)].find(element => element.getClientRects().length > 0)
+      if (!element) throw new Error(`No visible ${selector} available for theme verification`)
+      const style = getComputedStyle(element)
+      return { color: rgba(style.color), background: rgba(style.backgroundColor) }
+    }
+    return {
+      stage: rgba(getComputedStyle(stage).backgroundColor),
+      node: read('.globe-node-label'), traffic: read('.globe-traffic-label'),
+      legend: read('.globe-legend'), managed: read('.globe-legend .managed-dot'), peer: read('.globe-legend .peer-dot'),
+    }
+  })
+  const luminance = color => color.slice(0, 3).map(value => {
+    const channel = value / 255
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0)
+  const contrast = (first, second) => {
+    const a = luminance(first), b = luminance(second)
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+  }
+  for (const name of ['node', 'traffic']) {
+    const label = colors[name]
+    const background = label.background.slice(0, 3).map((value, index) =>
+      value * label.background[3] / 255 + colors.stage[index] * (1 - label.background[3] / 255))
+    assert.ok(luminance(background) > 0.65, `light mode: ${name} label kept its dark background`)
+    assert.ok(contrast(label.color, background) >= 4.5, `light mode: ${name} label text lacks contrast`)
+  }
+  assert.ok(contrast(colors.legend.color, colors.stage) >= 4.5, 'light mode: legend text lacks contrast')
+  for (const name of ['managed', 'peer'])
+    assert.ok(contrast(colors[name].background, colors.stage) >= 3, `light mode: ${name} marker lacks contrast`)
+}
+
 let previewServer
 if (!process.env.DASHBOARD_URL) {
   previewServer = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '5187', '--strictPort'], { stdio: 'pipe' })
@@ -139,7 +245,7 @@ const errors = []
 const detailAssets = []
 let page
 try {
-  page = await browser.newPage()
+  page = await browser.newPage({ colorScheme: 'dark' })
   // Software WebGL can take several frames to settle during native build load.
   page.setDefaultTimeout(60_000)
   page.on('pageerror', error => errors.push(error.message))
@@ -179,8 +285,11 @@ try {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
   })
   await page.addInitScript(() => {
-    if (location.protocol === 'http:' || location.protocol === 'https:')
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
       localStorage.setItem('lang', 'en')
+      // Existing particle-color checks exercise dark mode; retain explicit choices across reloads.
+      if (!localStorage.getItem('console-theme-mode')) localStorage.setItem('console-theme-mode', 'dark')
+    }
     const firstFrame = new MutationObserver(() => {
       const canvas = document.querySelector('.globe-stage canvas')
       const azimuth = canvas?.getAttribute('data-globe-azimuth')
@@ -306,6 +415,7 @@ try {
     await page.waitForTimeout(300)
     assert.equal(await canvas.getAttribute('data-globe-azimuth'), azimuthAfter,
       `${name}: globe continued spinning after a manual drag`)
+    if (name === 'desktop') await assertMountedThemeChanges(page, canvas)
     const motionBefore = PNG.sync.read(await canvas.screenshot())
     let movingWhitePixels = 0
     for (let attempt = 0; attempt < 6 && movingWhitePixels <= 2; attempt++) {
@@ -424,6 +534,11 @@ try {
     assert.equal(continuityResult.hiddenFrames, 0, `${name}: polling briefly hid visible traffic labels`)
     await assertLocalLabelLayout(page, name)
     await page.screenshot({ path: join(output, `${name}-close.png`), fullPage: true })
+    if (name === 'desktop') {
+      await selectTheme(page, 'light')
+      await assertLightGlobeLabels(page)
+      await page.screenshot({ path: join(output, 'desktop-close-light.png'), fullPage: true })
+    }
     const savedDistance = Number(await canvas.getAttribute('data-globe-distance'))
     const savedAzimuth = Number(await canvas.getAttribute('data-globe-azimuth'))
     await page.waitForTimeout(600)
@@ -439,6 +554,14 @@ try {
     `${name}: rotation switch did not survive page reload`)
     assert.equal(await page.locator('.node-row').filter({ hasText: 'Auckland' }).getAttribute('aria-pressed'), 'true',
       `${name}: selected node did not survive page reload`)
+    if (name === 'desktop') {
+      assert.equal(await page.evaluate(() => document.documentElement.classList.contains('app-dark')), false,
+        'Persisted light mode was ignored on reload')
+      assert.ok((await canvasBrightness(canvas)).sphere > 160,
+        'Persisted light mode did not initialize the globe materials')
+      await selectTheme(page, 'dark')
+      console.log('desktop: explicit/system theme changes, light globe and label contrast, preserved view and persisted light mode passed')
+    }
     await page.getByRole('button', { name: 'Reset View', exact: true }).click()
     await page.waitForFunction(longitude =>
       Math.abs(Number(document.querySelector('.globe-stage canvas')?.getAttribute('data-globe-azimuth')) - longitude) < 1e-8,

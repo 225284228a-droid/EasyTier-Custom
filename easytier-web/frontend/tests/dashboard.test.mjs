@@ -145,7 +145,7 @@ test('overview uses real counts and recovers from partial refresh failures', asy
     state.machines[0].online = true;
     await refresh(page);
     await page.waitForFunction(() => document.querySelectorAll('.summary-value')[1]?.textContent.trim() === '1');
-    assert.equal(await page.locator('.overview-columns section').first().locator('.preview-row').count(), 5);
+    assert.equal(await page.locator('.dashboard-device-card').count(), 5);
     state.failures.add('/networks');
     state.machines.pop();
     await refresh(page);
@@ -156,6 +156,66 @@ test('overview uses real counts and recovers from partial refresh failures', asy
     state.networks.pop();
     await page.waitForFunction(() => document.querySelectorAll('.summary-value')[2]?.textContent.trim() === '2');
     assert.equal(await page.getByText('Unable to refresh data.', { exact: false }).count(), 0);
+});
+
+test('dashboard devices default to compact cards, retain list choice and open the selected device', async t => {
+    const { page, state } = await open(t);
+    const devicePanel = page.locator('.overview-columns > section').first();
+    const cards = devicePanel.locator('.dashboard-device-card');
+    const rows = devicePanel.locator('.preview-row');
+    const view = devicePanel.locator('.dashboard-device-view');
+    await cards.first().waitFor();
+    assert.equal(await cards.count(), 5);
+    const names = state.machines.slice(0, 5).map(machine => machine.info.hostname);
+    assert.deepEqual(await cards.locator('.preview-name').allTextContents(), names);
+    for (let index = 0; index < names.length; index++) {
+        assert.equal((await cards.nth(index).innerText()).replace(/\s+/g, ' ').trim(),
+            `${names[index]} ${state.machines[index].public_ip}`,
+            'dashboard cards show only the device name and public IP');
+    }
+    await view.getByRole('button', { name: 'List view', exact: true }).click();
+    await rows.first().waitFor();
+    assert.equal(await cards.count(), 0);
+    assert.deepEqual(await rows.locator('.preview-name').allTextContents(), names);
+    assert.equal(await rows.locator('.preview-number').count(), 5, 'list mode retains instance counts');
+    await page.reload();
+    await rows.first().waitFor();
+    assert.deepEqual(await rows.locator('.preview-name').allTextContents(), names, 'list choice survives reload');
+    await view.getByRole('button', { name: 'Card view', exact: true }).click();
+    await cards.first().waitFor();
+    assert.equal(await rows.count(), 0);
+    await cards.first().click();
+    await page.waitForURL(`**/device/${id(1)}/${id(100)}`);
+    await page.locator('.console-device-drawer h2').filter({ hasText: names[0] }).waitFor();
+    await page.goBack();
+    await cards.first().waitFor();
+    assert.deepEqual(await cards.locator('.preview-name').allTextContents(), names, 'returning to the dashboard retains cards');
+});
+
+test('dashboard topology shares the panel heading inset and documentation links open this fork', async t => {
+    const { page } = await open(t, '/h', {}, state => { state.machines = []; });
+    const repository = 'https://github.com/225284228a-droid/EasyTier-Custom';
+    await page.locator('.overview-columns .console-empty-state a.entity-link').waitFor();
+    assert.equal(await page.locator('.console-docs').getAttribute('href'), repository);
+    assert.equal(await page.locator('.overview-columns .console-empty-state a.entity-link').getAttribute('href'), repository);
+    await page.locator('.dashboard .topology-header').waitFor();
+    for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 960 });
+        const bounds = await page.locator('.dashboard').evaluate(panel => {
+            const outer = panel.getBoundingClientRect();
+            const heading = panel.querySelector('.section-heading h2').getBoundingClientRect();
+            const summary = panel.querySelector('.dashboard-summary').getBoundingClientRect();
+            const toolbar = panel.querySelector('.topology-header').getBoundingClientRect();
+            return { outer: { left: outer.left, right: outer.right }, heading: heading.left,
+                summary: { left: summary.left, right: summary.right }, toolbar: toolbar.left };
+        });
+        assert.ok(Math.abs(bounds.summary.left - bounds.heading) <= 1,
+            `${width}: running-network summary is not aligned with the panel heading`);
+        assert.ok(Math.abs(bounds.toolbar - bounds.heading) <= 1,
+            `${width}: topology title and controls are not aligned with the panel heading`);
+        assert.ok(bounds.summary.left > bounds.outer.left + 8 && bounds.summary.right < bounds.outer.right - 8,
+            `${width}: topology content touches the panel edges`);
+    }
 });
 
 test('removed local configuration page falls back to the dashboard without a navigation entry', async t => {

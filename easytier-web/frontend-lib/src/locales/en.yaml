@@ -453,6 +453,7 @@ web:
     loading: "Loading"
     instances: "instances"
     view_table: "Table view"
+    view_list: "List view"
     view_card: "Card view"
   login:
     title: Login

@@ -104,8 +104,8 @@ const protos = computed(() => Object.fromEntries(Object.entries(allProtos).filte
   proto !== 'http3' || props.runtimeCapabilities === undefined || props.runtimeCapabilities.includes(HTTP3_CAPABILITY))))
 const listenerProtos = computed(() => Object.fromEntries(
   Object.entries(protos.value).filter(([proto]) => !listenerExcludedProtos.has(proto))))
-const extensionEditable = (field: string) => props.runtimeCapabilities === undefined || configFieldSupported(field, props.runtimeCapabilities)
-const disguiseEditable = computed(() => ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'].every(extensionEditable))
+const extensionSupported = (field: string) => props.runtimeCapabilities === undefined || configFieldSupported(field, props.runtimeCapabilities)
+const disguiseSupported = computed(() => ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'].every(extensionSupported))
 
 const inetSuggestions = ref([''])
 
@@ -174,6 +174,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
+const visibleBoolFlags = computed(() => bool_flags.filter(flag => extensionSupported(flag.field)))
 
 const disguisedP2pMode = computed<DisguisedP2pMode>({
   get() {
@@ -446,8 +447,8 @@ function removeVpnPortalClient(index: number) {
                   <label> {{ t('flags_switch') }} </label>
                   <div class="flex flex-row flex-wrap">
 
-                    <div class="basis-[20rem] flex items-center" v-for="flag in bool_flags">
-                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" :disabled="!extensionEditable(flag.field)" />
+                    <div class="basis-[20rem] flex items-center" v-for="flag in visibleBoolFlags" :key="flag.field">
+                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" />
                       <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
                     </div>
@@ -464,30 +465,30 @@ function removeVpnPortalClient(index: number) {
                 </div>
               </div>
 
-              <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+              <div v-if="extensionSupported('p2p_prefer_protocol') || disguiseSupported" class="flex flex-row gap-x-9 flex-wrap">
+                <div v-if="extensionSupported('p2p_prefer_protocol')" class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex items-center">
                     <label for="p2p_prefer_protocol">{{ t('p2p_prefer_protocol') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_prefer_protocol_help')"></span>
                   </div>
-                  <SelectButton id="p2p_prefer_protocol" v-model="p2pPreferProtocol" :disabled="!extensionEditable('p2p_prefer_protocol')"
+                  <SelectButton id="p2p_prefer_protocol" v-model="p2pPreferProtocol"
                     :options="p2pPreferProtocolOptions" option-label="label" option-value="value" fluid />
                 </div>
 
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+                <div v-if="disguiseSupported" class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex items-center">
                     <label for="p2p_disguise_mode">{{ t('p2p_disguise_mode') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_disguise_mode_help')"></span>
                   </div>
-                  <SelectButton id="p2p_disguise_mode" v-model="disguisedP2pMode" :disabled="!disguiseEditable"
+                  <SelectButton id="p2p_disguise_mode" v-model="disguisedP2pMode"
                     :options="disguisedP2pModeOptions" option-label="label" option-value="value" fluid />
                 </div>
               </div>
 
-              <div class="flex flex-row gap-x-9 flex-wrap">
+              <div v-if="extensionSupported('sni')" class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="sni">{{ t('sni') }}</label>
-                  <InputText id="sni" v-model="curNetwork.sni" :disabled="!extensionEditable('sni')" aria-describedby="sni-help" :format="true"
+                  <InputText id="sni" v-model="curNetwork.sni" aria-describedby="sni-help" :format="true"
                     :placeholder="t('sni_placeholder')" />
                 </div>
               </div>

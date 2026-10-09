@@ -43,6 +43,7 @@ let camera: THREE.PerspectiveCamera
 let renderer: THREE.WebGLRenderer | undefined
 let controls: OrbitControls | undefined
 let resizeObserver: ResizeObserver | undefined
+let themeObserver: MutationObserver | undefined
 let topologyGroup: THREE.Group | undefined
 let globeSurface: THREE.Mesh | undefined
 let boundaryMaterial: THREE.LineBasicMaterial | undefined
@@ -114,6 +115,35 @@ const controlsConfig = {
   minDistance: 1.25,
   maxDistance: 6.5,
   autoRotateSpeed: 0.21,
+}
+
+const globeColorRoles = ['surface', 'land', 'ocean', 'boundary', 'managed', 'peer', 'link', 'flow-forward', 'flow-reverse'] as const
+type GlobeColorRole = typeof globeColorRoles[number]
+type GlobeMaterial = THREE.Material & { color: THREE.Color }
+let globeColors: Record<GlobeColorRole, string>
+
+function themedMaterial<T extends GlobeMaterial>(material: T, role: GlobeColorRole): T {
+  material.userData.globeColorRole = role
+  material.color.set(globeColors[role])
+  return material
+}
+
+function syncTheme() {
+  if (!stage.value)
+    return
+  // Share CSS colors with WebGL, including geometry loaded after a theme change.
+  const style = getComputedStyle(stage.value)
+  globeColors = Object.fromEntries(globeColorRoles.map(role =>
+    [role, style.getPropertyValue(`--globe-${role}`).trim()])) as Record<GlobeColorRole, string>
+  // Recolor in place to preserve camera, selection, particles and map detail.
+  scene?.traverse(object => {
+    const material = (object as THREE.Mesh).material
+    for (const item of Array.isArray(material) ? material : material ? [material] : []) {
+      const role = item.userData.globeColorRole as GlobeColorRole | undefined
+      if (role)
+        (item as GlobeMaterial).color.set(globeColors[role])
+    }
+  })
 }
 
 function disposeGroup(group: THREE.Object3D) {
@@ -194,17 +224,16 @@ function buildPointCloud(
     return pixels[(y * map.width + x) * 4 + 3] > 100
   })
   const group = new THREE.Group()
-  for (const [points, color, size] of [
-    [land, 0x67d9b6, count > 100_000 ? 0.0035 : count > 30_000 ? 0.006 : 0.011],
-    [ocean, 0x465f65, count > 100_000 ? 0.002 : count > 30_000 ? 0.0035 : 0.006],
+  for (const [points, role, size] of [
+    [land, 'land', count > 100_000 ? 0.0035 : count > 30_000 ? 0.006 : 0.011],
+    [ocean, 'ocean', count > 100_000 ? 0.002 : count > 30_000 ? 0.0035 : 0.006],
   ] as const) {
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
-    group.add(new THREE.Points(geometry, new THREE.PointsMaterial({
-      color,
+    group.add(new THREE.Points(geometry, themedMaterial(new THREE.PointsMaterial({
       size,
       sizeAttenuation: true,
-    })))
+    }), role)))
   }
   return group
 }
@@ -251,16 +280,15 @@ function requestGeographyLevel(level: 1 | 2) {
 }
 
 function buildCloud() {
-  boundaryMaterial = new THREE.LineBasicMaterial({
-    color: 0x9bb7b5,
+  boundaryMaterial = themedMaterial(new THREE.LineBasicMaterial({
     transparent: true,
     opacity: 0.38,
     depthWrite: false,
-  })
+  }), 'boundary')
   buildGeographyLevel(0, worldGeography)
   globeSurface = new THREE.Mesh(
     new THREE.SphereGeometry(0.994, 64, 32),
-    new THREE.MeshBasicMaterial({ color: 0x10191d }),
+    themedMaterial(new THREE.MeshBasicMaterial(), 'surface'),
   )
   scene.add(globeSurface)
 }
@@ -414,7 +442,9 @@ function updateLabels() {
   const distance = camera.position.distanceTo(controls.target)
   const nodesVisible = distance <= NODE_LABEL_MAX_DISTANCE
   const trafficVisible = distance <= TRAFFIC_LABEL_MAX_DISTANCE
-  const { clientWidth: width, clientHeight: height } = renderer.domElement
+  // Aspect-ratio layouts can have fractional sizes; rounded clientHeight lets
+  // bottom-aligned labels encroach on the legend after a viewport resize.
+  const { width, height } = renderer.domElement.getBoundingClientRect()
   labelLayer.value.dataset.detailVisible = String(nodesVisible)
   labelLayer.value.dataset.nodeLabelsVisible = String(nodesVisible)
   labelLayer.value.dataset.trafficLabelsVisible = String(trafficVisible)
@@ -574,11 +604,10 @@ function rebuildTopology() {
   for (const node of nodeMap.values()) {
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(node.id === selectedId.value ? 0.025 : 0.018, 12, 8),
-      new THREE.MeshBasicMaterial({
-        color: node.managed ? 0xffcf67 : 0xe99fc4,
+      themedMaterial(new THREE.MeshBasicMaterial({
         transparent: !!node.stale,
         opacity: node.stale ? 0.5 : 1,
-      }),
+      }), node.managed ? 'managed' : 'peer'),
     )
     mesh.position.copy(position(node.latitude, node.longitude, 1.018))
     mesh.userData.nodeId = node.id
@@ -599,7 +628,7 @@ function rebuildTopology() {
     const curve = linkCurve(position(source.latitude, source.longitude), position(target.latitude, target.longitude))
     topologyGroup.add(new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(curve.getPoints(64)),
-      new THREE.LineBasicMaterial({ color: 0x77bce6, transparent: true, opacity: link.stale ? 0.28 : 0.72 }),
+      themedMaterial(new THREE.LineBasicMaterial({ transparent: true, opacity: link.stale ? 0.28 : 0.72 }), 'link'),
     ))
     for (const [reverse, rate] of [[false, link.txBps], [true, link.rxBps]] as const) {
       const emissionsPerSecond = flowEmissionsPerSecond(rate, link.stale)
@@ -608,7 +637,7 @@ function rebuildTopology() {
       const travelSeconds = flowTravelSeconds(link.latencyMs)
       const mesh = new THREE.InstancedMesh(
         new THREE.SphereGeometry(0.009, 8, 6),
-        new THREE.MeshBasicMaterial({ color: reverse ? 0xdaf1ff : 0xffffff }),
+        themedMaterial(new THREE.MeshBasicMaterial(), reverse ? 'flow-reverse' : 'flow-forward'),
         MAX_FLOW_PARTICLES,
       )
       mesh.count = 0
@@ -800,6 +829,9 @@ function animate(now: number) {
 onMounted(() => {
   if (!stage.value)
     return
+  syncTheme()
+  themeObserver = new MutationObserver(syncTheme)
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
   try {
     scene = new THREE.Scene()
     camera = new THREE.PerspectiveCamera(40, 1, 0.1, 20)
@@ -860,6 +892,7 @@ onUnmounted(() => {
   clearTimeout(viewSaveTimer)
   cancelAnimationFrame(frame)
   resizeObserver?.disconnect()
+  themeObserver?.disconnect()
   controls?.removeEventListener('change', scheduleZoomSave)
   controls?.dispose()
   renderer?.domElement.removeEventListener('pointerdown', beginInteraction)
@@ -931,41 +964,82 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.topology { min-width: 0; }
+.topology {
+  --globe-surface: #f1f6f8;
+  --globe-land: #087f6c;
+  --globe-ocean: #a3bcc6;
+  --globe-boundary: #526e76;
+  --globe-managed: #b66a09;
+  --globe-peer: #ad3974;
+  --globe-link: #237aaf;
+  --globe-flow-forward: #0b456b;
+  --globe-flow-reverse: #0c7169;
+  --globe-label-background: rgba(255, 255, 255, 0.94);
+  --globe-label-text: #1e3a43;
+  --globe-node-text: #8a4d00;
+  --globe-stat-text: #375d6b;
+  --globe-muted-text: #526b75;
+  --globe-label-border: rgba(82, 107, 117, 0.22);
+  --globe-leader: rgba(68, 101, 110, 0.46);
+  --globe-traffic-leader: rgba(68, 101, 110, 0.82);
+  --globe-legend-text: #37515d;
+  --globe-scrollbar: #728b91;
+  min-width: 0;
+}
+.topology:where(.app-dark *) {
+  --globe-surface: #10191d;
+  --globe-land: #67d9b6;
+  --globe-ocean: #465f65;
+  --globe-boundary: #9bb7b5;
+  --globe-managed: #ffcf67;
+  --globe-peer: #e99fc4;
+  --globe-link: #77bce6;
+  --globe-flow-forward: #ffffff;
+  --globe-flow-reverse: #daf1ff;
+  --globe-label-background: rgba(10, 17, 19, 0.88);
+  --globe-label-text: #edf7f5;
+  --globe-node-text: #ffda88;
+  --globe-stat-text: #c7e2e9;
+  --globe-muted-text: #a4bcc0;
+  --globe-label-border: rgba(164, 188, 192, 0.18);
+  --globe-leader: rgba(187, 215, 213, 0.4);
+  --globe-traffic-leader: rgba(187, 215, 213, 0.82);
+  --globe-legend-text: #d5e0df;
+}
 .topology-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .topology-counts { font-size: 12px; color: var(--p-text-muted-color); }
 .topology-tools { display: flex; flex-shrink: 0; }
 .topology-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: start; }
-.globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: #10191d; overflow: hidden; }
+.globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: var(--globe-surface); overflow: hidden; }
 .globe-stage :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }
 .globe-labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
-.globe-labels :deep(.globe-label-stack) { position: absolute; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #728b91 transparent; pointer-events: auto; }
+.globe-labels :deep(.globe-label-stack) { position: absolute; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--globe-scrollbar) transparent; pointer-events: auto; }
 .globe-labels :deep(.globe-label-stack::-webkit-scrollbar) { width: 6px; }
-.globe-labels :deep(.globe-label-stack::-webkit-scrollbar-thumb) { background: #728b91; border-radius: 3px; }
+.globe-labels :deep(.globe-label-stack::-webkit-scrollbar-thumb) { background: var(--globe-scrollbar); border-radius: 3px; }
 .globe-labels :deep(.globe-node-label), .globe-labels :deep(.globe-traffic-label) {
   position: relative; flex-shrink: 0; align-self: flex-start; padding: 3px 5px; max-width: 220px; box-sizing: border-box;
-  border-radius: 3px; background: rgba(10, 17, 19, 0.88); color: #edf7f5;
+  border-radius: 3px; background: var(--globe-label-background); color: var(--globe-label-text);
   font-size: 11px; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis;
 }
-.globe-labels :deep(.globe-node-label) { width: max-content; max-width: 174px; color: #ffda88; font-weight: 600; }
+.globe-labels :deep(.globe-node-label) { width: max-content; max-width: 174px; color: var(--globe-node-text); font-weight: 600; }
 .globe-labels :deep(.globe-traffic-label) { width: 198px; max-width: 198px; white-space: normal; }
 .globe-labels :deep(.globe-flow-cross) { display: grid; gap: 2px; }
 .globe-labels :deep(.traffic-endpoints) { display: grid; grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr); gap: 4px; align-items: center; }
-.globe-labels :deep(.globe-flow-stat) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 10px; line-height: 14px; color: #c7e2e9; }
+.globe-labels :deep(.globe-flow-stat) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 10px; line-height: 14px; color: var(--globe-stat-text); }
 .globe-labels :deep(.globe-flow-name) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: auto; }
 .globe-labels :deep(.globe-flow-source) { text-align: right; }
-.globe-labels :deep(.globe-flow-directions) { text-align: center; font-size: 13px; color: #edf7f5; }
-.globe-labels :deep(.globe-flow-latency) { display: flex; justify-content: center; align-items: center; gap: 4px; padding-top: 2px; border-top: 1px solid rgba(164, 188, 192, 0.18); color: #a4bcc0; font-size: 10px; line-height: 13px; }
+.globe-labels :deep(.globe-flow-directions) { text-align: center; font-size: 13px; color: var(--globe-label-text); }
+.globe-labels :deep(.globe-flow-latency) { display: flex; justify-content: center; align-items: center; gap: 4px; padding-top: 2px; border-top: 1px solid var(--globe-label-border); color: var(--globe-muted-text); font-size: 10px; line-height: 13px; }
 .globe-labels :deep(.globe-flow-latency .pi) { font-size: 10px; }
 .globe-labels :deep(.is-stale) { opacity: 0.55; }
-.globe-labels :deep(.globe-label-leader) { position: absolute; height: 1px; background: rgba(187, 215, 213, 0.4); transform-origin: left center; }
-.globe-labels :deep(.globe-traffic-leader) { height: 2px; margin-top: -1px; background: rgba(187, 215, 213, 0.82); }
-.globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: #c6d9db; padding: 24px; text-align: center; }
-.globe-legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 16px; color: #d5e0df; font-size: 12px; pointer-events: none; }
+.globe-labels :deep(.globe-label-leader) { position: absolute; height: 1px; background: var(--globe-leader); transform-origin: left center; }
+.globe-labels :deep(.globe-traffic-leader) { height: 2px; margin-top: -1px; background: var(--globe-traffic-leader); }
+.globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--globe-muted-text); padding: 24px; text-align: center; }
+.globe-legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 16px; color: var(--globe-legend-text); font-size: 12px; pointer-events: none; }
 .globe-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.managed-dot, .peer-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: #ffcf67; }
-.peer-dot { background: #e99fc4; }
+.managed-dot, .peer-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--globe-managed); }
+.peer-dot { background: var(--globe-peer); }
 .node-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--p-content-border-color); }
 .node-list { flex: 1; min-height: 0; overflow: auto; }
 .node-row { display: grid; grid-template-columns: 8px minmax(0, 1fr); width: 100%; align-items: center; gap: 4px 8px; border: 0; border-bottom: 1px solid var(--p-content-border-color); padding: 12px; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
