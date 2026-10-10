@@ -261,10 +261,10 @@ p2p_disguise_mode_help: 默认不主动使用伪装协议，但响应需要伪�
 p2p_prefer_protocol: P2P 优先协议
 p2p_prefer_protocol_tcp: 优先 TCP（可用时 WSS）
 p2p_prefer_protocol_udp: 优先 UDP（可用时 HTTP3）
-p2p_prefer_protocol_help: 默认优先 TCP。协商使用伪装时，选 UDP 优先 HTTP3，选 TCP 优先 WSS；不主动使用伪装时则优先对应的普通协议。支持 HTTP3 的节点会在已配置的 UDP 监听端口同时接受 HTTP3，自动P2P无需另加 HTTP3 监听；打洞使用临时监听端口。已有回退连接时仍会尝试首选协议。
+p2p_prefer_protocol_help: 自动P2P拨号默认优先 TCP。是否使用伪装由伪装策略决定；使用伪装时，选 UDP 优先 HTTP3，选 TCP 优先 WSS，否则优先对应的普通协议。支持 HTTP3 的节点会在已配置的 UDP 监听端口同时接受 HTTP3，自动P2P无需另加 HTTP3 监听；打洞使用临时监听端口。已有回退连接时仍会尝试首选协议。开启冗余连接清理后，已建连接的保留优先级由清理规则决定。
 
 close_redundant_conns_when_disguised: 首选连接建立后断开多余连接
-close_redundant_conns_when_disguised_help: 首选连接可用后，断开同一对等节点由自动P2P建立的较低优先级连接。协商使用伪装且优先 UDP 时，HTTP3 可替换 WSS；不主动使用伪装且优先 UDP 时，UDP 可替换 WSS。手动连接、普通入站连接和同级连接会保留。默认关闭。
+close_redundant_conns_when_disguised_help: 默认关闭。双方协商并验证可用后，手动初始节点连接优先级最高，只保留一条并断开同节点其他连接。否则，已建 WSS/HTTP3 优先于裸 TCP/UDP，默认不主动伪装也如此，显式禁止伪装除外。自动连接按 TCP 偏好 WSS、UDP 偏好 HTTP3，同级保留。此规则不改变拨号策略。旧版或不支持协商的节点不清理。
 
 enable_udp_broadcast_relay: UDP 广播中继
 enable_udp_broadcast_relay_help: "仅 Windows：捕获物理网卡上的本机 UDP 广播包并转发给 EasyTier 对等节点，帮助局域网游戏发现房间。需要管理员权限。"

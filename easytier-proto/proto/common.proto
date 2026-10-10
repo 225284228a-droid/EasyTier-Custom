@@ -98,9 +98,16 @@ message FlagsInConfig {
   // Do not use WSS/HTTP3 for automatic P2P at all.
   bool disable_wss_http3_for_p2p = 47;
 
-  // Once a preferred connection is usable, close lower-ranked automatic P2P
-  // connections to the same peer according to disguise and protocol policy.
-  // Manual, ordinary inbound, attached, and equally ranked connections remain.
+  // Disabled by default. Requires both peers to negotiate cleanup support and
+  // confirm usability with a round trip. Keep one manually configured initial
+  // peer connection, chosen in a shared deterministic order, and close all other
+  // connections to that peer, including other manual connections. Otherwise,
+  // established WSS/HTTP3 outrank bare TCP/UDP even when disguise is not initiated;
+  // explicit disguise disablement keeps ordinary protocol ordering. Manual
+  // connections retain highest priority regardless of disguise policy.
+  // TCP preference favors WSS and UDP preference favors HTTP3 among automatic
+  // connections. Equally ranked automatic connections remain. This does not
+  // change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
   bool close_redundant_conns_when_disguised = 49;
 }
 

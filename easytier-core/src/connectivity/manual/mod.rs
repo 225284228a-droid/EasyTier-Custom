@@ -9,7 +9,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use percent_encoding::percent_decode_str;
 use quanta::Instant;
 use rand::seq::SliceRandom;
@@ -20,6 +20,7 @@ use url::Url;
 
 use crate::tunnel::ring::RingTunnelRegistry;
 use crate::{
+    config::PeerId,
     connectivity::{
         protocol::ClientProtocolUpgrader,
         transport::{self, ConnectedByteStream, ConnectedTransport, IpTransport, UdpSessionMode},
@@ -325,7 +326,63 @@ struct ManualConnectorState {
     connectors: DashSet<Url>,
     reconnecting: DashSet<Url>,
     removed: DashSet<Url>,
+    last_connected_peers: DashMap<Url, PeerId>,
     state_lock: Mutex<()>,
+}
+
+impl ManualConnectorState {
+    fn remove_connector(&self, url: &Url) -> bool {
+        let _state_guard = self.state_lock.lock().unwrap();
+        self.last_connected_peers.remove(url);
+        if self.connectors.remove(url).is_some() {
+            tracing::warn!(%url, "manual connector removed");
+            return true;
+        }
+        if self.reconnecting.contains(url) {
+            self.removed.insert(url.clone());
+            return true;
+        }
+        false
+    }
+
+    fn clear_connectors(&self) {
+        let _state_guard = self.state_lock.lock().unwrap();
+        self.connectors.clear();
+        self.last_connected_peers.clear();
+        for url in self.reconnecting.iter() {
+            self.removed.insert(url.key().clone());
+        }
+    }
+
+    fn remember_connected_peer(&self, url: &Url, peer_id: PeerId) {
+        let _state_guard = self.state_lock.lock().unwrap();
+        // Removing a connector during its handshake must also discard its
+        // remembered identity, even if that handshake subsequently succeeds.
+        if !self.removed.contains(url)
+            && (self.connectors.contains(url) || self.reconnecting.contains(url))
+        {
+            self.last_connected_peers.insert(url.clone(), peer_id);
+        }
+    }
+
+    fn connection_satisfied(
+        &self,
+        url: &Url,
+        url_is_alive: impl FnOnce(&Url) -> bool,
+        peer_has_manual_connection: impl FnOnce(PeerId) -> bool,
+    ) -> bool {
+        if url_is_alive(url) {
+            return true;
+        }
+        let peer_id = self
+            .last_connected_peers
+            .get(url)
+            .map(|entry| *entry.value());
+        // A different manual URL may have won the shared cleanup ordering.
+        // Keep this URL available as a fallback, but avoid reopening it until
+        // the agreed, verified manual replacement is gone.
+        peer_id.is_some_and(peer_has_manual_connection)
+    }
 }
 
 struct ManualConnectorData<H>
@@ -451,24 +508,11 @@ where
     }
 
     pub fn remove_connector(&self, url: &Url) -> bool {
-        let _state_guard = self.data.state.state_lock.lock().unwrap();
-        if self.data.state.connectors.remove(url).is_some() {
-            tracing::warn!(%url, "manual connector removed");
-            return true;
-        }
-        if self.data.state.reconnecting.contains(url) {
-            self.data.state.removed.insert(url.clone());
-            return true;
-        }
-        false
+        self.data.state.remove_connector(url)
     }
 
     pub fn clear_connectors(&self) {
-        let _state_guard = self.data.state.state_lock.lock().unwrap();
-        self.data.state.connectors.clear();
-        for url in self.data.state.reconnecting.iter() {
-            self.data.state.removed.insert(url.key().clone());
-        }
+        self.data.state.clear_connectors();
     }
 
     pub fn list_connectors(&self) -> Vec<ManualConnectorSnapshot> {
@@ -481,9 +525,9 @@ where
             .iter()
             .map(|entry| {
                 let url = entry.key().clone();
-                let connected = peer_manager
-                    .as_ref()
-                    .is_some_and(|peer_manager| client_url_is_alive(peer_manager, &url));
+                let connected = peer_manager.as_ref().is_some_and(|peer_manager| {
+                    manual_connection_satisfied(&self.data.state, peer_manager, &url)
+                });
                 ManualConnectorSnapshot {
                     url,
                     status: if connected {
@@ -583,7 +627,7 @@ where
         .iter()
         .filter_map(|entry| {
             let url = entry.key();
-            (!client_url_is_alive(&peer_manager, url)).then(|| url.clone())
+            (!manual_connection_satisfied(&data.state, &peer_manager, url)).then(|| url.clone())
         })
         .collect::<BTreeSet<_>>();
     for url in &dead_connectors {
@@ -600,6 +644,18 @@ fn client_url_is_alive(peer_manager: &PeerManagerCore, url: &Url) -> bool {
         || peer_manager
             .get_foreign_network_client()
             .is_client_url_alive(url)
+}
+
+fn manual_connection_satisfied(
+    state: &ManualConnectorState,
+    peer_manager: &PeerManagerCore,
+    url: &Url,
+) -> bool {
+    state.connection_satisfied(
+        url,
+        |url| client_url_is_alive(peer_manager, url),
+        |peer_id| peer_manager.has_usable_manual_connection(peer_id),
+    )
 }
 
 async fn resolve_manual_endpoint(
@@ -885,6 +941,7 @@ where
                 .map_err(anyhow::Error::from)
         })
         .await?;
+    data.state.remember_connected_peer(&requested_url, peer_id);
     tracing::info!(peer_id, %conn_id, %requested_url, "manual reconnect succeeded");
     Ok(())
 }
@@ -1515,6 +1572,75 @@ mod tests {
         assert_eq!(url::Url::from(info.remote_addr.unwrap()), requested);
         assert_eq!(url::Url::from(info.resolved_remote_addr.unwrap()), resolved);
         assert_eq!(info.tunnel_type, "wss");
+    }
+
+    #[test]
+    fn retired_manual_urls_retry_only_after_the_same_peers_replacement_is_gone() {
+        let state = ManualConnectorState::default();
+        let retired: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        let other_peer: Url = "udp://127.0.0.2:11010".parse().unwrap();
+        let unknown: Url = "wss://127.0.0.3:11010".parse().unwrap();
+        for url in [&retired, &other_peer, &unknown] {
+            state.connectors.insert(url.clone());
+        }
+        state.remember_connected_peer(&retired, 2);
+        state.remember_connected_peer(&other_peer, 3);
+
+        // Only peer 2 has a negotiated, healthy manual replacement. The
+        // unrelated and never-connected URLs must still be dialed normally.
+        let satisfied = |url: &Url| state.connection_satisfied(url, |_| false, |peer| peer == 2);
+        assert!(satisfied(&retired));
+        assert!(!satisfied(&other_peer));
+        assert!(!satisfied(&unknown));
+        assert!(state.connection_satisfied(&unknown, |_| true, |_| false));
+
+        // Losing the winner, disabling cleanup, and a still-unverified or
+        // automatic-only path all make the peer query false and restore retry.
+        assert!(!state.connection_satisfied(&retired, |_| false, |_| false));
+        assert!(state.connectors.contains(&retired));
+        assert!(state.last_connected_peers.contains_key(&retired));
+    }
+
+    #[test]
+    fn removed_manual_url_forgets_its_peer_even_if_its_handshake_finishes_late() {
+        let state = Arc::new(ManualConnectorState::default());
+        let url: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        state.connectors.insert(url.clone());
+        state.remember_connected_peer(&url, 2);
+        let reservation = reserve_pending_connector(&state, &url);
+
+        assert!(state.remove_connector(&url));
+        state.remember_connected_peer(&url, 3);
+        drop(reservation);
+        assert!(!state.last_connected_peers.contains_key(&url));
+        assert!(!state.connectors.contains(&url));
+
+        state.connectors.insert(url.clone());
+        assert!(!state.connection_satisfied(&url, |_| false, |_| true));
+        state.remember_connected_peer(&url, 4);
+        assert!(state.connection_satisfied(&url, |_| false, |peer| peer == 4));
+        assert!(state.remove_connector(&url));
+        assert!(!state.last_connected_peers.contains_key(&url));
+    }
+
+    #[test]
+    fn clearing_manual_urls_discards_pending_and_inflight_peer_identities() {
+        let state = Arc::new(ManualConnectorState::default());
+        let pending: Url = "tcp://127.0.0.1:11010".parse().unwrap();
+        let inflight: Url = "udp://127.0.0.1:11010".parse().unwrap();
+        for url in [&pending, &inflight] {
+            state.connectors.insert(url.clone());
+            state.remember_connected_peer(url, 2);
+        }
+        let reservation = reserve_pending_connector(&state, &inflight);
+        state.clear_connectors();
+        state.remember_connected_peer(&pending, 2);
+        state.remember_connected_peer(&inflight, 2);
+        drop(reservation);
+
+        assert!(state.last_connected_peers.is_empty());
+        assert!(state.connectors.is_empty());
+        assert!(state.reconnecting.is_empty());
     }
 
     #[test]

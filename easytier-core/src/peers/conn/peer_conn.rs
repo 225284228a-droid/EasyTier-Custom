@@ -348,7 +348,8 @@ impl PeerConn {
         origin: PeerConnectionOrigin,
     ) -> Self {
         let flags = context.flags();
-        let cleanup_policy = CleanupPolicyPair::new(&flags);
+        let conn_id = PeerConnId::new_v4();
+        let cleanup_policy = CleanupPolicyPair::new(&flags, origin, conn_id);
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
@@ -372,7 +373,6 @@ impl PeerConn {
 
         let (recv, sink) = (mpsc_tunnel.get_stream(), mpsc_tunnel.get_sink());
 
-        let conn_id = PeerConnId::new_v4();
         let my_encrypt_algo = flags.encryption_algorithm;
 
         PeerConn {
@@ -475,6 +475,10 @@ impl PeerConn {
         &self.cleanup_policy
     }
 
+    pub(crate) fn is_manual(&self) -> bool {
+        self.cleanup_policy.is_manual()
+    }
+
     fn handshake_features(&self) -> Vec<String> {
         #[cfg(test)]
         if let Some(features) = &self.handshake_features_override {
@@ -494,14 +498,7 @@ impl PeerConn {
 
     /// Whether a verified, preferred P2P connection may replace this one.
     pub(crate) fn can_retire_as_redundant(&self) -> bool {
-        match self.origin {
-            PeerConnectionOrigin::Manual
-            | PeerConnectionOrigin::Listener
-            | PeerConnectionOrigin::Attached => false,
-            PeerConnectionOrigin::Direct
-            | PeerConnectionOrigin::TcpHolePunch
-            | PeerConnectionOrigin::UdpHolePunch => true,
-        }
+        self.cleanup_policy.can_retire_automatic()
     }
 
     pub fn is_closed(&self) -> bool {
@@ -1651,11 +1648,13 @@ mod tests {
                 client_tunnel,
                 Arc::new(PeerSessionStore::new()),
             );
-            let mut server = PeerConn::new(
+            let mut server = PeerConn::new_with_peer_id_hint_and_origin(
                 2,
                 server_context,
                 server_tunnel,
+                None,
                 Arc::new(PeerSessionStore::new()),
+                PeerConnectionOrigin::Listener,
             );
             let (client_result, server_result) = tokio::join!(
                 client.do_handshake_as_client(),
@@ -1663,14 +1662,13 @@ mod tests {
             );
             client_result.unwrap();
             server_result.unwrap();
+            assert_eq!(client.get_conn_info().features, server.handshake_features());
+            assert_eq!(server.get_conn_info().features, client.handshake_features());
             assert_eq!(
-                client.get_conn_info().features,
-                [LIVENESS_ECHO_FEATURE, "p2p-cleanup-v1:tcp:0:1:0"]
+                client.cleanup_policy().shared_connection_key(),
+                server.cleanup_policy().shared_connection_key()
             );
-            assert_eq!(
-                server.get_conn_info().features,
-                [LIVENESS_ECHO_FEATURE, "p2p-cleanup-v1:tcp:1:0:0"]
-            );
+            assert!(client.is_manual() && server.is_manual());
             assert_eq!(
                 client.cleanup_policy().agreed_disguise(&client_flags),
                 Some(true)
@@ -1769,10 +1767,7 @@ mod tests {
         );
         client_result.unwrap();
         server_result.unwrap();
-        assert_eq!(
-            server.get_conn_info().features,
-            [LIVENESS_ECHO_FEATURE, "p2p-cleanup-v1:tcp:0:0:0"]
-        );
+        assert_eq!(server.get_conn_info().features, client.handshake_features());
         assert_eq!(
             client.cleanup_policy().agreed_disguise(&context.flags()),
             None

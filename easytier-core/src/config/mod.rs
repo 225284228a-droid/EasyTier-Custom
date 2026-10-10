@@ -371,7 +371,9 @@ pub(crate) fn preferred_disguised_scheme(default_protocol: &str) -> Option<&'sta
     }
 }
 
-/// Common ordering for automatic connection attempts and existing peer paths.
+/// Ordering for automatic connection attempts. Existing peer paths use the
+/// disguised tier unless disguise is explicitly disabled, independently of
+/// whether automatic attempts initiate disguise.
 /// A lower rank is preferred; resolution prefixes on tunnel types are ignored.
 pub(crate) fn p2p_protocol_rank(default_protocol: &str, use_disguise: bool, scheme: &str) -> u8 {
     let default_protocol = normalized_p2p_protocol(default_protocol);
@@ -408,7 +410,7 @@ mod preferred_disguised_scheme_tests {
     }
 
     #[test]
-    fn connection_and_dial_order_follow_the_same_transport_preference() {
+    fn automatic_dial_order_follows_the_negotiated_disguise_preference() {
         for (preferred, use_disguise, order) in [
             ("udp", true, ["http3", "wss", "udp", "tcp"]),
             ("tcp", true, ["wss", "http3", "tcp", "udp"]),

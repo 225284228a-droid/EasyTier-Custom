@@ -217,6 +217,11 @@ impl PeerMap {
         peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
     }
 
+    pub(crate) fn has_usable_manual_connection(&self, peer_id: PeerId) -> bool {
+        self.get_peer_by_id(peer_id)
+            .is_some_and(|peer| peer.has_usable_manual_connection())
+    }
+
     /// Whether the peer already has a connection at least as preferred as
     /// `target_scheme`. `Some(use_disguise)` is fresh route metadata: it is
     /// recorded on the peer (invalidating the cached default connection on

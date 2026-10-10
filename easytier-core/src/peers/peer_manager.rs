@@ -1551,6 +1551,14 @@ impl PeerManagerCore {
         has_directly_connected_conn(&self.peers, &self.foreign_network_client, peer_id)
     }
 
+    pub(crate) fn has_usable_manual_connection(&self, peer_id: PeerId) -> bool {
+        self.peers.has_usable_manual_connection(peer_id)
+            || self
+                .foreign_network_client
+                .get_peer_map()
+                .has_usable_manual_connection(peer_id)
+    }
+
     pub(crate) fn has_connection_at_least_as_preferred(
         &self,
         peer_id: PeerId,

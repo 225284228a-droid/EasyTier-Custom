@@ -260,10 +260,10 @@ p2p_disguise_mode_help: By default, do not initiate disguised P2P, but accept pe
 p2p_prefer_protocol: P2P Preferred Protocol
 p2p_prefer_protocol_tcp: Prefer TCP (WSS if available)
 p2p_prefer_protocol_udp: Prefer UDP (HTTP3 if available)
-p2p_prefer_protocol_help: Defaults to TCP. When disguise is negotiated, UDP prefers HTTP3 and TCP prefers WSS; otherwise the corresponding ordinary protocol is preferred. Nodes with HTTP3 support also accept HTTP3 on configured UDP listener ports, so automatic P2P needs no extra HTTP3 listener. Hole punching uses temporary listener ports. Existing fallback connections do not stop attempts to establish the preferred protocol.
+p2p_prefer_protocol_help: Automatic P2P dialing defaults to TCP. Disguise policy decides whether dialing uses disguise; when it does, UDP prefers HTTP3 and TCP prefers WSS, otherwise the corresponding ordinary protocol is preferred. Nodes with HTTP3 support also accept HTTP3 on configured UDP listener ports, so automatic P2P needs no extra HTTP3 listener. Hole punching uses temporary listener ports. Existing fallback connections do not stop attempts to establish the preferred protocol. When redundant-connection cleanup is enabled, its rules determine which established connections are kept.
 
 close_redundant_conns_when_disguised: Close Redundant Connections on Preferred Transport
-close_redundant_conns_when_disguised_help: Once the preferred connection is usable, close lower-priority automatic P2P connections to the same peer. With UDP preferred, HTTP3 can replace WSS when disguise is negotiated; ordinary UDP can replace WSS when disguise is not initiated. Manual connections, ordinary inbound connections, and equally ranked connections are kept. Off by default.
+close_redundant_conns_when_disguised_help: Off by default. Requires both peers to negotiate cleanup and verify usability. Manual initial-peer connections rank highest; keep one and close all other connections to that peer. Otherwise, established WSS/HTTP3 outrank bare TCP/UDP even in Default (do not initiate) mode, except when disguise is explicitly disabled. Automatic connections favor WSS for TCP and HTTP3 for UDP; equal ranks remain. Dialing policy is unchanged. Legacy or unsupported peers are not cleaned up.
 
 enable_udp_broadcast_relay: UDP Broadcast Relay
 enable_udp_broadcast_relay_help: "Windows only: capture local UDP broadcast packets from physical interfaces and forward them to EasyTier peers. Helps games to find rooms in local network. Requires administrator privileges."

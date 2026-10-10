@@ -40,11 +40,9 @@ enum PeerConnCloseEvent {
     },
 }
 
-/// Shared revalidation for closing a redundant automatic connection in
-/// favor of `replacement`: the cleanup flag is on, the negotiated disguise
-/// preference has not drifted since the proposal, the replacement is alive
-/// and verified (its first ping answered), and the candidate is a
-/// direct or hole-punch connection strictly worse than the replacement.
+/// Revalidate a queued cleanup against the live replacement and the immutable
+/// ordering both endpoints advertised. Manual paths use a shared total order;
+/// automatic paths must be strictly worse under both protocol preferences.
 fn redundant_conn_eligible(
     conn: &PeerConn,
     replacement: &PeerConn,
@@ -54,27 +52,39 @@ fn redundant_conn_eligible(
     proposed_policy: &CleanupPolicyPair,
 ) -> bool {
     if !flags.close_redundant_conns_when_disguised
-        || negotiated != Some(proposed_use_disguise)
-        || use_disguise_preference(flags, negotiated) != proposed_use_disguise
+        || conn.get_conn_id() == replacement.get_conn_id()
+        || replacement.is_closed()
+        || replacement.get_stats().latency_us == 0
+        || !conn.cleanup_policy().same_ordering_as(proposed_policy)
+        || replacement.cleanup_policy() != proposed_policy
+        || !proposed_policy.matches_current_flags(flags)
     {
         return false;
     }
-    if replacement.is_closed()
-        || replacement.get_stats().latency_us == 0
-        || !conn.can_retire_as_redundant()
-        || conn.cleanup_policy() != proposed_policy
-        || replacement.cleanup_policy() != proposed_policy
+    if replacement.is_manual() {
+        // RTT and local IDs can select different winners at the two ends.
+        // A shared, strict order also prevents crossed cleanup of two manual
+        // connections, including when only one endpoint has enabled cleanup.
+        return !conn.is_manual()
+            || matches!(
+                (replacement.cleanup_policy().shared_connection_key(), conn.cleanup_policy().shared_connection_key()),
+                (Some(replacement), Some(candidate)) if replacement < candidate
+            );
+    }
+    if !conn.can_retire_as_redundant()
+        || negotiated != Some(proposed_use_disguise)
+        || use_disguise_preference(flags, negotiated) != proposed_use_disguise
         || proposed_policy.agreed_disguise(flags) != Some(proposed_use_disguise)
     {
         return false;
     }
-    let Some(replacement_rank) =
-        conn_protocol_rank(replacement, &flags.default_protocol, proposed_use_disguise)
-    else {
+    let (Some(candidate), Some(replacement)) = (
+        conn.get_conn_info().tunnel,
+        replacement.get_conn_info().tunnel,
+    ) else {
         return false;
     };
-    conn_protocol_rank(conn, &flags.default_protocol, proposed_use_disguise)
-        .is_some_and(|rank| rank > replacement_rank)
+    proposed_policy.both_prefer_transport(&replacement.tunnel_type, &candidate.tunnel_type)
 }
 
 impl PeerConnCloseEvent {
@@ -136,7 +146,10 @@ fn use_disguise_preference(flags: &FlagsInConfig, negotiated: Option<bool>) -> b
             .unwrap_or(flags.prefer_wss_http3_for_p2p || flags.only_use_wss_http3_for_hole_punching)
 }
 
-fn conn_protocol_rank(conn: &PeerConn, default_protocol: &str, use_disguise: bool) -> Option<u8> {
+fn conn_protocol_rank(conn: &PeerConn, flags: &FlagsInConfig) -> Option<u8> {
+    if conn.is_manual() {
+        return Some(0);
+    }
     if conn.is_attached() {
         return None;
     }
@@ -144,28 +157,34 @@ fn conn_protocol_rank(conn: &PeerConn, default_protocol: &str, use_disguise: boo
     if tunnel.tunnel_type.rsplit('-').next() == Some("ring") {
         return None;
     }
-    Some(p2p_protocol_rank(
-        default_protocol,
-        use_disguise,
-        &tunnel.tunnel_type,
-    ))
+    // The dialing policy controls whether to initiate disguise, not whether
+    // an already established WSS/HTTP3 path can replace raw TCP/UDP.
+    Some(
+        1 + p2p_protocol_rank(
+            &flags.default_protocol,
+            !flags.disable_wss_http3_for_p2p,
+            &tunnel.tunnel_type,
+        ),
+    )
 }
 
-fn select_preferred_conn(
-    conns: &ConnMap,
-    flags: &FlagsInConfig,
-    use_disguise: bool,
-) -> Option<ArcPeerConn> {
+fn select_preferred_conn(conns: &ConnMap, flags: &FlagsInConfig) -> Option<ArcPeerConn> {
     conns
         .iter()
         .filter(|conn| !conn.value().is_closed())
         .min_by_key(|conn| {
             let conn = conn.value();
-            preferred_conn_sort_key(
+            let (unverified, rank, latency) = preferred_conn_sort_key(
                 conn.get_stats().latency_us,
-                conn.is_hole_punched(),
-                conn_protocol_rank(conn, &flags.default_protocol, use_disguise).unwrap_or(0),
-            )
+                conn.is_hole_punched() || conn.is_manual(),
+                conn_protocol_rank(conn, flags).unwrap_or(1),
+            );
+            let manual_key = if conn.is_manual() {
+                conn.cleanup_policy().shared_connection_key()
+            } else {
+                None
+            };
+            (unverified, rank, manual_key, latency)
         })
         .map(|conn| conn.value().clone())
 }
@@ -182,11 +201,11 @@ async fn reconcile_peer_connections(
     let (replacement, use_disguise) = {
         let _update_guard = update_lock.lock();
         let use_disguise = use_disguise_preference(flags, negotiated_disguise.load());
-        let selected = select_preferred_conn(conns, flags, use_disguise);
+        let selected = select_preferred_conn(conns, flags);
         default_conn.store(selected.clone());
         (selected, use_disguise)
     };
-    if !flags.close_redundant_conns_when_disguised || negotiated_disguise.load().is_none() {
+    if !flags.close_redundant_conns_when_disguised {
         return;
     }
     let Some(replacement) = replacement else {
@@ -201,7 +220,11 @@ async fn reconcile_peer_connections(
         return;
     }
     let policy = replacement.cleanup_policy().clone();
-    if policy.agreed_disguise(flags) != Some(use_disguise) {
+    if !policy.matches_current_flags(flags)
+        || (!replacement.is_manual()
+            && (negotiated_disguise.load().is_none()
+                || policy.agreed_disguise(flags) != Some(use_disguise)))
+    {
         return;
     }
     let negotiated = negotiated_disguise.load();
@@ -224,7 +247,8 @@ async fn reconcile_peer_connections(
     for conn_id in redundant {
         if replacement.is_closed()
             || !conns.contains_key(&replacement.get_conn_id())
-            || use_disguise != use_disguise_preference(flags, negotiated_disguise.load())
+            || (!replacement.is_manual()
+                && use_disguise != use_disguise_preference(flags, negotiated_disguise.load()))
         {
             break;
         }
@@ -232,7 +256,7 @@ async fn reconcile_peer_connections(
             ?conn_id,
             %peer_id,
             replacement_conn_id = %replacement.get_conn_id(),
-            "a preferred connection is ready, closing a redundant automatic connection"
+            "a preferred connection is ready, closing a redundant connection"
         );
         if let Err(error) = close_event_sender
             .send(PeerConnCloseEvent::Redundant {
@@ -264,6 +288,7 @@ pub struct Peer {
     default_conn: Arc<ArcSwapOption<PeerConn>>,
     default_conn_update_lock: Arc<Mutex<()>>,
     negotiated_disguise: Arc<AtomicCell<Option<bool>>>,
+    remote_cleanup_requested: Arc<AtomicCell<bool>>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
     #[allow(dead_code)]
@@ -287,6 +312,7 @@ impl Peer {
         let default_conn = Arc::new(ArcSwapOption::empty());
         let default_conn_update_lock = Arc::new(Mutex::new(()));
         let negotiated_disguise = Arc::new(AtomicCell::new(None));
+        let remote_cleanup_requested = Arc::new(AtomicCell::new(false));
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
@@ -294,6 +320,7 @@ impl Peer {
         let default_conn_copy = default_conn.clone();
         let default_conn_update_lock_copy = default_conn_update_lock.clone();
         let negotiated_disguise_copy = negotiated_disguise.clone();
+        let remote_cleanup_requested_copy = remote_cleanup_requested.clone();
         let close_event_listener = AbortOnDropHandle::new(tokio::spawn(
             async move {
                 loop {
@@ -333,6 +360,7 @@ impl Peer {
                                 ));
                                 shrink_dashmap(&conns_copy, Some(4));
                                 if conns_copy.is_empty() {
+                                    remote_cleanup_requested_copy.store(false);
                                     peer_identity_type_copy.store(None);
                                     *peer_public_key_copy.write() = None;
                                 }
@@ -390,6 +418,7 @@ impl Peer {
             default_conn,
             default_conn_update_lock,
             negotiated_disguise,
+            remote_cleanup_requested,
             peer_identity_type,
             peer_public_key,
             conn_maintenance_task,
@@ -429,6 +458,12 @@ impl Peer {
             }
         }
 
+        // A peer may enable cleanup after the surviving manual connection's
+        // handshake. Use the latest supported offer (including opt-out), so
+        // retired URLs neither churn nor remain suppressed by an old offer.
+        if let Some(enabled) = conn.cleanup_policy().remote_cleanup_enabled() {
+            self.remote_cleanup_requested.store(enabled);
+        }
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
         self.conns.insert(conn.get_conn_id(), Arc::new(conn));
@@ -477,11 +512,7 @@ impl Peer {
         // confirmed liveness yet. Prefer any other connection, so a freshly admitted
         // hole-punched path cannot steal traffic before its first successful ping.
         let flags = self.context.flags();
-        let selected = select_preferred_conn(
-            &self.conns,
-            &flags,
-            use_disguise_preference(&flags, self.negotiated_disguise.load()),
-        );
+        let selected = select_preferred_conn(&self.conns, &flags);
 
         if let Some(conn) = selected.as_ref() {
             self.default_conn.store(Some(conn.clone()));
@@ -541,10 +572,8 @@ impl Peer {
         self.conns.iter().any(|entry| !entry.value().is_closed())
     }
 
-    /// Records the disguise preference negotiated with this peer, derived
-    /// from route metadata that knows both endpoints' policy. A value change
-    /// invalidates the cached default connection so the next send reselects
-    /// under the new preference.
+    /// Records route metadata for revalidating automatic cleanup against the
+    /// handshake policy. This does not change established transport rankings.
     pub(crate) fn note_negotiated_disguise(&self, use_disguise: bool) {
         let _update_guard = self.default_conn_update_lock.lock();
         if self.negotiated_disguise.swap(Some(use_disguise)) != Some(use_disguise) {
@@ -555,26 +584,32 @@ impl Peer {
     pub(crate) fn has_connection_at_least_as_preferred(
         &self,
         target_scheme: &str,
-        use_disguise: Option<bool>,
+        _use_disguise: Option<bool>,
     ) -> bool {
-        let default_protocol = self.context.flags().default_protocol;
-        // `None` means the route metadata is missing. Rank with the last
-        // negotiated preference and do NOT overwrite it: a metadata gap
-        // flipping the preference to false would make the next reconcile
-        // pass tear down established disguised connections. Callers that
-        // observed fresh route metadata update the preference explicitly
-        // via `note_negotiated_disguise` (see `PeerMap`).
-        let use_disguise = use_disguise.unwrap_or_else(|| {
-            self.negotiated_disguise
-                .load()
-                .unwrap_or(use_disguise_preference(&self.context.flags(), None))
-        });
-        let target_rank = p2p_protocol_rank(&default_protocol, use_disguise, target_scheme);
+        let flags = self.context.flags();
+        let target_rank = 1 + p2p_protocol_rank(
+            &flags.default_protocol,
+            !flags.disable_wss_http3_for_p2p,
+            target_scheme,
+        );
         self.conns.iter().any(|entry| {
             let conn = entry.value();
             !conn.is_closed()
-                && conn_protocol_rank(conn, &default_protocol, use_disguise)
-                    .is_some_and(|rank| rank <= target_rank)
+                && (!conn.is_manual() || conn.get_stats().latency_us > 0)
+                && conn_protocol_rank(conn, &flags).is_some_and(|rank| rank <= target_rank)
+        })
+    }
+
+    pub(crate) fn has_usable_manual_connection(&self) -> bool {
+        let flags = self.context.flags();
+        self.conns.iter().any(|entry| {
+            let conn = entry.value();
+            conn.is_manual()
+                && !conn.is_closed()
+                && conn.get_stats().latency_us > 0
+                && conn.cleanup_policy().matches_current_flags(&flags)
+                && (flags.close_redundant_conns_when_disguised
+                    || self.remote_cleanup_requested.load())
         })
     }
 
