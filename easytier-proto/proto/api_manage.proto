@@ -114,10 +114,10 @@ message NetworkConfig {
   // Preferred underlay transport for automatic P2P connect attempts: "tcp" or
   // "udp". Disguise policy separately decides whether dialing uses WSS/HTTP3;
   // when it does, this preference also picks the disguised transport -
-  // "udp" prefers HTTP3, "tcp" prefers WSS. Empty means "tcp".
+  // "udp" prefers HTTP3, "tcp" prefers WSS. Unset or empty means "udp".
   optional string p2p_prefer_protocol = 78;
 
-  // Disabled by default. Requires both peers to negotiate cleanup support and
+  // Enabled when omitted; explicit false is preserved. Requires both peers to negotiate cleanup support and
   // confirm usability with a round trip. Keep one manually configured initial
   // peer connection, chosen in a shared deterministic order, and close all other
   // connections to that peer, including other manual connections. Otherwise,

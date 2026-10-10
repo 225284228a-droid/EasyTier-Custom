@@ -889,39 +889,48 @@ mod tests {
     fn p2p_defaults_and_explicit_settings_round_trip_through_toml() {
         let defaults = TomlConfigLoader::default().get_flags();
         assert!(!defaults.prefer_wss_http3_for_p2p);
-        assert_eq!(defaults.default_protocol, "tcp");
+        assert_eq!(defaults.default_protocol, "udp");
         assert!(!defaults.only_use_wss_http3_for_hole_punching);
         assert!(!defaults.disable_wss_http3_for_p2p);
-        assert!(!defaults.close_redundant_conns_when_disguised);
+        assert!(defaults.close_redundant_conns_when_disguised);
 
-        for (prefer, protocol) in [
-            (None, None),
-            (None, Some("")),
-            (None, Some("  ")),
-            (Some(false), Some("udp")),
-            (Some(true), Some("tcp")),
+        for (prefer, protocol, cleanup) in [
+            (None, None, None),
+            (None, Some(""), None),
+            (None, Some("  "), None),
+            (Some(false), Some("udp"), Some(false)),
+            (Some(true), Some("tcp"), Some(false)),
+            (Some(false), Some("tcp"), Some(true)),
         ] {
             let input = NetworkConfig {
                 prefer_wss_http3_for_p2p: prefer,
                 p2p_prefer_protocol: protocol.map(str::to_owned),
+                close_redundant_conns_when_disguised: cleanup,
                 ..standalone_config()
             };
             let expected_prefer = prefer.unwrap_or(false);
             let expected_protocol = protocol
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .unwrap_or("tcp");
+                .unwrap_or("udp");
+            let expected_cleanup = cleanup.unwrap_or(true);
             let config = input.gen_config().unwrap();
             let flags = config.get_flags();
             assert_eq!(flags.prefer_wss_http3_for_p2p, expected_prefer);
             assert_eq!(flags.default_protocol, expected_protocol);
+            assert_eq!(flags.close_redundant_conns_when_disguised, expected_cleanup);
 
             let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
             let flags = restored.get_flags();
             assert_eq!(flags.prefer_wss_http3_for_p2p, expected_prefer);
             assert_eq!(flags.default_protocol, expected_protocol);
+            assert_eq!(flags.close_redundant_conns_when_disguised, expected_cleanup);
             let output = NetworkConfig::new_from_config(&restored).unwrap();
             assert_eq!(output.prefer_wss_http3_for_p2p, Some(expected_prefer));
+            assert_eq!(
+                output.close_redundant_conns_when_disguised,
+                Some(expected_cleanup)
+            );
             assert_eq!(
                 output.p2p_prefer_protocol.as_deref(),
                 Some(expected_protocol)
@@ -930,6 +939,10 @@ mod tests {
             {
                 let output = crate::config::api::network_config_from_toml(&restored);
                 assert_eq!(output.prefer_wss_http3_for_p2p, Some(expected_prefer));
+                assert_eq!(
+                    output.close_redundant_conns_when_disguised,
+                    Some(expected_cleanup)
+                );
                 assert_eq!(
                     output.p2p_prefer_protocol.as_deref(),
                     Some(expected_protocol)

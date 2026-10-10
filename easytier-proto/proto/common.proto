@@ -5,6 +5,7 @@ import "error.proto";
 package common;
 
 message FlagsInConfig {
+  // Defaults to "udp" in configuration; explicit "tcp" is preserved.
   string default_protocol = 1;
   string dev_name = 2;
   bool enable_encryption = 3;
@@ -98,7 +99,7 @@ message FlagsInConfig {
   // Do not use WSS/HTTP3 for automatic P2P at all.
   bool disable_wss_http3_for_p2p = 47;
 
-  // Disabled by default. Requires both peers to negotiate cleanup support and
+  // Enabled by default in configuration. Requires both peers to negotiate cleanup support and
   // confirm usability with a round trip. Keep one manually configured initial
   // peer connection, chosen in a shared deterministic order, and close all other
   // connections to that peer, including other manual connections. Otherwise,

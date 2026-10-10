@@ -277,7 +277,12 @@ mod tests {
                 "{features:?}"
             );
         }
-        let feature = policy(&FlagsInConfig::default()).feature().unwrap();
+        let feature = policy(&FlagsInConfig {
+            default_protocol: "tcp".to_owned(),
+            ..Default::default()
+        })
+        .feature()
+        .unwrap();
         for invalid in [
             feature.replace(":tcp:", ":TCP:"),
             feature.replace(":tcp:", "::"),
@@ -372,7 +377,10 @@ mod tests {
 
     #[test]
     fn manual_origin_and_connection_order_are_shared_without_matching_protocol_preferences() {
-        let flags = FlagsInConfig::default();
+        let flags = FlagsInConfig {
+            default_protocol: "tcp".to_owned(),
+            ..Default::default()
+        };
         let mut a =
             CleanupPolicyPair::new(&flags, PeerConnectionOrigin::Manual, uuid::Uuid::new_v4());
         let remote_flags = FlagsInConfig {

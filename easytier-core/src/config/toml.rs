@@ -76,7 +76,7 @@ pub fn gen_default_flags() -> Flags {
         only_use_wss_http3_for_hole_punching: false,
         prefer_wss_http3_for_p2p: false,
         disable_wss_http3_for_p2p: false,
-        close_redundant_conns_when_disguised: false,
+        close_redundant_conns_when_disguised: true,
     }
 }
 
@@ -1238,7 +1238,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn omitted_or_empty_protocol_uses_tcp_and_keeps_cleanup_disabled() {
+    fn omitted_or_empty_protocol_uses_udp_and_enables_cleanup() {
         for input in [
             "",
             "[flags]",
@@ -1246,26 +1246,35 @@ mod tests {
             "[flags]\ndefault_protocol = \"  \"",
         ] {
             let config = TomlConfigLoader::new_from_str(input).unwrap();
-            assert_eq!(config.get_flags().default_protocol, "tcp", "{input}");
-            assert!(!config.get_flags().close_redundant_conns_when_disguised);
+            assert_eq!(config.get_flags().default_protocol, "udp", "{input}");
+            assert!(config.get_flags().close_redundant_conns_when_disguised);
         }
     }
 
     #[cfg(feature = "config-write")]
     #[test]
-    fn explicit_protocol_survives_config_dump_and_reload() {
-        for protocol in ["udp", "tcp"] {
+    fn explicit_protocol_and_cleanup_survive_config_dump_and_reload() {
+        for (protocol, cleanup) in [("udp", true), ("tcp", false)] {
             let config = TomlConfigLoader::new_from_str(&format!(
-                "[flags]\ndefault_protocol = \"{protocol}\"\n"
+                "[flags]\ndefault_protocol = \"{protocol}\"\nclose_redundant_conns_when_disguised = {cleanup}\n"
             ))
             .unwrap();
             assert_eq!(config.get_flags().default_protocol, protocol);
+            assert_eq!(
+                config.get_flags().close_redundant_conns_when_disguised,
+                cleanup
+            );
             let dumped = config.dump();
-            if protocol == "udp" {
-                assert!(dumped.contains("default_protocol = \"udp\""));
+            if protocol == "tcp" {
+                assert!(dumped.contains("default_protocol = \"tcp\""));
+                assert!(dumped.contains("close_redundant_conns_when_disguised = false"));
             }
             let reloaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
             assert_eq!(reloaded.get_flags().default_protocol, protocol);
+            assert_eq!(
+                reloaded.get_flags().close_redundant_conns_when_disguised,
+                cleanup
+            );
         }
     }
 

@@ -497,20 +497,36 @@ describe('Config.vue network config projection', () => {
     wrapper.unmount()
   })
 
-  it('shows passive disguise use and TCP for new and missing settings', async () => {
+  it('shows passive disguise use, UDP and enabled cleanup for new and missing settings', async () => {
     for (const legacy of [false, true]) {
       const config = DEFAULT_NETWORK_CONFIG()
       config.advanced_settings = true
       if (legacy) {
         delete config.prefer_wss_http3_for_p2p
         delete config.p2p_prefer_protocol
+        delete config.close_redundant_conns_when_disguised
       }
       const { wrapper } = mountConfig(config)
       await nextTick()
       expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('default')
-      expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('tcp')
+      expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('udp')
+      expect(input(wrapper, '#close_redundant_conns_when_disguised').checked).toBe(true)
       wrapper.unmount()
     }
+  })
+
+  it('preserves explicitly saved TCP and disabled cleanup in the form', async () => {
+    const config = DEFAULT_NETWORK_CONFIG()
+    config.advanced_settings = true
+    config.p2p_prefer_protocol = 'tcp'
+    config.close_redundant_conns_when_disguised = false
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+    expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('tcp')
+    expect(input(wrapper, '#close_redundant_conns_when_disguised').checked).toBe(false)
+    expect(curNetwork.p2p_prefer_protocol).toBe('tcp')
+    expect(curNetwork.close_redundant_conns_when_disguised).toBe(false)
+    wrapper.unmount()
   })
 
   it('projects config values into the visible form controls', async () => {

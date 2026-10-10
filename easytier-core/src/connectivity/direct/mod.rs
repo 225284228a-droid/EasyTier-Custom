@@ -1505,10 +1505,10 @@ mod tests {
             (Some("udp"), false, [11011, 11010]),
             (Some("tcp"), true, [11012, 11014]),
             (Some("udp"), true, [11014, 11012]),
-            (None, false, [11010, 11011]),
-            (None, true, [11012, 11014]),
-            (Some(""), false, [11010, 11011]),
-            (Some("  "), true, [11012, 11014]),
+            (None, false, [11011, 11010]),
+            (None, true, [11014, 11012]),
+            (Some(""), false, [11011, 11010]),
+            (Some("  "), true, [11014, 11012]),
         ] {
             let mut config = PortablePeerManagerConfig::new(PeerRuntimeSnapshot::default().runtime);
             let mut options = DirectConnectorOptions::default();

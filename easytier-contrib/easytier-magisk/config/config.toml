@@ -20,7 +20,7 @@ network_secret = ""
 #uri = "协议://中转ip:端口"
 
 [flags]
-default_protocol = "tcp"
+default_protocol = "udp"
 dev_name = ""
 enable_encryption = true
 enable_ipv6 = true

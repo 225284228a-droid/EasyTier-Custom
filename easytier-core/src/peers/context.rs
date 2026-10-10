@@ -555,6 +555,7 @@ pub(crate) trait PeerContext: Send + Sync {
     fn flags(&self) -> FlagsInConfig {
         FlagsInConfig {
             default_protocol: crate::config::DEFAULT_PROTOCOL.to_owned(),
+            close_redundant_conns_when_disguised: true,
             ..Default::default()
         }
     }
@@ -1045,7 +1046,7 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
-    fn default_context_prefers_tcp_without_changing_other_zero_flags() {
+    fn default_context_prefers_udp_and_enables_cleanup() {
         struct DefaultContext;
 
         impl PeerContext for DefaultContext {
@@ -1055,9 +1056,9 @@ pub(crate) mod tests {
         }
 
         let flags = DefaultContext.flags();
-        assert_eq!(flags.default_protocol, "tcp");
+        assert_eq!(flags.default_protocol, "udp");
         assert_eq!(flags.mtu, 0);
-        assert!(!flags.close_redundant_conns_when_disguised);
+        assert!(flags.close_redundant_conns_when_disguised);
     }
 
     impl PeerRuntimeSnapshot {

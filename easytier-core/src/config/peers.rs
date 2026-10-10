@@ -276,6 +276,7 @@ impl Default for PeerRuntimeSnapshot {
             },
             FlagsInConfig {
                 default_protocol: super::DEFAULT_PROTOCOL.to_owned(),
+                close_redundant_conns_when_disguised: true,
                 ..Default::default()
             },
         )
@@ -293,11 +294,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_snapshot_prefers_tcp_without_changing_other_zero_flags() {
+    fn default_snapshot_prefers_udp_and_enables_cleanup() {
         let snapshot = PeerRuntimeSnapshot::default();
-        assert_eq!(snapshot.flags.default_protocol, "tcp");
+        assert_eq!(snapshot.flags.default_protocol, "udp");
         assert_eq!(snapshot.flags.mtu, 0);
-        assert!(!snapshot.flags.close_redundant_conns_when_disguised);
+        assert!(snapshot.flags.close_redundant_conns_when_disguised);
     }
 
     #[test]

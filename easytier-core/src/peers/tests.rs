@@ -121,14 +121,14 @@ async fn peer_conn_handshake_over_memory_tunnel() {
         client.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            format!("p2p-cleanup-v2:tcp:0:0:0:0:manual:{}", server.get_conn_id())
+            format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", server.get_conn_id())
         ]
     );
     assert_eq!(
         server.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            format!("p2p-cleanup-v2:tcp:0:0:0:0:manual:{}", client.get_conn_id())
+            format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", client.get_conn_id())
         ]
     );
 }
@@ -227,14 +227,14 @@ async fn peer_conn_noise_handshake_advertises_liveness_echo() {
         client.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            format!("p2p-cleanup-v2:tcp:0:0:0:0:manual:{}", server.get_conn_id())
+            format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", server.get_conn_id())
         ]
     );
     assert_eq!(
         server.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            format!("p2p-cleanup-v2:tcp:0:0:0:0:manual:{}", client.get_conn_id())
+            format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", client.get_conn_id())
         ]
     );
 }

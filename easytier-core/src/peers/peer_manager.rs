@@ -223,6 +223,7 @@ impl PortablePeerManagerConfig {
         let traffic = &runtime.core.traffic;
         let flags = FlagsInConfig {
             default_protocol: crate::config::DEFAULT_PROTOCOL.to_owned(),
+            close_redundant_conns_when_disguised: true,
             enable_encryption: policy.encryption_required,
             encryption_algorithm: crate::config::EncryptionAlgorithm::default().to_string(),
             disable_p2p: !policy.p2p_enabled,
@@ -3706,12 +3707,17 @@ mod tests {
     }
 
     #[test]
-    fn portable_config_prefers_tcp_without_changing_other_zero_flags() {
+    fn portable_config_prefers_udp_and_enables_cleanup() {
         let config = PortablePeerManagerConfig::new(portable_runtime_config("portable-net"));
-        assert_eq!(config.snapshot.flags.default_protocol, "tcp");
-        assert_eq!(config.foreign_context_default_flags.default_protocol, "tcp");
+        assert_eq!(config.snapshot.flags.default_protocol, "udp");
+        assert_eq!(config.foreign_context_default_flags.default_protocol, "udp");
         assert_eq!(config.snapshot.flags.mtu, 0);
-        assert!(!config.snapshot.flags.close_redundant_conns_when_disguised);
+        assert!(config.snapshot.flags.close_redundant_conns_when_disguised);
+        assert!(
+            config
+                .foreign_context_default_flags
+                .close_redundant_conns_when_disguised
+        );
     }
 
     #[tokio::test]
