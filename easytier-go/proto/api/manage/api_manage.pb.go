@@ -312,12 +312,20 @@ type NetworkConfig struct {
 	PreferWssHttp3ForP2P           *bool                      `protobuf:"varint,75,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3,oneof" json:"prefer_wss_http3_for_p2p,omitempty"`
 	DisableWssHttp3ForP2P          *bool                      `protobuf:"varint,76,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3,oneof" json:"disable_wss_http3_for_p2p,omitempty"`
 	// Preferred underlay transport for automatic P2P connect attempts: "tcp" or
-	// "udp". When WSS/HTTP3 is in use it also picks the disguised transport -
-	// "udp" prefers HTTP3, "tcp" prefers WSS. Empty means "tcp".
+	// "udp". Disguise policy separately decides whether dialing uses WSS/HTTP3;
+	// when it does, this preference also picks the disguised transport -
+	// "udp" prefers HTTP3, "tcp" prefers WSS. Unset or empty means "udp".
 	P2PPreferProtocol *string `protobuf:"bytes,78,opt,name=p2p_prefer_protocol,json=p2pPreferProtocol,proto3,oneof" json:"p2p_prefer_protocol,omitempty"`
-	// Once a disguised (WSS/HTTP3) connection to a peer is up, close the
-	// automatically established non-disguised connections to the same peer.
-	// Manually configured peers and inbound connections are kept.
+	// Enabled when omitted; explicit false is preserved. Requires both peers to negotiate cleanup support and
+	// confirm usability with a round trip. Keep one manually configured initial
+	// peer connection, chosen in a shared deterministic order, and close all other
+	// connections to that peer, including other manual connections. Otherwise,
+	// established WSS/HTTP3 outrank bare TCP/UDP even when disguise is not initiated;
+	// explicit disguise disablement keeps ordinary protocol ordering. Manual
+	// connections retain highest priority regardless of disguise policy.
+	// TCP preference favors WSS and UDP preference favors HTTP3 among automatic
+	// connections. Equally ranked automatic connections remain. This does not
+	// change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
 	CloseRedundantConnsWhenDisguised *bool `protobuf:"varint,79,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3,oneof" json:"close_redundant_conns_when_disguised,omitempty"`
 	unknownFields                    protoimpl.UnknownFields
 	sizeCache                        protoimpl.SizeCache

@@ -7,6 +7,7 @@
 package common
 
 import (
+	_ "github.com/easytier/easytier/easytier-go/proto/easytier"
 	error1 "github.com/easytier/easytier/easytier-go/proto/error"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -188,21 +189,22 @@ func (SocketType) EnumDescriptor() ([]byte, []int) {
 	return file_common_proto_rawDescGZIP(), []int{2}
 }
 
-type FlagsInConfig struct {
-	state                  protoimpl.MessageState `protogen:"open.v1"`
-	DefaultProtocol        string                 `protobuf:"bytes,1,opt,name=default_protocol,json=defaultProtocol,proto3" json:"default_protocol,omitempty"`
-	DevName                string                 `protobuf:"bytes,2,opt,name=dev_name,json=devName,proto3" json:"dev_name,omitempty"`
-	EnableEncryption       bool                   `protobuf:"varint,3,opt,name=enable_encryption,json=enableEncryption,proto3" json:"enable_encryption,omitempty"`
-	EnableIpv6             bool                   `protobuf:"varint,4,opt,name=enable_ipv6,json=enableIpv6,proto3" json:"enable_ipv6,omitempty"`
-	Mtu                    uint32                 `protobuf:"varint,5,opt,name=mtu,proto3" json:"mtu,omitempty"`
-	LatencyFirst           bool                   `protobuf:"varint,6,opt,name=latency_first,json=latencyFirst,proto3" json:"latency_first,omitempty"`
-	EnableExitNode         bool                   `protobuf:"varint,7,opt,name=enable_exit_node,json=enableExitNode,proto3" json:"enable_exit_node,omitempty"`
-	NoTun                  bool                   `protobuf:"varint,8,opt,name=no_tun,json=noTun,proto3" json:"no_tun,omitempty"`
-	UseSmoltcp             bool                   `protobuf:"varint,9,opt,name=use_smoltcp,json=useSmoltcp,proto3" json:"use_smoltcp,omitempty"`
-	RelayNetworkWhitelist  string                 `protobuf:"bytes,10,opt,name=relay_network_whitelist,json=relayNetworkWhitelist,proto3" json:"relay_network_whitelist,omitempty"`
-	DisableP2P             bool                   `protobuf:"varint,11,opt,name=disable_p2p,json=disableP2p,proto3" json:"disable_p2p,omitempty"`
-	RelayAllPeerRpc        bool                   `protobuf:"varint,12,opt,name=relay_all_peer_rpc,json=relayAllPeerRpc,proto3" json:"relay_all_peer_rpc,omitempty"`
-	DisableUdpHolePunching bool                   `protobuf:"varint,13,opt,name=disable_udp_hole_punching,json=disableUdpHolePunching,proto3" json:"disable_udp_hole_punching,omitempty"`
+type Flags struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Defaults to "udp" in configuration; explicit "tcp" is preserved.
+	DefaultProtocol        string `protobuf:"bytes,1,opt,name=default_protocol,json=defaultProtocol,proto3" json:"default_protocol,omitempty"`
+	DevName                string `protobuf:"bytes,2,opt,name=dev_name,json=devName,proto3" json:"dev_name,omitempty"`
+	EnableEncryption       bool   `protobuf:"varint,3,opt,name=enable_encryption,json=enableEncryption,proto3" json:"enable_encryption,omitempty"`
+	EnableIpv6             bool   `protobuf:"varint,4,opt,name=enable_ipv6,json=enableIpv6,proto3" json:"enable_ipv6,omitempty"`
+	Mtu                    uint32 `protobuf:"varint,5,opt,name=mtu,proto3" json:"mtu,omitempty"`
+	LatencyFirst           bool   `protobuf:"varint,6,opt,name=latency_first,json=latencyFirst,proto3" json:"latency_first,omitempty"`
+	EnableExitNode         bool   `protobuf:"varint,7,opt,name=enable_exit_node,json=enableExitNode,proto3" json:"enable_exit_node,omitempty"`
+	NoTun                  bool   `protobuf:"varint,8,opt,name=no_tun,json=noTun,proto3" json:"no_tun,omitempty"`
+	UseSmoltcp             bool   `protobuf:"varint,9,opt,name=use_smoltcp,json=useSmoltcp,proto3" json:"use_smoltcp,omitempty"`
+	RelayNetworkWhitelist  string `protobuf:"bytes,10,opt,name=relay_network_whitelist,json=relayNetworkWhitelist,proto3" json:"relay_network_whitelist,omitempty"`
+	DisableP2P             bool   `protobuf:"varint,11,opt,name=disable_p2p,json=disableP2p,proto3" json:"disable_p2p,omitempty"`
+	RelayAllPeerRpc        bool   `protobuf:"varint,12,opt,name=relay_all_peer_rpc,json=relayAllPeerRpc,proto3" json:"relay_all_peer_rpc,omitempty"`
+	DisableUdpHolePunching bool   `protobuf:"varint,13,opt,name=disable_udp_hole_punching,json=disableUdpHolePunching,proto3" json:"disable_udp_hole_punching,omitempty"`
 	// string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345
 	// instead
 	MultiThread      bool              `protobuf:"varint,15,opt,name=multi_thread,json=multiThread,proto3" json:"multi_thread,omitempty"`
@@ -265,28 +267,35 @@ type FlagsInConfig struct {
 	PreferWssHttp3ForP2P bool `protobuf:"varint,46,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
 	// Do not use WSS/HTTP3 for automatic P2P at all.
 	DisableWssHttp3ForP2P bool `protobuf:"varint,47,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
-	// Once a preferred connection is usable, close lower-ranked automatic P2P
-	// connections to the same peer according to disguise and protocol policy.
-	// Manual, ordinary inbound, attached, and equally ranked connections remain.
+	// Enabled by default in configuration. Requires both peers to negotiate cleanup support and
+	// confirm usability with a round trip. Keep one manually configured initial
+	// peer connection, chosen in a shared deterministic order, and close all other
+	// connections to that peer, including other manual connections. Otherwise,
+	// established WSS/HTTP3 outrank bare TCP/UDP even when disguise is not initiated;
+	// explicit disguise disablement keeps ordinary protocol ordering. Manual
+	// connections retain highest priority regardless of disguise policy.
+	// TCP preference favors WSS and UDP preference favors HTTP3 among automatic
+	// connections. Equally ranked automatic connections remain. This does not
+	// change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
 	CloseRedundantConnsWhenDisguised bool `protobuf:"varint,49,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3" json:"close_redundant_conns_when_disguised,omitempty"`
 	unknownFields                    protoimpl.UnknownFields
 	sizeCache                        protoimpl.SizeCache
 }
 
-func (x *FlagsInConfig) Reset() {
-	*x = FlagsInConfig{}
+func (x *Flags) Reset() {
+	*x = Flags{}
 	mi := &file_common_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *FlagsInConfig) String() string {
+func (x *Flags) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*FlagsInConfig) ProtoMessage() {}
+func (*Flags) ProtoMessage() {}
 
-func (x *FlagsInConfig) ProtoReflect() protoreflect.Message {
+func (x *Flags) ProtoReflect() protoreflect.Message {
 	mi := &file_common_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -298,180 +307,180 @@ func (x *FlagsInConfig) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use FlagsInConfig.ProtoReflect.Descriptor instead.
-func (*FlagsInConfig) Descriptor() ([]byte, []int) {
+// Deprecated: Use Flags.ProtoReflect.Descriptor instead.
+func (*Flags) Descriptor() ([]byte, []int) {
 	return file_common_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *FlagsInConfig) GetDefaultProtocol() string {
+func (x *Flags) GetDefaultProtocol() string {
 	if x != nil {
 		return x.DefaultProtocol
 	}
 	return ""
 }
 
-func (x *FlagsInConfig) GetDevName() string {
+func (x *Flags) GetDevName() string {
 	if x != nil {
 		return x.DevName
 	}
 	return ""
 }
 
-func (x *FlagsInConfig) GetEnableEncryption() bool {
+func (x *Flags) GetEnableEncryption() bool {
 	if x != nil {
 		return x.EnableEncryption
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetEnableIpv6() bool {
+func (x *Flags) GetEnableIpv6() bool {
 	if x != nil {
 		return x.EnableIpv6
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetMtu() uint32 {
+func (x *Flags) GetMtu() uint32 {
 	if x != nil {
 		return x.Mtu
 	}
 	return 0
 }
 
-func (x *FlagsInConfig) GetLatencyFirst() bool {
+func (x *Flags) GetLatencyFirst() bool {
 	if x != nil {
 		return x.LatencyFirst
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetEnableExitNode() bool {
+func (x *Flags) GetEnableExitNode() bool {
 	if x != nil {
 		return x.EnableExitNode
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetNoTun() bool {
+func (x *Flags) GetNoTun() bool {
 	if x != nil {
 		return x.NoTun
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetUseSmoltcp() bool {
+func (x *Flags) GetUseSmoltcp() bool {
 	if x != nil {
 		return x.UseSmoltcp
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetRelayNetworkWhitelist() string {
+func (x *Flags) GetRelayNetworkWhitelist() string {
 	if x != nil {
 		return x.RelayNetworkWhitelist
 	}
 	return ""
 }
 
-func (x *FlagsInConfig) GetDisableP2P() bool {
+func (x *Flags) GetDisableP2P() bool {
 	if x != nil {
 		return x.DisableP2P
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetRelayAllPeerRpc() bool {
+func (x *Flags) GetRelayAllPeerRpc() bool {
 	if x != nil {
 		return x.RelayAllPeerRpc
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableUdpHolePunching() bool {
+func (x *Flags) GetDisableUdpHolePunching() bool {
 	if x != nil {
 		return x.DisableUdpHolePunching
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetMultiThread() bool {
+func (x *Flags) GetMultiThread() bool {
 	if x != nil {
 		return x.MultiThread
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDataCompressAlgo() CompressionAlgoPb {
+func (x *Flags) GetDataCompressAlgo() CompressionAlgoPb {
 	if x != nil {
 		return x.DataCompressAlgo
 	}
 	return CompressionAlgoPb_Invalid
 }
 
-func (x *FlagsInConfig) GetBindDevice() bool {
+func (x *Flags) GetBindDevice() bool {
 	if x != nil {
 		return x.BindDevice
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetEnableKcpProxy() bool {
+func (x *Flags) GetEnableKcpProxy() bool {
 	if x != nil {
 		return x.EnableKcpProxy
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableKcpInput() bool {
+func (x *Flags) GetDisableKcpInput() bool {
 	if x != nil {
 		return x.DisableKcpInput
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableRelayKcp() bool {
+func (x *Flags) GetDisableRelayKcp() bool {
 	if x != nil {
 		return x.DisableRelayKcp
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetProxyForwardBySystem() bool {
+func (x *Flags) GetProxyForwardBySystem() bool {
 	if x != nil {
 		return x.ProxyForwardBySystem
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetAcceptDns() bool {
+func (x *Flags) GetAcceptDns() bool {
 	if x != nil {
 		return x.AcceptDns
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetPrivateMode() bool {
+func (x *Flags) GetPrivateMode() bool {
 	if x != nil {
 		return x.PrivateMode
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetEnableQuicProxy() bool {
+func (x *Flags) GetEnableQuicProxy() bool {
 	if x != nil {
 		return x.EnableQuicProxy
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableQuicInput() bool {
+func (x *Flags) GetDisableQuicInput() bool {
 	if x != nil {
 		return x.DisableQuicInput
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableRelayQuic() bool {
+func (x *Flags) GetDisableRelayQuic() bool {
 	if x != nil {
 		return x.DisableRelayQuic
 	}
@@ -479,154 +488,154 @@ func (x *FlagsInConfig) GetDisableRelayQuic() bool {
 }
 
 // Deprecated: Marked as deprecated in common.proto.
-func (x *FlagsInConfig) GetQuicListenPort() uint32 {
+func (x *Flags) GetQuicListenPort() uint32 {
 	if x != nil {
 		return x.QuicListenPort
 	}
 	return 0
 }
 
-func (x *FlagsInConfig) GetForeignRelayBpsLimit() uint64 {
+func (x *Flags) GetForeignRelayBpsLimit() uint64 {
 	if x != nil {
 		return x.ForeignRelayBpsLimit
 	}
 	return 0
 }
 
-func (x *FlagsInConfig) GetMultiThreadCount() uint32 {
+func (x *Flags) GetMultiThreadCount() uint32 {
 	if x != nil {
 		return x.MultiThreadCount
 	}
 	return 0
 }
 
-func (x *FlagsInConfig) GetEnableRelayForeignNetworkKcp() bool {
+func (x *Flags) GetEnableRelayForeignNetworkKcp() bool {
 	if x != nil {
 		return x.EnableRelayForeignNetworkKcp
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetEnableRelayForeignNetworkQuic() bool {
+func (x *Flags) GetEnableRelayForeignNetworkQuic() bool {
 	if x != nil {
 		return x.EnableRelayForeignNetworkQuic
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetEncryptionAlgorithm() string {
+func (x *Flags) GetEncryptionAlgorithm() string {
 	if x != nil {
 		return x.EncryptionAlgorithm
 	}
 	return ""
 }
 
-func (x *FlagsInConfig) GetDisableSymHolePunching() bool {
+func (x *Flags) GetDisableSymHolePunching() bool {
 	if x != nil {
 		return x.DisableSymHolePunching
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetTldDnsZone() string {
+func (x *Flags) GetTldDnsZone() string {
 	if x != nil {
 		return x.TldDnsZone
 	}
 	return ""
 }
 
-func (x *FlagsInConfig) GetP2POnly() bool {
+func (x *Flags) GetP2POnly() bool {
 	if x != nil {
 		return x.P2POnly
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableTcpHolePunching() bool {
+func (x *Flags) GetDisableTcpHolePunching() bool {
 	if x != nil {
 		return x.DisableTcpHolePunching
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetLazyP2P() bool {
+func (x *Flags) GetLazyP2P() bool {
 	if x != nil {
 		return x.LazyP2P
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetNeedP2P() bool {
+func (x *Flags) GetNeedP2P() bool {
 	if x != nil {
 		return x.NeedP2P
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetInstanceRecvBpsLimit() uint64 {
+func (x *Flags) GetInstanceRecvBpsLimit() uint64 {
 	if x != nil {
 		return x.InstanceRecvBpsLimit
 	}
 	return 0
 }
 
-func (x *FlagsInConfig) GetDisableUpnp() bool {
+func (x *Flags) GetDisableUpnp() bool {
 	if x != nil {
 		return x.DisableUpnp
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableRelayData() bool {
+func (x *Flags) GetDisableRelayData() bool {
 	if x != nil {
 		return x.DisableRelayData
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetEnableUdpBroadcastRelay() bool {
+func (x *Flags) GetEnableUdpBroadcastRelay() bool {
 	if x != nil {
 		return x.EnableUdpBroadcastRelay
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetSocketMark() uint32 {
+func (x *Flags) GetSocketMark() uint32 {
 	if x != nil && x.SocketMark != nil {
 		return *x.SocketMark
 	}
 	return 0
 }
 
-func (x *FlagsInConfig) GetPreferPeerRelay() bool {
+func (x *Flags) GetPreferPeerRelay() bool {
 	if x != nil {
 		return x.PreferPeerRelay
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetOnlyUseWssHttp3ForHolePunching() bool {
+func (x *Flags) GetOnlyUseWssHttp3ForHolePunching() bool {
 	if x != nil {
 		return x.OnlyUseWssHttp3ForHolePunching
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetPreferWssHttp3ForP2P() bool {
+func (x *Flags) GetPreferWssHttp3ForP2P() bool {
 	if x != nil {
 		return x.PreferWssHttp3ForP2P
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetDisableWssHttp3ForP2P() bool {
+func (x *Flags) GetDisableWssHttp3ForP2P() bool {
 	if x != nil {
 		return x.DisableWssHttp3ForP2P
 	}
 	return false
 }
 
-func (x *FlagsInConfig) GetCloseRedundantConnsWhenDisguised() bool {
+func (x *Flags) GetCloseRedundantConnsWhenDisguised() bool {
 	if x != nil {
 		return x.CloseRedundantConnsWhenDisguised
 	}
@@ -2209,63 +2218,118 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\verror.proto\"\x85\x11\n" +
-	"\rFlagsInConfig\x12)\n" +
-	"\x10default_protocol\x18\x01 \x01(\tR\x0fdefaultProtocol\x12\x19\n" +
-	"\bdev_name\x18\x02 \x01(\tR\adevName\x12+\n" +
-	"\x11enable_encryption\x18\x03 \x01(\bR\x10enableEncryption\x12\x1f\n" +
-	"\venable_ipv6\x18\x04 \x01(\bR\n" +
-	"enableIpv6\x12\x10\n" +
-	"\x03mtu\x18\x05 \x01(\rR\x03mtu\x12#\n" +
-	"\rlatency_first\x18\x06 \x01(\bR\flatencyFirst\x12(\n" +
-	"\x10enable_exit_node\x18\a \x01(\bR\x0eenableExitNode\x12\x15\n" +
-	"\x06no_tun\x18\b \x01(\bR\x05noTun\x12\x1f\n" +
-	"\vuse_smoltcp\x18\t \x01(\bR\n" +
-	"useSmoltcp\x126\n" +
+	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xe6\x16\n" +
+	"\x05Flags\x12M\n" +
+	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
+	"\x03udp\x12\x15\n" +
+	"\x13p2p_prefer_protocol\x18\x01R\x0fdefaultProtocol\x12#\n" +
+	"\bdev_name\x18\x02 \x01(\tB\b\x8a\xb5\x18\x04\n" +
+	"\x00\x18\x01R\adevName\x12O\n" +
+	"\x11enable_encryption\x18\x03 \x01(\bB\"\x8a\xb5\x18\x1e\n" +
+	"\x04true\x12\x16\n" +
+	"\x12disable_encryption\x10\x01R\x10enableEncryption\x12=\n" +
+	"\venable_ipv6\x18\x04 \x01(\bB\x1c\x8a\xb5\x18\x18\n" +
+	"\x04true\x12\x10\n" +
+	"\fdisable_ipv6\x10\x01R\n" +
+	"enableIpv6\x12\x1e\n" +
+	"\x03mtu\x18\x05 \x01(\rB\f\x8a\xb5\x18\b\n" +
+	"\x041380\x18\x01R\x03mtu\x120\n" +
+	"\rlatency_first\x18\x06 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\flatencyFirst\x125\n" +
+	"\x10enable_exit_node\x18\a \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0eenableExitNode\x12\"\n" +
+	"\x06no_tun\x18\b \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x05noTun\x12,\n" +
+	"\vuse_smoltcp\x18\t \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\n" +
+	"useSmoltcp\x12A\n" +
 	"\x17relay_network_whitelist\x18\n" +
-	" \x01(\tR\x15relayNetworkWhitelist\x12\x1f\n" +
-	"\vdisable_p2p\x18\v \x01(\bR\n" +
-	"disableP2p\x12+\n" +
-	"\x12relay_all_peer_rpc\x18\f \x01(\bR\x0frelayAllPeerRpc\x129\n" +
-	"\x19disable_udp_hole_punching\x18\r \x01(\bR\x16disableUdpHolePunching\x12!\n" +
-	"\fmulti_thread\x18\x0f \x01(\bR\vmultiThread\x12G\n" +
-	"\x12data_compress_algo\x18\x10 \x01(\x0e2\x19.common.CompressionAlgoPbR\x10dataCompressAlgo\x12\x1f\n" +
-	"\vbind_device\x18\x11 \x01(\bR\n" +
-	"bindDevice\x12(\n" +
-	"\x10enable_kcp_proxy\x18\x12 \x01(\bR\x0eenableKcpProxy\x12*\n" +
-	"\x11disable_kcp_input\x18\x13 \x01(\bR\x0fdisableKcpInput\x12*\n" +
-	"\x11disable_relay_kcp\x18\x14 \x01(\bR\x0fdisableRelayKcp\x125\n" +
-	"\x17proxy_forward_by_system\x18\x15 \x01(\bR\x14proxyForwardBySystem\x12\x1d\n" +
+	" \x01(\tB\t\x8a\xb5\x18\x05\n" +
+	"\x01*\x18\x01R\x15relayNetworkWhitelist\x12,\n" +
+	"\vdisable_p2p\x18\v \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\n" +
+	"disableP2p\x128\n" +
+	"\x12relay_all_peer_rpc\x18\f \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0frelayAllPeerRpc\x12F\n" +
+	"\x19disable_udp_hole_punching\x18\r \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x16disableUdpHolePunching\x12-\n" +
+	"\fmulti_thread\x18\x0f \x01(\bB\n" +
+	"\x8a\xb5\x18\x06\n" +
+	"\x04trueR\vmultiThread\x12U\n" +
+	"\x12data_compress_algo\x18\x10 \x01(\x0e2\x19.common.CompressionAlgoPbB\f\x8a\xb5\x18\b\n" +
+	"\x04None\x18\x01R\x10dataCompressAlgo\x12+\n" +
+	"\vbind_device\x18\x11 \x01(\bB\n" +
+	"\x8a\xb5\x18\x06\n" +
+	"\x04trueR\n" +
+	"bindDevice\x125\n" +
+	"\x10enable_kcp_proxy\x18\x12 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0eenableKcpProxy\x127\n" +
+	"\x11disable_kcp_input\x18\x13 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fdisableKcpInput\x127\n" +
+	"\x11disable_relay_kcp\x18\x14 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fdisableRelayKcp\x12B\n" +
+	"\x17proxy_forward_by_system\x18\x15 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x14proxyForwardBySystem\x12>\n" +
 	"\n" +
-	"accept_dns\x18\x16 \x01(\bR\tacceptDns\x12!\n" +
-	"\fprivate_mode\x18\x17 \x01(\bR\vprivateMode\x12*\n" +
-	"\x11enable_quic_proxy\x18\x18 \x01(\bR\x0fenableQuicProxy\x12,\n" +
-	"\x12disable_quic_input\x18\x19 \x01(\bR\x10disableQuicInput\x12,\n" +
-	"\x12disable_relay_quic\x18# \x01(\bR\x10disableRelayQuic\x12,\n" +
-	"\x10quic_listen_port\x18! \x01(\rB\x02\x18\x01R\x0equicListenPort\x125\n" +
-	"\x17foreign_relay_bps_limit\x18\x1a \x01(\x04R\x14foreignRelayBpsLimit\x12,\n" +
-	"\x12multi_thread_count\x18\x1b \x01(\rR\x10multiThreadCount\x12F\n" +
-	" enable_relay_foreign_network_kcp\x18\x1c \x01(\bR\x1cenableRelayForeignNetworkKcp\x12H\n" +
-	"!enable_relay_foreign_network_quic\x18$ \x01(\bR\x1denableRelayForeignNetworkQuic\x121\n" +
-	"\x14encryption_algorithm\x18\x1d \x01(\tR\x13encryptionAlgorithm\x129\n" +
-	"\x19disable_sym_hole_punching\x18\x1e \x01(\bR\x16disableSymHolePunching\x12 \n" +
-	"\ftld_dns_zone\x18\x1f \x01(\tR\n" +
-	"tldDnsZone\x12\x19\n" +
-	"\bp2p_only\x18  \x01(\bR\ap2pOnly\x129\n" +
-	"\x19disable_tcp_hole_punching\x18\" \x01(\bR\x16disableTcpHolePunching\x12\x19\n" +
-	"\blazy_p2p\x18% \x01(\bR\alazyP2p\x12\x19\n" +
-	"\bneed_p2p\x18& \x01(\bR\aneedP2p\x125\n" +
-	"\x17instance_recv_bps_limit\x18' \x01(\x04R\x14instanceRecvBpsLimit\x12!\n" +
-	"\fdisable_upnp\x18( \x01(\bR\vdisableUpnp\x12,\n" +
-	"\x12disable_relay_data\x18) \x01(\bR\x10disableRelayData\x12;\n" +
-	"\x1aenable_udp_broadcast_relay\x18* \x01(\bR\x17enableUdpBroadcastRelay\x12$\n" +
-	"\vsocket_mark\x18+ \x01(\rH\x00R\n" +
-	"socketMark\x88\x01\x01\x12*\n" +
-	"\x11prefer_peer_relay\x18, \x01(\bR\x0fpreferPeerRelay\x12L\n" +
-	"$only_use_wss_http3_for_hole_punching\x18- \x01(\bR\x1eonlyUseWssHttp3ForHolePunching\x126\n" +
-	"\x18prefer_wss_http3_for_p2p\x18. \x01(\bR\x14preferWssHttp3ForP2p\x128\n" +
-	"\x19disable_wss_http3_for_p2p\x18/ \x01(\bR\x15disableWssHttp3ForP2p\x12N\n" +
-	"$close_redundant_conns_when_disguised\x181 \x01(\bR closeRedundantConnsWhenDisguisedB\x0e\n" +
+	"accept_dns\x18\x16 \x01(\bB\x1f\x8a\xb5\x18\x1b\n" +
+	"\x05false\x12\x12\n" +
+	"\x10enable_magic_dnsR\tacceptDns\x12E\n" +
+	"\fprivate_mode\x18\x17 \x01(\bB\"\x8a\xb5\x18\x1e\n" +
+	"\x05false\x12\x15\n" +
+	"\x13enable_private_modeR\vprivateMode\x127\n" +
+	"\x11enable_quic_proxy\x18\x18 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fenableQuicProxy\x129\n" +
+	"\x12disable_quic_input\x18\x19 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10disableQuicInput\x129\n" +
+	"\x12disable_relay_quic\x18# \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10disableRelayQuic\x12>\n" +
+	"\x10quic_listen_port\x18! \x01(\rB\x14\x8a\xb5\x18\x0e\n" +
+	"\n" +
+	"4294967295 \x01\x18\x01R\x0equicListenPort\x12Q\n" +
+	"\x17foreign_relay_bps_limit\x18\x1a \x01(\x04B\x1a\x8a\xb5\x18\x16\n" +
+	"\x1418446744073709551615R\x14foreignRelayBpsLimit\x125\n" +
+	"\x12multi_thread_count\x18\x1b \x01(\rB\a\x8a\xb5\x18\x03\n" +
+	"\x012R\x10multiThreadCount\x12S\n" +
+	" enable_relay_foreign_network_kcp\x18\x1c \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x1cenableRelayForeignNetworkKcp\x12U\n" +
+	"!enable_relay_foreign_network_quic\x18$ \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x1denableRelayForeignNetworkQuic\x12B\n" +
+	"\x14encryption_algorithm\x18\x1d \x01(\tB\x0f\x8a\xb5\x18\v\n" +
+	"\aaes-gcm\x18\x01R\x13encryptionAlgorithm\x12F\n" +
+	"\x19disable_sym_hole_punching\x18\x1e \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x16disableSymHolePunching\x12/\n" +
+	"\ftld_dns_zone\x18\x1f \x01(\tB\r\x8a\xb5\x18\t\n" +
+	"\aet.net.R\n" +
+	"tldDnsZone\x12&\n" +
+	"\bp2p_only\x18  \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\ap2pOnly\x12F\n" +
+	"\x19disable_tcp_hole_punching\x18\" \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x16disableTcpHolePunching\x12&\n" +
+	"\blazy_p2p\x18% \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\alazyP2p\x12&\n" +
+	"\bneed_p2p\x18& \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\aneedP2p\x12S\n" +
+	"\x17instance_recv_bps_limit\x18' \x01(\x04B\x1c\x8a\xb5\x18\x18\n" +
+	"\x1418446744073709551615\x18\x01R\x14instanceRecvBpsLimit\x12.\n" +
+	"\fdisable_upnp\x18( \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\vdisableUpnp\x129\n" +
+	"\x12disable_relay_data\x18) \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10disableRelayData\x12H\n" +
+	"\x1aenable_udp_broadcast_relay\x18* \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x17enableUdpBroadcastRelay\x12,\n" +
+	"\vsocket_mark\x18+ \x01(\rB\x06\x8a\xb5\x18\x02\x18\x01H\x00R\n" +
+	"socketMark\x88\x01\x01\x127\n" +
+	"\x11prefer_peer_relay\x18, \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fpreferPeerRelay\x12Y\n" +
+	"$only_use_wss_http3_for_hole_punching\x18- \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x1eonlyUseWssHttp3ForHolePunching\x12C\n" +
+	"\x18prefer_wss_http3_for_p2p\x18. \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x14preferWssHttp3ForP2p\x12E\n" +
+	"\x19disable_wss_http3_for_p2p\x18/ \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x15disableWssHttp3ForP2p\x12Z\n" +
+	"$close_redundant_conns_when_disguised\x181 \x01(\bB\n" +
+	"\x8a\xb5\x18\x06\n" +
+	"\x04trueR closeRedundantConnsWhenDisguisedB\x0e\n" +
 	"\f_socket_mark\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
@@ -2440,7 +2504,7 @@ var file_common_proto_goTypes = []any{
 	(CompressionAlgoPb)(0),        // 0: common.CompressionAlgoPb
 	(NatType)(0),                  // 1: common.NatType
 	(SocketType)(0),               // 2: common.SocketType
-	(*FlagsInConfig)(nil),         // 3: common.FlagsInConfig
+	(*Flags)(nil),                 // 3: common.Flags
 	(*RpcDescriptor)(nil),         // 4: common.RpcDescriptor
 	(*RpcRequest)(nil),            // 5: common.RpcRequest
 	(*DirectRpcRequest)(nil),      // 6: common.DirectRpcRequest
@@ -2467,7 +2531,7 @@ var file_common_proto_goTypes = []any{
 	(*error1.Error)(nil),          // 27: error.Error
 }
 var file_common_proto_depIdxs = []int32{
-	0,  // 0: common.FlagsInConfig.data_compress_algo:type_name -> common.CompressionAlgoPb
+	0,  // 0: common.Flags.data_compress_algo:type_name -> common.CompressionAlgoPb
 	4,  // 1: common.RpcRequest.descriptor:type_name -> common.RpcDescriptor
 	6,  // 2: common.HostManagementRequest.rpc:type_name -> common.DirectRpcRequest
 	12, // 3: common.HostManagementRequest.prepared_instance_id:type_name -> common.UUID

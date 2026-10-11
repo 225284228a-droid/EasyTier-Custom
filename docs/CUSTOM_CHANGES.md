@@ -140,6 +140,8 @@ cargo build --release --locked -p easytier
 - protobuf 库单元测试 36 项通过、2 项默认忽略，覆盖 Flags schema 默认值/字段编号、显式值与 unset、API 序列化和当前握手线格式。
 - 使用此前独立构建的官方 `4837468d` CLI，重新执行 WS/WSS 真实进程互通 6 项，全部通过：双向 peer、Noise、管理反向 RPC 与未协商 padding 拒绝。该项验证旧官方节点兼容性，未将旧二进制标记为本轮官方 `7592951b` 产物；本轮 HTTP3 实例和传输测试使用合入后的源码。
 - `script/build-wasi-core.sh` 的 `wasm32-wasip1` release 构建及 Binaryen 131 优化通过，启用 `management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload`。Windows 本机使用已有 Zig 编译器提供 WASI C 后端；Go 生成器的可重现构建环境与 schema 输入摘要单元测试通过。嵌入产物在源码合并提交后重新生成并独立记录来源。
+- 已从干净的源码合并提交 `938e7d1eccc6e7bd8da07cf993854bd646887879` 运行完整 Go/WASM 生成器，使用 protoc 35.1、protoc-gen-go v1.36.11 和 Binaryen 131。Windows 的 protoc 中文输出路径失败后，改用指向同一源码的 ASCII 别名成功生成，没有手写产物或来源记录。
+- 新内嵌 WASM 为 7,153,347 字节，SHA-256 为 `be88f075d3f56fbbda194d9a4282812b27d30cd5d3f3311f82e4447ac72c001e`；schema 输入 SHA-256 为 `692365b296dd5dfe4d94b8682a45f43a0a41297931507198d167c980e186ccbe`。两份 provenance 均指向上述源码提交。Go 主模块和 TUN 示例模块 `go test ./...` 通过，实际 WASM ABI/引擎/Host 测试通过；再次使用固定生成器刷新 protobuf 后，所有 `.pb.go` 文件无漂移。
 - 共享/Web/GUI 前端单元测试共 342 项、配置转换检查 10 项、完整浏览器回归 42 项通过；Web 与 GUI 类型检查和生产构建通过。浏览器仍使用项目既有 `CHROMIUM_ANGLE_BACKEND=d3d11` 验证路径，没有降低地图精度或断言。
 - Windows 生产代码 Clippy 通过：`cargo clippy --locked -p easytier-core -p easytier -p easytier-web -p easytier-gui --lib --bins -- -D warnings`。本机缺少完整 Perl/OpenSSL 构建环境，且 OHOS crate 不适用于 Windows，不能据此声称整个 workspace 的 `--features full --all-targets` 通过；完整特性检查由 Linux CI 执行。
 - 修复 Web API 测试中缺少 `runtime_capabilities` 的初始化，保留运行时能力声明。此前 Linux CI 的双管理员 credential 测试在已完成故障转移后的稳定性检查阶段触及整段 60 秒预算；仅对该单项设置 Nextest 180 秒预算，保留默认 60 秒以及内部所有阶段期限、唯一性和数据断言。
