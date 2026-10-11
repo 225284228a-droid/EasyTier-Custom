@@ -7,7 +7,7 @@ use easytier_proto::{
 
 use crate::{
     config::{api::network_config_from_toml, toml::ConfigLoader as _},
-    management::apply_config_patch,
+    management::{LocalConfigMutationError, apply_config_patch},
 };
 
 use super::{ReadOnlyInstanceResolver, ResolvedInstanceManagementRpc};
@@ -37,7 +37,7 @@ where
                 .config_control(instance.instance_id())
                 .is_some_and(|control| control.is_read_only())
             {
-                return Err(anyhow::anyhow!("configuration is protected").into());
+                return Err(anyhow::Error::from(LocalConfigMutationError::Protected).into());
             }
             if let Some(patch) = request.patch {
                 apply_config_patch(&instance, patch, rpc.config_patch_persistence.as_deref())
@@ -65,7 +65,7 @@ where
             .config_control(instance.instance_id())
             .is_some_and(|control| control.is_read_only())
         {
-            return Err(anyhow::anyhow!("configuration is protected").into());
+            return Err(anyhow::Error::from(LocalConfigMutationError::Protected).into());
         }
         if let Some(persistence) = &self.config_patch_persistence
             && let Some((config, raw)) = persistence.read_config(instance.instance_id()).await?

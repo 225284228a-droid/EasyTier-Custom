@@ -25,6 +25,7 @@ use crate::{
         CoreInstance, CoreInstanceHost,
         manager::{InstanceFactory, InstanceManager},
     },
+    management::LocalConfigMutationError,
     peers::{context::TrustedKeySource, foreign_network::ForeignNetworkEntryInfo},
 };
 
@@ -299,7 +300,7 @@ async fn persist_config_patch(
     config: &TomlConfig,
 ) -> anyhow::Result<()> {
     if control.is_read_only() {
-        anyhow::bail!("configuration file is read-only");
+        return Err(LocalConfigMutationError::ReadOnly.into());
     }
     let Some(path) = control.path.as_deref() else {
         return Ok(());

@@ -354,6 +354,26 @@ impl P2pPolicyFlags {
     }
 }
 
+/// The P2P disguise policy is contradictory when both flags are set:
+/// `disable_wss_http3_for_p2p` forbids the disguised transport while
+/// `only_use_wss_http3_for_hole_punching` forbids the raw one, leaving no
+/// dialable path to any peer. The config UI keeps the two options mutually
+/// exclusive; the management-API and TOML entries enforce the same rule so a
+/// hand-written configuration fails fast with a clear error instead of
+/// reaching the connection branches with an impossible policy.
+pub fn validate_p2p_disguise_flags(
+    disable_wss_http3_for_p2p: bool,
+    only_use_wss_http3_for_hole_punching: bool,
+) -> anyhow::Result<()> {
+    if disable_wss_http3_for_p2p && only_use_wss_http3_for_hole_punching {
+        anyhow::bail!(
+            "disable_wss_http3_for_p2p and only_use_wss_http3_for_hole_punching are mutually \
+             exclusive: the first forbids the disguised transport while the second forbids the raw transport"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn normalized_p2p_protocol(default_protocol: &str) -> String {
     let protocol = default_protocol.trim().to_ascii_lowercase();
     if protocol.is_empty() {

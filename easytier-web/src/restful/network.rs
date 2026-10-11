@@ -355,7 +355,7 @@ impl NetworkApi {
             None => uuid::Uuid::new_v4(),
         };
         payload.config.instance_id = Some(instance_id.to_string());
-        let _mutation = network_service.lock_mutations().await;
+        let _mutation = network_service.lock_mutations(user_id).await;
         ensure_direct_mutation_allowed(
             &network_service,
             user_id,
@@ -454,7 +454,7 @@ impl NetworkApi {
                 .map_err(super::local_configs::failure)?;
             return Ok(());
         }
-        let _mutation = network_service.lock_mutations().await;
+        let _mutation = network_service.lock_mutations(user_id).await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
         client_mgr
@@ -710,7 +710,7 @@ impl NetworkApi {
                 .map_err(super::local_configs::failure)?;
             return Ok(());
         }
-        let _mutation = network_service.lock_mutations().await;
+        let _mutation = network_service.lock_mutations(user_id).await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
         client_mgr
@@ -757,7 +757,7 @@ impl NetworkApi {
             ));
         }
         let user_id = Self::get_user_id(&auth_session)?;
-        let _mutation = network_service.lock_mutations().await;
+        let _mutation = network_service.lock_mutations(user_id).await;
         ensure_direct_mutation_allowed(
             &network_service,
             user_id,
@@ -805,7 +805,7 @@ impl NetworkApi {
         Json(payload): Json<PatchVpnPortalClientsJsonReq>,
     ) -> Result<(), HttpHandleError> {
         let user_id = Self::get_user_id(&auth_session)?;
-        let _mutation = network_service.lock_mutations().await;
+        let _mutation = network_service.lock_mutations(user_id).await;
         ensure_direct_mutation_allowed(&network_service, user_id, machine_id, inst_id, None)
             .await?;
         client_mgr

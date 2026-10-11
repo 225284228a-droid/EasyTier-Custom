@@ -357,7 +357,7 @@ pub async fn handle_proxy_rpc(
         .id();
 
     let _mutation = if proxy_rpc_mutates_runtime_config(&req.service_name, &req.method_name) {
-        Some(network_service.lock_mutations().await)
+        Some(network_service.lock_mutations(user_id).await)
     } else {
         None
     };

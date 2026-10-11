@@ -306,6 +306,7 @@ port_forwards_bind_addr: "绑定地址，如：0.0.0.0"
 port_forwards_dst_addr: "目标地址，如：10.126.126.1"
 port_forwards_add_btn: "添加"
 edit_port_forward: "编辑端口转发"
+port_forwards_invalid_ip: "绑定与目标地址必须是有效的 IPv4 或 IPv6 地址。"
 
 mtu: MTU
 mtu_help: |

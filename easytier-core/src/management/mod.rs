@@ -5,6 +5,7 @@ mod forwarded_rpc;
 #[cfg(feature = "web-client")]
 mod full;
 mod instance_rpc;
+pub mod mutation_error;
 mod rpc_server_hook;
 mod selector;
 mod server;
@@ -48,6 +49,7 @@ pub use full::{
     register_management_rpc,
 };
 pub use instance_rpc::InstanceManagementRpc;
+pub use mutation_error::LocalConfigMutationError;
 pub use rpc_server_hook::ManagementRpcServerHook;
 pub use selector::{
     ManagementInstance, ManagementSelector, resolve_instance, resolve_management_instance,

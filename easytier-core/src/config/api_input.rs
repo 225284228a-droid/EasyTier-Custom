@@ -345,27 +345,50 @@ impl NetworkConfigExt for NetworkConfig {
         }
 
         if !self.port_forwards.is_empty() {
-            cfg.set_port_forwards(
-                self.port_forwards
-                    .iter()
-                    .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
-                    .filter_map(|pf| {
-                        let bind_addr =
-                            format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
-                        let dst_addr =
-                            format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
-
-                        match (bind_addr, dst_addr) {
-                            (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
-                                bind_addr,
-                                dst_addr,
-                                proto: pf.proto.clone(),
-                            }),
-                            _ => None,
-                        }
+            let mut forwards = Vec::new();
+            for (index, pf) in self.port_forwards.iter().enumerate() {
+                // A fully blank row is an untouched form entry, not a rule.
+                if pf.bind_ip.is_empty()
+                    && pf.dst_ip.is_empty()
+                    && pf.bind_port == 0
+                    && pf.dst_port == 0
+                {
+                    continue;
+                }
+                let rule = |detail: String| {
+                    format!("port forward #{} ({}:{} -> {}:{}): {}", index, pf.bind_ip, pf.bind_port, pf.dst_ip, pf.dst_port, detail)
+                };
+                let parse_ip = |field: &str, ip: &str| -> anyhow::Result<std::net::IpAddr> {
+                    ip.parse().with_context(|| {
+                        rule(format!("{field} address {ip:?} is not a valid IP address"))
                     })
-                    .collect::<Vec<_>>(),
-            );
+                };
+                let parse_port = |field: &str, port: u32| -> anyhow::Result<u16> {
+                    // Port 0 stays legal: it binds an OS-assigned port.
+                    u16::try_from(port).with_context(|| {
+                        rule(format!("{field} port {port} must be between 0 and 65535"))
+                    })
+                };
+                let proto = pf.proto.to_lowercase();
+                if !matches!(proto.as_str(), "tcp" | "udp") {
+                    anyhow::bail!(rule(format!(
+                        "protocol {:?} must be tcp or udp",
+                        pf.proto
+                    )));
+                }
+                forwards.push(PortForwardConfig {
+                    bind_addr: SocketAddr::new(
+                        parse_ip("bind", &pf.bind_ip)?,
+                        parse_port("bind", pf.bind_port)?,
+                    ),
+                    dst_addr: SocketAddr::new(
+                        parse_ip("destination", &pf.dst_ip)?,
+                        parse_port("destination", pf.dst_port)?,
+                    ),
+                    proto,
+                });
+            }
+            cfg.set_port_forwards(forwards);
         }
 
         if self.enable_vpn_portal == Some(true) {
@@ -554,6 +577,11 @@ impl NetworkConfigExt for NetworkConfig {
             instance_recv_bps_limit: self.instance_recv_bps_limit,
             ..Default::default()
         });
+        let flags = cfg.get_flags();
+        super::validate_p2p_disguise_flags(
+            flags.disable_wss_http3_for_p2p,
+            flags.only_use_wss_http3_for_hole_punching,
+        )?;
         Ok(cfg)
     }
 
@@ -720,6 +748,119 @@ mod tests {
             networking_method: Some(NetworkingMethod::Standalone as i32),
             ..Default::default()
         }
+    }
+
+    fn port_forward(
+        bind_ip: &str,
+        bind_port: u32,
+        dst_ip: &str,
+        dst_port: u32,
+    ) -> manage::PortForwardConfig {
+        manage::PortForwardConfig {
+            bind_ip: bind_ip.to_owned(),
+            bind_port,
+            dst_ip: dst_ip.to_owned(),
+            dst_port,
+            proto: "tcp".to_owned(),
+        }
+    }
+
+    #[test]
+    fn port_forwards_parse_ip_and_port_separately_and_survive_ipv6() {
+        let mut config = standalone_config();
+        config.port_forwards = vec![
+            port_forward("10.0.0.1", 8080, "192.168.1.2", 80),
+            port_forward("fe80::1", 8080, "2001:db8::1", 443),
+        ];
+        let forwards = config.gen_config().unwrap().get_port_forwards();
+        assert_eq!(forwards.len(), 2);
+        assert_eq!(forwards[0].bind_addr.to_string(), "10.0.0.1:8080");
+        assert_eq!(forwards[1].bind_addr.to_string(), "[fe80::1]:8080");
+        assert_eq!(forwards[1].dst_addr.to_string(), "[2001:db8::1]:443");
+        assert_eq!(forwards[1].proto, "tcp");
+    }
+
+    #[test]
+    fn blank_port_forward_rows_are_skipped_but_invalid_rules_error() {
+        let mut config = standalone_config();
+        config.port_forwards = vec![
+            manage::PortForwardConfig::default(),
+            port_forward("10.0.0.1", 8080, "192.168.1.2", 80),
+        ];
+        assert_eq!(config.gen_config().unwrap().get_port_forwards().len(), 1);
+
+        let mut config = standalone_config();
+        config.port_forwards = vec![port_forward("999.0.0.1", 8080, "192.168.1.2", 80)];
+        let error = config.gen_config().unwrap_err().to_string();
+        assert!(error.contains("not a valid IP address"), "{error}");
+
+        let mut config = standalone_config();
+        config.port_forwards = vec![port_forward("10.0.0.1", 70000, "192.168.1.2", 80)];
+        let error = config.gen_config().unwrap_err().to_string();
+        assert!(error.contains("between 0 and 65535"), "{error}");
+
+        // Port 0 binds an OS-assigned port and must stay legal.
+        let mut config = standalone_config();
+        config.port_forwards = vec![port_forward("127.0.0.1", 0, "10.88.0.8", 80)];
+        let forwards = config.gen_config().unwrap().get_port_forwards();
+        assert_eq!(forwards.len(), 1);
+        assert_eq!(forwards[0].bind_addr.to_string(), "127.0.0.1:0");
+
+        let mut config = standalone_config();
+        let mut rule = port_forward("10.0.0.1", 8080, "192.168.1.2", 80);
+        rule.proto = "sctp".to_owned();
+        config.port_forwards = vec![rule];
+        assert!(config.gen_config().is_err());
+    }
+
+    #[test]
+    fn gen_config_rejects_contradictory_disguise_flags() {
+        let mut config = standalone_config();
+        config.only_use_wss_http3_for_hole_punching = Some(true);
+        config.disable_wss_http3_for_p2p = Some(true);
+        let error = config.gen_config().unwrap_err().to_string();
+        assert!(error.contains("mutually exclusive"), "{error}");
+
+        for (only, disable) in [
+            (Some(true), None),
+            (None, Some(true)),
+            (Some(true), Some(false)),
+            (Some(false), Some(true)),
+        ] {
+            let mut config = standalone_config();
+            config.only_use_wss_http3_for_hole_punching = only;
+            config.disable_wss_http3_for_p2p = disable;
+            config
+                .gen_config()
+                .unwrap_or_else(|error| panic!("single disguise flag must load: {error}"));
+        }
+    }
+
+    #[test]
+    fn port_forward_read_back_round_trip_preserves_ipv6_rules() {
+        let mut config = standalone_config();
+        config.port_forwards = vec![port_forward("fe80::1", 8080, "2001:db8::1", 443)];
+        let forwards = config.gen_config().unwrap().get_port_forwards();
+
+        // The management read-back path serializes the address and port as
+        // separate fields, so an IPv6 rule must survive a save/load cycle.
+        let round_tripped = NetworkConfig {
+            port_forwards: forwards
+                .iter()
+                .map(|f| manage::PortForwardConfig {
+                    proto: f.proto.clone(),
+                    bind_ip: f.bind_addr.ip().to_string(),
+                    bind_port: f.bind_addr.port() as u32,
+                    dst_ip: f.dst_addr.ip().to_string(),
+                    dst_port: f.dst_addr.port() as u32,
+                })
+                .collect(),
+            ..standalone_config()
+        };
+        let forwards = round_tripped.gen_config().unwrap().get_port_forwards();
+        assert_eq!(forwards.len(), 1);
+        assert_eq!(forwards[0].bind_addr.to_string(), "[fe80::1]:8080");
+        assert_eq!(forwards[0].dst_addr.to_string(), "[2001:db8::1]:443");
     }
 
     /// The management API's name for a flag is the schema's to state, and the
@@ -894,29 +1035,36 @@ mod tests {
     #[test]
     fn disguise_api_flags_preserve_missing_and_explicit_values() {
         for value in [None, Some(false), Some(true)] {
-            let input = NetworkConfig {
-                only_use_wss_http3_for_hole_punching: value,
-                prefer_wss_http3_for_p2p: value,
-                disable_wss_http3_for_p2p: value,
-                close_redundant_conns_when_disguised: value,
-                dev_name: Some(String::new()),
-                encryption_algorithm: Some(String::new()),
-                instance_recv_bps_limit: Some(0),
-                socket_mark: Some(0),
-                ..standalone_config()
-            };
-            let config = input.gen_config().unwrap();
-            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
-            let output = NetworkConfig::new_from_config(&restored).unwrap();
-            assert_eq!(output.only_use_wss_http3_for_hole_punching, value);
-            assert_eq!(output.prefer_wss_http3_for_p2p, value);
-            assert_eq!(output.disable_wss_http3_for_p2p, value);
-            assert_eq!(output.close_redundant_conns_when_disguised, value);
-            assert_eq!(output.dev_name.as_deref(), Some(""));
-            assert_eq!(output.encryption_algorithm.as_deref(), Some(""));
-            assert_eq!(output.instance_recv_bps_limit, Some(0));
-            assert_eq!(output.socket_mark, Some(0));
-            assert_eq!(output.p2p_prefer_protocol, None);
+            for only_use in [None, Some(false), Some(true)] {
+                // Both disguise toggles on is a contradictory policy the
+                // config layer rejects; every other pairing must round-trip.
+                if value == Some(true) && only_use == Some(true) {
+                    continue;
+                }
+                let input = NetworkConfig {
+                    only_use_wss_http3_for_hole_punching: only_use,
+                    prefer_wss_http3_for_p2p: value,
+                    disable_wss_http3_for_p2p: value,
+                    close_redundant_conns_when_disguised: value,
+                    dev_name: Some(String::new()),
+                    encryption_algorithm: Some(String::new()),
+                    instance_recv_bps_limit: Some(0),
+                    socket_mark: Some(0),
+                    ..standalone_config()
+                };
+                let config = input.gen_config().unwrap();
+                let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+                let output = NetworkConfig::new_from_config(&restored).unwrap();
+                assert_eq!(output.only_use_wss_http3_for_hole_punching, only_use);
+                assert_eq!(output.prefer_wss_http3_for_p2p, value);
+                assert_eq!(output.disable_wss_http3_for_p2p, value);
+                assert_eq!(output.close_redundant_conns_when_disguised, value);
+                assert_eq!(output.dev_name.as_deref(), Some(""));
+                assert_eq!(output.encryption_algorithm.as_deref(), Some(""));
+                assert_eq!(output.instance_recv_bps_limit, Some(0));
+                assert_eq!(output.socket_mark, Some(0));
+                assert_eq!(output.p2p_prefer_protocol, None);
+            }
         }
     }
 

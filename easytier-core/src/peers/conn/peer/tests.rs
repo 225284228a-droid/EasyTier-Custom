@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use crate::{
     packet::{PacketType, ZCPacket},
     peers::{
+        PacketRecvChanReceiver,
         PeerConnectionOrigin,
         conn::{peer_conn::PeerConn, peer_session::PeerSessionStore},
         context::{ArcPeerContext, NetworkIdentity, PeerContext},
@@ -1002,6 +1003,50 @@ async fn later_handshakes_update_manual_reconnect_suppression_for_the_surviving_
     assert!(!peer.remote_cleanup_requested.load());
 }
 
+/// A manual path that dies on the wire (half-open connection, one-way packet
+/// loss, ping timeout giving up on the socket) must lift the reconnect
+/// suppression as soon as the connection is reaped, so a backup URL the
+/// connector held back gets dialed again on the next reconnect tick.
+#[tokio::test]
+async fn manual_connection_death_on_the_wire_lifts_reconnect_suppression_immediately() {
+    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
+        close_redundant_conns_when_disguised: true,
+        ..Default::default()
+    }));
+    let remote_context = Arc::new(MutableCleanupContext(std::sync::Mutex::new(
+        context.flags(),
+    )));
+    let (tx, _rx) = create_packet_recv_chan();
+    let peer = Peer::new(2, tx, context.clone());
+    let (manual, mut manual_remote) = handshaken_connection_with_remote(
+        context.clone(),
+        remote_context.clone(),
+        "tcp",
+        PeerConnectionOrigin::Manual,
+        true,
+        None,
+    )
+    .await;
+    let manual_id = manual.get_conn_id();
+    let (remote_tx, _remote_rx) = create_packet_recv_chan();
+    manual_remote.start_recv_loop(remote_tx).await;
+    peer.add_peer_conn(manual).await.unwrap();
+    wait_until_latency_verified(&peer, &[manual_id]).await;
+    assert!(peer.has_usable_manual_connection());
+
+    // The wire path dies: the remote end goes away and the pinger gives up
+    // on the connection. No explicit close is involved.
+    drop(manual_remote);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while peer.conns.contains_key(&manual_id) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!peer.has_usable_manual_connection());
+}
+
 #[tokio::test]
 async fn queued_cleanup_rechecks_every_local_ordering_input() {
     for changed_field in 0..4 {
@@ -1093,6 +1138,154 @@ async fn queued_cleanup_rechecks_every_local_ordering_input() {
         .await
         .expect("fresh matching policy must restore cleanup");
         assert!(peer.conns.contains_key(&fresh_ids[1]));
+    }
+}
+
+type FlipRemote = (PeerConn, Option<PacketRecvChanReceiver>);
+
+/// Adds one raw-TCP and one raw-UDP connection with per-node mutable remote
+/// contexts, waits until both are latency-verified, and returns their ids
+/// (TCP first) together with the first path's packet receiver.
+async fn add_verified_tcp_udp_conns(
+    peer: &Peer,
+    context: ArcPeerContext,
+    remote_context: ArcPeerContext,
+    remotes: &mut Vec<FlipRemote>,
+) -> (PeerConnId, PeerConnId, PacketRecvChanReceiver) {
+    let mut ids = Vec::new();
+    let mut preferred_rx = None;
+    for scheme in ["tcp", "udp"] {
+        let (conn, mut remote) = handshaken_connection_with_remote(
+            context.clone(),
+            remote_context.clone(),
+            scheme,
+            PeerConnectionOrigin::Direct,
+            true,
+            None,
+        )
+        .await;
+        let (remote_tx, remote_rx) = create_packet_recv_chan();
+        remote.start_recv_loop(remote_tx).await;
+        ids.push(conn.get_conn_id());
+        peer.add_peer_conn(conn).await.unwrap();
+        if scheme == "tcp" {
+            preferred_rx = Some(remote_rx);
+        }
+        remotes.push((remote, None));
+    }
+    wait_until_latency_verified(peer, &ids).await;
+    (ids[0], ids[1], preferred_rx.unwrap())
+}
+
+/// Two running nodes flip their transport preference (raw TCP/UDP protocol
+/// or the disguise preference) while connections are live. A retirement that
+/// the old policy executes just before the flip is fenced once the flip
+/// happened, the path the new policy still prefers keeps carrying traffic,
+/// and an explicit retirement still works.
+#[tokio::test]
+async fn live_preference_flip_fences_stale_cleanup_and_keeps_the_surviving_path_usable() {
+    for flip_disguise in [false, true] {
+        let context = Arc::new(MutableCleanupContext(std::sync::Mutex::new(Flags {
+            default_protocol: "udp".to_owned(),
+            close_redundant_conns_when_disguised: true,
+            ..Default::default()
+        })));
+        let remote_context =
+            Arc::new(MutableCleanupContext(std::sync::Mutex::new(context.flags())));
+        let (tx, _rx) = create_packet_recv_chan();
+        let peer = Peer::new(2, tx, context.clone());
+        let mut remotes: Vec<FlipRemote> = Vec::new();
+
+        // Control leg: under the unflipped policy the same retirement runs,
+        // so the fence below is proven by contrast.
+        let (tcp_id, udp_id, _) =
+            add_verified_tcp_udp_conns(&peer, context.clone(), remote_context.clone(), &mut remotes)
+                .await;
+        peer.note_negotiated_disguise(false);
+        peer.close_event_sender
+            .try_send(PeerConnCloseEvent::Redundant {
+                conn_id: tcp_id,
+                replacement_id: udp_id,
+                use_disguise: false,
+                policy: peer.conns.get(&udp_id).unwrap().cleanup_policy().clone(),
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while peer.conns.contains_key(&tcp_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("raw TCP must be redundant under the original UDP preference");
+        peer.close_peer_conn(&udp_id).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !peer.conns.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Both nodes flip their preference while the connections are live.
+        let (tcp_id, udp_id, mut preferred_rx) =
+            add_verified_tcp_udp_conns(&peer, context.clone(), remote_context.clone(), &mut remotes)
+                .await;
+        peer.note_negotiated_disguise(false);
+        {
+            let change = |flags: &mut Flags| {
+                if flip_disguise {
+                    flags.prefer_wss_http3_for_p2p = true;
+                } else {
+                    flags.default_protocol = "tcp".to_owned();
+                }
+            };
+            change(&mut context.0.lock().unwrap());
+            change(&mut remote_context.0.lock().unwrap());
+        }
+
+        // A retirement queued under the old policy arrives after the flip.
+        // It matches the handshakes and the negotiated cache, but no longer
+        // matches the live flags, so both connections must survive.
+        peer.close_event_sender
+            .try_send(PeerConnCloseEvent::Redundant {
+                conn_id: tcp_id,
+                replacement_id: udp_id,
+                use_disguise: false,
+                policy: peer.conns.get(&udp_id).unwrap().cleanup_policy().clone(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(peer.conns.len(), 2, "flip_disguise={flip_disguise}");
+
+        // The path the new policy still prefers keeps carrying traffic after
+        // the flip, and an explicit retirement of the other path works.
+        peer.close_peer_conn(&udp_id).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while peer.conns.contains_key(&udp_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(peer.conns.contains_key(&tcp_id), "flip_disguise={flip_disguise}");
+        peer.send_msg(data_packet()).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), preferred_rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .payload(),
+            b"preferred-path"
+        );
+
+        drop(remotes);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !peer.conns.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 }
 

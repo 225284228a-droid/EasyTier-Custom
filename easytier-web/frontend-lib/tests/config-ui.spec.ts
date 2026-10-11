@@ -576,6 +576,36 @@ describe('Config.vue network config projection', () => {
     expect(wrapper.findComponent(AclManagerStub).props('modelValue')).toStrictEqual(curNetwork.acl)
   })
 
+  it('flags invalid port-forward addresses inline and accepts IPv6', async () => {
+    const { curNetwork, wrapper } = mountConfig()
+    await nextTick()
+
+    const bindInput = wrapper.find('input[placeholder="port_forwards_bind_addr"]')
+    expect(bindInput.classes()).not.toContain('p-invalid')
+
+    await bindInput.setValue('999.0.0.1')
+    expect(bindInput.classes()).toContain('p-invalid')
+
+    await bindInput.setValue('fe80::1')
+    expect(bindInput.classes()).not.toContain('p-invalid')
+    expect(curNetwork.port_forwards[0].bind_ip).toBe('fe80::1')
+
+    await setInput(wrapper, 'input[placeholder="port_forwards_dst_addr"]', '2001:db8::2')
+    expect(curNetwork.port_forwards[0]).toMatchObject({
+      proto: 'udp',
+      bind_ip: 'fe80::1',
+      dst_ip: '2001:db8::2',
+    })
+    const backend = toBackendNetworkConfig(curNetwork)
+    expect(backend.port_forwards?.[0]).toMatchObject({ bind_ip: 'fe80::1', dst_ip: '2001:db8::2' })
+
+    // The compact editor's save stays disabled until it is editing a row
+    // whose addresses both parse.
+    const editorSave = wrapper.find('button[data-label="web.common.save"]')
+    expect(editorSave.exists()).toBe(true)
+    expect((editorSave.element as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('projects form edits back into config and backend JSON', async () => {
     const { curNetwork, wrapper } = mountConfig()
     await nextTick()

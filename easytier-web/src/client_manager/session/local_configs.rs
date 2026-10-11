@@ -14,6 +14,7 @@ use tokio::sync::{RwLock, broadcast};
 
 use super::{Session, SessionData, SharedSessionData};
 use crate::db::local_config_mirror::LocalConfigMirror;
+use easytier_core::management::LocalConfigMutationError;
 
 pub(crate) const REVISION_CAPABILITY: &str = "management:persisted-config-revision-v1";
 pub(crate) const APPLY_CAPABILITY: &str = "management:persisted-config-apply-v1";
@@ -351,16 +352,15 @@ impl Session {
         let refreshed = self.observe_local_configs().await;
         match result {
             Ok(Ok(())) => refreshed.map_err(|_| LocalConfigError::Unknown),
-            Ok(Err(error)) if error.to_string().contains("local_config_revision_conflict") => {
-                Err(LocalConfigError::Conflict(None))
-            }
-            Ok(Err(error))
-                if error.to_string().contains("read-only")
-                    || error.to_string().contains("protected") =>
-            {
-                Err(LocalConfigError::Protected)
-            }
-            Ok(Err(_)) => Err(LocalConfigError::ApplyFailed),
+            Ok(Err(error)) => match LocalConfigMutationError::classify_rpc(&error) {
+                Some(LocalConfigMutationError::RevisionConflict) => {
+                    Err(LocalConfigError::Conflict(None))
+                }
+                Some(LocalConfigMutationError::Protected | LocalConfigMutationError::ReadOnly) => {
+                    Err(LocalConfigError::Protected)
+                }
+                None => Err(LocalConfigError::ApplyFailed),
+            },
             Err(_) => Err(LocalConfigError::Unknown),
         }
     }

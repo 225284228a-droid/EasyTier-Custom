@@ -574,6 +574,13 @@ impl TomlConfig {
     }
 
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
+        super::validate_p2p_disguise_flags(
+            config.flags.disable_wss_http3_for_p2p.unwrap_or(false),
+            config
+                .flags
+                .only_use_wss_http3_for_hole_punching
+                .unwrap_or(false),
+        )?;
         config.secure_mode = config
             .secure_mode
             .take()
@@ -1392,6 +1399,25 @@ socket_mark = 66
         );
     }
 
+    #[test]
+    fn contradictory_disguise_flags_are_rejected_on_load() {
+        let error = TomlConfig::new_from_str(
+            "[flags]\nonly_use_wss_http3_for_hole_punching = true\ndisable_wss_http3_for_p2p = true\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("mutually exclusive"), "{error}");
+
+        for input in [
+            "only_use_wss_http3_for_hole_punching = true",
+            "disable_wss_http3_for_p2p = true",
+            "only_use_wss_http3_for_hole_punching = false\ndisable_wss_http3_for_p2p = true",
+        ] {
+            TomlConfig::new_from_str(&format!("[flags]\n{input}\n"))
+                .unwrap_or_else(|error| panic!("single disguise flag must load: {error}"));
+        }
+    }
+
     #[cfg(feature = "config-write")]
     #[test]
     fn flags_presence_survives_parse_patch_and_dump() {
@@ -1429,7 +1455,7 @@ relay_network_whitelist = "allowed"
 mtu = 1420
 instance_recv_bps_limit = 1024
 socket_mark = 66
-only_use_wss_http3_for_hole_punching = true
+only_use_wss_http3_for_hole_punching = false
 prefer_wss_http3_for_p2p = true
 disable_wss_http3_for_p2p = true
 close_redundant_conns_when_disguised = true

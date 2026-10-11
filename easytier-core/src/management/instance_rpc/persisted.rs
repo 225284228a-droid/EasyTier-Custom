@@ -11,6 +11,7 @@ use crate::{
     management::{
         ConfigFileStorage,
         full::{merge_active_changes, persisted_raw_hash, refresh_local_configs},
+        LocalConfigMutationError,
     },
 };
 
@@ -28,7 +29,7 @@ where
     if let Some(control) = manager.config_control(id)
         && control.is_read_only()
     {
-        anyhow::bail!("configuration is protected");
+        return Err(LocalConfigMutationError::Protected.into());
     }
     if storage.supports_catalog() && manager.config_dir().is_some() {
         let state = manager
@@ -44,11 +45,12 @@ where
             .next()
             .ok_or_else(|| anyhow::anyhow!("persisted configuration is unavailable"))?;
         if entries.next().is_some() || entry.status != "ready" {
-            anyhow::bail!("configuration is protected or unavailable");
+            return Err(anyhow::Error::from(LocalConfigMutationError::Protected)
+            .context("configuration is protected or unavailable"));
         }
         let raw = entry
             .persisted_toml
-            .ok_or_else(|| anyhow::anyhow!("configuration is protected"))?;
+            .ok_or_else(|| LocalConfigMutationError::Protected)?;
         let config = TomlConfig::new_from_str(&raw)
             .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
         return Ok(Some((config, raw)));
@@ -60,7 +62,7 @@ where
         return Ok(None);
     };
     if control.is_read_only() {
-        anyhow::bail!("configuration is protected");
+        return Err(LocalConfigMutationError::Protected.into());
     }
     let Some(path) = control.path.as_deref() else {
         return Ok(None);
@@ -78,7 +80,7 @@ where
         .await?
         .is_read_only()
     {
-        anyhow::bail!("configuration is protected");
+        return Err(LocalConfigMutationError::Protected.into());
     }
     let raw =
         String::from_utf8(raw).map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
@@ -106,7 +108,7 @@ where
         .config_control(id)
         .ok_or_else(|| anyhow::anyhow!("configuration control is unavailable"))?;
     if control.is_read_only() {
-        anyhow::bail!("configuration is protected");
+        return Err(LocalConfigMutationError::Protected.into());
     }
     let Some(path) = control.path.as_deref() else {
         return Ok(None);
@@ -125,7 +127,7 @@ where
         .await?
         .ok_or_else(|| anyhow::anyhow!("persisted configuration is unavailable"))?;
     if current != original.as_bytes() {
-        anyhow::bail!("local_config_revision_conflict");
+        return Err(LocalConfigMutationError::RevisionConflict.into());
     }
     storage.write(path, merged.as_bytes()).await?;
     manager.local_config_catalog().request_refresh();
@@ -155,11 +157,11 @@ where
         .ok_or_else(|| anyhow::anyhow!("persisted configuration is unavailable"))?
         .1;
     if expected_raw_hash != Some(persisted_raw_hash(original.as_bytes()).as_str()) {
-        anyhow::bail!("local_config_revision_conflict");
+        return Err(LocalConfigMutationError::RevisionConflict.into());
     }
     let merged = merge_active_changes(&original, &written.dump(), &previous.dump())?;
     if storage.read(path).await?.as_deref() != Some(original.as_bytes()) {
-        anyhow::bail!("local_config_revision_conflict");
+        return Err(LocalConfigMutationError::RevisionConflict.into());
     }
     storage.write(path, merged.as_bytes()).await?;
     manager.local_config_catalog().request_refresh();

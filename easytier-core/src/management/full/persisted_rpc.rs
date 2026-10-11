@@ -18,6 +18,7 @@ use super::{
 use crate::{
     config::toml::{ConfigLoader as _, TomlConfig},
     instance::{CoreInstance, CoreInstanceHost, manager::InstanceFactory},
+    management::LocalConfigMutationError,
 };
 
 fn response(
@@ -82,7 +83,7 @@ where
             .filter(|entry| entry.inst_id.map(uuid::Uuid::from) == Some(instance_id))
             .collect::<Vec<_>>();
         if entries.len() != 1 || entries[0].revision != expected {
-            anyhow::bail!("local_config_revision_conflict");
+            return Err(LocalConfigMutationError::RevisionConflict.into());
         }
         Ok(Some(entries[0].clone()))
     }
@@ -127,7 +128,7 @@ where
                     snapshot,
                     id,
                     PersistedConfigMutationStatus::Conflict,
-                    Some("local_config_revision_conflict"),
+                    Some(LocalConfigMutationError::RevisionConflict.code()),
                 ));
             }
             let status = match entry.status.as_str() {
@@ -270,7 +271,7 @@ where
                 self.refresh_local_configs_locked().await?,
                 id,
                 PersistedConfigMutationStatus::Conflict,
-                Some("local_config_revision_conflict"),
+                Some(LocalConfigMutationError::RevisionConflict.code()),
             ));
         }
         let control = self
@@ -299,7 +300,7 @@ where
                     checked,
                     id,
                     PersistedConfigMutationStatus::Conflict,
-                    Some("local_config_revision_conflict"),
+                    Some(LocalConfigMutationError::RevisionConflict.code()),
                 ));
             }
         }
@@ -337,25 +338,25 @@ where
             self.instances.register_managed_config(id, control)?;
             Ok(())
         };
+        let conflicted = outcome
+            .as_ref()
+            .err()
+            .is_some_and(|error| {
+                LocalConfigMutationError::classify(error) == Some(LocalConfigMutationError::RevisionConflict)
+            });
         let refreshed = self.refresh_local_configs_locked().await?;
         Ok(response(
             refreshed,
             id,
-            if outcome
-                .as_ref()
-                .is_err_and(|error| error.to_string() == "local_config_revision_conflict")
-            {
+            if conflicted {
                 PersistedConfigMutationStatus::Conflict
             } else if outcome.is_ok() {
                 PersistedConfigMutationStatus::Success
             } else {
                 PersistedConfigMutationStatus::ApplyFailed
             },
-            if outcome
-                .as_ref()
-                .is_err_and(|error| error.to_string() == "local_config_revision_conflict")
-            {
-                Some("local_config_revision_conflict")
+            if conflicted {
+                Some(LocalConfigMutationError::RevisionConflict.code())
             } else if outcome.is_ok() {
                 None
             } else {

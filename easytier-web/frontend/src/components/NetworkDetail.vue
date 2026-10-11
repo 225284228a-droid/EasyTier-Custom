@@ -8,6 +8,7 @@ import { Config, NetworkTypes, UrlListInput, Utils, StatusDisplay } from 'easyti
 import AclPolicyTab from './AclPolicyTab.vue';
 import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
 import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
+import { toNetworkCidr } from '../modules/cidr';
 
 const { t } = useI18n()
 const route = useRoute();
@@ -77,6 +78,8 @@ onUnmounted(() => {
     periodFunc.stop();
     window.clearInterval(nodeDetailTimer);
     configRequest++;
+    candidateCidrRequest++;
+    nodeDetailRequest++;
 });
 
 // --- members tab ---
@@ -167,31 +170,6 @@ const editProxyCidrs = ref<string[]>([]);
 const proxyCidrInput = ref('');
 const savingMember = ref(false);
 
-// Normalize user input into a network CIDR: a bare host address expands to
-// its /24 network, and an explicit prefix gets its host bits cleared.
-const toNetworkCidr = (input: string): string | null => {
-    const trimmed = input.trim();
-    if (!trimmed) return null;
-    if (trimmed.includes('/')) {
-        const [addr, prefixStr] = trimmed.split('/');
-        const prefix = Number(prefixStr);
-        const ip = addr.split('.').map(Number);
-        if (ip.length !== 4 || ip.some(o => Number.isNaN(o) || o < 0 || o > 255)
-            || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
-            return null;
-        }
-        const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-        const ipNum = ((ip[0] << 24) | (ip[1] << 16) | (ip[2] << 8) | ip[3]) >>> 0;
-        const network = (ipNum & mask) >>> 0;
-        return [24, 16, 8, 0].map(shift => (network >> shift) & 0xff).join('.') + '/' + prefix;
-    }
-    const ip = trimmed.split('.').map(Number);
-    if (ip.length !== 4 || ip.some(o => Number.isInteger(o) && o >= 0 && o <= 255 ? false : true)) {
-        return null;
-    }
-    return `${ip[0]}.${ip[1]}.${ip[2]}.0/24`;
-};
-
 // The Enter used to confirm an IME composition must not add the entry.
 const onProxyCidrEnter = (event: KeyboardEvent) => {
     if (event.isComposing || event.keyCode === 229) {
@@ -231,13 +209,16 @@ const openEditMember = (member: CentralNetworkMember) => {
 // its /24 network; loopback, link-local and the member's own virtual
 // subnet are filtered out.
 const candidateCidrs = ref<string[] | undefined>(undefined);
+let candidateCidrRequest = 0;
 const loadCandidateCidrs = async (member: CentralNetworkMember) => {
+    const request = ++candidateCidrRequest;
     if (!member.online) {
         candidateCidrs.value = [];
         return;
     }
     try {
         const addrs = await api?.get_node_interface_ips(member.device_id, networkId.value);
+        if (request !== candidateCidrRequest) return;
         const virtualPrefix = (member.runtime_virtual_ipv4 ?? member.virtual_ipv4 ?? member.allocated_ipv4 ?? '')
             .split('/')[0].split('.').slice(0, 3).join('.');
         const cidrs = new Set<string>();
@@ -251,6 +232,7 @@ const loadCandidateCidrs = async (member: CentralNetworkMember) => {
         }
         candidateCidrs.value = [...cidrs];
     } catch (e) {
+        if (request !== candidateCidrRequest) return;
         console.error(e);
         candidateCidrs.value = [];
     }
@@ -391,7 +373,10 @@ const configBaseline = ref<{ network_name: string; network_secret: string }>({ n
 let configRequest = 0;
 
 watch(editMemberVisible, (visible) => {
-    if (!visible) configRequest++;
+    if (!visible) {
+        configRequest++;
+        candidateCidrRequest++;
+    }
 }, { flush: 'sync' });
 
 const loadMemberConfigForm = async (member: CentralNetworkMember) => {
@@ -460,6 +445,10 @@ const nodeLoggerLevel = ref<number | undefined>(undefined);
 const nodeLoggerSaving = ref(false);
 const nodeTomlConfig = ref<string | undefined>(undefined);
 const nodeConfigVisible = ref(false);
+// Shared generation of the node-detail dialog: every open, close and unmount
+// invalidates the async requests of the previous device, so a slow response
+// can never write another device's data into the current view.
+let nodeDetailRequest = 0;
 
 const loggerLevelOptions = computed(() => [
     { label: t('web.network_detail.log_disabled'), value: 0 },
@@ -472,21 +461,30 @@ const loggerLevelOptions = computed(() => [
 
 const loadNodeGeneral = async () => {
     if (!nodeDetailMember.value) return;
+    const request = nodeDetailRequest;
+    const device_id = nodeDetailMember.value.device_id;
     try {
-        nodeLoggerLevel.value = await api?.get_node_logger_level(nodeDetailMember.value.device_id);
+        const level = await api?.get_node_logger_level(device_id);
+        if (request !== nodeDetailRequest) return;
+        nodeLoggerLevel.value = level;
     } catch (e) {
+        if (request !== nodeDetailRequest) return;
         console.error(e);
     }
 };
 
 const applyNodeLoggerLevel = async (level: number) => {
     if (!nodeDetailMember.value) return;
+    const request = nodeDetailRequest;
+    const device_id = nodeDetailMember.value.device_id;
     nodeLoggerSaving.value = true;
     try {
-        await api?.set_node_logger_level(nodeDetailMember.value.device_id, level);
+        await api?.set_node_logger_level(device_id, level);
+        if (request !== nodeDetailRequest || nodeDetailMember.value?.device_id !== device_id) return;
         nodeLoggerLevel.value = level;
         toast.add({ severity: 'success', summary: t('web.network_detail.log_level'), detail: t('web.device_management.config_saved'), life: 2000 });
     } catch (e: any) {
+        if (request !== nodeDetailRequest) return;
         toast.add({ severity: 'error', summary: t('web.network_detail.log_level'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
     } finally {
         nodeLoggerSaving.value = false;
@@ -495,11 +493,16 @@ const applyNodeLoggerLevel = async (level: number) => {
 
 const exportNodeConfig = async () => {
     if (!nodeDetailMember.value) return;
+    const request = nodeDetailRequest;
+    const device_id = nodeDetailMember.value.device_id;
     nodeTomlConfig.value = undefined;
     nodeConfigVisible.value = true;
     try {
-        nodeTomlConfig.value = await api?.get_node_toml_config(nodeDetailMember.value.device_id, networkId.value);
+        const config = await api?.get_node_toml_config(device_id, networkId.value);
+        if (request !== nodeDetailRequest || nodeDetailMember.value?.device_id !== device_id) return;
+        nodeTomlConfig.value = config;
     } catch (e: any) {
+        if (request !== nodeDetailRequest) return;
         nodeTomlConfig.value = '';
         toast.add({ severity: 'error', summary: t('web.network_detail.export_config'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
     }
@@ -541,6 +544,7 @@ const ipv4ToString = (addr?: { address?: { addr?: number } } | null) => {
 
 const loadNodeDetail = async () => {
     if (!nodeDetailMember.value) return;
+    const request = nodeDetailRequest;
     const machine_id = nodeDetailMember.value.device_id;
     const inst_id = networkId.value;
     nodeDetailError.value = undefined;
@@ -549,6 +553,7 @@ const loadNodeDetail = async () => {
         api?.get_node_peers(machine_id, inst_id),
         api?.get_node_acl_stats(machine_id, inst_id),
     ]);
+    if (request !== nodeDetailRequest || nodeDetailMember.value?.device_id !== machine_id) return;
     if (results[0].status === 'fulfilled') nodeRoutes.value = results[0].value ?? [];
     if (results[1].status === 'fulfilled') nodePeers.value = results[1].value ?? [];
     if (results[2].status === 'fulfilled') nodeAclStats.value = results[2].value ?? [];
@@ -566,15 +571,20 @@ const openNodeDetail = (member: CentralNetworkMember) => {
     nodeAclStats.value = undefined;
     nodeDetailVisible.value = true;
     nodeLoggerLevel.value = undefined;
+    nodeDetailRequest++;
     loadNodeDetail();
     loadNodeGeneral();
     window.clearInterval(nodeDetailTimer);
-    nodeDetailTimer = window.setInterval(loadNodeDetail, 5_000);
+    nodeDetailTimer = window.setInterval(() => {
+        if (!nodeDetailVisible.value) return;
+        loadNodeDetail();
+    }, 5_000);
 };
 const closeNodeDetail = () => {
     window.clearInterval(nodeDetailTimer);
     nodeDetailTimer = undefined;
     nodeDetailVisible.value = false;
+    nodeDetailRequest++;
 };
 
 const routeCostLabel = (cost: number) => cost === 1 ? 'p2p' : `relay(${cost})`;

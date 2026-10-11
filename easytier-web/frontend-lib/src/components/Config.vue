@@ -18,6 +18,7 @@ import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
 import { configFieldSupported, HTTP3_CAPABILITY } from '../modules/capabilities'
 import { createVpnPortalConfig } from '../modules/vpnPortal'
+import { isValidHostIp } from '../modules/ip'
 import type { VpnPortalClientConfig } from '../types/network'
 
 const props = defineProps<{
@@ -240,9 +241,20 @@ function addPortForward() {
 }
 
 function savePortForward() {
+  if (portForwardEditorInvalid.value) return;
   curNetwork.value.port_forwards[editingPortForwardIndex.value] = editingPortForwardData.value;
   editingPortForward.value = false;
 }
+
+/** An empty address is a row not filled in yet; a typed one must parse. */
+function portForwardIpInvalid(ip: string | null | undefined): boolean {
+  return !!ip && !isValidHostIp(ip);
+}
+
+const portForwardEditorInvalid = computed(() => {
+  const data = editingPortForwardData.value;
+  return !data || !isValidHostIp(data.bind_ip) || !isValidHostIp(data.dst_ip);
+});
 
 const portForwardContainer = ref<HTMLElement | null>(null);
 const isCompact = ref(false);
@@ -681,7 +693,8 @@ function removeVpnPortalClient(index: number) {
                         :options="portForwardProtocolOptions" :allow-empty="false" />
                       <div style="flex-grow: 4;">
                         <InputGroup>
-                          <InputText v-model="row.bind_ip" :placeholder="t('port_forwards_bind_addr')" />
+                          <InputText v-model="row.bind_ip" :placeholder="t('port_forwards_bind_addr')"
+                            :class="{ 'p-invalid': portForwardIpInvalid(row.bind_ip) }" />
                           <InputGroupAddon>
                             <span style="font-weight: bold">:</span>
                           </InputGroupAddon>
@@ -691,7 +704,8 @@ function removeVpnPortalClient(index: number) {
                       </div>
                       <div style="flex-grow: 4;">
                         <InputGroup>
-                          <InputText v-model="row.dst_ip" :placeholder="t('port_forwards_dst_addr')" />
+                          <InputText v-model="row.dst_ip" :placeholder="t('port_forwards_dst_addr')"
+                            :class="{ 'p-invalid': portForwardIpInvalid(row.dst_ip) }" />
                           <InputGroupAddon>
                             <span style="font-weight: bold">:</span>
                           </InputGroupAddon>
@@ -728,7 +742,8 @@ function removeVpnPortalClient(index: number) {
                         :options="portForwardProtocolOptions" :allow-empty="false" />
                       <InputGroup>
                         <InputText v-model="editingPortForwardData.bind_ip"
-                          :placeholder="t('port_forwards_bind_addr')" />
+                          :placeholder="t('port_forwards_bind_addr')"
+                          :class="{ 'p-invalid': portForwardIpInvalid(editingPortForwardData.bind_ip) }" />
                         <InputGroupAddon>
                           <span style="font-weight: bold">:</span>
                         </InputGroupAddon>
@@ -736,18 +751,21 @@ function removeVpnPortalClient(index: number) {
                           :min="1" :max="65535" class="max-w-20" />
                       </InputGroup>
                       <InputGroup>
-                        <InputText v-model="editingPortForwardData.dst_ip" :placeholder="t('port_forwards_dst_addr')" />
+                        <InputText v-model="editingPortForwardData.dst_ip" :placeholder="t('port_forwards_dst_addr')"
+                          :class="{ 'p-invalid': portForwardIpInvalid(editingPortForwardData.dst_ip) }" />
                         <InputGroupAddon>
                           <span style="font-weight: bold">:</span>
                         </InputGroupAddon>
                         <InputNumber v-model="editingPortForwardData.dst_port" :format="false" :step="1" mode="decimal"
                           :min="1" :max="65535" class="max-w-20" />
                       </InputGroup>
+                      <small v-if="portForwardEditorInvalid" class="p-error">{{ t('port_forwards_invalid_ip') }}</small>
                     </div>
                     <template #footer>
                       <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="editingPortForward = false"
                         text />
-                      <Button :label="t('web.common.save')" icon="pi pi-save" @click="savePortForward" />
+                      <Button :label="t('web.common.save')" icon="pi pi-save" :disabled="portForwardEditorInvalid"
+                        @click="savePortForward" />
                     </template>
                   </Dialog>
                 </div>

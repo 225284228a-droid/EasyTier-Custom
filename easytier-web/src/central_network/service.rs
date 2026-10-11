@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -205,7 +205,12 @@ pub struct NetworkCredentialInfo {
 pub struct CentralNetworkService {
     pub(crate) db: Db,
     client_manager: Arc<ClientManager>,
-    mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    /// One mutation lock per user id. Central data (networks, devices,
+    /// members) is user-scoped, so serializing mutations per account keeps
+    /// every invariant a global lock did — while a slow device interaction
+    /// in one account, such as waiting up to 30s for a deleted device to
+    /// stop its managed instances, no longer blocks other accounts.
+    mutation_locks: Arc<Mutex<HashMap<UserIdInDb, Arc<tokio::sync::Mutex<()>>>>>,
     network_instances: Option<Arc<crate::central_network::gateway::NetworkInstanceManager>>,
     reconciler_started: Arc<AtomicBool>,
 }
@@ -223,14 +228,26 @@ impl CentralNetworkService {
         Self {
             db,
             client_manager,
-            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mutation_locks: Arc::default(),
             network_instances,
             reconciler_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub(crate) async fn lock_mutations(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutation_lock.lock().await
+    fn user_mutation_lock(&self, user_id: UserIdInDb) -> Arc<tokio::sync::Mutex<()>> {
+        self.mutation_locks
+            .lock()
+            .expect("mutation lock registry must not be poisoned")
+            .entry(user_id)
+            .or_default()
+            .clone()
+    }
+
+    pub(crate) async fn lock_mutations(
+        &self,
+        user_id: UserIdInDb,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.user_mutation_lock(user_id).lock_owned().await
     }
 
     pub fn network_instances(
@@ -260,7 +277,6 @@ impl CentralNetworkService {
     }
 
     async fn reconcile_all(&self) -> Result<(), CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
         let users = sqlx::query_scalar::<_, i32>(
             r#"
             SELECT user_id FROM networks
@@ -285,6 +301,7 @@ impl CentralNetworkService {
             );
         }
         for user_id in users {
+            let _mutation = self.lock_mutations(user_id).await;
             self.publish_user(user_id).await;
         }
         Ok(())
@@ -388,7 +405,7 @@ impl CentralNetworkService {
         mut settings: NetworkSettings,
         network_secret: Option<String>,
     ) -> Result<NetworkDetail, CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         settings.normalize_virtual_cidr();
         let network_name = settings
             .network_name
@@ -441,7 +458,7 @@ impl CentralNetworkService {
         network_id: Uuid,
         mut request: UpdateNetworkReq,
     ) -> Result<NetworkDetail, CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         request.settings.normalize_virtual_cidr();
         let mut intent = self.load(user_id, network_id).await?;
         let mode = mode_from_settings(&request.settings, self.gateway_config())?;
@@ -469,7 +486,7 @@ impl CentralNetworkService {
         user_id: UserIdInDb,
         network_id: Uuid,
     ) -> Result<(), CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         self.load(user_id, network_id).await?;
         self.db
             .delete_central_network_intent(user_id, network_id)
@@ -484,7 +501,7 @@ impl CentralNetworkService {
         machine_id: Uuid,
         block: bool,
     ) -> Result<bool, CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         if !self
             .client_manager
             .supports_local_configs(&(user_id, machine_id))
@@ -580,7 +597,7 @@ impl CentralNetworkService {
         network_id: Uuid,
         request: AddMembersReq,
     ) -> Result<(), CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         if request.device_ids.is_empty() {
             return Err(CentralNetworkServiceError::Invalid(
@@ -662,7 +679,7 @@ impl CentralNetworkService {
         network_id: Uuid,
         device_id: Uuid,
     ) -> Result<(), CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         if !intent.remove_device(device_id) {
             return Err(CentralNetworkServiceError::NotFound(device_id.to_string()));
@@ -678,7 +695,7 @@ impl CentralNetworkService {
         device_id: Uuid,
         request: UpdateMemberReq,
     ) -> Result<MemberInfo, CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         let position = member_position(&intent, device_id)?;
         let member = &mut intent.members[position];
@@ -719,7 +736,7 @@ impl CentralNetworkService {
         device_id: Uuid,
         config: NetworkConfig,
     ) -> Result<MemberInfo, CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         let position = member_position(&intent, device_id)?;
         intent.members[position].config_override = Some(config);
@@ -734,7 +751,7 @@ impl CentralNetworkService {
         network_id: Uuid,
         device_id: Uuid,
     ) -> Result<(), CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         let position = member_position(&intent, device_id)?;
         intent.members[position].config_override = None;
@@ -749,7 +766,7 @@ impl CentralNetworkService {
         network_id: Uuid,
         policy: AclPolicy,
     ) -> Result<AclPolicy, CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         for member in &mut intent.members {
             if member.credential_id.is_none() && member.acl_group_secret.is_none() {
@@ -779,7 +796,7 @@ impl CentralNetworkService {
         network_id: Uuid,
         request: GenerateCredentialReq,
     ) -> Result<NetworkCredentialInfo, CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         if !intent.secure_mode {
             return Err(CentralNetworkServiceError::Invalid(
@@ -826,7 +843,7 @@ impl CentralNetworkService {
         network_id: Uuid,
         credential_id: &str,
     ) -> Result<(), CentralNetworkServiceError> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutations(user_id).await;
         let mut intent = self.load(user_id, network_id).await?;
         if intent
             .members
@@ -2566,7 +2583,7 @@ mod tests {
             .await
             .unwrap();
 
-        let guards = service.mutation_lock.lock().await;
+        let guards = service.lock_mutations(user_id).await;
         let waiting_service = service.clone();
         let update = tokio::spawn(async move {
             waiting_service
@@ -2596,6 +2613,60 @@ mod tests {
                 .as_deref(),
             Some("after-lock")
         );
+    }
+
+    #[tokio::test]
+    async fn one_users_mutation_lock_does_not_block_another_user() {
+        let (service, user_a, user_b) = service().await;
+        let device_b = Uuid::new_v4();
+        register_device(&service, user_b, device_b).await;
+        let network_b = service
+            .create_network(user_b, standalone_settings(), None)
+            .await
+            .unwrap();
+        let network_b_id = Uuid::parse_str(&network_b.network_id).unwrap();
+        service
+            .add_members(
+                user_b,
+                network_b_id,
+                AddMembersReq {
+                    device_ids: vec![device_b.to_string()],
+                    temporary: false,
+                    ttl_seconds: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Mutations are per user: a lock user A holds (e.g. while deleting a
+        // device of theirs) must not serialize user B's changes behind it.
+        let guard_a = service.lock_mutations(user_a).await;
+        let waiting_service = service.clone();
+        let update_b = tokio::spawn(async move {
+            waiting_service
+                .update_member(
+                    user_b,
+                    network_b_id,
+                    device_b,
+                    UpdateMemberReq {
+                        hostname_override: Some("unblocked".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), update_b)
+            .await
+            .expect("user B's mutation must not wait for user A's lock")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            service.load(user_b, network_b_id).await.unwrap().members[0]
+                .hostname
+                .as_deref(),
+            Some("unblocked")
+        );
+        drop(guard_a);
     }
 
     #[tokio::test]
