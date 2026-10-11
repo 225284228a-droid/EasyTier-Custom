@@ -170,6 +170,7 @@ route_cost: Route Cost
 tunnel_proto: Protocol
 sni: SNI Camouflage Hostname
 sni_placeholder: "Example: www.cloudflare.com"
+device: Device
 hostname: Hostname
 latency: Latency
 upload_bytes: Upload

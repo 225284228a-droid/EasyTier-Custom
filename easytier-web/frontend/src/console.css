@@ -150,9 +150,9 @@
 .node-drawer-empty .pi { flex: none; color: var(--p-primary-color); font-size: 15px; }
 .node-drawer-empty strong { color: var(--p-text-color); font-weight: 600; }
 .node-drawer-mobile-peers { display: none; }
-.node-drawer-mobile-peer { padding: 12px 16px; }
+.node-drawer-mobile-peer { padding: 12px 16px; font-size: 13px; }
 .node-drawer-mobile-peer + .node-drawer-mobile-peer { border-top: 1px solid var(--node-border); }
-.node-drawer-mobile-peer-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.node-drawer-mobile-peer-heading { display: flex; flex-direction: column; gap: 4px; }
 .node-drawer-mobile-peer-heading strong { font-size: 13px; font-weight: 600; }
 .node-drawer-mobile-peer-path { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; color: var(--node-muted); font-size: 12px; }
 .node-drawer-mobile-peer-path span + span::before { content: '·'; margin-right: 12px; }

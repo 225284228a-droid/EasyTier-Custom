@@ -1451,12 +1451,12 @@ const switchTab = async (tab: string) => {
                             <template v-else>
                             <DataTable :value="nodePeerRows" dataKey="key" size="small" class="console-table node-drawer-desktop-peers" scrollable
                                 :paginator="nodePeerRows.length > 15" :rows="15" tableStyle="min-width: 40rem">
-                            <Column field="hostname" :header="t('web.device.hostname')">
-                                <template #body="{ data }">{{ data.hostname || `#${data.peer_id}` }}</template>
-                            </Column>
-                            <Column field="ipv4" :header="t('virtual_ipv4')">
+                            <Column :header="t('device')">
                                 <template #body="{ data }">
-                                    <span class="font-mono">{{ data.ipv4 || '—' }}</span>
+                                    <div class="flex flex-col gap-1">
+                                        <div class="whitespace-nowrap">{{ data.ipv4 || '—' }}</div>
+                                        <div>{{ data.hostname || `#${data.peer_id}` }}</div>
+                                    </div>
                                 </template>
                             </Column>
                             <Column :header="t('web.network_detail.route_cost')"><template #body="{ data }">
@@ -1469,27 +1469,27 @@ const switchTab = async (tab: string) => {
                                 {{ latencyLabel(data.latencyMs) }}
                             </template></Column>
                             <Column :header="t('total_traffic')"><template #body="{ data }">
-                                <div class="font-mono text-xs">{{ t('upload') }}: {{ data.traffic.upload }}</div>
-                                <div class="font-mono text-xs">{{ t('download') }}: {{ data.traffic.download }}</div>
+                                <div class="whitespace-nowrap">{{ t('upload') }}: {{ data.traffic.upload }}</div>
+                                <div class="whitespace-nowrap">{{ t('download') }}: {{ data.traffic.download }}</div>
                             </template></Column>
                             <Column :header="t('estimated_bandwidth')"><template #body="{ data }">
-                                <div class="font-mono text-xs">{{ t('upload') }}: {{ data.bandwidth.upload }}</div>
-                                <div class="font-mono text-xs">{{ t('download') }}: {{ data.bandwidth.download }}</div>
+                                <div class="whitespace-nowrap">{{ t('upload') }}: {{ data.bandwidth.upload }}</div>
+                                <div class="whitespace-nowrap">{{ t('download') }}: {{ data.bandwidth.download }}</div>
                             </template></Column>
                             </DataTable>
                             <div class="node-drawer-mobile-peers">
                                 <div v-for="peer in nodePeerRows" :key="peer.key" class="node-drawer-mobile-peer">
                                     <div class="node-drawer-mobile-peer-heading">
+                                        <span>{{ peer.ipv4 || '—' }}</span>
                                         <strong>{{ peer.hostname || `#${peer.peer_id}` }}</strong>
-                                        <span class="mono-value">{{ peer.ipv4 || '—' }}</span>
                                     </div>
                                     <div class="node-drawer-mobile-peer-path">
                                         <span>{{ routeCostLabel(peer.cost) }}</span>
                                         <span>{{ peer.protocols.join(' / ') || '—' }}</span>
                                         <span>{{ latencyLabel(peer.latencyMs) }}</span>
                                     </div>
-                                    <div class="font-mono text-xs mt-2">{{ t('total_traffic') }}: {{ t('upload') }} {{ peer.traffic.upload }} / {{ t('download') }} {{ peer.traffic.download }}</div>
-                                    <div class="font-mono text-xs">{{ t('estimated_bandwidth') }}: {{ t('upload') }} {{ peer.bandwidth.upload }} / {{ t('download') }} {{ peer.bandwidth.download }}</div>
+                                    <div class="mt-2">{{ t('total_traffic') }}: {{ t('upload') }} {{ peer.traffic.upload }} / {{ t('download') }} {{ peer.traffic.download }}</div>
+                                    <div>{{ t('estimated_bandwidth') }}: {{ t('upload') }} {{ peer.bandwidth.upload }} / {{ t('download') }} {{ peer.bandwidth.download }}</div>
                                 </div>
                             </div>
                             </template>
@@ -1498,9 +1498,11 @@ const switchTab = async (tab: string) => {
                             <summary><span>{{ t('web.network_detail.node_routes') }}</span><span class="node-drawer-disclosure-count">{{ nodeRoutes?.length }}</span><i class="pi pi-chevron-down" aria-hidden="true"></i></summary>
                         <DataTable :value="nodeRoutes ?? []" size="small" class="console-table" scrollable
                             :paginator="(nodeRoutes?.length ?? 0) > 15" :rows="15" tableStyle="min-width: 40rem">
-                            <Column field="hostname" :header="t('web.device.hostname')" />
-                            <Column :header="t('virtual_ipv4')"><template #body="{ data }">
-                                <span class="font-mono">{{ ipv4ToString(data.ipv4_addr) }}/{{ data.ipv4_addr?.network_length ?? 24 }}</span>
+                            <Column :header="t('device')"><template #body="{ data }">
+                                <div class="flex flex-col gap-1">
+                                    <div class="whitespace-nowrap">{{ ipv4ToString(data.ipv4_addr) }}/{{ data.ipv4_addr?.network_length ?? 24 }}</div>
+                                    <div>{{ data.hostname || `#${data.peer_id}` }}</div>
+                                </div>
                             </template></Column>
                             <Column :header="t('web.network_detail.route_cost')"><template #body="{ data }">
                                 {{ routeCostLabel(data.cost) }}
@@ -1534,12 +1536,12 @@ const switchTab = async (tab: string) => {
                                 {{ ((data.conn.loss_rate ?? 0) * 100).toFixed(1) + '%' }}
                             </template></Column>
                             <Column :header="t('web.network_detail.traffic')"><template #body="{ data }">
-                                <div class="font-mono text-xs">{{ t('upload') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.tx_bytes) }}</div>
-                                <div class="font-mono text-xs">{{ t('download') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.rx_bytes) }}</div>
+                                <div class="whitespace-nowrap">{{ t('upload') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.tx_bytes) }}</div>
+                                <div class="whitespace-nowrap">{{ t('download') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.rx_bytes) }}</div>
                             </template></Column>
                             <Column :header="t('estimated_bandwidth')"><template #body="{ data }">
-                                <div class="font-mono text-xs">{{ t('upload') }}: {{ connectionBandwidth(data.conn).upload }}</div>
-                                <div class="font-mono text-xs">{{ t('download') }}: {{ connectionBandwidth(data.conn).download }}</div>
+                                <div class="whitespace-nowrap">{{ t('upload') }}: {{ connectionBandwidth(data.conn).upload }}</div>
+                                <div class="whitespace-nowrap">{{ t('download') }}: {{ connectionBandwidth(data.conn).download }}</div>
                             </template></Column>
                         </DataTable>
                         </details>

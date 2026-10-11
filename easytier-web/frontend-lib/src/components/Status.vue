@@ -422,21 +422,21 @@ function showEventLogs() {
         </template>
         <template #content>
           <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
-            <Column :field="ipFormat" :header="t('virtual_ipv4')" />
-            <Column :header="t('hostname')">
+            <Column :header="t('device')">
               <template #body="slotProps">
-                <div v-if="!slotProps.data.route.cost || !isPublicServerRoute(slotProps.data)"
-                  v-tooltip="slotProps.data.route.hostname">
-                  {{
-                    slotProps.data.route.hostname }}
-                </div>
-                <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
-                  <Tag v-if="isPublicServerRoute(slotProps.data)" severity="info" value="Info">
-                    {{ t('status.server') }}
-                  </Tag>
-                  <Tag v-if="shouldAvoidRelayData(slotProps.data)" severity="warn" value="Warn">
-                    {{ t('status.relay') }}
-                  </Tag>
+                <div class="flex flex-col gap-1">
+                  <div class="whitespace-nowrap">{{ ipFormat(slotProps.data) || '—' }}</div>
+                  <div v-tooltip="slotProps.data.route.hostname">
+                    <span>{{ slotProps.data.route.hostname || '—' }}</span>
+                    <span v-if="slotProps.data.route.cost && isPublicServerRoute(slotProps.data)" class="ml-1 space-x-1">
+                      <Tag severity="info" value="Info">
+                        {{ t('status.server') }}
+                      </Tag>
+                      <Tag v-if="shouldAvoidRelayData(slotProps.data)" severity="warn" value="Warn">
+                        {{ t('status.relay') }}
+                      </Tag>
+                    </span>
+                  </div>
                 </div>
               </template>
             </Column>
@@ -445,7 +445,7 @@ function showEventLogs() {
             <Column :field="latencyMs" :header="t('latency')" />
             <Column :header="t('total_traffic')">
               <template #body="slotProps">
-                <div class="whitespace-nowrap text-xs leading-5">
+                <div class="whitespace-nowrap">
                   <div>{{ t('upload') }}: {{ txBytes(slotProps.data) }}</div>
                   <div>{{ t('download') }}: {{ rxBytes(slotProps.data) }}</div>
                 </div>
@@ -453,7 +453,7 @@ function showEventLogs() {
             </Column>
             <Column :header="t('estimated_bandwidth')">
               <template #body="slotProps">
-                <div class="whitespace-nowrap text-xs leading-5">
+                <div class="whitespace-nowrap">
                   <div>{{ t('upload') }}: {{ estimatedBandwidth(slotProps.data).upload }}</div>
                   <div>{{ t('download') }}: {{ estimatedBandwidth(slotProps.data).download }}</div>
                 </div>

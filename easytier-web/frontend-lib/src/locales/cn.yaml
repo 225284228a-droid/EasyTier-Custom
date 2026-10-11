@@ -167,6 +167,7 @@ vpn_portal_state_error: 错误
 show_event_log: 显示事件日志
 event_log: 事件日志
 peer_info: 节点信息
+device: 设备
 hostname: 主机名
 route_cost: 路由
 tunnel_proto: 协议
