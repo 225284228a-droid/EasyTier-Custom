@@ -6,7 +6,7 @@
 
 - 上游仓库：https://github.com/EasyTier/EasyTier
 - 本项目仓库：https://github.com/225284228a-droid/EasyTier-Custom
-- 最近已合入的上游基线：`4837468d43b6fe48865b2ce926312b66afd10bef`（固定合入基线）。
+- 最近已合入的上游基线：`7592951b808c4839cb9d77cc4bc642f124915951`（2026-10-11 合入）。
 - 开源协议与该上游版本一致：GNU Lesser General Public License v3.0（LGPL-3.0），见根目录 [LICENSE](../LICENSE)。保留上游历史、作者归属及第三方组件各自的许可证；本项目修改按同一项目许可证发布。
 - 本文对比上述固定基线，不把“尚未合入上游后续提交”当作本项目主动删除的功能。
 
@@ -15,6 +15,7 @@
 ### 1. 本地 TOML 与去中心化配置管理
 
 - CLI 默认使用 `config.d` 配置目录，保存网络配置，启动时加载配置并恢复启用状态。
+- 保留官方每实例运行时，`--state-dir` / `ET_STATE_DIR` 控制机器身份的状态目录；默认配置目录、停用状态及多服务器管理继续采用上述定制行为。
 - 引入共享的 `InstanceStateStore`，持久化实例启用/停用状态，供 RPC 管理与配置服务器客户端共用。
 - 桌面 GUI 普通模式与服务模式共用服务配置目录（默认 `config.d`）和持久化状态；切换模式时停用网络保持停用，旧普通模式目录不再参与运行。
 - 离开服务模式时卸载 GUI 安装的系统服务；切入本地模式时，Windows GUI 会按配置目录或 RPC 端口识别并移除冲突的 EasyTier 服务。所有桌面平台都会在 RPC 端口未释放时阻止新服务启动并报错。
@@ -112,6 +113,10 @@
 
 这些策略受本机构建能力和对端能力影响。与原版混用时不要假定扩展功能全部可用；强制仅使用 WSS/HTTP3 可能减少可连接路径。启用互相冲突的策略可能使连接无法建立。
 
+配置标志使用官方 schema 生成的 `Flags` / `FlagsPatch`、CLI 和管理表单。未设置、显式 `false` 和 `0` 独立保存；`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。保留定制 protobuf 字段编号、既有 CLI 参数和 `ET_*` 环境变量，省略参数时仍优先 UDP 并开启冗余连接清理。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
+
+已合入官方 UDP 绑定的虚拟端口所有权和分片缓存：未先发送的绑定 socket 可接收数据；关闭后重绑不会接收旧绑定的残留分片。`PeerPacketFilterResult::PassBatch` 中的包按原顺序从产生批次的下一个过滤器继续处理。本地实际监听端口的防回环检查与上述虚拟端口所有权共同生效。
+
 ## 构建与验证
 
 沿用仓库的 Rust 工具链和构建方式（`rust-toolchain.toml` 当前指定 Rust 1.95），原有可执行文件名称仍为 EasyTier 系列。构建示例：
@@ -121,6 +126,23 @@ git clone https://github.com/225284228a-droid/EasyTier-Custom.git
 cd EasyTier-Custom
 cargo build --release --locked -p easytier
 ```
+
+### 官方主线合入验证（2026-10-11）
+
+本轮使用 merge commit 合入官方 `7592951b808c4839cb9d77cc4bc642f124915951`，保留原有定制提交历史。日志保存在本地 `.test-env/upstream-merge-2026-10-11/`；以下仅列本轮实际执行的检查。
+
+- `cargo fmt --all -- --check`、`cargo metadata --locked --offline` 通过；锁文件按最终依赖解析。
+- Core 启用 `proxy-smoltcp-stack,browser-config` 后完整库测试 1158 项通过。覆盖 UDP 绑定、端口所有权、分片缓存及乱序、关闭重绑、过滤器批次顺序、连接选择/清理、配置显式值和目录语义比较；最初运行中的两项调度超时和默认值比较失败均在最终完整运行中通过。
+- CLI 配置及参数测试 17 项通过，包含默认 `config.d`、`--state-dir`、schema 参数、定制开关与环境变量、显式值及目录启动隔离。
+- 原生 `instance::` 定向回归 70 项通过，覆盖每实例执行器、四组 TCP/WSS 经中继发现自动 HTTP3、四组手动初始连接保留及双向数据、配置持久化事务与运行配置同步。HTTP3 7 项、WebSocket 20 项通过。首次原生运行还出现 5 项 Windows DNS/TUN 环境失败；最终 `instance::` 运行排除 DNS 模块和 `tun_test`，没有重跑修改主机 DNS 或依赖 TUN 驱动的测试，不能将其记为通过。
+- 原生 CLI 日志与 schema 环境变量集成测试 4 项、named WireGuard 密钥回归 1 项通过。Web 后端完整运行 329 项通过、1 项既有容量压力测试默认忽略，包含持久化快照、多服务器 CAS/同步、停用状态、运行时能力过滤及 OIDC/依赖迁移相关回归。
+- GUI 后端 27 项通过，覆盖普通/服务模式配置目录、停用状态、服务参数、RPC 占用判断及 Windows 服务冲突识别；本次两个 Windows Clippy 修复仅调整等价写法。
+- protobuf 库单元测试 36 项通过、2 项默认忽略，覆盖 Flags schema 默认值/字段编号、显式值与 unset、API 序列化和当前握手线格式。
+- 使用此前独立构建的官方 `4837468d` CLI，重新执行 WS/WSS 真实进程互通 6 项，全部通过：双向 peer、Noise、管理反向 RPC 与未协商 padding 拒绝。该项验证旧官方节点兼容性，未将旧二进制标记为本轮官方 `7592951b` 产物；本轮 HTTP3 实例和传输测试使用合入后的源码。
+- `script/build-wasi-core.sh` 的 `wasm32-wasip1` release 构建及 Binaryen 131 优化通过，启用 `management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload`。Windows 本机使用已有 Zig 编译器提供 WASI C 后端；Go 生成器的可重现构建环境与 schema 输入摘要单元测试通过。嵌入产物在源码合并提交后重新生成并独立记录来源。
+- 共享/Web/GUI 前端单元测试共 342 项、配置转换检查 10 项、完整浏览器回归 42 项通过；Web 与 GUI 类型检查和生产构建通过。浏览器仍使用项目既有 `CHROMIUM_ANGLE_BACKEND=d3d11` 验证路径，没有降低地图精度或断言。
+- Windows 生产代码 Clippy 通过：`cargo clippy --locked -p easytier-core -p easytier -p easytier-web -p easytier-gui --lib --bins -- -D warnings`。本机缺少完整 Perl/OpenSSL 构建环境，且 OHOS crate 不适用于 Windows，不能据此声称整个 workspace 的 `--features full --all-targets` 通过；完整特性检查由 Linux CI 执行。
+- 修复 Web API 测试中缺少 `runtime_capabilities` 的初始化，保留运行时能力声明。此前 Linux CI 的双管理员 credential 测试在已完成故障转移后的稳定性检查阶段触及整段 60 秒预算；仅对该单项设置 Nextest 180 秒预算，保留默认 60 秒以及内部所有阶段期限、唯一性和数据断言。
 
 ### 四项回归修复验证（2026-10-08）
 
@@ -160,8 +182,8 @@ cargo build --release --locked -p easytier
 Git 历史保留了上游提交与本项目提交。克隆后可查看完整差异与变更记录：
 
 ```sh
-git diff 0a783c8e04561d1fee4e3e922e9576402d5bfea3 HEAD
-git log --oneline 0a783c8e04561d1fee4e3e922e9576402d5bfea3..HEAD
+git diff 7592951b808c4839cb9d77cc4bc642f124915951 HEAD
+git log --oneline 7592951b808c4839cb9d77cc4bc642f124915951..HEAD
 ```
 
 原版 README 的安装脚本、官方 Web 服务、发布下载、徽章和赞助链接仍指向上游。使用本项目功能请构建本仓库，问题请提交到本项目 Issues。

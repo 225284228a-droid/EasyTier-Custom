@@ -2837,6 +2837,7 @@ pub fn run_gui() -> std::process::ExitCode {
     }
 
     setup_panic_handler();
+    easytier::utils::init_crypto_provider();
 
     let mut builder = tauri::Builder::default();
 

@@ -4,6 +4,7 @@ import { NetworkConfig as NetworkConfigPb } from '../src/generated/proto/api_man
 import {
   normalizeNetworkConfig,
   toBackendNetworkConfig,
+  type NetworkConfig,
 } from '../src/types/network'
 
 // The member config form round-trips a NetworkConfig through fromJson twice:
@@ -11,6 +12,23 @@ import {
 // for saving. int64 fields (managed credential expiry) become protobuf-ts
 // bigints after the first pass; the second pass must still work.
 describe('network config int64 round trip', () => {
+  it.each([0, '0', 0n])('preserves an explicit uint64 zero: %s', (limit) => {
+    const config = { instance_recv_bps_limit: limit } as unknown as NetworkConfig
+    const form = normalizeNetworkConfig(config)
+    expect(form.instance_recv_bps_limit).toBe(0)
+    const saved = toBackendNetworkConfig(form)
+    expect(saved.instance_recv_bps_limit).toBe('0')
+    expect(normalizeNetworkConfig(saved).instance_recv_bps_limit).toBe(0)
+  })
+
+  it.each([undefined, null, '', '   '])('keeps an unset uint64 absent from backend JSON: %s', (limit) => {
+    const config = { instance_recv_bps_limit: limit } as unknown as NetworkConfig
+    const form = normalizeNetworkConfig(config)
+    expect(form.instance_recv_bps_limit).toBeNull()
+    expect(toBackendNetworkConfig(config)).not.toHaveProperty('instance_recv_bps_limit')
+    expect(toBackendNetworkConfig(form)).not.toHaveProperty('instance_recv_bps_limit')
+  })
+
   it('converts bigint form state back to backend JSON', () => {
     const backend: any = {
       network_name: 'test-mesh',

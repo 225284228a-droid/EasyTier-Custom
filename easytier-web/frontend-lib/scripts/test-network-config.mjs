@@ -572,15 +572,17 @@ function assertNumberBoundaries() {
   })
   assert.equal(emptyLimit.instance_recv_bps_limit, null)
 
-  const zeroLimit = normalizeNetworkConfig({
-    ...DEFAULT_NETWORK_CONFIG(),
-    instance_recv_bps_limit: '0',
-  })
-  assert.equal(zeroLimit.instance_recv_bps_limit, null)
-  assert.equal(toBackendNetworkConfig({
-    ...DEFAULT_NETWORK_CONFIG(),
-    instance_recv_bps_limit: 0,
-  }).instance_recv_bps_limit, undefined)
+  for (const limit of [0, '0', 0n]) {
+    const zeroLimit = normalizeNetworkConfig({
+      ...DEFAULT_NETWORK_CONFIG(),
+      instance_recv_bps_limit: limit,
+    })
+    assert.equal(zeroLimit.instance_recv_bps_limit, 0)
+    const saved = toBackendNetworkConfig(zeroLimit)
+    assert.equal(saved.instance_recv_bps_limit, '0')
+    assert.equal(normalizeNetworkConfig(saved).instance_recv_bps_limit, 0)
+  }
+  assert.equal(toBackendNetworkConfig(emptyLimit).instance_recv_bps_limit, undefined)
 
   const oversizedLimit = normalizeNetworkConfig({
     ...DEFAULT_NETWORK_CONFIG(),

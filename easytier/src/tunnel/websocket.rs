@@ -1,7 +1,5 @@
 use super::FromUrl;
-use super::insecure_tls::{
-    get_insecure_tls_cert, get_insecure_tls_client_config, init_crypto_provider,
-};
+use super::insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config};
 use crate::tunnel::common::bind;
 use crate::{proto::common::TunnelInfo, socket::tcp::RuntimeTcpSocket};
 use anyhow::Context as _;
@@ -434,12 +432,16 @@ where
     let bandwidth_source = stream.bandwidth_source();
     let mut remote_url = socket_url(local_url.scheme(), peer_addr);
     let stream = if is_wss(&local_url)? {
-        init_crypto_provider();
         let (certificates, private_key) = get_insecure_tls_cert();
-        let config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certificates, private_key)
-            .with_context(|| "Failed to create server config")?;
+        // Do not rely on another tunnel initializing the global provider.
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .with_context(|| "Failed to select TLS protocol versions")?
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .with_context(|| "Failed to create server config")?;
         Either::Left(TlsAcceptor::from(Arc::new(config)).accept(stream).await?)
     } else {
         Either::Right(stream)
@@ -669,7 +671,6 @@ where
     }
 
     let stream: MaybeTlsStream<S> = if is_wss {
-        init_crypto_provider();
         let tls = tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
         let sni = disguise.sni(&remote_url);
         let server_name = rustls::pki_types::ServerName::try_from(sni)
@@ -744,12 +745,15 @@ pub mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let stream = if tls {
-                init_crypto_provider();
                 let (certificates, private_key) = get_insecure_tls_cert();
-                let config = rustls::ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(certificates, private_key)
-                    .unwrap();
+                let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(certificates, private_key)
+                .unwrap();
                 Either::Left(
                     TlsAcceptor::from(Arc::new(config))
                         .accept(stream)

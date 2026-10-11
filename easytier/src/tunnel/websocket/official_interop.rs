@@ -41,7 +41,7 @@ use crate::{
     },
 };
 
-use super::{WsTunnelListener, get_insecure_tls_client_config, init_crypto_provider};
+use super::{WsTunnelListener, get_insecure_tls_client_config};
 
 const DEADLINE: Duration = Duration::from_secs(30);
 
@@ -475,7 +475,6 @@ async fn official_listener_rejects_unsolicited_text_padding() {
             .await
             .unwrap();
         let stream = if scheme == "wss" {
-            init_crypto_provider();
             let tls = tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
             let server_name =
                 rustls::pki_types::ServerName::try_from("localhost".to_owned()).unwrap();

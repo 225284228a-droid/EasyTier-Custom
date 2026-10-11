@@ -40,7 +40,7 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 
-use super::insecure_tls::{SkipServerVerification, get_insecure_tls_cert, init_crypto_provider};
+use super::insecure_tls::{SkipServerVerification, get_insecure_tls_cert};
 pub(crate) use super::quic::QuicUdpSessionSocket as Http3UdpSessionSocket;
 
 const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -50,16 +50,13 @@ pub fn transport_config() -> Arc<TransportConfig> {
 }
 
 fn build_rustls_client_config() -> anyhow::Result<rustls::ClientConfig> {
-    init_crypto_provider();
-    let provider = rustls::crypto::CryptoProvider::get_default().unwrap();
-    let mut config = rustls::ClientConfig::builder_with_provider(
-        rustls::crypto::ring::default_provider().into(),
-    )
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .map_err(|error| anyhow::anyhow!("http3 TLS 1.3 setup failed: {error}"))?
-    .dangerous()
-    .with_custom_certificate_verifier(SkipServerVerification::new(provider.clone()))
-    .with_no_client_auth();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| anyhow::anyhow!("http3 TLS 1.3 setup failed: {error}"))?
+        .dangerous()
+        .with_custom_certificate_verifier(SkipServerVerification::new(provider))
+        .with_no_client_auth();
     // Mimic a browser's HTTP/3 ALPN.
     config.alpn_protocols = vec![b"h3".to_vec()];
     config.enable_early_data = false;
@@ -67,7 +64,6 @@ fn build_rustls_client_config() -> anyhow::Result<rustls::ClientConfig> {
 }
 
 fn build_rustls_server_config() -> anyhow::Result<rustls::ServerConfig> {
-    init_crypto_provider();
     let (certificates, private_key) = get_insecure_tls_cert();
     let mut config = rustls::ServerConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),

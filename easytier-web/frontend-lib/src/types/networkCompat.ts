@@ -74,7 +74,7 @@ function normalizeLegacyOptionalUint64(obj: JsonRecord, key: string): void {
   if (typeof value !== 'string') return
 
   const trimmed = value.trim()
-  if (!isPositiveUint64String(trimmed)) {
+  if (!isUint64String(trimmed)) {
     delete obj[key]
     return
   }
@@ -82,9 +82,9 @@ function normalizeLegacyOptionalUint64(obj: JsonRecord, key: string): void {
   obj[key] = trimmed
 }
 
-function isPositiveUint64String(value: string): boolean {
+function isUint64String(value: string): boolean {
   if (!/^\d+$/.test(value)) return false
 
   const n = BigInt(value)
-  return n > 0n && n <= UINT64_MAX
+  return n >= 0n && n <= UINT64_MAX
 }

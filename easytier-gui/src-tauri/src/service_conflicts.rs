@@ -132,10 +132,10 @@ mod windows {
             if arg.eq_ignore_ascii_case(option) {
                 return args.get(index + 1).map(String::as_str);
             }
-            if let Some((key, value)) = arg.split_once('=') {
-                if key.eq_ignore_ascii_case(option) {
-                    return Some(value);
-                }
+            if let Some((key, value)) = arg.split_once('=')
+                && key.eq_ignore_ascii_case(option)
+            {
+                return Some(value);
             }
         }
         None

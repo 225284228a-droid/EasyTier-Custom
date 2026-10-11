@@ -2,6 +2,10 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick, reactive } from 'vue'
 import Config from '../src/components/Config.vue'
+import { ScalarType } from '@protobuf-ts/runtime'
+import type { FlagMeta } from '../src/generated/proto/annotations'
+import { NetworkConfig as NetworkConfigPb } from '../src/generated/proto/api_manage'
+import { Flags as FlagsPb } from '../src/generated/proto/common'
 import {
   DEFAULT_NETWORK_CONFIG,
   normalizeNetworkConfig,
@@ -9,33 +13,29 @@ import {
   type NetworkConfig,
 } from '../src/types/network'
 
+/** The flags the management API carries, so a form's value reaches the backend. */
+function apiCarries(field: string): boolean {
+  return NetworkConfigPb.fields.some((declared) => declared.name === field)
+}
+
+/**
+ * The checkboxes the form is expected to offer, read off the schema the way a
+ * config form reads it: every boolean flag it declares that the management API
+ * carries, less the deprecated ones and the flags with a dedicated selector,
+ * plus the one network option the form adds itself.
+ */
 const CONFIG_FLAG_FIELDS = [
-  'latency_first',
-  'use_smoltcp',
-  'disable_ipv6',
+  ...FlagsPb.fields.flatMap((flag) => {
+    const meta = flag.options?.['easytier.flag'] as FlagMeta | undefined
+    if (!meta || meta.deprecated) return []
+    if (flag.kind !== 'scalar' || flag.T !== ScalarType.BOOL) return []
+    const field = (meta.api?.field ?? flag.name) as keyof NetworkConfig
+    if (!apiCarries(field)) return []
+    if (['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'].includes(field)) return []
+
+    return [field]
+  }),
   'ipv6_public_addr_auto',
-  'enable_kcp_proxy',
-  'disable_kcp_input',
-  'enable_quic_proxy',
-  'disable_quic_input',
-  'disable_p2p',
-  'p2p_only',
-  'lazy_p2p',
-  'bind_device',
-  'no_tun',
-  'enable_exit_node',
-  'relay_all_peer_rpc',
-  'need_p2p',
-  'multi_thread',
-  'proxy_forward_by_system',
-  'disable_encryption',
-  'disable_tcp_hole_punching',
-  'disable_udp_hole_punching',
-  'enable_udp_broadcast_relay',
-  'disable_upnp',
-  'disable_sym_hole_punching',
-  'enable_magic_dns',
-  'enable_private_mode',
 ] as const satisfies readonly (keyof NetworkConfig)[]
 
 const CONFIG_CHECKBOX_FIELDS = [
@@ -424,6 +424,9 @@ describe('Config.vue network config projection', () => {
       expect(wrapper.find(`#${field}`).attributes('disabled')).toBeUndefined()
       expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(true)
     }
+    for (const field of ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p']) {
+      expect(wrapper.find(`#${field}`).exists(), `${field} uses the dedicated disguise selector`).toBe(false)
+    }
     for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
       expect(urls.props('protos')).toHaveProperty('http3')
     }
@@ -441,7 +444,7 @@ describe('Config.vue network config projection', () => {
       expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(false)
       expect(wrapper.find(`[data-tooltip="${field}_help"]`).exists()).toBe(false)
     }
-    for (const field of CONFIG_FLAG_FIELDS) {
+    for (const field of CONFIG_FLAG_FIELDS.filter(field => field !== 'close_redundant_conns_when_disguised')) {
       expect(input(wrapper, `#${field}`).disabled, `${field} should remain editable`).toBe(false)
     }
     for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
@@ -503,14 +506,23 @@ describe('Config.vue network config projection', () => {
       config.advanced_settings = true
       if (legacy) {
         delete config.prefer_wss_http3_for_p2p
+        delete config.only_use_wss_http3_for_hole_punching
+        delete config.disable_wss_http3_for_p2p
         delete config.p2p_prefer_protocol
         delete config.close_redundant_conns_when_disguised
       }
-      const { wrapper } = mountConfig(config)
+      const { curNetwork, wrapper } = mountConfig(config)
       await nextTick()
       expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('default')
       expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('udp')
       expect(input(wrapper, '#close_redundant_conns_when_disguised').checked).toBe(true)
+      if (legacy) {
+        const backend = toBackendNetworkConfig(curNetwork)
+        for (const field of ['prefer_wss_http3_for_p2p', 'only_use_wss_http3_for_hole_punching', 'disable_wss_http3_for_p2p', 'p2p_prefer_protocol', 'close_redundant_conns_when_disguised'] as const) {
+          expect(curNetwork[field], `${field} should remain unset`).toBeUndefined()
+          expect(backend, `${field} should remain absent when saving`).not.toHaveProperty(field)
+        }
+      }
       wrapper.unmount()
     }
   })
@@ -695,8 +707,34 @@ describe('Config.vue network config projection', () => {
     expect(curNetwork.only_use_wss_http3_for_hole_punching).toBe(false)
   })
 
+  it('shows a flag the configuration does not state as the value the core resolves without setting it', async () => {
+    const config = makeConfig()
+    delete config.bind_device
+    delete config.multi_thread
+
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+
+    // Both default to on, so an unset flag must not read as off.
+    expect(input(wrapper, '#bind_device').checked).toBe(true)
+    expect(input(wrapper, '#multi_thread').checked).toBe(true)
+    expect(curNetwork.bind_device).toBeUndefined()
+    expect(curNetwork.multi_thread).toBeUndefined()
+    const backend = toBackendNetworkConfig(curNetwork)
+    expect(backend).not.toHaveProperty('bind_device')
+    expect(backend).not.toHaveProperty('multi_thread')
+
+    // Toggling states the value, which is how a flag gets turned off.
+    await wrapper.find('#bind_device').setValue(false)
+    expect(curNetwork.bind_device).toBe(false)
+    expect(toBackendNetworkConfig(curNetwork).bind_device).toBe(false)
+  })
+
   it('round-trips every visible boolean config control into backend JSON', async () => {
     const config = makeConfig()
+    // A checkbox for a flag the API has no field for states a value that stops
+    // at the form; the rest have to arrive at the backend.
+    const reachesBackend = CONFIG_UI_BOOLEAN_FIELDS.filter(apiCarries)
     const originalFlagValues = new Map(
       CONFIG_UI_BOOLEAN_FIELDS.map((field, index) => {
         const value = index % 2 === 0
@@ -730,6 +768,10 @@ describe('Config.vue network config projection', () => {
     for (const [field, value] of originalFlagValues) {
       const expectedValue = !value
       expect(curNetwork[field], `${field} should update config`).toBe(expectedValue)
+      if (!reachesBackend.includes(field)) {
+        expect(backend[field], `${field} has no api.manage.NetworkConfig field`).toBeUndefined()
+        continue
+      }
       expect(backend[field], `${field} should be preserved in backend JSON`).toBe(expectedValue)
     }
   })
@@ -784,8 +826,9 @@ describe('Config.vue network config projection', () => {
     expect(curNetwork.instance_recv_bps_limit).toBe(1234)
 
     await setInput(wrapper, '#instance_recv_bps_limit', '0')
-    expect(curNetwork.instance_recv_bps_limit).toBeNull()
-    expect(input(wrapper, '#instance_recv_bps_limit').value).toBe('')
+    expect(curNetwork.instance_recv_bps_limit).toBe(0)
+    expect(input(wrapper, '#instance_recv_bps_limit').value).toBe('0')
+    expect(toBackendNetworkConfig(curNetwork).instance_recv_bps_limit).toBe('0')
 
     await setInput(wrapper, '#instance_recv_bps_limit', '9007199254740993')
     expect(curNetwork.instance_recv_bps_limit).toBe('9007199254740993')
@@ -795,6 +838,7 @@ describe('Config.vue network config projection', () => {
 
     await setInput(wrapper, '#instance_recv_bps_limit', '')
     expect(curNetwork.instance_recv_bps_limit).toBeNull()
+    expect(toBackendNetworkConfig(curNetwork)).not.toHaveProperty('instance_recv_bps_limit')
   })
 
   it('emits runNetwork with the current projected config', async () => {

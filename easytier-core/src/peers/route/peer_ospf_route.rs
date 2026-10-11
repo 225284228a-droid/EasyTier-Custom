@@ -12,7 +12,7 @@ use std::{
 use arc_swap::ArcSwap;
 use atomic_shim::AtomicU64;
 use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr, Ipv6Inet};
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use dashmap::DashMap;
 use ordered_hash_map::OrderedHashMap;
 use parking_lot::{RwLock, lock_api::RwLockUpgradableReadGuard};
@@ -4886,8 +4886,8 @@ mod tests {
             CoreNetworkIdentity::default()
         }
 
-        fn flags(&self) -> crate::proto::common::FlagsInConfig {
-            crate::proto::common::FlagsInConfig {
+        fn flags(&self) -> crate::proto::common::Flags {
+            crate::proto::common::Flags {
                 prefer_peer_relay: self.enabled.load(Ordering::Relaxed),
                 ..Default::default()
             }
@@ -5012,7 +5012,7 @@ mod tests {
     }
 
     fn test_peer_relay_service_impl(my_peer_id: PeerId) -> PeerRouteServiceImpl {
-        let flags = crate::proto::common::FlagsInConfig {
+        let flags = crate::proto::common::Flags {
             prefer_peer_relay: true,
             ..Default::default()
         };

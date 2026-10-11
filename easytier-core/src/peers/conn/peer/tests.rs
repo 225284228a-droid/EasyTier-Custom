@@ -9,7 +9,7 @@ use crate::{
         create_packet_recv_chan,
         test_support::NoopPeerContext,
     },
-    proto::common::{FlagsInConfig, TunnelInfo},
+    proto::common::{Flags, TunnelInfo},
     tunnel::ring::{RingTunnel, create_ring_socket_pair},
 };
 
@@ -173,7 +173,7 @@ async fn check_preferred_transition(default_protocol: &str, use_disguise: bool, 
         ("tcp", false) => ("tcp", "udp", PeerConnectionOrigin::TcpHolePunch),
         _ => unreachable!(),
     };
-    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: default_protocol.to_owned(),
         prefer_wss_http3_for_p2p: use_disguise && !strict,
         only_use_wss_http3_for_hole_punching: strict,
@@ -308,7 +308,7 @@ async fn check_dual_peer_cleanup(
         .into_iter()
         .zip(cleanup)
         .map(|(protocol, enabled)| {
-            Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+            Arc::new(NoopPeerContext::default().with_flags(Flags {
                 default_protocol: protocol.to_owned(),
                 prefer_wss_http3_for_p2p: use_disguise,
                 close_redundant_conns_when_disguised: enabled,
@@ -421,7 +421,7 @@ async fn passive_disguise_retires_both_raw_transports_at_both_endpoints() {
                     .into_iter()
                     .zip(cleanup)
                     .map(|(protocol, enabled)| {
-                        Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                        Arc::new(NoopPeerContext::default().with_flags(Flags {
                             default_protocol: protocol.to_owned(),
                             close_redundant_conns_when_disguised: enabled,
                             ..Default::default()
@@ -490,7 +490,7 @@ async fn manual_connections_agree_on_one_winner_without_route_metadata() {
             .into_iter()
             .zip(cleanup)
             .map(|(protocol, enabled)| {
-                Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+                Arc::new(NoopPeerContext::default().with_flags(Flags {
                     default_protocol: protocol.to_owned(),
                     close_redundant_conns_when_disguised: enabled,
                     ..Default::default()
@@ -613,7 +613,7 @@ async fn manual_connections_agree_on_one_winner_without_route_metadata() {
 #[tokio::test]
 async fn manual_priority_waits_for_liveness_and_revalidates_queued_cleanup() {
     for fail_replacement in [false, true] {
-        let flags = FlagsInConfig {
+        let flags = Flags {
             default_protocol: "udp".to_owned(),
             close_redundant_conns_when_disguised: true,
             ..Default::default()
@@ -681,7 +681,7 @@ async fn manual_priority_waits_for_liveness_and_revalidates_queued_cleanup() {
 
 #[tokio::test]
 async fn manual_priority_does_not_retire_a_legacy_connection() {
-    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         close_redundant_conns_when_disguised: true,
         ..Default::default()
     }));
@@ -728,7 +728,7 @@ async fn manual_priority_does_not_retire_a_legacy_connection() {
 
 #[tokio::test]
 async fn cleanup_keeps_noncooperating_peers_and_mismatched_connection_snapshots() {
-    let flags = FlagsInConfig {
+    let flags = Flags {
         default_protocol: "tcp".to_owned(),
         close_redundant_conns_when_disguised: true,
         ..Default::default()
@@ -799,11 +799,10 @@ async fn cleanup_keeps_noncooperating_peers_and_mismatched_connection_snapshots(
     // they cannot replace each other using different paired snapshots.
     let (tx, _rx) = create_packet_recv_chan();
     let peer = Peer::new(2, tx, context.clone());
-    let remote_context: ArcPeerContext =
-        Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
-            prefer_wss_http3_for_p2p: true,
-            ..flags
-        }));
+    let remote_context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
+        prefer_wss_http3_for_p2p: true,
+        ..flags
+    }));
     let mut ids = Vec::new();
     let mut remotes = Vec::new();
     for (scheme, remote_context) in [("udp", context.clone()), ("tcp", remote_context)] {
@@ -870,13 +869,12 @@ async fn server_punch_cleanup_requires_enabled_flag_and_a_verified_better_protoc
                 "tcp",
             ),
         ] {
-            let context: ArcPeerContext =
-                Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
-                    default_protocol: default_protocol.to_owned(),
-                    prefer_wss_http3_for_p2p: use_disguise,
-                    close_redundant_conns_when_disguised: cleanup_enabled,
-                    ..Default::default()
-                }));
+            let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
+                default_protocol: default_protocol.to_owned(),
+                prefer_wss_http3_for_p2p: use_disguise,
+                close_redundant_conns_when_disguised: cleanup_enabled,
+                ..Default::default()
+            }));
             let (local_tx, _local_rx) = create_packet_recv_chan();
             let peer = Peer::new(2, local_tx, context.clone());
             let (fallback_conn, mut fallback_remote) =
@@ -926,14 +924,14 @@ async fn server_punch_cleanup_requires_enabled_flag_and_a_verified_better_protoc
     }
 }
 
-struct MutableCleanupContext(std::sync::Mutex<FlagsInConfig>);
+struct MutableCleanupContext(std::sync::Mutex<Flags>);
 
 impl PeerContext for MutableCleanupContext {
     fn network_identity(&self) -> NetworkIdentity {
         NetworkIdentity::default()
     }
 
-    fn flags(&self) -> FlagsInConfig {
+    fn flags(&self) -> Flags {
         self.0.lock().unwrap().clone()
     }
 }
@@ -1007,7 +1005,7 @@ async fn later_handshakes_update_manual_reconnect_suppression_for_the_surviving_
 #[tokio::test]
 async fn queued_cleanup_rechecks_every_local_ordering_input() {
     for changed_field in 0..4 {
-        let flags = FlagsInConfig {
+        let flags = Flags {
             default_protocol: "tcp".to_owned(),
             close_redundant_conns_when_disguised: true,
             ..Default::default()
@@ -1100,7 +1098,7 @@ async fn queued_cleanup_rechecks_every_local_ordering_input() {
 
 #[tokio::test]
 async fn cleanup_waits_for_route_cache_to_match_the_handshake_disguise_policy() {
-    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: "tcp".to_owned(),
         prefer_wss_http3_for_p2p: true,
         close_redundant_conns_when_disguised: true,
@@ -1152,13 +1150,11 @@ async fn cleanup_waits_for_route_cache_to_match_the_handshake_disguise_policy() 
 
 #[tokio::test]
 async fn queued_server_punch_cleanup_is_cancelled_when_the_flag_is_disabled() {
-    let context = Arc::new(MutableCleanupContext(std::sync::Mutex::new(
-        FlagsInConfig {
-            default_protocol: "udp".to_owned(),
-            close_redundant_conns_when_disguised: true,
-            ..Default::default()
-        },
-    )));
+    let context = Arc::new(MutableCleanupContext(std::sync::Mutex::new(Flags {
+        default_protocol: "udp".to_owned(),
+        close_redundant_conns_when_disguised: true,
+        ..Default::default()
+    })));
     let (tx, _rx) = create_packet_recv_chan();
     let peer = Peer::new(2, tx, context.clone());
     let (fallback, mut fallback_remote) = handshaken_connection(
@@ -1209,7 +1205,7 @@ async fn queued_server_punch_cleanup_is_cancelled_when_the_flag_is_disabled() {
 
 #[tokio::test]
 async fn failed_unverified_preferred_path_keeps_working_fallback() {
-    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: "udp".to_owned(),
         prefer_wss_http3_for_p2p: true,
         close_redundant_conns_when_disguised: true,
@@ -1256,13 +1252,12 @@ async fn failed_unverified_preferred_path_keeps_working_fallback() {
 #[tokio::test]
 async fn queued_cleanup_rechecks_policy_and_replacement_at_removal() {
     for preference_changed in [false, true] {
-        let context: ArcPeerContext =
-            Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
-                default_protocol: "udp".to_owned(),
-                prefer_wss_http3_for_p2p: true,
-                close_redundant_conns_when_disguised: true,
-                ..Default::default()
-            }));
+        let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
+            default_protocol: "udp".to_owned(),
+            prefer_wss_http3_for_p2p: true,
+            close_redundant_conns_when_disguised: true,
+            ..Default::default()
+        }));
         let (tx, _rx) = create_packet_recv_chan();
         let peer = Peer::new(2, tx, context.clone());
         let (udp, mut udp_remote) =
@@ -1314,7 +1309,7 @@ async fn queued_cleanup_rechecks_policy_and_replacement_at_removal() {
 
 #[tokio::test]
 async fn automatic_cleanup_preserves_attached_and_equal_rank_connections() {
-    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: "udp".to_owned(),
         close_redundant_conns_when_disguised: true,
         ..Default::default()
@@ -1352,17 +1347,16 @@ async fn automatic_cleanup_preserves_attached_and_equal_rank_connections() {
 #[tokio::test]
 async fn established_disguise_precedes_raw_despite_passive_negotiation() {
     for cleanup_enabled in [false, true] {
-        let context: ArcPeerContext =
-            Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
-                default_protocol: "udp".to_owned(),
-                prefer_wss_http3_for_p2p: true,
-                close_redundant_conns_when_disguised: cleanup_enabled,
-                ..Default::default()
-            }));
+        let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
+            default_protocol: "udp".to_owned(),
+            prefer_wss_http3_for_p2p: true,
+            close_redundant_conns_when_disguised: cleanup_enabled,
+            ..Default::default()
+        }));
         let (local_tx, _local_rx) = create_packet_recv_chan();
         let peer = Peer::new(2, local_tx, context.clone());
         let remote_context: ArcPeerContext =
-            Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+            Arc::new(NoopPeerContext::default().with_flags(Flags {
                 prefer_wss_http3_for_p2p: false,
                 ..context.flags()
             }));
@@ -1418,7 +1412,7 @@ async fn established_disguise_precedes_raw_despite_passive_negotiation() {
 
 #[tokio::test]
 async fn missing_route_metadata_keeps_negotiated_disguise_stable() {
-    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(FlagsInConfig {
+    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: "udp".to_owned(),
         prefer_wss_http3_for_p2p: true,
         close_redundant_conns_when_disguised: true,

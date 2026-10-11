@@ -11,6 +11,7 @@ pub mod host;
 mod persisted_config_policy;
 #[cfg(all(test, feature = "management"))]
 mod persisted_config_tests;
+mod runtime_executor;
 pub(crate) mod runtime_host;
 #[cfg(test)]
 pub(crate) mod test_instance;

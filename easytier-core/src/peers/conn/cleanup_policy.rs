@@ -1,7 +1,7 @@
 use crate::{
     config::{P2pPolicyFlags, PeerDisguiseP2pFlags, normalized_p2p_protocol, p2p_protocol_rank},
     peers::PeerConnectionOrigin,
-    proto::common::FlagsInConfig,
+    proto::common::Flags,
 };
 
 const FEATURE_FAMILY: &str = "p2p-cleanup-";
@@ -21,7 +21,7 @@ struct CleanupPolicySnapshot {
 }
 
 impl CleanupPolicySnapshot {
-    fn from_flags(flags: &FlagsInConfig) -> Self {
+    fn from_flags(flags: &Flags) -> Self {
         Self {
             protocol: normalized_p2p_protocol(&flags.default_protocol),
             prefer: flags.prefer_wss_http3_for_p2p,
@@ -143,11 +143,7 @@ pub(crate) struct CleanupPolicyPair {
 }
 
 impl CleanupPolicyPair {
-    pub(crate) fn new(
-        flags: &FlagsInConfig,
-        origin: PeerConnectionOrigin,
-        conn_id: uuid::Uuid,
-    ) -> Self {
+    pub(crate) fn new(flags: &Flags, origin: PeerConnectionOrigin, conn_id: uuid::Uuid) -> Self {
         Self {
             local: CleanupOffer {
                 policy: CleanupPolicySnapshot::from_flags(flags),
@@ -167,7 +163,7 @@ impl CleanupPolicyPair {
         self.remote = CleanupOffer::from_features(features);
     }
 
-    pub(crate) fn matches_current_flags(&self, flags: &FlagsInConfig) -> bool {
+    pub(crate) fn matches_current_flags(&self, flags: &Flags) -> bool {
         self.remote.is_some() && self.local.policy == CleanupPolicySnapshot::from_flags(flags)
     }
 
@@ -232,7 +228,7 @@ impl CleanupPolicyPair {
             })
     }
 
-    pub(crate) fn agreed_disguise(&self, current_flags: &FlagsInConfig) -> Option<bool> {
+    pub(crate) fn agreed_disguise(&self, current_flags: &Flags) -> Option<bool> {
         let remote = self.remote.as_ref()?;
         if !self.matches_current_flags(current_flags) {
             return None;
@@ -251,7 +247,7 @@ impl CleanupPolicyPair {
 mod tests {
     use super::*;
 
-    fn policy(flags: &FlagsInConfig) -> CleanupPolicyPair {
+    fn policy(flags: &Flags) -> CleanupPolicyPair {
         CleanupPolicyPair::new(flags, PeerConnectionOrigin::Direct, uuid::Uuid::new_v4())
     }
 
@@ -277,7 +273,7 @@ mod tests {
                 "{features:?}"
             );
         }
-        let feature = policy(&FlagsInConfig {
+        let feature = policy(&Flags {
             default_protocol: "tcp".to_owned(),
             ..Default::default()
         })
@@ -324,14 +320,14 @@ mod tests {
                     (false, true, false),
                     (true, true, true),
                 ] {
-                    let a_flags = FlagsInConfig {
+                    let a_flags = Flags {
                         default_protocol: protocol.to_owned(),
                         prefer_wss_http3_for_p2p: a_prefer,
                         only_use_wss_http3_for_hole_punching: a_only,
                         disable_wss_http3_for_p2p: a_disabled,
                         ..Default::default()
                     };
-                    let b_flags = FlagsInConfig {
+                    let b_flags = Flags {
                         default_protocol: normalized_p2p_protocol(protocol),
                         prefer_wss_http3_for_p2p: b_prefer,
                         only_use_wss_http3_for_hole_punching: b_only,
@@ -347,12 +343,12 @@ mod tests {
                 }
             }
         }
-        let flags = FlagsInConfig {
+        let flags = Flags {
             default_protocol: "tcp".to_owned(),
             ..Default::default()
         };
         let mut paired = policy(&flags);
-        let remote = policy(&FlagsInConfig {
+        let remote = policy(&Flags {
             default_protocol: "udp".to_owned(),
             ..flags.clone()
         });
@@ -368,7 +364,7 @@ mod tests {
         ] {
             assert!(!paired.both_prefer_transport(replacement, candidate));
         }
-        let changed = FlagsInConfig {
+        let changed = Flags {
             prefer_wss_http3_for_p2p: true,
             ..flags.clone()
         };
@@ -377,13 +373,13 @@ mod tests {
 
     #[test]
     fn manual_origin_and_connection_order_are_shared_without_matching_protocol_preferences() {
-        let flags = FlagsInConfig {
+        let flags = Flags {
             default_protocol: "tcp".to_owned(),
             ..Default::default()
         };
         let mut a =
             CleanupPolicyPair::new(&flags, PeerConnectionOrigin::Manual, uuid::Uuid::new_v4());
-        let remote_flags = FlagsInConfig {
+        let remote_flags = Flags {
             default_protocol: "udp".to_owned(),
             close_redundant_conns_when_disguised: true,
             ..flags.clone()
@@ -409,8 +405,8 @@ mod tests {
 
     #[test]
     fn explicit_disguise_ban_keeps_its_ordering_and_conflicts_do_not_retire_either_path() {
-        let allowed = FlagsInConfig::default();
-        let banned = FlagsInConfig {
+        let allowed = Flags::default();
+        let banned = Flags {
             disable_wss_http3_for_p2p: true,
             ..allowed.clone()
         };

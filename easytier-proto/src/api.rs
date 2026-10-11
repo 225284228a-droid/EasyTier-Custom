@@ -437,6 +437,7 @@ mod tests {
                         }],
                         disabled_inst_ids: vec![],
                         supports_persisted_config_management: None,
+                        runtime_capabilities: vec![],
                     };
                     Ok(Bytes::from(resp.encode_to_vec()))
                 }

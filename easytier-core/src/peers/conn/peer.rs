@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use parking_lot::{Mutex, RwLock};
 
@@ -22,7 +22,7 @@ use crate::{
     config::{PeerId, p2p_protocol_rank},
     packet::ZCPacket,
     peers::error::Error,
-    proto::{common::FlagsInConfig, core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
+    proto::{common::Flags, core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
 };
 use tokio_util::task::AbortOnDropHandle;
 
@@ -46,7 +46,7 @@ enum PeerConnCloseEvent {
 fn redundant_conn_eligible(
     conn: &PeerConn,
     replacement: &PeerConn,
-    flags: &FlagsInConfig,
+    flags: &Flags,
     proposed_use_disguise: bool,
     negotiated: Option<bool>,
     proposed_policy: &CleanupPolicyPair,
@@ -91,7 +91,7 @@ impl PeerConnCloseEvent {
     fn removable_id(
         &self,
         conns: &ConnMap,
-        flags: &FlagsInConfig,
+        flags: &Flags,
         negotiated: Option<bool>,
     ) -> Option<PeerConnId> {
         match self {
@@ -140,13 +140,13 @@ fn disguised_tunnel_scheme(tunnel_type: &str) -> Option<&'static str> {
     }
 }
 
-fn use_disguise_preference(flags: &FlagsInConfig, negotiated: Option<bool>) -> bool {
+fn use_disguise_preference(flags: &Flags, negotiated: Option<bool>) -> bool {
     !flags.disable_wss_http3_for_p2p
         && negotiated
             .unwrap_or(flags.prefer_wss_http3_for_p2p || flags.only_use_wss_http3_for_hole_punching)
 }
 
-fn conn_protocol_rank(conn: &PeerConn, flags: &FlagsInConfig) -> Option<u8> {
+fn conn_protocol_rank(conn: &PeerConn, flags: &Flags) -> Option<u8> {
     if conn.is_manual() {
         return Some(0);
     }
@@ -168,7 +168,7 @@ fn conn_protocol_rank(conn: &PeerConn, flags: &FlagsInConfig) -> Option<u8> {
     )
 }
 
-fn select_preferred_conn(conns: &ConnMap, flags: &FlagsInConfig) -> Option<ArcPeerConn> {
+fn select_preferred_conn(conns: &ConnMap, flags: &Flags) -> Option<ArcPeerConn> {
     conns
         .iter()
         .filter(|conn| !conn.value().is_closed())
@@ -191,7 +191,7 @@ fn select_preferred_conn(conns: &ConnMap, flags: &FlagsInConfig) -> Option<ArcPe
 
 async fn reconcile_peer_connections(
     conns: &ConnMap,
-    flags: &FlagsInConfig,
+    flags: &Flags,
     negotiated_disguise: &AtomicCell<Option<bool>>,
     default_conn: &ArcSwapOption<PeerConn>,
     update_lock: &Mutex<()>,

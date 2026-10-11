@@ -31,7 +31,10 @@ use crate::{
     instance::runtime_host::NativeInstanceRuntimeHost,
 };
 
-use super::host::{NativeInstanceHost, native_instance_host};
+use super::{
+    host::{NativeInstanceHost, native_instance_host},
+    runtime_executor::NativeInstanceExecutor,
+};
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::KcpProxyService;
 #[cfg(feature = "quic")]
@@ -42,10 +45,11 @@ use easytier_core::gateway::proxy::wrapped_transport::WrappedTransportEngine;
 
 pub(crate) type NativeCoreInstance = CoreInstance<NativeInstanceHost>;
 
-pub(crate) fn compose_native_core_instance(
+pub(super) fn compose_native_core_instance(
     toml_config: TomlConfig,
     process_runtime: Arc<CoreProcessRuntime>,
     compact_runtime: bool,
+    executor: Option<NativeInstanceExecutor>,
 ) -> anyhow::Result<Arc<NativeCoreInstance>> {
     let host_config = if compact_runtime {
         compact_runtime_core_host_config()
@@ -58,7 +62,7 @@ pub(crate) fn compose_native_core_instance(
         &normalized,
         &host_config,
     ));
-    let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+    let runtime_host = NativeInstanceRuntimeHost::new_with_executor(global_ctx.clone(), executor);
     let mut adapters = runtime_core_host_adapters_with_packet_egress_and_config(
         global_ctx.clone(),
         process_runtime,
@@ -1220,7 +1224,7 @@ mod tests {
         #[cfg(feature = "websocket")]
         #[rstest::rstest]
         #[tokio::test(flavor = "multi_thread")]
-        async fn native_core_direct_upgrades_tcp_or_wss_to_http3_companion(
+        async fn native_core_direct_discovers_http3_companion_through_tcp_or_wss_relay(
             #[values("127.0.0.1:0", "[::1]:0")] bind: &str,
             #[values("tcp", "wss")] bootstrap_scheme: &str,
         ) {
@@ -1237,21 +1241,34 @@ mod tests {
                 );
                 let (client, mut client_packets) =
                     build_instance(network, "10.253.0.2/24", Vec::new(), true);
-                let (start_server, start_client) = tokio::join!(server.start(), client.start());
+                let (relay, _relay_packets) = build_instance(
+                    network,
+                    "10.253.0.3/24",
+                    vec![format!("{bootstrap_scheme}://{bind}").parse().unwrap()],
+                    false,
+                );
+                let (start_server, start_client, start_relay) =
+                    tokio::join!(server.start(), client.start(), relay.start());
                 start_server.unwrap();
                 start_client.unwrap();
+                start_relay.unwrap();
                 let listeners = server.running_listeners();
                 assert!(!listeners.iter().any(|url| url.scheme() == "http3"));
-                let bootstrap = listeners
+                let bootstrap = relay
+                    .running_listeners()
                     .iter()
                     .find(|url| url.scheme() == bootstrap_scheme)
                     .unwrap()
                     .clone();
                 let udp_url = listeners.iter().find(|url| url.scheme() == "udp").unwrap();
-                client.add_connector(bootstrap).unwrap();
-                wait_for_connection(&client, server.peer_id(), bootstrap_scheme, false).await;
+                client.add_connector(bootstrap.clone()).unwrap();
+                server.add_connector(bootstrap).unwrap();
+                wait_for_connection(&client, relay.peer_id(), bootstrap_scheme, true).await;
+                wait_for_connection(&server, relay.peer_id(), bootstrap_scheme, true).await;
 
-                // The only connector is TCP/WSS, so HTTP3 must be discovered via peer RPC.
+                // The only manual paths end at the relay. The client and server
+                // discover each other through routing and peer RPC, so their
+                // automatic HTTP3 path is eligible to become the default.
                 let upgraded = wait_for_connection(&client, server.peer_id(), "http3", true).await;
                 let remote_url: url::Url = upgraded.remote_addr.unwrap().into();
                 assert_eq!(remote_url.scheme(), "http3");
@@ -1259,8 +1276,11 @@ mod tests {
                 assert_eq!(remote_url.port(), udp_url.port());
                 wait_for_connection(&server, client.peer_id(), "http3", true).await;
                 assert_eq!(client.list_connectors().len(), 1);
-                // Preference cleanup must retain the explicitly configured bootstrap path.
-                wait_for_connection(&client, server.peer_id(), bootstrap_scheme, false).await;
+                assert_eq!(server.list_connectors().len(), 1);
+                wait_for_connection(&client, relay.peer_id(), bootstrap_scheme, true).await;
+                wait_for_connection(&server, relay.peer_id(), bootstrap_scheme, true).await;
+                assert!(client.connected_peers().await.contains(&server.peer_id()));
+                assert!(server.connected_peers().await.contains(&client.peer_id()));
 
                 let request = ip_packet(
                     "10.253.0.2".parse().unwrap(),
@@ -1274,11 +1294,126 @@ mod tests {
                     b"automatic HTTP3 reply",
                 );
                 deliver_packet(&server, &mut client_packets, &reply).await;
+                wait_for_connection(&client, server.peer_id(), "http3", true).await;
+                wait_for_connection(&server, client.peer_id(), "http3", true).await;
+                client.stop().await;
+                server.stop().await;
+                relay.stop().await;
+            })
+            .await
+            .expect("native automatic HTTP3 upgrade test timed out");
+        }
+
+        #[cfg(feature = "websocket")]
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn native_core_manual_tcp_or_wss_bootstrap_remains_preferred_to_http3(
+            #[values("127.0.0.1:0", "[::1]:0")] bind: &str,
+            #[values("tcp", "wss")] bootstrap_scheme: &str,
+        ) {
+            tokio::time::timeout(Duration::from_secs(45), async {
+                let network = "native-manual-http3-priority";
+                let (server, mut server_packets) = build_instance(
+                    network,
+                    "10.251.0.1/24",
+                    vec![
+                        format!("{bootstrap_scheme}://{bind}").parse().unwrap(),
+                        format!("udp://{bind}").parse().unwrap(),
+                    ],
+                    true,
+                );
+                let (client, mut client_packets) =
+                    build_instance(network, "10.251.0.2/24", Vec::new(), true);
+                let (start_server, start_client) = tokio::join!(server.start(), client.start());
+                start_server.unwrap();
+                start_client.unwrap();
+                let listeners = server.running_listeners();
+                assert!(listeners.iter().any(|url| url.scheme() == "udp"));
+                assert!(!listeners.iter().any(|url| url.scheme() == "http3"));
+                let bootstrap = listeners
+                    .iter()
+                    .find(|url| url.scheme() == bootstrap_scheme)
+                    .unwrap()
+                    .clone();
+                client.add_connector(bootstrap).unwrap();
+
+                wait_for_connection(&client, server.peer_id(), bootstrap_scheme, false).await;
+                wait_for_connection(&server, client.peer_id(), bootstrap_scheme, false).await;
+                let request = ip_packet(
+                    "10.251.0.2".parse().unwrap(),
+                    "10.251.0.1".parse().unwrap(),
+                    b"manual bootstrap request",
+                );
+                let reply = ip_packet(
+                    "10.251.0.1".parse().unwrap(),
+                    "10.251.0.2".parse().unwrap(),
+                    b"manual bootstrap reply",
+                );
+                // Verify the connection with actual bidirectional IP traffic.
+                deliver_packet(&client, &mut server_packets, &request).await;
+                deliver_packet(&server, &mut client_packets, &reply).await;
+
+                // Observe a full five-second direct scan and leave time for
+                // any connection started before verification to be retired.
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                let mut retained_paths = Vec::new();
+                for (instance, peer_id) in
+                    [(&client, server.peer_id()), (&server, client.peer_id())]
+                {
+                    let peers = instance.peer_snapshots().await;
+                    let peer = peers.iter().find(|peer| peer.peer_id == peer_id).unwrap();
+                    let live = peer
+                        .conns
+                        .iter()
+                        .filter(|conn| !conn.is_closed)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        live.len(),
+                        1,
+                        "manual bootstrap must be the only live path: {peers:#?}"
+                    );
+                    assert_eq!(
+                        live[0]
+                            .tunnel
+                            .as_ref()
+                            .unwrap()
+                            .tunnel_type
+                            .rsplit('-')
+                            .next(),
+                        Some(bootstrap_scheme)
+                    );
+                    retained_paths.push(live[0].conn_id.clone());
+                }
+                // Route metadata can invalidate an idle default-connection
+                // cache. Exercise selection again before asserting the API's
+                // default ID, while proving the retained path still carries data.
+                deliver_packet(&client, &mut server_packets, &request).await;
+                deliver_packet(&server, &mut client_packets, &reply).await;
+                wait_for_connection(&client, server.peer_id(), bootstrap_scheme, true).await;
+                wait_for_connection(&server, client.peer_id(), bootstrap_scheme, true).await;
+                for ((instance, peer_id), retained_path) in
+                    [(&client, server.peer_id()), (&server, client.peer_id())]
+                        .into_iter()
+                        .zip(retained_paths)
+                {
+                    let peers = instance.peer_snapshots().await;
+                    let peer = peers.iter().find(|peer| peer.peer_id == peer_id).unwrap();
+                    assert_eq!(peer.conns.iter().filter(|conn| !conn.is_closed).count(), 1);
+                    assert_eq!(
+                        peer.default_conn_id.map(|id| id.to_string()).as_deref(),
+                        Some(retained_path.as_str()),
+                        "actual data must use the retained manual connection: {peers:#?}"
+                    );
+                }
+                assert_eq!(client.list_connectors().len(), 1);
+                assert!(client.connected_peers().await.contains(&server.peer_id()));
+                assert!(server.connected_peers().await.contains(&client.peer_id()));
+
                 client.stop().await;
                 server.stop().await;
             })
             .await
-            .expect("native automatic HTTP3 upgrade test timed out");
+            .expect("native manual bootstrap priority test timed out");
         }
     }
 }

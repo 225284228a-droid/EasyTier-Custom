@@ -316,12 +316,19 @@ generic completion, cancellation, free, drain, and take transitions. The data
 plane retains TCP/UDP resource ownership, operation metadata, route deadlines,
 and error semantics.
 
-The proposed restructuring of the smoltcp data plane, SOCKS5 and port-forward
-Adapters, portable KCP engine, event-driven FFI/WASI completion model, and Go
-Host integration is tracked in
-[`data-plane-runtime-plan.md`](data-plane-runtime-plan.md). That document is a
-future implementation plan; this document remains the source of truth for the
-currently implemented architecture until the plan is completed.
+`DataPlaneRuntime` owns the peer-packet pipeline shared by smoltcp, SOCKS5,
+port forwarding, and FFI/WASI callers. A UDP socket owns its bound local
+endpoint from bind until close, so it can receive before its first send.
+Virtual UDP ports are reserved per instance independently of Host sockets.
+
+Local UDP fragments follow the binding selected by their first fragment;
+earlier tails wait in a shallow cache. The cache retains at most 1,024 routes
+and 1 MiB of pending bytes with a one-second idle timeout. A binding's
+registration prevents closed sockets from transferring cached fragments to a
+replacement binding. Address changes and shutdown clear the cache. Random
+smoltcp seeds reduce repeated IP IDs, while residual 16-bit ID collisions can
+still cause UDP loss or unintended downstream delivery. Released packet
+batches continue at the next filter in the current pipeline snapshot.
 
 ### Instance and management
 
@@ -348,6 +355,14 @@ A core instance:
 `CoreHostAdapters` contains the required Host, DNS, packet sink, and
 `CoreProcessRuntime`, plus optional protocol and platform capabilities. The
 bundle carries capabilities, not preconstructed portable managers.
+
+The standard native factory owns one continuously driven Tokio executor per
+instance. `multi_thread` selects a multi-thread or current-thread runtime;
+`multi_thread_count` sets the worker count with the historical minimum of two.
+Construction, start/stop, and FFI data-plane tasks use that executor, independent
+of the process management runtime. Dropping its Host owner shuts down the
+executor without blocking a worker on its own termination. Compact and WASI
+Hosts retain their externally supplied execution model.
 
 Each Module owns partial-start cleanup for its internal resources.
 `CoreInstance` has one outer cancellation and recovery path for the complete

@@ -57,18 +57,14 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     }
 }
 
-pub(crate) fn init_crypto_provider() {
-    let _ =
-        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
-}
-
 /// An HTTP/1.1-style TLS client config that skips certificate verification.
 pub(crate) fn get_insecure_tls_client_config() -> rustls::ClientConfig {
-    init_crypto_provider();
-    let provider = rustls::crypto::CryptoProvider::get_default().unwrap();
-    let mut config = rustls::ClientConfig::builder()
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default TLS protocol versions")
         .dangerous()
-        .with_custom_certificate_verifier(SkipServerVerification::new(provider.clone()))
+        .with_custom_certificate_verifier(SkipServerVerification::new(provider))
         .with_no_client_auth();
     config.enable_sni = true;
     config.enable_early_data = false;

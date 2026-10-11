@@ -1,5 +1,5 @@
 use arc_swap::ArcSwapOption;
-use crossbeam::atomic::AtomicCell;
+use crossbeam_utils::atomic::AtomicCell;
 use futures::{StreamExt, TryFutureExt};
 use std::{
     any::Any,
@@ -1603,11 +1603,11 @@ mod tests {
     use super::*;
     use crate::{
         peers::{context::PeerContext, test_support::NoopPeerContext},
-        proto::common::FlagsInConfig,
+        proto::common::Flags,
         tunnel::ring::create_ring_tunnel_pair,
     };
 
-    fn cleanup_handshake_context(key: u8, secure: bool, flags: FlagsInConfig) -> ArcPeerContext {
+    fn cleanup_handshake_context(key: u8, secure: bool, flags: Flags) -> ArcPeerContext {
         let mut context = NoopPeerContext::new(NetworkIdentity {
             network_name: "cleanup-handshake".to_owned(),
             network_secret: Some("cleanup-secret".to_owned()),
@@ -1629,12 +1629,12 @@ mod tests {
     #[tokio::test]
     async fn ordinary_and_noise_handshakes_exchange_cleanup_snapshots() {
         for secure in [false, true] {
-            let client_flags = FlagsInConfig {
+            let client_flags = Flags {
                 default_protocol: " TCP ".to_owned(),
                 prefer_wss_http3_for_p2p: true,
                 ..Default::default()
             };
-            let server_flags = FlagsInConfig {
+            let server_flags = Flags {
                 default_protocol: "tcp".to_owned(),
                 only_use_wss_http3_for_hole_punching: true,
                 ..Default::default()
@@ -1694,7 +1694,7 @@ mod tests {
                         "p2p-cleanup-v1:tcp:0:0:0",
                     ],
                 ] {
-                    let flags = FlagsInConfig {
+                    let flags = Flags {
                         default_protocol: "tcp".to_owned(),
                         ..Default::default()
                     };
@@ -1733,16 +1733,16 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_offer_does_not_follow_flags_changed_after_connection_creation() {
-        struct MutableContext(std::sync::Mutex<FlagsInConfig>);
+        struct MutableContext(std::sync::Mutex<Flags>);
         impl PeerContext for MutableContext {
             fn network_identity(&self) -> NetworkIdentity {
                 NetworkIdentity::default()
             }
-            fn flags(&self) -> FlagsInConfig {
+            fn flags(&self) -> Flags {
                 self.0.lock().unwrap().clone()
             }
         }
-        let flags = FlagsInConfig {
+        let flags = Flags {
             default_protocol: "tcp".to_owned(),
             ..Default::default()
         };

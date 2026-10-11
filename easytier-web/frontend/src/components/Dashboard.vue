@@ -40,22 +40,30 @@ watch(deviceGrid, grid => {
     deviceGridObserver.observe(grid);
 }, { flush: 'post' });
 let summaryGeneration = 0;
+let summaryRequestGeneration: number | undefined;
 
-const loadSummary = async () => {
-    if (refreshing.value) return;
+const loadSummary = async (manual = false) => {
+    // A manual refresh can show progress for an already running background request.
+    if (manual) refreshing.value = true;
     const api = props.api;
     const scope = api.persistenceScope;
     const generation = summaryGeneration;
+    if (summaryRequestGeneration === generation) return;
+    summaryRequestGeneration = generation;
     const current = () => generation === summaryGeneration && api === props.api && scope === api.persistenceScope;
-    refreshing.value = true;
-    const results = await Promise.allSettled([
-        api.get_summary().then(value => { if (current()) summary.value = value; }),
-        api.list_machines().then(value => { if (current()) devices.value = value.map(Utils.buildDeviceInfo); }),
-        ...(props.centralEnabled ? [api.list_networks().then(value => { if (current()) networks.value = value; })] : []),
-    ]);
-    if (!current()) return;
-    loadError.value = results.some(result => result.status === 'rejected');
-    refreshing.value = false;
+    try {
+        const results = await Promise.allSettled([
+            api.get_summary().then(value => { if (current()) summary.value = value; }),
+            api.list_machines().then(value => { if (current()) devices.value = value.map(Utils.buildDeviceInfo); }),
+            ...(props.centralEnabled ? [api.list_networks().then(value => { if (current()) networks.value = value; })] : []),
+        ]);
+        if (current()) loadError.value = results.some(result => result.status === 'rejected');
+    } finally {
+        if (summaryRequestGeneration === generation) {
+            summaryRequestGeneration = undefined;
+            if (current()) refreshing.value = false;
+        }
+    }
 };
 watch(() => props.centralEnabled, () => loadSummary());
 watch([() => props.api, () => props.api.persistenceScope], () => {
@@ -88,7 +96,7 @@ const stats = computed(() => [
     <div class="console-page">
         <header class="page-heading">
             <div><h1>{{ t('web.main.dashboard') }}</h1></div>
-            <Button icon="pi pi-refresh" :label="t('web.console.refresh')" severity="secondary" outlined :loading="refreshing" @click="loadSummary" />
+            <Button icon="pi pi-refresh" :label="t('web.console.refresh')" severity="secondary" outlined :loading="refreshing" @click="loadSummary(true)" />
         </header>
         <Message v-if="loadError" severity="warn" :closable="false">{{ t('web.console.load_failed') }}</Message>
         <section class="console-panel summary-strip" :aria-label="t('web.main.dashboard')">

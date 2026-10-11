@@ -157,7 +157,23 @@ pub(crate) fn raw_hash(contents: &[u8]) -> String {
 
 fn semantic_hash(contents: &str) -> Option<String> {
     let parsed = TomlConfig::new_from_str(contents).ok()?;
-    Some(raw_hash(parsed.dump().as_bytes()))
+    config_semantic_hash(&parsed)
+}
+
+fn config_semantic_hash(config: &TomlConfig) -> Option<String> {
+    // A dump preserves user-supplied flag presence. For runtime comparison,
+    // resolve defaults only in this document, leaving the configuration and
+    // its management API projection untouched.
+    let mut normalized = toml::from_str::<toml::Table>(&config.dump()).ok()?;
+    normalized.insert(
+        "flags".to_owned(),
+        toml::Value::try_from(config.get_flags()).ok()?,
+    );
+    Some(raw_hash(toml::to_string(&normalized).ok()?.as_bytes()))
+}
+
+fn has_pending_config_change(contents: &str, active: Option<&TomlConfig>) -> bool {
+    semantic_hash(contents) != active.and_then(config_semantic_hash)
 }
 
 /// The revision fences file contents, permissions, enabled state and the
@@ -252,6 +268,7 @@ where
             status: "invalid".into(),
             ..Default::default()
         };
+        let mut active_config = None;
         let raw = match storage.read(&path).await {
             Ok(Some(raw)) => raw,
             Ok(None) => continue,
@@ -296,6 +313,7 @@ where
             entry.enabled = state.is_enabled(&id);
             if let Some(config) = manager.config(id) {
                 entry.active_raw_hash = Some(raw_hash(config.dump().as_bytes()));
+                active_config = Some(config);
             }
             owners.entry(id).or_default().push(key.clone());
         }
@@ -337,7 +355,8 @@ where
             entry.status = "ready".into();
             entry.network_name = config.get_network_identity().network_name;
             entry.source = config_source_to_rpc(config.get_network_config_source());
-            entry.pending_apply = entry.running && semantic_hash(text) != entry.active_raw_hash;
+            entry.pending_apply =
+                entry.running && has_pending_config_change(text, active_config.as_ref());
             entry.config = Some(network_config_from_toml(&config));
             entry.persisted_toml = Some(text.to_owned());
             if manager
@@ -528,5 +547,81 @@ mod tests {
         let two = "# comment\ninstance_id = '11111111-1111-1111-1111-111111111111'\n";
         assert_ne!(raw_hash(one.as_bytes()), raw_hash(two.as_bytes()));
         assert_eq!(semantic_hash(one), semantic_hash(two));
+
+        // Equivalent runtime behavior still represents a different on-disk
+        // revision, so an edit cannot bypass the raw-content fence.
+        let mut entry = PersistedConfigEntry {
+            entry_key: "one.toml".into(),
+            persisted_raw_hash: raw_hash(one.as_bytes()),
+            ..Default::default()
+        };
+        let revision = entry_revision("boot", &entry, 1);
+        entry.persisted_raw_hash = raw_hash(two.as_bytes());
+        assert_ne!(revision, entry_revision("boot", &entry, 1));
+    }
+
+    #[test]
+    fn semantic_hash_resolves_flag_defaults_and_distinguishes_actual_changes() {
+        let base = "instance_id='11111111-1111-1111-1111-111111111111'\n";
+        let hash = semantic_hash(base).unwrap();
+        for defaults in [
+            "default_protocol = 'udp'",
+            "default_protocol = ''",
+            "enable_encryption = true",
+            "disable_p2p = false",
+            "close_redundant_conns_when_disguised = true",
+            "mtu = 1380",
+            "instance_recv_bps_limit = '18446744073709551615'",
+            "dev_name = ''",
+        ] {
+            assert_eq!(
+                hash,
+                semantic_hash(&format!("{base}[flags]\n{defaults}")).unwrap(),
+                "{defaults} should retain the default runtime behavior"
+            );
+        }
+        for changed in [
+            "default_protocol = 'tcp'",
+            "enable_encryption = false",
+            "close_redundant_conns_when_disguised = false",
+            "prefer_wss_http3_for_p2p = true",
+            "mtu = 0",
+            "instance_recv_bps_limit = 0",
+            "socket_mark = 0",
+        ] {
+            assert_ne!(
+                hash,
+                semantic_hash(&format!("{base}[flags]\n{changed}")).unwrap(),
+                "{changed} should change the runtime behavior"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_hash_matches_active_flags_without_mutating_patch_presence() {
+        let contents =
+            "instance_id='11111111-1111-1111-1111-111111111111'\n[flags]\ndisable_p2p=false\n";
+        let persisted = TomlConfig::new_from_str(contents).unwrap();
+        let before_patch = persisted.get_flags_patch();
+        let before_dump = persisted.dump();
+        let active = TomlConfig::new_from_str(contents).unwrap();
+        active.set_flags(active.get_flags());
+        assert_ne!(before_patch, active.get_flags_patch());
+        assert_eq!(
+            semantic_hash(contents),
+            config_semantic_hash(&active),
+            "pending-apply compares both configurations after resolving defaults"
+        );
+        assert!(!has_pending_config_change(contents, Some(&active)));
+        for changed in ["close_redundant_conns_when_disguised = false", "mtu = 0"] {
+            let changed = format!("{contents}{changed}\n");
+            assert!(has_pending_config_change(&changed, Some(&active)));
+        }
+        assert_eq!(before_patch, persisted.get_flags_patch());
+        assert_eq!(before_dump, persisted.dump());
+        let projected = network_config_from_toml(&persisted);
+        assert_eq!(projected.disable_p2p, Some(false));
+        assert_eq!(projected.mtu, None);
+        assert_eq!(projected.disable_encryption, None);
     }
 }

@@ -2,21 +2,36 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_NETWORK_CONFIG, normalizeNetworkConfig, toBackendNetworkConfig } from '../src/types/network'
 
 describe('P2P configuration defaults', () => {
-  it('defaults new and legacy configurations to passive disguise use, UDP and enabled cleanup', () => {
+  it('defaults new configurations to passive disguise use, UDP and enabled cleanup', () => {
     const config = DEFAULT_NETWORK_CONFIG()
     expect(config.prefer_wss_http3_for_p2p).toBe(false)
+    expect(config.only_use_wss_http3_for_hole_punching).toBe(false)
+    expect(config.disable_wss_http3_for_p2p).toBe(false)
     expect(config.p2p_prefer_protocol).toBe('udp')
     expect(config.close_redundant_conns_when_disguised).toBe(true)
+  })
 
+  it('keeps legacy settings unset through normalization, saving and readback', () => {
+    const config = DEFAULT_NETWORK_CONFIG()
     delete config.prefer_wss_http3_for_p2p
+    delete config.only_use_wss_http3_for_hole_punching
+    delete config.disable_wss_http3_for_p2p
     delete config.p2p_prefer_protocol
     delete config.close_redundant_conns_when_disguised
     const restored = normalizeNetworkConfig(config)
-    expect(restored.prefer_wss_http3_for_p2p).toBe(false)
-    expect(restored.p2p_prefer_protocol).toBe('udp')
-    expect(restored.only_use_wss_http3_for_hole_punching).toBe(false)
-    expect(restored.disable_wss_http3_for_p2p).toBe(false)
-    expect(restored.close_redundant_conns_when_disguised).toBe(true)
+    const saved = toBackendNetworkConfig(restored)
+    const readback = normalizeNetworkConfig(saved)
+    for (const field of [
+      'prefer_wss_http3_for_p2p',
+      'only_use_wss_http3_for_hole_punching',
+      'disable_wss_http3_for_p2p',
+      'p2p_prefer_protocol',
+      'close_redundant_conns_when_disguised',
+    ] as const) {
+      expect(restored[field], `${field} should remain unset in the form`).toBeUndefined()
+      expect(saved, `${field} should not be written`).not.toHaveProperty(field)
+      expect(readback[field], `${field} should remain unset on readback`).toBeUndefined()
+    }
   })
 
   it.each([

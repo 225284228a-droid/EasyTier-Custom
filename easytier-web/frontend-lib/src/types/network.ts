@@ -8,6 +8,8 @@ import {
   type VpnPortalClientConfig,
   type VpnPortalConfig,
 } from '../generated/proto/api_manage'
+import { ScalarType } from '@protobuf-ts/runtime'
+import type { FlagMeta } from '../generated/proto/annotations'
 import {
   VpnPortalClientState,
   VpnPortalInfo as VpnPortalInfoPb,
@@ -27,6 +29,7 @@ import {
 } from '../generated/proto/acl'
 import {
   CompressionAlgoPb,
+  Flags as FlagsPb,
   NatType,
   type PeerFeatureFlag,
   type SecureModeConfig,
@@ -88,6 +91,68 @@ function emptyAcl(): Acl {
   }
 }
 
+/** A flag of `common.Flags` that carries an annotation. */
+interface AnnotatedFlag {
+  /** The name the management API uses for the flag. */
+  field: string
+  /** Whether the schema types the flag as a boolean. */
+  boolean: boolean
+  meta: FlagMeta
+}
+
+const annotatedFlags: AnnotatedFlag[] = FlagsPb.fields.flatMap((flag) => {
+  const meta = flag.options?.['easytier.flag'] as FlagMeta | undefined
+  if (!meta) return []
+
+  return [{
+    field: meta.api?.field ?? flag.name,
+    boolean: flag.kind === 'scalar' && flag.T === ScalarType.BOOL,
+    meta,
+  }]
+})
+
+/** The value a flag's annotation declares, as the flag itself is typed. */
+function declaredValue(flag: AnnotatedFlag): boolean {
+  const declared = flag.meta.default === 'true'
+
+  return flag.meta.api?.negate ? !declared : declared
+}
+
+/**
+ * The value a flag runs with when the configuration does not state one, so a
+ * form shows what an unset flag means instead of showing it as off.
+ */
+export function defaultFlagValue(field: keyof NetworkConfig): boolean {
+  const flag = annotatedFlags.find((flag) => flag.field === field)
+
+  return flag ? declaredValue(flag) : false
+}
+
+/** The flags the management API carries, so a form's value reaches the backend. */
+export function apiCarries(field: string): boolean {
+  return NetworkConfigPb.fields.some((declared) => declared.name === field)
+}
+
+/**
+ * The flags a config form offers as checkboxes, in schema order: every boolean
+ * flag the message declares that the management API carries, less the deprecated ones.
+ */
+export function formFlags(): { field: keyof NetworkConfig; help: string }[] {
+  return annotatedFlags
+    .filter((flag) => flag.boolean && !flag.meta.deprecated && apiCarries(flag.field))
+    .map((flag) => ({ field: flag.field as keyof NetworkConfig, help: `${flag.field}_help` }))
+}
+
+/** The value the schema declares for every boolean flag, by form field. */
+function newFlagValues(): Record<string, boolean> {
+  const values: Record<string, boolean> = {}
+  for (const flag of annotatedFlags) {
+    if (flag.boolean) values[flag.field] = declaredValue(flag)
+  }
+
+  return values
+}
+
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
   return {
     ...NetworkConfigPb.create(),
@@ -115,37 +180,11 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
     ],
-    latency_first: false,
+    ...newFlagValues(),
     dev_name: '',
 
-    use_smoltcp: false,
-    disable_ipv6: false,
     ipv6_public_addr_auto: false,
-    enable_kcp_proxy: false,
-    disable_kcp_input: false,
-    enable_quic_proxy: false,
-    disable_quic_input: false,
-    disable_p2p: false,
-    p2p_only: false,
-    lazy_p2p: false,
-    bind_device: true,
-    no_tun: false,
-    enable_exit_node: false,
-    relay_all_peer_rpc: false,
-    need_p2p: false,
-    multi_thread: true,
-    proxy_forward_by_system: false,
-    disable_encryption: false,
-    disable_tcp_hole_punching: false,
-    disable_udp_hole_punching: false,
-    only_use_wss_http3_for_hole_punching: false,
-    prefer_wss_http3_for_p2p: false,
-    disable_wss_http3_for_p2p: false,
     p2p_prefer_protocol: 'udp',
-    close_redundant_conns_when_disguised: true,
-    disable_upnp: false,
-    enable_udp_broadcast_relay: false,
-    disable_sym_hole_punching: false,
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,
@@ -156,8 +195,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mtu: null,
     instance_recv_bps_limit: null,
     mapped_listeners: [],
-    enable_magic_dns: false,
-    enable_private_mode: false,
     port_forwards: [],
     acl: emptyAcl(),
   }
@@ -254,7 +291,7 @@ function normalizeUint64ForInput(v: bigint | number | string | null | undefined)
 
   try {
     const n = typeof v === 'bigint' ? v : BigInt(v)
-    if (n === 0n || n > UINT64_MAX) return null
+    if (n < 0n || n > UINT64_MAX) return null
     return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n.toString()
   } catch {
     return null
@@ -268,10 +305,10 @@ function normalizeNumberForInput(v: number | string | null | undefined): number 
 }
 
 function toBackendUint64(v: number | bigint | string | null | undefined): bigint | undefined {
-  if (v == null || v === '') return undefined
+  if (v == null || (typeof v === 'string' && v.trim() === '')) return undefined
   try {
     const n = typeof v === 'bigint' ? v : BigInt(v)
-    return n > 0n && n <= UINT64_MAX ? n : undefined
+    return n >= 0n && n <= UINT64_MAX ? n : undefined
   } catch {
     return undefined
   }
@@ -326,11 +363,6 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
-  normalized.prefer_wss_http3_for_p2p ??= false
-  normalized.disable_wss_http3_for_p2p ??= false
-  normalized.only_use_wss_http3_for_hole_punching ??= false
-  normalized.p2p_prefer_protocol ??= 'udp'
-  normalized.close_redundant_conns_when_disguised ??= true
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
     normalized.vpn_portal_config.clients.forEach((client) => {
