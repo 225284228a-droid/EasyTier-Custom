@@ -22,8 +22,8 @@ use easytier::proto::{
     api::config::ConfigRpc,
     api::manage::{
         CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
-        GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest, MyNodeInfo,
-        RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
+        DeleteNetworkInstanceResponse, GetNetworkInstanceConfigRequest, ListNetworkInstanceRequest,
+        MyNodeInfo, RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
         SaveNetworkInstanceConfigRequest, SetNetworkInstanceEnabledRequest, WebClientService,
     },
     rpc_types::controller::BaseController,
@@ -31,8 +31,8 @@ use easytier::proto::{
 };
 use easytier_core::{
     management::remote_client::{
-        self, ListNetworkInstanceIdsJsonResp, PersistentConfig, RemoteClientError,
-        RemoteClientManager, Storage as RemoteStorage,
+        self, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
+        Storage as RemoteStorage,
     },
     socket::SocketListener,
     tunnel::{Tunnel, web_security},
@@ -954,82 +954,63 @@ impl
         self.storage.db()
     }
 
-    async fn handle_collect_network_info(
+    async fn runtime_mutation_guard(
         &self,
-        identify: (UserIdInDb, uuid::Uuid),
-        inst_ids: Option<Vec<uuid::Uuid>>,
-    ) -> Result<CollectNetworkInfoResponse, RemoteClientError<sea_orm::DbErr>> {
-        let full_snapshot = inst_ids.as_ref().is_none_or(Vec::is_empty);
-        let client = self
-            .get_rpc_client(identify)
-            .ok_or(RemoteClientError::ClientNotFound)?;
-        let response = client
-            .collect_network_info(
-                BaseController::default(),
-                CollectNetworkInfoRequest {
-                    inst_ids: inst_ids
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
-                },
-            )
-            .await?;
+        identify: &(UserIdInDb, uuid::Uuid),
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        Some(
+            self.storage
+                .runtime_mutation_lock(*identify)
+                .lock_owned()
+                .await,
+        )
+    }
+
+    async fn manages_local_configs(&self, identify: &(UserIdInDb, uuid::Uuid)) -> bool {
+        self.supports_local_configs(identify).await
+    }
+
+    async fn on_network_info_collected(
+        &self,
+        identify: &(UserIdInDb, uuid::Uuid),
+        full_snapshot: bool,
+        response: &mut CollectNetworkInfoResponse,
+    ) {
         if full_snapshot
             && let Some(cache) = &self.city_geo_cache
             && let Some(session) = self.get_session_by_machine_id(identify.0, &identify.1)
         {
-            Self::apply_network_location_snapshot(
-                &session,
-                &response,
-                cache,
-                self.geoip_db.clone(),
-            )
-            .await;
+            Self::apply_network_location_snapshot(&session, response, cache, self.geoip_db.clone())
+                .await;
         }
-        Ok(response)
     }
 
-    async fn handle_list_network_instance_ids(
+    async fn verify_network_instance_stopped(
+        &self,
+        _identify: &(UserIdInDb, uuid::Uuid),
+        inst_id: &uuid::Uuid,
+        response: &DeleteNetworkInstanceResponse,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        if response.remain_inst_ids.contains(&(*inst_id).into()) {
+            return Err(RemoteClientError::Other(format!(
+                "network instance {inst_id} could not be stopped"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn list_network_instance_ids_for_local_config(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
     ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<sea_orm::DbErr>> {
-        if !self.supports_local_configs(&identify).await {
-            let client = self
-                .get_rpc_client(identify)
-                .ok_or(RemoteClientError::ClientNotFound)?;
-            let ret = client
-                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-                .await?;
-
-            let running_inst_ids = ret.inst_ids.clone().into_iter().collect();
-
-            // collect networks that are disabled
-            let disabled_inst_ids = self
-                .get_storage()
-                .list_network_configs(identify, remote_client::ListNetworkProps::All)
-                .await
-                .map_err(RemoteClientError::PersistentError)?
-                .iter()
-                .map(|x| {
-                    Into::<easytier::proto::common::Uuid>::into(x.get_network_inst_id().to_string())
-                })
-                .filter(|id| !ret.inst_ids.contains(id))
-                .collect::<Vec<_>>();
-
-            return Ok(ListNetworkInstanceIdsJsonResp {
-                running_inst_ids,
-                disabled_inst_ids,
-                runtime_capabilities: ret.runtime_capabilities,
-            });
-        }
-
         let client = self
             .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
         let ret = client
             .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
             .await?;
+        // The node's own catalog reports running and disabled instances; the
+        // web database only mirrors read-only observations for these nodes.
         Ok(ListNetworkInstanceIdsJsonResp {
             running_inst_ids: ret.inst_ids.into_iter().collect(),
             disabled_inst_ids: ret.disabled_inst_ids.into_iter().collect(),
@@ -1037,48 +1018,13 @@ impl
         })
     }
 
-    async fn handle_run_network_instance_with_source(
+    async fn run_network_instance_for_local_config(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         config: easytier::proto::api::manage::NetworkConfig,
-        save: bool,
+        _save: bool,
         source: ConfigSource,
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
-        let _mutation = self
-            .storage
-            .runtime_mutation_lock(identify)
-            .lock_owned()
-            .await;
-        if !self.supports_local_configs(&identify).await {
-            let client = self
-                .get_rpc_client(identify)
-                .ok_or(RemoteClientError::ClientNotFound)?;
-            let resp = client
-                .run_network_instance(
-                    BaseController::default(),
-                    RunNetworkInstanceRequest {
-                        inst_id: None,
-                        config: Some(config.clone()),
-                        overwrite: true,
-                        source: config_source_to_rpc(source),
-                    },
-                )
-                .await?;
-
-            if save {
-                self.get_storage()
-                    .insert_or_update_user_network_config(
-                        identify,
-                        resp.inst_id.unwrap_or_default().into(),
-                        config,
-                        source,
-                    )
-                    .await
-                    .map_err(RemoteClientError::PersistentError)?;
-            }
-            return Ok(());
-        }
-
         let client = self
             .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -1184,125 +1130,41 @@ impl
         Ok(())
     }
 
-    async fn handle_update_network_state(
+    async fn update_network_state_for_local_config(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         inst_id: uuid::Uuid,
         disabled: bool,
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
-        let _mutation = self
-            .storage
-            .runtime_mutation_lock(identify)
-            .lock_owned()
-            .await;
         let client = self
             .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
+        // Both directions go through set_network_instance_enabled. Enable
+        // restores the instance from its on-disk config file, mirroring the
+        // disable path and avoiding the redundant NetworkConfig<->TOML
+        // round-trip + file rewrite that run_network_instance(overwrite=true)
+        // would perform.
+        client
+            .set_network_instance_enabled(
+                BaseController::default(),
+                SetNetworkInstanceEnabledRequest {
+                    inst_id: Some(inst_id.into()),
+                    enabled: !disabled,
 
-        if !self.supports_local_configs(&identify).await {
-            let (cfg, source) = self
-                .handle_get_network_config_with_source(identify, inst_id)
-                .await?;
-
-            if disabled {
-                self.get_storage()
-                    .insert_or_update_user_network_config(identify, inst_id, cfg.clone(), source)
-                    .await
-                    .map_err(RemoteClientError::PersistentError)?;
-
-                let response = client
-                    .delete_network_instance(
-                        BaseController::default(),
-                        DeleteNetworkInstanceRequest {
-                            inst_ids: vec![inst_id.into()],
-
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-                if response.remain_inst_ids.contains(&inst_id.into()) {
-                    return Err(RemoteClientError::Other(format!(
-                        "network instance {inst_id} could not be stopped"
-                    )));
-                }
-            } else {
-                client
-                    .run_network_instance(
-                        BaseController::default(),
-                        RunNetworkInstanceRequest {
-                            inst_id: Some(inst_id.into()),
-                            config: Some(cfg),
-                            overwrite: true,
-                            source: config_source_to_rpc(source),
-                        },
-                    )
-                    .await?;
-            }
-
-            self.get_storage()
-                .update_network_config_state(identify, inst_id, disabled)
-                .await
-                .map_err(RemoteClientError::PersistentError)?;
-            return Ok(());
-        }
-
-        if disabled {
-            client
-                .set_network_instance_enabled(
-                    BaseController::default(),
-                    SetNetworkInstanceEnabledRequest {
-                        inst_id: Some(inst_id.into()),
-                        enabled: false,
-
-                        ..Default::default()
-                    },
-                )
-                .await?;
-        } else {
-            // Enable restores the instance from its on-disk config file. This
-            // mirrors the disable path (which calls set_network_instance_enabled
-            // with enabled=false) and avoids the redundant NetworkConfig<->TOML
-            // round-trip + file rewrite that run_network_instance(overwrite=true)
-            // would perform.
-            client
-                .set_network_instance_enabled(
-                    BaseController::default(),
-                    SetNetworkInstanceEnabledRequest {
-                        inst_id: Some(inst_id.into()),
-                        enabled: true,
-
-                        ..Default::default()
-                    },
-                )
-                .await?;
-        }
+                    ..Default::default()
+                },
+            )
+            .await?;
         Ok(())
     }
 
-    async fn handle_save_network_config_with_source(
+    async fn save_network_config_for_local_config(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         inst_id: uuid::Uuid,
         config: easytier::proto::api::manage::NetworkConfig,
         source: ConfigSource,
     ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
-        let _mutation = self
-            .storage
-            .runtime_mutation_lock(identify)
-            .lock_owned()
-            .await;
-        if !self.supports_local_configs(&identify).await {
-            self.get_storage()
-                .insert_or_update_user_network_config(identify, inst_id, config, source)
-                .await
-                .map_err(RemoteClientError::PersistentError)?;
-            self.get_storage()
-                .update_network_config_state(identify, inst_id, true)
-                .await
-                .map_err(RemoteClientError::PersistentError)?;
-            return Ok(());
-        }
-
         let client = self
             .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -1319,7 +1181,7 @@ impl
         Ok(())
     }
 
-    async fn handle_get_network_config_with_source(
+    async fn get_network_config_for_local_config(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         inst_id: uuid::Uuid,
@@ -1327,51 +1189,6 @@ impl
         (easytier::proto::api::manage::NetworkConfig, ConfigSource),
         RemoteClientError<sea_orm::DbErr>,
     > {
-        if !self.supports_local_configs(&identify).await {
-            if let Some(client) = self.get_rpc_client(identify)
-                && let Ok(resp) = client
-                    .get_network_instance_config(
-                        BaseController::default(),
-                        GetNetworkInstanceConfigRequest {
-                            inst_id: Some(inst_id.into()),
-                        },
-                    )
-                    .await
-                && let Some(config) = resp.config
-            {
-                let source = if let Some(source) = config_source_from_rpc(resp.source) {
-                    source
-                } else {
-                    self.get_storage()
-                        .get_network_config(identify, &inst_id.to_string())
-                        .await
-                        .map_err(RemoteClientError::PersistentError)?
-                        .map(|cfg| cfg.get_runtime_network_config_source())
-                        .unwrap_or(ConfigSource::User)
-                };
-                return Ok((config, source));
-            }
-
-            let inst_id = inst_id.to_string();
-
-            let db_row = self
-                .get_storage()
-                .get_network_config(identify, &inst_id)
-                .await
-                .map_err(RemoteClientError::PersistentError)?
-                .ok_or(RemoteClientError::NotFound(format!(
-                    "No such network instance: {}",
-                    inst_id
-                )))?;
-
-            return Ok((
-                db_row
-                    .get_network_config()
-                    .map_err(RemoteClientError::PersistentError)?,
-                db_row.get_runtime_network_config_source(),
-            ));
-        }
-
         let client = self
             .get_rpc_client(identify)
             .ok_or(RemoteClientError::ClientNotFound)?;

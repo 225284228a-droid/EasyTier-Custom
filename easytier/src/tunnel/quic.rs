@@ -9,7 +9,6 @@ use easytier_core::{
         protocol::{ServerProtocolAdmission, ServerTunnelAcceptor},
         transport::ConnectedUdpSession,
     },
-    foundation::bandwidth::{TransmissionWindow, TransmissionWindowSource},
     socket::udp::UdpSession,
     tunnel::{
         Tunnel, TunnelError,
@@ -18,23 +17,17 @@ use easytier_core::{
     },
 };
 use quinn::{
-    AsyncUdpSocket, ClientConfig, Connecting, Connection, ConnectionError, Endpoint,
-    EndpointConfig, Incoming, ServerConfig, TransportConfig, congestion::BbrConfig,
-    default_runtime,
+    AsyncUdpSocket, ClientConfig, Connection, ConnectionError, Endpoint, EndpointConfig,
+    ServerConfig, TransportConfig, congestion::BbrConfig,
 };
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{
-    sync::{
-        OwnedSemaphorePermit, Semaphore,
-        mpsc::{Receiver, Sender, channel},
-    },
-    task::JoinSet,
-};
-use tokio_util::task::AbortOnDropHandle;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+pub(crate) mod session_common;
 mod session_socket;
 #[cfg(test)]
 pub(crate) mod session_tests;
+pub(crate) use session_common::{ConnWrapper, window_source};
 pub(crate) use session_socket::QuicUdpSessionSocket;
 
 // region config
@@ -437,40 +430,6 @@ pub(crate) async fn connect_with_etq1(
 }
 //endregion
 
-const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
-
-struct ConnWrapper {
-    conn: Connection,
-    _endpoint: Endpoint,
-}
-
-#[derive(Debug)]
-struct QuicWindowSource(Connection);
-
-impl TransmissionWindowSource for QuicWindowSource {
-    fn transmission_window(&self) -> Option<TransmissionWindow> {
-        if self.0.close_reason().is_some() {
-            return None;
-        }
-        let path = self.0.stats().path;
-        Some(TransmissionWindow {
-            congestion_window_bytes: path.cwnd,
-            peer_receive_window_bytes: None,
-            rtt: path.rtt,
-        })
-    }
-}
-
-pub(crate) fn window_source(connection: &Connection) -> Arc<dyn TransmissionWindowSource> {
-    Arc::new(QuicWindowSource(connection.clone()))
-}
-
-impl Drop for ConnWrapper {
-    fn drop(&mut self) {
-        self.conn.close(0u32.into(), b"done");
-    }
-}
-
 pub(crate) async fn upgrade_connected(
     connected: ConnectedUdpSession,
     remote_url: url::Url,
@@ -478,11 +437,7 @@ pub(crate) async fn upgrade_connected(
     let socket = Arc::new(QuicUdpSessionSocket::new(connected)?);
     let local_addr = socket.local_addr()?;
     let remote_addr = socket.peer_addr();
-    let runtime = default_runtime().ok_or(TunnelError::InternalError(
-        "no async runtime found".to_owned(),
-    ))?;
-    let mut endpoint =
-        Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)?;
+    let mut endpoint = session_common::build_session_endpoint(socket, None, endpoint_config())?;
     endpoint.set_default_client_config(client_config());
     let connection = connect_with_etq1(&endpoint, remote_addr, "localhost").await?;
     let (write, read) = connection
@@ -490,10 +445,7 @@ pub(crate) async fn upgrade_connected(
         .await
         .with_context(|| "open_bi failed")?;
     let resolved_remote_addr = connection.remote_address();
-    let connection = Arc::new(ConnWrapper {
-        conn: connection,
-        _endpoint: endpoint,
-    });
+    let connection = Arc::new(ConnWrapper::new(connection, endpoint));
     let bandwidth_source = window_source(&connection.conn);
     let info = TunnelInfo {
         tunnel_type: "quic".to_owned(),
@@ -513,121 +465,8 @@ pub(crate) async fn upgrade_connected(
     ))
 }
 
-struct PendingQuicSessionTunnel {
-    connecting: Connecting,
-    endpoint: Endpoint,
-    local_url: url::Url,
-    remote_addr: SocketAddr,
-    _handshake_permit: OwnedSemaphorePermit,
-}
-
-async fn finish_quic_session_tunnel(
-    pending: PendingQuicSessionTunnel,
-) -> Result<Box<dyn Tunnel>, TunnelError> {
-    let PendingQuicSessionTunnel {
-        connecting,
-        endpoint,
-        local_url,
-        remote_addr,
-        _handshake_permit,
-    } = pending;
-    let connection = tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connecting)
-        .await
-        .map_err(TunnelError::Timeout)?
-        .with_context(|| "accept connection failed")?;
-    let (write, read) =
-        tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connection.accept_bi())
-            .await
-            .map_err(TunnelError::Timeout)?
-            .with_context(|| "accept_bi failed")?;
-    let connection = Arc::new(ConnWrapper {
-        conn: connection,
-        _endpoint: endpoint,
-    });
-    let bandwidth_source = window_source(&connection.conn);
-    let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "quic");
-    let info = TunnelInfo {
-        tunnel_type: "quic".to_owned(),
-        local_addr: Some(local_url.into()),
-        remote_addr: Some(remote_url.clone().into()),
-        resolved_remote_addr: Some(remote_url.into()),
-    };
-    Ok(Box::new(
-        TunnelWrapper::new(
-            FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
-            FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
-            Some(info),
-        )
-        .with_bandwidth_source(Some(bandwidth_source)),
-    ))
-}
-
-async fn run_quic_accepted_session(
-    endpoint: Endpoint,
-    local_url: url::Url,
-    handshakes: Arc<Semaphore>,
-    completed: Sender<Result<Box<dyn Tunnel>, TunnelError>>,
-) {
-    let mut complete_tasks = JoinSet::new();
-    let mut pending_incoming: Option<Incoming> = None;
-    loop {
-        tokio::select! {
-            Some(result) = complete_tasks.join_next(), if !complete_tasks.is_empty() => {
-                let result = match result {
-                    Ok(result) => result,
-                    Err(error) => Err(TunnelError::InternalError(
-                        format!("quic accept task failed: {error}"),
-                    )),
-                };
-                if completed.send(result).await.is_err() {
-                    break;
-                }
-            }
-            incoming = endpoint.accept(), if pending_incoming.is_none() => {
-                match incoming {
-                    Some(incoming) => pending_incoming = Some(incoming),
-                    None => break,
-                }
-            }
-            permit = handshakes.clone().acquire_owned(), if pending_incoming.is_some() => {
-                let Ok(handshake_permit) = permit else {
-                    break;
-                };
-                let incoming = pending_incoming.take().unwrap();
-                let remote_addr = incoming.remote_address();
-                match incoming.accept() {
-                    Ok(connecting) => {
-                        complete_tasks.spawn(finish_quic_session_tunnel(
-                            PendingQuicSessionTunnel {
-                                connecting,
-                                endpoint: endpoint.clone(),
-                                local_url: local_url.clone(),
-                                remote_addr,
-                                _handshake_permit: handshake_permit,
-                            },
-                        ));
-                    }
-                    Err(error) => {
-                        drop(handshake_permit);
-                        if completed
-                            .send(Err(anyhow::Error::new(error)
-                                .context("quic accept connection failed")
-                                .into()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub(crate) struct QuicAcceptedSession {
-    completed: Receiver<Result<Box<dyn Tunnel>, TunnelError>>,
-    _accept_task: AbortOnDropHandle<()>,
+    inner: session_common::AcceptedSession,
 }
 
 impl QuicAcceptedSession {
@@ -650,38 +489,20 @@ impl QuicAcceptedSession {
             session,
             active_session,
         )?);
-        let runtime = default_runtime().ok_or(TunnelError::InternalError(
-            "no async runtime found".to_owned(),
-        ))?;
-        let endpoint = Endpoint::new_with_abstract_socket(
-            endpoint_config(),
-            Some(server_config()),
+        let endpoint = session_common::build_session_endpoint(
             socket,
-            runtime,
+            Some(server_config()),
+            endpoint_config(),
         )?;
-        let (completed_tx, completed) = channel(100);
-        let accept_task = AbortOnDropHandle::new(tokio::spawn(run_quic_accepted_session(
-            endpoint,
-            local_url,
-            handshakes,
-            completed_tx,
-        )));
         Ok(Self {
-            completed,
-            _accept_task: accept_task,
+            inner: session_common::AcceptedSession::start(
+                endpoint, local_url, "quic", "QUIC", handshakes,
+            ),
         })
     }
 
     pub(crate) async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        while let Some(result) = self.completed.recv().await {
-            match result {
-                Ok(tunnel) => return Ok(tunnel),
-                Err(error) => {
-                    tracing::warn!(?error, "QUIC session connection failed");
-                }
-            }
-        }
-        Err(TunnelError::Shutdown)
+        self.inner.accept().await
     }
 }
 
@@ -699,6 +520,7 @@ pub(crate) mod tests {
     use easytier_core::{
         connectivity::protocol::ServerProtocolAdmissionController, socket::SocketListener,
     };
+    use quinn::default_runtime;
 
     use super::session_tests::{
         accept_two_connections_on_same_session, assert_second_connection_survives_first_close,

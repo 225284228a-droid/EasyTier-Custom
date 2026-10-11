@@ -1,5 +1,5 @@
 use super::FromUrl;
-use super::insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config};
+use super::insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config, sni_from_url};
 use crate::tunnel::common::bind;
 use crate::{proto::common::TunnelInfo, socket::tcp::RuntimeTcpSocket};
 use anyhow::Context as _;
@@ -199,15 +199,7 @@ impl WssDisguise {
     /// it) to "localhost". An explicitly configured but empty `sni` param is
     /// ignored, matching the http3 side.
     pub fn sni(&self, url: &url::Url) -> String {
-        self.sni
-            .clone()
-            .filter(|sni| !sni.is_empty())
-            .unwrap_or_else(|| match url.host() {
-                Some(url::Host::Domain(host)) => host.to_owned(),
-                Some(url::Host::Ipv4(host)) => host.to_string(),
-                Some(url::Host::Ipv6(host)) => host.to_string(),
-                None => "localhost".to_owned(),
-            })
+        sni_from_url(url, self.sni.as_deref())
     }
 
     /// Builds the HTTP request target (scheme/host/path/query) for the

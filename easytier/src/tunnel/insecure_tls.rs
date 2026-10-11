@@ -82,3 +82,20 @@ pub(crate) fn get_insecure_tls_cert<'a>() -> (
     let private_key = rustls::pki_types::PrivatePkcs8KeyDer::from(private_key);
     (vec![cert_der], private_key.into())
 }
+
+/// Resolves the TLS server name for a disguised tunnel: a non-empty `sni`
+/// override wins, otherwise the URL host is used. The host is stringified
+/// without IPv6 brackets so the value is a valid
+/// [`rustls::pki_types::ServerName`]; an absent host degrades to
+/// `localhost` instead of failing the handshake.
+pub(crate) fn sni_from_url(url: &url::Url, sni_override: Option<&str>) -> String {
+    match sni_override {
+        Some(sni) if !sni.is_empty() => sni.to_owned(),
+        _ => match url.host() {
+            Some(url::Host::Domain(host)) => host.to_owned(),
+            Some(url::Host::Ipv4(host)) => host.to_string(),
+            Some(url::Host::Ipv6(host)) => host.to_string(),
+            None => "localhost".to_owned(),
+        },
+    }
+}

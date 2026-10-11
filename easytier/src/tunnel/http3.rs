@@ -26,24 +26,15 @@ use easytier_core::{
     },
 };
 use quinn::{
-    AsyncUdpSocket, ClientConfig, Connecting, Connection, Endpoint, EndpointConfig, Incoming,
-    ServerConfig, TransportConfig, crypto::rustls::QuicClientConfig,
-    crypto::rustls::QuicServerConfig, default_runtime,
+    AsyncUdpSocket, ClientConfig, EndpointConfig, ServerConfig, TransportConfig,
+    crypto::rustls::QuicClientConfig, crypto::rustls::QuicServerConfig,
 };
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{
-    sync::{
-        OwnedSemaphorePermit, Semaphore,
-        mpsc::{Receiver, Sender, channel},
-    },
-    task::JoinSet,
-};
-use tokio_util::task::AbortOnDropHandle;
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use super::insecure_tls::{SkipServerVerification, get_insecure_tls_cert};
+use super::insecure_tls::{SkipServerVerification, get_insecure_tls_cert, sni_from_url};
 pub(crate) use super::quic::QuicUdpSessionSocket as Http3UdpSessionSocket;
-
-const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
+use super::quic::{session_common, window_source};
 
 pub fn transport_config() -> Arc<TransportConfig> {
     super::quic::transport_config()
@@ -103,27 +94,11 @@ pub fn endpoint_config() -> EndpointConfig {
 /// Resolves the SNI for the connection: the `sni` query parameter overrides
 /// the URL host, which is what an SNI whitelist will see.
 fn resolve_sni(url: &url::Url) -> String {
-    url.query_pairs()
+    let param = url
+        .query_pairs()
         .find(|(key, _)| key == "sni")
-        .map(|(_, value)| value.into_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| match url.host() {
-            Some(url::Host::Domain(host)) => host.to_owned(),
-            Some(url::Host::Ipv4(host)) => host.to_string(),
-            Some(url::Host::Ipv6(host)) => host.to_string(),
-            None => "localhost".to_owned(),
-        })
-}
-
-struct ConnWrapper {
-    conn: Connection,
-    _endpoint: Endpoint,
-}
-
-impl Drop for ConnWrapper {
-    fn drop(&mut self) {
-        self.conn.close(0u32.into(), b"done");
-    }
+        .map(|(_, value)| value.into_owned());
+    sni_from_url(url, param.as_deref())
 }
 
 pub(crate) async fn upgrade_connected(
@@ -133,11 +108,7 @@ pub(crate) async fn upgrade_connected(
     let socket = Arc::new(Http3UdpSessionSocket::new(connected)?);
     let local_addr = socket.local_addr()?;
     let remote_addr = socket.peer_addr();
-    let runtime = default_runtime().ok_or(TunnelError::InternalError(
-        "no async runtime found".to_owned(),
-    ))?;
-    let mut endpoint =
-        Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)?;
+    let mut endpoint = session_common::build_session_endpoint(socket, None, endpoint_config())?;
     let client_config =
         client_config().map_err(|error| TunnelError::InternalError(error.to_string()))?;
     endpoint.set_default_client_config(client_config);
@@ -154,11 +125,8 @@ pub(crate) async fn upgrade_connected(
         .await
         .with_context(|| "open_bi failed")?;
     let resolved_remote_addr = connection.remote_address();
-    let connection = Arc::new(ConnWrapper {
-        conn: connection,
-        _endpoint: endpoint,
-    });
-    let bandwidth_source = super::quic::window_source(&connection.conn);
+    let connection = Arc::new(session_common::ConnWrapper::new(connection, endpoint));
+    let bandwidth_source = window_source(&connection.conn);
     let info = TunnelInfo {
         tunnel_type: "http3".to_owned(),
         local_addr: Some(
@@ -179,121 +147,8 @@ pub(crate) async fn upgrade_connected(
     ))
 }
 
-struct PendingHttp3SessionTunnel {
-    connecting: Connecting,
-    endpoint: Endpoint,
-    local_url: url::Url,
-    remote_addr: SocketAddr,
-    _handshake_permit: OwnedSemaphorePermit,
-}
-
-async fn finish_http3_session_tunnel(
-    pending: PendingHttp3SessionTunnel,
-) -> Result<Box<dyn Tunnel>, TunnelError> {
-    let PendingHttp3SessionTunnel {
-        connecting,
-        endpoint,
-        local_url,
-        remote_addr,
-        _handshake_permit,
-    } = pending;
-    let connection = tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connecting)
-        .await
-        .map_err(TunnelError::Timeout)?
-        .with_context(|| "accept connection failed")?;
-    let (write, read) =
-        tokio::time::timeout(QUIC_ACCEPT_COMPLETION_TIMEOUT, connection.accept_bi())
-            .await
-            .map_err(TunnelError::Timeout)?
-            .with_context(|| "accept_bi failed")?;
-    let connection = Arc::new(ConnWrapper {
-        conn: connection,
-        _endpoint: endpoint,
-    });
-    let bandwidth_source = super::quic::window_source(&connection.conn);
-    let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "http3");
-    let info = TunnelInfo {
-        tunnel_type: "http3".to_owned(),
-        local_addr: Some(local_url.into()),
-        remote_addr: Some(remote_url.clone().into()),
-        resolved_remote_addr: Some(remote_url.into()),
-    };
-    Ok(Box::new(
-        TunnelWrapper::new(
-            FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
-            FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
-            Some(info),
-        )
-        .with_bandwidth_source(Some(bandwidth_source)),
-    ))
-}
-
-async fn run_http3_accepted_session(
-    endpoint: Endpoint,
-    local_url: url::Url,
-    handshakes: Arc<Semaphore>,
-    completed: Sender<Result<Box<dyn Tunnel>, TunnelError>>,
-) {
-    let mut complete_tasks = JoinSet::new();
-    let mut pending_incoming: Option<Incoming> = None;
-    loop {
-        tokio::select! {
-            Some(result) = complete_tasks.join_next(), if !complete_tasks.is_empty() => {
-                let result = match result {
-                    Ok(result) => result,
-                    Err(error) => Err(TunnelError::InternalError(
-                        format!("http3 accept task failed: {error}"),
-                    )),
-                };
-                if completed.send(result).await.is_err() {
-                    break;
-                }
-            }
-            incoming = endpoint.accept(), if pending_incoming.is_none() => {
-                match incoming {
-                    Some(incoming) => pending_incoming = Some(incoming),
-                    None => break,
-                }
-            }
-            permit = handshakes.clone().acquire_owned(), if pending_incoming.is_some() => {
-                let Ok(handshake_permit) = permit else {
-                    break;
-                };
-                let incoming = pending_incoming.take().unwrap();
-                let remote_addr = incoming.remote_address();
-                match incoming.accept() {
-                    Ok(connecting) => {
-                        complete_tasks.spawn(finish_http3_session_tunnel(
-                            PendingHttp3SessionTunnel {
-                                connecting,
-                                endpoint: endpoint.clone(),
-                                local_url: local_url.clone(),
-                                remote_addr,
-                                _handshake_permit: handshake_permit,
-                            },
-                        ));
-                    }
-                    Err(error) => {
-                        drop(handshake_permit);
-                        if completed
-                            .send(Err(anyhow::Error::new(error)
-                                .context("http3 accept connection failed")
-                                .into()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub(crate) struct Http3AcceptedSession {
-    completed: Receiver<Result<Box<dyn Tunnel>, TunnelError>>,
-    _accept_task: AbortOnDropHandle<()>,
+    inner: session_common::AcceptedSession,
 }
 
 impl Http3AcceptedSession {
@@ -316,40 +171,19 @@ impl Http3AcceptedSession {
             session,
             active_session,
         )?);
-        let runtime = default_runtime().ok_or(TunnelError::InternalError(
-            "no async runtime found".to_owned(),
-        ))?;
         let server_config =
             server_config().map_err(|error| TunnelError::InternalError(error.to_string()))?;
-        let endpoint = Endpoint::new_with_abstract_socket(
-            endpoint_config(),
-            Some(server_config),
-            socket,
-            runtime,
-        )?;
-        let (completed_tx, completed) = channel(100);
-        let accept_task = AbortOnDropHandle::new(tokio::spawn(run_http3_accepted_session(
-            endpoint,
-            local_url,
-            handshakes,
-            completed_tx,
-        )));
+        let endpoint =
+            session_common::build_session_endpoint(socket, Some(server_config), endpoint_config())?;
         Ok(Self {
-            completed,
-            _accept_task: accept_task,
+            inner: session_common::AcceptedSession::start(
+                endpoint, local_url, "http3", "http3", handshakes,
+            ),
         })
     }
 
     pub(crate) async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        while let Some(result) = self.completed.recv().await {
-            match result {
-                Ok(tunnel) => return Ok(tunnel),
-                Err(error) => {
-                    tracing::warn!(?error, "http3 session connection failed");
-                }
-            }
-        }
-        Err(TunnelError::Shutdown)
+        self.inner.accept().await
     }
 }
 
@@ -374,6 +208,7 @@ mod tests {
         socket::udp::{UdpBindOptions, UdpSessionLayer, VirtualUdpSocket, VirtualUdpSocketFactory},
     };
     use futures::{SinkExt, StreamExt};
+    use quinn::{Endpoint, default_runtime};
 
     use crate::host_runtime::native_host_runtime;
 

@@ -6,9 +6,9 @@ use easytier_proto::{
     api::instance::{InstanceIdentifier, instance_identifier},
     api::manage::{
         CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
-        GetNetworkInstanceConfigRequest, ListNetworkInstanceMetaRequest,
-        ListNetworkInstanceRequest, NetworkConfig, NetworkMeta, RunNetworkInstanceRequest,
-        ValidateConfigRequest, ValidateConfigResponse, WebClientService,
+        DeleteNetworkInstanceResponse, GetNetworkInstanceConfigRequest,
+        ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, NetworkConfig, NetworkMeta,
+        RunNetworkInstanceRequest, ValidateConfigRequest, ValidateConfigResponse, WebClientService,
     },
     rpc_types::controller::BaseController,
 };
@@ -35,6 +35,47 @@ where
         &self,
         identify: T,
     ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>>;
+
+    /// Serializes device mutations for managers that own per-device locks.
+    /// The official flows hold no extra lock, so the default is `None`; the
+    /// guard returned here is held for the whole mutating handler.
+    async fn runtime_mutation_guard(
+        &self,
+        _identify: &T,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        None
+    }
+
+    /// Whether configuration state for this device is owned by the node
+    /// itself (persisted local-config management) instead of the central
+    /// database. Managers returning `true` must override the
+    /// `*_for_local_config` handlers they rely on; the default delegates
+    /// report an error.
+    async fn manages_local_configs(&self, _identify: &T) -> bool {
+        false
+    }
+
+    /// Called after a successful network info collection. `full_snapshot`
+    /// reports whether the request covered every instance of the device.
+    async fn on_network_info_collected(
+        &self,
+        _identify: &T,
+        _full_snapshot: bool,
+        _response: &mut CollectNetworkInfoResponse,
+    ) {
+    }
+
+    /// Verifies that a stop request actually stopped the instance before the
+    /// disabled state is recorded. The official flow accepts the RPC result
+    /// as-is.
+    async fn verify_network_instance_stopped(
+        &self,
+        _identify: &T,
+        _inst_id: &uuid::Uuid,
+        _response: &DeleteNetworkInstanceResponse,
+    ) -> Result<(), RemoteClientError<E>> {
+        Ok(())
+    }
 
     async fn handle_patch_vpn_portal_clients(
         &self,
@@ -161,6 +202,12 @@ where
         save: bool,
         source: ConfigSource,
     ) -> Result<(), RemoteClientError<E>> {
+        let _mutation = self.runtime_mutation_guard(&identify).await;
+        if self.manages_local_configs(&identify).await {
+            return self
+                .run_network_instance_for_local_config(identify, config, save, source)
+                .await;
+        }
         let client = self
             .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -191,34 +238,56 @@ where
         Ok(())
     }
 
+    /// Runs an instance on a node that owns its own configuration catalog.
+    /// Only called when [`Self::manages_local_configs`] returns `true`.
+    async fn run_network_instance_for_local_config(
+        &self,
+        _identify: T,
+        _config: NetworkConfig,
+        _save: bool,
+        _source: ConfigSource,
+    ) -> Result<(), RemoteClientError<E>> {
+        Err(RemoteClientError::Other(
+            "local-config management is not implemented by this manager".to_owned(),
+        ))
+    }
+
     async fn handle_collect_network_info(
         &self,
         identify: T,
         inst_ids: Option<Vec<uuid::Uuid>>,
     ) -> Result<CollectNetworkInfoResponse, RemoteClientError<E>> {
+        let full_snapshot = inst_ids.as_ref().is_none_or(Vec::is_empty);
         let client = self
-            .get_rpc_client(identify)
+            .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
-        let resp = client
+        let response = client
             .collect_network_info(
                 BaseController::default(),
                 CollectNetworkInfoRequest {
                     inst_ids: inst_ids
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|id| id.into())
+                        .map(Into::into)
                         .collect(),
                 },
             )
             .await?;
-
-        Ok(resp)
+        let mut response = response;
+        self.on_network_info_collected(&identify, full_snapshot, &mut response)
+            .await;
+        Ok(response)
     }
 
     async fn handle_list_network_instance_ids(
         &self,
         identify: T,
     ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<E>> {
+        if self.manages_local_configs(&identify).await {
+            return self
+                .list_network_instance_ids_for_local_config(identify)
+                .await;
+        }
         let client = self
             .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -246,6 +315,18 @@ where
             disabled_inst_ids,
             runtime_capabilities: ret.runtime_capabilities,
         })
+    }
+
+    /// Lists instance ids for a node that owns its own configuration
+    /// catalog. Only called when [`Self::manages_local_configs`] returns
+    /// `true`.
+    async fn list_network_instance_ids_for_local_config(
+        &self,
+        _identify: T,
+    ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<E>> {
+        Err(RemoteClientError::Other(
+            "local-config management is not implemented by this manager".to_owned(),
+        ))
     }
 
     async fn handle_remove_network_instances(
@@ -283,6 +364,12 @@ where
         inst_id: uuid::Uuid,
         disabled: bool,
     ) -> Result<(), RemoteClientError<E>> {
+        let _mutation = self.runtime_mutation_guard(&identify).await;
+        if self.manages_local_configs(&identify).await {
+            return self
+                .update_network_state_for_local_config(identify, inst_id, disabled)
+                .await;
+        }
         let client = self
             .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
@@ -302,7 +389,7 @@ where
                 .await
                 .map_err(RemoteClientError::PersistentError)?;
 
-            client
+            let response = client
                 .delete_network_instance(
                     BaseController::default(),
                     DeleteNetworkInstanceRequest {
@@ -310,6 +397,8 @@ where
                         expected_revision: None,
                     },
                 )
+                .await?;
+            self.verify_network_instance_stopped(&identify, &inst_id, &response)
                 .await?;
         } else {
             client
@@ -331,6 +420,20 @@ where
             .map_err(RemoteClientError::PersistentError)?;
 
         Ok(())
+    }
+
+    /// Enables or disables an instance on a node that owns its own
+    /// configuration catalog. Only called when
+    /// [`Self::manages_local_configs`] returns `true`.
+    async fn update_network_state_for_local_config(
+        &self,
+        _identify: T,
+        _inst_id: uuid::Uuid,
+        _disabled: bool,
+    ) -> Result<(), RemoteClientError<E>> {
+        Err(RemoteClientError::Other(
+            "local-config management is not implemented by this manager".to_owned(),
+        ))
     }
 
     async fn handle_get_network_metas(
@@ -398,6 +501,12 @@ where
         config: NetworkConfig,
         source: ConfigSource,
     ) -> Result<(), RemoteClientError<E>> {
+        let _mutation = self.runtime_mutation_guard(&identify).await;
+        if self.manages_local_configs(&identify).await {
+            return self
+                .save_network_config_for_local_config(identify, inst_id, config, source)
+                .await;
+        }
         self.get_storage()
             .insert_or_update_user_network_config(identify.clone(), inst_id, config, source)
             .await
@@ -407,6 +516,20 @@ where
             .await
             .map_err(RemoteClientError::PersistentError)?;
         Ok(())
+    }
+
+    /// Saves a config on a node that owns its own configuration catalog.
+    /// Only called when [`Self::manages_local_configs`] returns `true`.
+    async fn save_network_config_for_local_config(
+        &self,
+        _identify: T,
+        _inst_id: uuid::Uuid,
+        _config: NetworkConfig,
+        _source: ConfigSource,
+    ) -> Result<(), RemoteClientError<E>> {
+        Err(RemoteClientError::Other(
+            "local-config management is not implemented by this manager".to_owned(),
+        ))
     }
 
     async fn handle_get_network_config(
@@ -424,6 +547,11 @@ where
         identify: T,
         inst_id: uuid::Uuid,
     ) -> Result<(NetworkConfig, ConfigSource), RemoteClientError<E>> {
+        if self.manages_local_configs(&identify).await {
+            return self
+                .get_network_config_for_local_config(identify, inst_id)
+                .await;
+        }
         if let Some(client) = self.get_rpc_client(identify.clone())
             && let Ok(resp) = client
                 .get_network_instance_config(
@@ -465,6 +593,19 @@ where
                 .get_network_config()
                 .map_err(RemoteClientError::PersistentError)?,
             db_row.get_runtime_network_config_source(),
+        ))
+    }
+
+    /// Fetches a config from a node that owns its own configuration
+    /// catalog. Only called when [`Self::manages_local_configs`] returns
+    /// `true`.
+    async fn get_network_config_for_local_config(
+        &self,
+        _identify: T,
+        _inst_id: uuid::Uuid,
+    ) -> Result<(NetworkConfig, ConfigSource), RemoteClientError<E>> {
+        Err(RemoteClientError::Other(
+            "local-config management is not implemented by this manager".to_owned(),
         ))
     }
 }
