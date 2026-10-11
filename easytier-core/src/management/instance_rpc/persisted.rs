@@ -9,9 +9,8 @@ use crate::{
         manager::{InstanceFactory, InstanceManager},
     },
     management::{
-        ConfigFileStorage,
+        ConfigFileStorage, LocalConfigMutationError,
         full::{merge_active_changes, persisted_raw_hash, refresh_local_configs},
-        LocalConfigMutationError,
     },
 };
 
@@ -46,11 +45,11 @@ where
             .ok_or_else(|| anyhow::anyhow!("persisted configuration is unavailable"))?;
         if entries.next().is_some() || entry.status != "ready" {
             return Err(anyhow::Error::from(LocalConfigMutationError::Protected)
-            .context("configuration is protected or unavailable"));
+                .context("configuration is protected or unavailable"));
         }
         let raw = entry
             .persisted_toml
-            .ok_or_else(|| LocalConfigMutationError::Protected)?;
+            .ok_or(LocalConfigMutationError::Protected)?;
         let config = TomlConfig::new_from_str(&raw)
             .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
         return Ok(Some((config, raw)));

@@ -434,7 +434,6 @@ mod tests {
 
         let global_ctx = get_mock_global_ctx();
         let server = runtime_server_protocol_upgrader(global_ctx.clone());
-        let global_ctx = get_mock_global_ctx();
         let client = runtime_client_protocol_upgrader(global_ctx);
         let server_url = remote_url.clone();
         let server_task = tokio::spawn(async move {

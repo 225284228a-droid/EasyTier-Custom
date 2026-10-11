@@ -3,6 +3,8 @@ pub(crate) mod cli_event_logger;
 pub(crate) mod composition;
 pub(crate) mod config;
 #[cfg(feature = "management")]
+pub mod config_dir_startup;
+#[cfg(feature = "management")]
 pub(crate) mod config_storage;
 pub mod dns_server;
 pub mod factory;

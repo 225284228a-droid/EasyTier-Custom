@@ -17,6 +17,9 @@ impl BackOff {
     }
 
     pub fn next_backoff(&mut self) -> u64 {
+        if self.backoffs_ms.is_empty() {
+            return 0;
+        }
         let backoff = self.backoffs_ms[self.current_idx];
         self.current_idx = (self.current_idx + 1).min(self.backoffs_ms.len() - 1);
         backoff
@@ -27,7 +30,12 @@ impl BackOff {
     pub fn next_backoff_jittered(&mut self) -> u64 {
         use rand::Rng as _;
         let base = self.next_backoff() as i64;
-        let delta = base >> 1;
+        // `gen_range(-0..0)` would panic on an empty range, and a single
+        // millisecond of base has no room for symmetric jitter anyway.
+        if base == 0 {
+            return 0;
+        }
+        let delta = (base >> 1).max(1);
         (base + rand::thread_rng().gen_range(-delta..delta)) as u64
     }
 
@@ -66,5 +74,18 @@ mod tests {
             let delay = backoff.next_backoff_jittered() as i64;
             assert!((500..1500).contains(&delay));
         }
+    }
+
+    #[test]
+    fn degenerate_backoff_sequences_do_not_panic() {
+        // An empty sequence or a zero delay must degrade to "no wait"
+        // instead of panicking on an out-of-bounds index or an empty
+        // `gen_range` sample.
+        let mut backoff = BackOff::new(vec![]);
+        assert_eq!(backoff.next_backoff(), 0);
+        assert_eq!(backoff.next_backoff_jittered(), 0);
+
+        let mut zero = BackOff::new(vec![0]);
+        assert_eq!(zero.next_backoff_jittered(), 0);
     }
 }

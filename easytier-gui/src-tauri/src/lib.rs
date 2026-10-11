@@ -21,7 +21,7 @@ use easytier::proto::api::manage::{
 use easytier::proto::rpc_types::controller::BaseController;
 use easytier::web_client::{self, WebClient};
 use easytier::{
-    common::config::{NetworkConfig, NetworkConfigExt, load_config_from_file},
+    common::config::{NetworkConfig, NetworkConfigExt},
     common::{
         MachineIdOptions,
         config::{ConfigLoader, ConfigSource, FileLoggerConfig, LoggingConfig, TomlConfigLoader},
@@ -538,32 +538,32 @@ fn gui_machine_id(app: &AppHandle) -> Result<Uuid, String> {
 async fn restore_managed_configs(
     manager: &NativeInstanceManager,
     state_store: &InstanceStateStore,
-    config_dir: &std::path::PathBuf,
+    config_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let mut configs = Vec::new();
-    for entry in std::fs::read_dir(config_dir)? {
-        let path = entry?.path();
-        if path.is_file() && path.extension() == Some(std::ffi::OsStr::new("toml")) {
-            configs.push(path);
-        }
-    }
-    configs.sort();
+    // Share the CLI startup policy (see `easytier::instance::config_dir_startup`):
+    // invalid entries and duplicate instance UUIDs are isolated with a
+    // warning so a single broken file cannot keep the whole local backend -
+    // and with it the configuration editor that could repair the file - from
+    // starting. Entries that fail to start are skipped as well.
+    let mut startup =
+        easytier::instance::config_dir_startup::load_config_dir_entries(config_dir, false).await?;
 
-    for path in configs {
-        let (config, control) = load_config_from_file(&path, Some(config_dir), false).await?;
-        manager.register_managed_config(config.get_id(), control.clone())?;
-        if state_store.is_enabled(&config.get_id()) {
-            manager.run_network_instance(config, control)?;
+    for file in startup.files.drain(..) {
+        let result = (|| -> anyhow::Result<()> {
+            manager.register_managed_config(file.config.get_id(), file.control.clone())?;
+            if state_store.is_enabled(&file.config.get_id()) {
+                manager.run_network_instance(file.config, file.control)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!(%error, config_file = ?file.path, "Skipping config directory entry that could not be started");
         }
     }
 
-    // Match the service core: a removed config cannot remain disabled forever.
-    let seen = manager.managed_config_ids();
-    for id in state_store.disabled_instance_ids() {
-        if !seen.contains(&id) {
-            state_store.remove(&id)?;
-        }
-    }
+    // Match the service core: a removed config cannot remain disabled
+    // forever, deferred while any entry has no confirmed identity.
+    startup.gc_disabled_state(state_store);
     Ok(())
 }
 
@@ -628,7 +628,7 @@ mod managed_restore_tests {
 
         let state_store = InstanceStateStore::new(Some(dir.path()));
         let manager = native_instance_manager_with_config_dir(Some(dir.path().to_path_buf()));
-        restore_managed_configs(&manager, &state_store, &dir.path().to_path_buf())
+        restore_managed_configs(&manager, &state_store, dir.path())
             .await
             .unwrap();
 
@@ -639,6 +639,32 @@ mod managed_restore_tests {
             manager.managed_config_control(disabled_id).unwrap().path,
             Some(dir.path().join("named-disabled.toml"))
         );
+        manager.retain_network_instances(&[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn normal_mode_isolates_invalid_config_files() {
+        // The GUI normal mode shares the service config directory, so a
+        // broken file must not keep the whole local backend (and with it the
+        // configuration editor that could repair the file) from starting.
+        let dir = tempfile::tempdir().unwrap();
+        let valid = TomlConfigLoader::default();
+        valid.set_inst_name("valid".to_string());
+        valid.set_listeners(Vec::new());
+        let mut valid_flags = valid.get_flags();
+        valid_flags.no_tun = true;
+        valid.set_flags(valid_flags);
+        let valid_id = valid.get_id();
+        std::fs::write(dir.path().join(format!("{valid_id}.toml")), valid.dump()).unwrap();
+        std::fs::write(dir.path().join("broken.toml"), "not = [a valid toml").unwrap();
+
+        let state_store = InstanceStateStore::new(Some(dir.path()));
+        let manager = native_instance_manager_with_config_dir(Some(dir.path().to_path_buf()));
+        restore_managed_configs(&manager, &state_store, dir.path())
+            .await
+            .unwrap();
+
+        assert!(manager.instance_ids().contains(&valid_id));
         manager.retain_network_instances(&[]).await.unwrap();
     }
 }

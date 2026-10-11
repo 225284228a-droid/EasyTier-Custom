@@ -3,8 +3,7 @@ use std::{sync::Arc, time::Duration};
 use crate::{
     packet::{PacketType, ZCPacket},
     peers::{
-        PacketRecvChanReceiver,
-        PeerConnectionOrigin,
+        PacketRecvChanReceiver, PeerConnectionOrigin,
         conn::{peer_conn::PeerConn, peer_session::PeerSessionStore},
         context::{ArcPeerContext, NetworkIdentity, PeerContext},
         create_packet_recv_chan,
@@ -197,13 +196,13 @@ async fn check_preferred_transition(default_protocol: &str, use_disguise: bool, 
     // Route metadata negotiated the disguise preference for this peer
     // (PeerMap notes it before querying).
     peer.note_negotiated_disguise(use_disguise);
-    assert!(!peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
+    assert!(!peer.has_connection_at_least_as_preferred(preferred));
 
     let (replacement, mut replacement_remote) =
         handshaken_connection(context.clone(), preferred, punch_origin, true).await;
     let replacement_id = replacement.get_conn_id();
     peer.add_peer_conn(replacement).await.unwrap();
-    assert!(peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
+    assert!(peer.has_connection_at_least_as_preferred(preferred));
     assert!(peer.conns.contains_key(&old_id));
     assert_eq!(peer.get_default_conn_id(), old_id);
     peer.send_msg(data_packet()).await.unwrap();
@@ -254,13 +253,13 @@ async fn check_preferred_transition(default_protocol: &str, use_disguise: bool, 
     })
     .await
     .unwrap();
-    assert!(!peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
+    assert!(!peer.has_connection_at_least_as_preferred(preferred));
     let (recovered, mut recovered_remote) =
         handshaken_connection(context, fallback, PeerConnectionOrigin::Direct, true).await;
     let (recovered_tx, mut recovered_rx) = create_packet_recv_chan();
     recovered_remote.start_recv_loop(recovered_tx).await;
     peer.add_peer_conn(recovered).await.unwrap();
-    assert!(!peer.has_connection_at_least_as_preferred(preferred, Some(use_disguise)));
+    assert!(!peer.has_connection_at_least_as_preferred(preferred));
     peer.send_msg(data_packet()).await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(1), recovered_rx.recv())
@@ -475,8 +474,8 @@ async fn passive_disguise_retires_both_raw_transports_at_both_endpoints() {
                 assert_eq!(a.select_conn().unwrap().get_conn_id(), a_ids[2]);
                 assert_eq!(b.select_conn().unwrap().get_conn_id(), b_ids[2]);
                 for peer in [&a, &b] {
-                    assert!(peer.has_connection_at_least_as_preferred("tcp", Some(false)));
-                    assert!(peer.has_connection_at_least_as_preferred("udp", Some(false)));
+                    assert!(peer.has_connection_at_least_as_preferred("tcp"));
+                    assert!(peer.has_connection_at_least_as_preferred("udp"));
                 }
                 exchange_peer_data(&a, &b, &mut a_rx, &mut b_rx).await;
             }
@@ -591,7 +590,7 @@ async fn manual_connections_agree_on_one_winner_without_route_metadata() {
         for peer in [&a, &b] {
             assert_eq!(peer.has_usable_manual_connection(), enabled);
             for target in ["tcp", "udp", "wss", "http3"] {
-                assert!(peer.has_connection_at_least_as_preferred(target, None));
+                assert!(peer.has_connection_at_least_as_preferred(target));
             }
         }
         exchange_peer_data(&a, &b, &mut a_rx, &mut b_rx).await;
@@ -606,7 +605,7 @@ async fn manual_connections_agree_on_one_winner_without_route_metadata() {
             .unwrap();
             assert!(!a.has_usable_manual_connection());
             assert!(!b.has_usable_manual_connection());
-            assert!(!a.has_connection_at_least_as_preferred("wss", None));
+            assert!(!a.has_connection_at_least_as_preferred("wss"));
         }
     }
 }
@@ -1190,17 +1189,22 @@ async fn live_preference_flip_fences_stale_cleanup_and_keeps_the_surviving_path_
             close_redundant_conns_when_disguised: true,
             ..Default::default()
         })));
-        let remote_context =
-            Arc::new(MutableCleanupContext(std::sync::Mutex::new(context.flags())));
+        let remote_context = Arc::new(MutableCleanupContext(std::sync::Mutex::new(
+            context.flags(),
+        )));
         let (tx, _rx) = create_packet_recv_chan();
         let peer = Peer::new(2, tx, context.clone());
         let mut remotes: Vec<FlipRemote> = Vec::new();
 
         // Control leg: under the unflipped policy the same retirement runs,
         // so the fence below is proven by contrast.
-        let (tcp_id, udp_id, _) =
-            add_verified_tcp_udp_conns(&peer, context.clone(), remote_context.clone(), &mut remotes)
-                .await;
+        let (tcp_id, udp_id, _) = add_verified_tcp_udp_conns(
+            &peer,
+            context.clone(),
+            remote_context.clone(),
+            &mut remotes,
+        )
+        .await;
         peer.note_negotiated_disguise(false);
         peer.close_event_sender
             .try_send(PeerConnCloseEvent::Redundant {
@@ -1227,9 +1231,13 @@ async fn live_preference_flip_fences_stale_cleanup_and_keeps_the_surviving_path_
         .unwrap();
 
         // Both nodes flip their preference while the connections are live.
-        let (tcp_id, udp_id, mut preferred_rx) =
-            add_verified_tcp_udp_conns(&peer, context.clone(), remote_context.clone(), &mut remotes)
-                .await;
+        let (tcp_id, udp_id, mut preferred_rx) = add_verified_tcp_udp_conns(
+            &peer,
+            context.clone(),
+            remote_context.clone(),
+            &mut remotes,
+        )
+        .await;
         peer.note_negotiated_disguise(false);
         {
             let change = |flags: &mut Flags| {
@@ -1267,7 +1275,10 @@ async fn live_preference_flip_fences_stale_cleanup_and_keeps_the_surviving_path_
         })
         .await
         .unwrap();
-        assert!(peer.conns.contains_key(&tcp_id), "flip_disguise={flip_disguise}");
+        assert!(
+            peer.conns.contains_key(&tcp_id),
+            "flip_disguise={flip_disguise}"
+        );
         peer.send_msg(data_packet()).await.unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), preferred_rx.recv())
@@ -1417,7 +1428,7 @@ async fn failed_unverified_preferred_path_keeps_working_fallback() {
     let (remote_tx, mut remote_rx) = create_packet_recv_chan();
     fallback_remote.start_recv_loop(remote_tx).await;
     peer.add_peer_conn(fallback).await.unwrap();
-    assert!(!peer.has_connection_at_least_as_preferred("http3", Some(true)));
+    assert!(!peer.has_connection_at_least_as_preferred("http3"));
     let (replacement, replacement_remote) =
         handshaken_connection(context, "http3", PeerConnectionOrigin::UdpHolePunch, true).await;
     let replacement_id = replacement.get_conn_id();
@@ -1432,7 +1443,7 @@ async fn failed_unverified_preferred_path_keeps_working_fallback() {
     .unwrap();
     peer.reconcile_connections().await;
     assert!(peer.conns.contains_key(&fallback_id));
-    assert!(!peer.has_connection_at_least_as_preferred("http3", Some(true)));
+    assert!(!peer.has_connection_at_least_as_preferred("http3"));
     peer.send_msg(data_packet()).await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(1), remote_rx.recv())
@@ -1585,7 +1596,7 @@ async fn established_disguise_precedes_raw_despite_passive_negotiation() {
         // Passive negotiation still controls dialing, but an established
         // disguised connection must not be torn down in favor of raw UDP.
         peer.note_negotiated_disguise(false);
-        assert!(peer.has_connection_at_least_as_preferred("udp", Some(false)));
+        assert!(peer.has_connection_at_least_as_preferred("udp"));
         assert_eq!(peer.select_conn().unwrap().get_conn_id(), wss_id);
         peer.reconcile_connections().await;
         assert_eq!(peer.get_default_conn_id(), wss_id);
@@ -1620,12 +1631,12 @@ async fn missing_route_metadata_keeps_negotiated_disguise_stable() {
     // Authoritative metadata records the negotiated disguise preference
     // (PeerMap does this via note_negotiated_disguise before its query).
     peer.note_negotiated_disguise(true);
-    assert!(peer.has_connection_at_least_as_preferred("http3", Some(true)));
+    assert!(peer.has_connection_at_least_as_preferred("http3"));
     assert_eq!(peer.negotiated_disguise.load(), Some(true));
     // Missing route metadata must not flip it back to false, otherwise
     // the next reconcile pass would treat the established http3 path as
     // redundant and close it (connection churn on metadata flaps).
-    assert!(peer.has_connection_at_least_as_preferred("udp", None));
+    assert!(peer.has_connection_at_least_as_preferred("udp"));
     assert_eq!(peer.negotiated_disguise.load(), Some(true));
     peer.reconcile_connections().await;
     assert!(peer.conns.contains_key(&http3_id));
@@ -1639,6 +1650,6 @@ async fn attached_ring_does_not_satisfy_network_transport_preference() {
     let (conn, _remote) =
         handshaken_connection(context, "ring", PeerConnectionOrigin::Attached, true).await;
     peer.add_peer_conn(conn).await.unwrap();
-    assert!(!peer.has_connection_at_least_as_preferred("udp", Some(false)));
-    assert!(!peer.has_connection_at_least_as_preferred("http3", Some(true)));
+    assert!(!peer.has_connection_at_least_as_preferred("udp"));
+    assert!(!peer.has_connection_at_least_as_preferred("http3"));
 }

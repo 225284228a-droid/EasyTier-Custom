@@ -515,8 +515,11 @@ where
         #[cfg(feature = "management")]
         self.ensure_catalog_identity_locked(instance_id).await?;
         if control.is_read_only() {
-            return Err(anyhow::Error::from(LocalConfigMutationError::ReadOnly)
-            .context(format!("instance {instance_id} is read-only, cannot be overwritten")));
+            return Err(
+                anyhow::Error::from(LocalConfigMutationError::ReadOnly).context(format!(
+                    "instance {instance_id} is read-only, cannot be overwritten"
+                )),
+            );
         }
         if require_deletable && !control.is_deletable() {
             anyhow::bail!("instance {instance_id} is no-delete, cannot be overwritten");
@@ -1042,6 +1045,26 @@ where
                 tracing::warn!(%error, %instance_id, "preserving instance with uncertain identity before deletion");
                 continue;
             }
+            // Fence before any irreversible action: an external edit between
+            // the revision capture at the start of this call and the stop
+            // must reject the deletion while the instance is still running.
+            // The checks run again after the stop, because the post-stop
+            // hooks are allowed to rewrite or alias the file.
+            if let Some(path) = path.as_ref() {
+                #[cfg(feature = "management")]
+                if let Some(expected) = &expected_file {
+                    self.verify_lifecycle_file_locked(path, expected).await?;
+                }
+                #[cfg(feature = "management")]
+                if let Err(error) = self.ensure_catalog_identity_locked(*instance_id).await {
+                    tracing::warn!(%error, %instance_id, "preserving config with uncertain identity during deletion");
+                    continue;
+                }
+                let current = self.storage.inspect(path).await;
+                if current.is_read_only() || !current.is_deletable() {
+                    continue;
+                }
+            }
             let was_running = self.instances.instance(*instance_id).is_some();
             if was_running {
                 if let Err(error) = self.state_store.set_enabled(*instance_id, false) {
@@ -1066,6 +1089,8 @@ where
                 }
             }
             if let Some(path) = path {
+                // Post-stop recheck: hooks may have rewritten the file or
+                // created a duplicate identity while stopping the instance.
                 #[cfg(feature = "management")]
                 if let Some(expected) = &expected_file {
                     self.verify_lifecycle_file_locked(&path, expected).await?;
@@ -1248,7 +1273,7 @@ where
                 let path = control
                     .path
                     .as_deref()
-                    .ok_or_else(|| LocalConfigMutationError::RevisionConflict)?;
+                    .ok_or(LocalConfigMutationError::RevisionConflict)?;
                 self.verify_lifecycle_file_locked(path, expected).await?;
             }
             #[cfg(feature = "management")]
@@ -1394,7 +1419,7 @@ where
             }
             if entries.len() != 1 || entries[0].status != "ready" {
                 return Err(anyhow::Error::from(LocalConfigMutationError::Protected)
-                .context("configuration is protected or unavailable"));
+                    .context("configuration is protected or unavailable"));
             }
             let entry = entries.into_iter().next().unwrap();
             return Ok(entry.config.map(|config| {
@@ -1425,15 +1450,21 @@ where
             .managed_config_control(instance_id)
             .is_some_and(|control| control.is_read_only())
         {
-            return Err(anyhow::Error::from(LocalConfigMutationError::ReadOnly)
-                .context(format!("configuration for instance {instance_id} is read-only")));
+            return Err(
+                anyhow::Error::from(LocalConfigMutationError::ReadOnly).context(format!(
+                    "configuration for instance {instance_id} is read-only"
+                )),
+            );
         }
         let Some((config, control)) = self.load_saved_config(instance_id).await? else {
             return Ok(None);
         };
         if control.is_read_only() {
-            return Err(anyhow::Error::from(LocalConfigMutationError::ReadOnly)
-                .context(format!("configuration for instance {instance_id} is read-only")));
+            return Err(
+                anyhow::Error::from(LocalConfigMutationError::ReadOnly).context(format!(
+                    "configuration for instance {instance_id} is read-only"
+                )),
+            );
         }
         let source = config.get_network_config_source();
         Ok(Some((network_config_from_toml(&config), source)))

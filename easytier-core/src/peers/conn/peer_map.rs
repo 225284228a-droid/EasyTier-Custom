@@ -236,7 +236,7 @@ impl PeerMap {
             if let Some(use_disguise) = use_disguise {
                 peer.note_negotiated_disguise(use_disguise);
             }
-            peer.has_connection_at_least_as_preferred(target_scheme, use_disguise)
+            peer.has_connection_at_least_as_preferred(target_scheme)
         })
     }
 

@@ -338,12 +338,10 @@ where
             self.instances.register_managed_config(id, control)?;
             Ok(())
         };
-        let conflicted = outcome
-            .as_ref()
-            .err()
-            .is_some_and(|error| {
-                LocalConfigMutationError::classify(error) == Some(LocalConfigMutationError::RevisionConflict)
-            });
+        let conflicted = outcome.as_ref().err().is_some_and(|error| {
+            LocalConfigMutationError::classify(error)
+                == Some(LocalConfigMutationError::RevisionConflict)
+        });
         let refreshed = self.refresh_local_configs_locked().await?;
         Ok(response(
             refreshed,

@@ -951,7 +951,7 @@ impl
         user_running_network_configs::Model,
         sea_orm::DbErr,
     > {
-        self
+        self.storage.db()
     }
 
     async fn handle_collect_network_info(
@@ -1390,66 +1390,6 @@ impl
             config,
             config_source_from_rpc(resp.source).unwrap_or(ConfigSource::User),
         ))
-    }
-}
-
-#[async_trait]
-impl
-    remote_client::Storage<
-        (UserIdInDb, uuid::Uuid),
-        user_running_network_configs::Model,
-        sea_orm::DbErr,
-    > for ClientManager
-{
-    async fn insert_or_update_user_network_config(
-        &self,
-        identify: (UserIdInDb, uuid::Uuid),
-        network_inst_id: Uuid,
-        network_config: easytier::proto::api::manage::NetworkConfig,
-        source: ConfigSource,
-    ) -> Result<(), sea_orm::DbErr> {
-        self.db()
-            .insert_or_update_user_network_config(identify, network_inst_id, network_config, source)
-            .await
-    }
-
-    async fn delete_network_configs(
-        &self,
-        identify: (UserIdInDb, uuid::Uuid),
-        network_inst_ids: &[Uuid],
-    ) -> Result<(), sea_orm::DbErr> {
-        self.db()
-            .delete_network_configs(identify, network_inst_ids)
-            .await
-    }
-
-    async fn update_network_config_state(
-        &self,
-        identify: (UserIdInDb, uuid::Uuid),
-        network_inst_id: Uuid,
-        disabled: bool,
-    ) -> Result<(), sea_orm::DbErr> {
-        self.db()
-            .update_network_config_state(identify, network_inst_id, disabled)
-            .await
-    }
-
-    async fn list_network_configs(
-        &self,
-        identify: (UserIdInDb, uuid::Uuid),
-        props: remote_client::ListNetworkProps,
-    ) -> Result<Vec<user_running_network_configs::Model>, sea_orm::DbErr> {
-        self.db().list_network_configs(identify, props).await
-    }
-
-    async fn get_network_config(
-        &self,
-        identify: (UserIdInDb, uuid::Uuid),
-        network_inst_id: &str,
-    ) -> Result<Option<user_running_network_configs::Model>, sea_orm::DbErr> {
-        self.db()
-            .get_network_config(identify, network_inst_id)
-            .await
     }
 }
 
@@ -2530,7 +2470,8 @@ mod tests {
                     ConfigFileControl::new(None, permission),
                 )
                 .unwrap();
-            mgr.insert_or_update_user_network_config(identify, id, config, ConfigSource::User)
+            mgr.db()
+                .insert_or_update_user_network_config(identify, id, config, ConfigSource::User)
                 .await
                 .unwrap();
         }
@@ -2540,7 +2481,8 @@ mod tests {
                 .is_err()
         );
         assert!(
-            !mgr.get_network_config(identify, &protected_id.to_string())
+            !mgr.db()
+                .get_network_config(identify, &protected_id.to_string())
                 .await
                 .unwrap()
                 .unwrap()
@@ -2558,13 +2500,15 @@ mod tests {
         );
         assert!(core_manager.instance(protected_id).is_some());
         assert!(
-            mgr.get_network_config(identify, &removable_id.to_string())
+            mgr.db()
+                .get_network_config(identify, &removable_id.to_string())
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            mgr.get_network_config(identify, &protected_id.to_string())
+            mgr.db()
+                .get_network_config(identify, &protected_id.to_string())
                 .await
                 .unwrap()
                 .is_some()

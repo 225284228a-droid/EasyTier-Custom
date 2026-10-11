@@ -11,10 +11,7 @@ use crate::{
         constants::EASYTIER_VERSION,
         log,
     },
-    instance::{
-        config_storage::NativeConfigFileStorage,
-        factory::{NativeInstanceManager, native_cli_instance_manager},
-    },
+    instance::factory::{NativeInstanceManager, native_cli_instance_manager},
     proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -24,14 +21,13 @@ use anyhow::Context;
 use cidr::IpCidr;
 use clap::{Arg, ArgMatches, CommandFactory, FromArgMatches, Parser};
 use easytier_core::config::{EncryptionAlgorithm, normalize_secure_mode_config};
-use easytier_core::management::{ConfigFileStorage, InstanceStateStore};
+use easytier_core::management::InstanceStateStore;
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
 use serde_json::{Value, json};
 use std::str::{FromStr, ParseBoolError};
 use std::{
-    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
@@ -1227,39 +1223,13 @@ struct StartupConfigFile {
 struct StartupConfigs {
     files: Vec<StartupConfigFile>,
     explicit_file_count: usize,
-    config_dir_file_count: usize,
-    config_dir_ids: HashSet<uuid::Uuid>,
-    unidentified_config_dir_entry: bool,
+    directory: crate::instance::config_dir_startup::StartupConfigs,
 }
 
 impl StartupConfigs {
     fn gc_disabled_state(&self, state: &InstanceStateStore) {
-        // A file can still own a stopped instance even when its flags no
-        // longer parse. An unidentified/unreadable file prevents proving
-        // that any of the old identities have actually disappeared.
-        if self.unidentified_config_dir_entry {
-            log::warn!(
-                "Deferring instance state cleanup: a config directory entry has no confirmed identity"
-            );
-            return;
-        }
-        for id in state.disabled_instance_ids() {
-            if !self.config_dir_ids.contains(&id)
-                && let Err(error) = state.remove(&id)
-            {
-                log::warn!(%error, %id, "failed to GC stale instance state entry");
-            }
-        }
+        self.directory.gc_disabled_state(state)
     }
-}
-
-fn config_document_identity(contents: &[u8]) -> Option<uuid::Uuid> {
-    let table = toml::from_str::<toml::Table>(std::str::from_utf8(contents).ok()?).ok()?;
-    table
-        .get("instance_id")?
-        .as_str()?
-        .parse::<uuid::Uuid>()
-        .ok()
 }
 
 async fn prepare_startup_configs(
@@ -1285,81 +1255,23 @@ async fn prepare_startup_configs(
     let Some(directory) = config_dir else {
         return Ok(startup);
     };
-    if !directory.is_dir() {
-        anyhow::bail!("config_dir {} is not a directory", directory.display());
-    }
-    let storage = NativeConfigFileStorage::new(disable_env_parsing);
-    let paths = storage.list_configs(directory).await?;
-    // Count even invalid and conflicting entries, so they never cause an
-    // implicit default network to be created instead.
-    startup.config_dir_file_count = paths.len();
-    let mut owners = HashMap::<uuid::Uuid, HashSet<PathBuf>>::new();
-    for path in paths {
-        let filename_id = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .and_then(|stem| stem.parse::<uuid::Uuid>().ok());
-        if let Some(id) = filename_id {
-            startup.config_dir_ids.insert(id);
-        }
-        // Inspect identity without expanding environment values or asking
-        // get_id() to generate an identity for a legacy document.
-        let raw_id = match storage.read(&path).await {
-            Ok(Some(raw)) => config_document_identity(&raw),
-            Ok(None) => None,
-            Err(error) => {
-                log::warn!(%error, config_file = ?path, "Could not inspect config directory identity");
-                None
-            }
-        };
-        if let Some(id) = raw_id.or(filename_id) {
-            startup.config_dir_ids.insert(id);
-            owners.entry(id).or_default().insert(path.clone());
-        } else {
-            startup.unidentified_config_dir_entry = true;
-        }
-        // Use the original native loader: valid read-only and environment
-        // configurations can still start locally despite remote protection.
-        let (config, control) = match load_config_from_file(
-            &path,
-            Some(directory),
-            disable_env_parsing,
-        )
-        .await
-        {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                log::warn!(%error, config_file = ?path, "Skipping invalid config directory entry");
-                continue;
-            }
-        };
-        // The native loader may resolve an environment-supplied UUID or
-        // materialize a legacy runtime UUID while assigning permissions.
-        // Reading its dump does not generate another UUID or write the file.
-        let loaded_id = config_document_identity(config.dump().as_bytes());
-        if let Some(id) = loaded_id {
-            startup.config_dir_ids.insert(id);
-            owners.entry(id).or_default().insert(path.clone());
-        }
-        if raw_id.is_some() && raw_id != loaded_id {
-            log::warn!(config_file = ?path, "Skipping config directory entry whose identity changed while loading");
-            continue;
-        }
-        startup.files.push(StartupConfigFile {
-            path,
+    // The config directory is scanned with the shared isolation policy
+    // (also used by the GUI local backend): invalid entries and duplicate
+    // instance UUIDs are skipped instead of failing the startup.
+    let mut entries = crate::instance::config_dir_startup::load_config_dir_entries(
+        directory,
+        disable_env_parsing,
+    )
+    .await?;
+    startup
+        .files
+        .extend(entries.files.drain(..).map(|file| StartupConfigFile {
+            path: file.path,
             source: ConfigFileSource::ConfigDir,
-            config,
-            control,
-        });
-    }
-    let mut conflicting_paths = HashSet::new();
-    for (id, paths) in owners.into_iter().filter(|(_, paths)| paths.len() > 1) {
-        log::warn!(%id, config_files = ?paths, "Skipping config directory entries with a duplicate instance UUID");
-        conflicting_paths.extend(paths);
-    }
-    startup.files.retain(|file| {
-        file.source != ConfigFileSource::ConfigDir || !conflicting_paths.contains(&file.path)
-    });
+            config: file.config,
+            control: file.control,
+        }));
+    startup.directory = entries;
     Ok(startup)
 }
 
@@ -1389,7 +1301,7 @@ fn start_prepared_configs(
                 &config,
                 source,
                 startup.explicit_file_count,
-                startup.config_dir_file_count,
+                startup.directory.config_dir_file_count,
             ) {
                 options
                     .merge_into(&config)
@@ -1502,7 +1414,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     )
     .await?;
     let config_file_count =
-        startup_configs.explicit_file_count + startup_configs.config_dir_file_count;
+        startup_configs.explicit_file_count + startup_configs.directory.config_dir_file_count;
     let crate_cli_network = {
         if cli.daemon {
             false
@@ -1721,6 +1633,7 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::instance::config_dir_startup::config_document_identity;
     use crate::proto::common::CompressionAlgoPb;
 
     /// Parses the flags the way the binary does.
@@ -1760,7 +1673,7 @@ mod tests {
         let mut startup = prepare_startup_configs(&[], Some(&directory), true)
             .await
             .unwrap();
-        assert_eq!(startup.config_dir_file_count, 3);
+        assert_eq!(startup.directory.config_dir_file_count, 3);
         assert_eq!(startup.files.len(), 2);
         let manager = native_cli_instance_manager().with_config_path(Some(directory.clone()));
         assert!(
@@ -1790,7 +1703,7 @@ mod tests {
         let startup = prepare_startup_configs(&[], Some(&directory), true)
             .await
             .unwrap();
-        assert!(startup.unidentified_config_dir_entry);
+        assert!(startup.directory.unidentified_config_dir_entry);
         startup.gc_disabled_state(&state);
         assert!(!state.is_enabled(&removed));
     }
@@ -1822,7 +1735,7 @@ mod tests {
         let mut startup = prepare_startup_configs(&[], Some(&directory), true)
             .await
             .unwrap();
-        assert_eq!(startup.config_dir_file_count, 5);
+        assert_eq!(startup.directory.config_dir_file_count, 5);
         assert_eq!(startup.files.len(), 1);
         assert_eq!(startup.files[0].config.get_id(), stopped);
         let manager = native_cli_instance_manager().with_config_path(Some(directory));
@@ -1895,7 +1808,7 @@ mod tests {
             .find(|file| file.path == legacy_path)
             .unwrap();
         assert!(config_document_identity(legacy.config.dump().as_bytes()).is_none());
-        assert!(startup.unidentified_config_dir_entry);
+        assert!(startup.directory.unidentified_config_dir_entry);
         let manager = native_cli_instance_manager().with_config_path(Some(directory));
         start_prepared_configs(
             &mut startup,

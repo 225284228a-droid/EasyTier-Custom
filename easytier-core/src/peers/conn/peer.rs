@@ -581,11 +581,7 @@ impl Peer {
         }
     }
 
-    pub(crate) fn has_connection_at_least_as_preferred(
-        &self,
-        target_scheme: &str,
-        _use_disguise: Option<bool>,
-    ) -> bool {
+    pub(crate) fn has_connection_at_least_as_preferred(&self, target_scheme: &str) -> bool {
         let flags = self.context.flags();
         let target_rank = 1 + p2p_protocol_rank(
             &flags.default_protocol,

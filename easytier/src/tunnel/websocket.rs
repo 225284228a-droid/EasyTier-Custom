@@ -163,6 +163,10 @@ impl WssDisguise {
                         .map(|interval| interval.clamp(MIN_PADDING_INTERVAL, MAX_PADDING_INTERVAL))
                     {
                         disguise.padding_interval = Some(interval);
+                    } else if !value.is_empty() {
+                        // Values like `padding=true` silently disable padding
+                        // otherwise; the parameter is `<interval_ms>[,<size>]`.
+                        tracing::warn!(%value, "ignoring malformed ws padding parameter; expected <interval_ms>[,<size>]");
                     }
                     if let Some(size) = parts.next().and_then(|size| size.parse::<usize>().ok())
                         && size > 0
@@ -209,7 +213,15 @@ impl WssDisguise {
     /// Builds the HTTP request target (scheme/host/path/query) for the
     /// WebSocket upgrade while stripping the disguise parameters themselves.
     pub fn request_uri(&self, url: &url::Url) -> anyhow::Result<String> {
-        let host = self.host.clone().unwrap_or_else(|| self.sni(url));
+        let mut host = self.host.clone().unwrap_or_else(|| self.sni(url));
+        // `Url::set_host` rejects a bare IPv6 literal whose first colon is at
+        // index 0 and silently truncates one like `2001:db8::1` at the first
+        // colon, so bracket IPv6 literals explicitly. `sni()` stringifies
+        // them without brackets (for rustls `ServerName`), and a `host=`
+        // parameter may also carry a bare address.
+        if !host.starts_with('[') && host.parse::<std::net::Ipv6Addr>().is_ok() {
+            host = format!("[{host}]");
+        }
         let path = self.path.clone().unwrap_or_else(|| {
             if url.path().is_empty() {
                 "/".to_owned()
@@ -480,7 +492,7 @@ where
         && let Some(ip) = forwarded.remotest_forwarded_for_ip()
     {
         remote_url
-            .set_host(Some(&ip.to_string()))
+            .set_ip_host(ip)
             .map_err(|_| TunnelError::InvalidAddr(format!("invalid forwarded ip {ip}")))?;
         remote_url
             .query_pairs_mut()
@@ -492,6 +504,19 @@ where
     // Listener URL policy cannot establish remote support. The HTTP offer is
     // the remote receiver's explicit promise for this connection only.
     let padding_expected = supports_text_padding(request.headers());
+    // Padding is bidirectional: a listener configured with `?padding=` pads
+    // its own outgoing frames too, but only when the peer offered the
+    // feature in its upgrade request, mirroring the client-side rule that
+    // both sides must declare the feature before padding.
+    let listener_disguise = WssDisguise::from_url(&local_url);
+    let write = if let Some(interval) = listener_disguise
+        .padding_interval
+        .filter(|_| padding_expected)
+    {
+        WebSocketPacketSink::with_padding(write, interval, listener_disguise.padding_size)
+    } else {
+        WebSocketPacketSink::new(write)
+    };
     let info = TunnelInfo {
         tunnel_type: local_url.scheme().to_owned(),
         local_addr: Some(local_url.into()),
@@ -501,7 +526,7 @@ where
     Ok(Box::new(
         TunnelWrapper::new(
             read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
-            WebSocketPacketSink::new(write),
+            write,
             Some(info),
         )
         .with_bandwidth_source(bandwidth_source),
@@ -890,6 +915,60 @@ pub mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn listener_padding_url_pads_server_frames_for_negotiating_client() {
+        let mut listener =
+            WsTunnelListener::new("ws://127.0.0.1:0/?padding=100,64".parse().unwrap());
+        listener.listen().await.unwrap();
+        let url = listener.local_url();
+        let server = tokio::spawn(async move {
+            let tunnel = listener.accept().await.unwrap();
+            let (mut read, mut write) = tunnel.split();
+            let packet = read.next().await.unwrap().unwrap();
+            assert_eq!(packet.payload(), b"negotiation probe");
+            write
+                .send(ZCPacket::new_with_payload(b"server reply"))
+                .await
+                .unwrap();
+        });
+        let (mut client, response) = ClientBuilder::new()
+            .uri(url.as_str())
+            .unwrap()
+            .add_header(
+                http::HeaderName::from_static(TRANSPORT_FEATURES_HEADER),
+                http::HeaderValue::from_static(WS_TEXT_PADDING_V1),
+            )
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        assert!(supports_text_padding(response.headers()));
+        client
+            .send(Message::binary(
+                ZCPacket::new_with_payload(b"negotiation probe")
+                    .tunnel_payload_bytes()
+                    .freeze(),
+            ))
+            .await
+            .unwrap();
+        // The listener URL configured padding and the client offered the
+        // feature, so the server's first outgoing send must be preceded by a
+        // text padding frame, mirroring the client-side behavior.
+        let first = timeout(Duration::from_secs(3), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(first.is_text(), "server padding frame must precede replies");
+        let second = timeout(Duration::from_secs(3), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(second.is_binary());
+        server.await.unwrap();
+    }
+
     #[test]
     fn wss_disguise_sni_handles_ip_literal_hosts() {
         // url.domain() is None for IP literals; the SNI (and the Host header
@@ -936,6 +1015,39 @@ pub mod tests {
         assert_eq!(parsed.host_str(), Some("192.0.2.1"));
         assert_eq!(parsed.path(), "/ws");
         assert!(parsed.query().unwrap_or("").is_empty());
+    }
+
+    #[test]
+    fn wss_disguise_request_uri_keeps_ipv6_literal_host() {
+        // `Url::set_host` rejects a bare IPv6 literal when the first colon is
+        // at index 0 and truncates one at the first colon otherwise, so both
+        // loopback-style and global addresses must stay intact.
+        for raw in [
+            "wss://[::1]:443/ws?ua=x",
+            "wss://[2001:db8::1]:8443/ws?padding=100,64",
+        ] {
+            let url: url::Url = raw.parse().unwrap();
+            let uri = WssDisguise::from_url(&url).request_uri(&url).unwrap();
+            let parsed: url::Url = uri.parse().unwrap();
+            assert_eq!(parsed.scheme(), "wss", "{raw}");
+            assert_eq!(
+                parsed.host(),
+                url.host(),
+                "IPv6 literal host must round-trip unchanged: {raw}"
+            );
+            assert_eq!(parsed.path(), "/ws", "{raw}");
+            assert!(parsed.query().unwrap_or("").is_empty(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn wss_disguise_request_uri_brackets_bare_ipv6_host_param() {
+        let url: url::Url = "wss://www.example.com:443/ws?host=fe80::1&ua=x"
+            .parse()
+            .unwrap();
+        let uri = WssDisguise::from_url(&url).request_uri(&url).unwrap();
+        let parsed: url::Url = uri.parse().unwrap();
+        assert_eq!(parsed.host_str(), Some("[fe80::1]"));
     }
 
     struct FailingWebSocketSink {

@@ -103,7 +103,10 @@ mod tests {
     #[test]
     fn prose_from_older_peers_still_classifies() {
         let cases = [
-            ("configuration is read-only", LocalConfigMutationError::ReadOnly),
+            (
+                "configuration is read-only",
+                LocalConfigMutationError::ReadOnly,
+            ),
             (
                 "configuration file is read-only",
                 LocalConfigMutationError::ReadOnly,
@@ -112,7 +115,10 @@ mod tests {
                 "configuration for instance 9e3b is read-only",
                 LocalConfigMutationError::ReadOnly,
             ),
-            ("configuration is protected", LocalConfigMutationError::Protected),
+            (
+                "configuration is protected",
+                LocalConfigMutationError::Protected,
+            ),
             (
                 "configuration is protected or unavailable",
                 LocalConfigMutationError::Protected,
@@ -129,9 +135,14 @@ mod tests {
 
     #[test]
     fn unrelated_errors_do_not_classify() {
-        assert_eq!(LocalConfigMutationError::classify(&anyhow::anyhow!("dial failed")), None);
         assert_eq!(
-            LocalConfigMutationError::classify(&anyhow::anyhow!("configuration could not be removed")),
+            LocalConfigMutationError::classify(&anyhow::anyhow!("dial failed")),
+            None
+        );
+        assert_eq!(
+            LocalConfigMutationError::classify(&anyhow::anyhow!(
+                "configuration could not be removed"
+            )),
             None
         );
     }
@@ -148,6 +159,9 @@ mod tests {
             LocalConfigMutationError::classify_rpc(&conflict),
             Some(LocalConfigMutationError::RevisionConflict)
         );
-        assert_eq!(LocalConfigMutationError::classify_rpc(&RpcError::DecodeError), None);
+        assert_eq!(
+            LocalConfigMutationError::classify_rpc(&RpcError::DecodeError),
+            None
+        );
     }
 }

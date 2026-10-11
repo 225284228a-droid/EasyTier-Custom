@@ -54,19 +54,19 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                 let Ok(udp_nat_type) = crate::proto::common::NatType::try_from(udp_nat_type) else {
                     return None;
                 };
-                let peer_disguise_flags = route
-                    .feature_flag
-                    .as_ref()
-                    .map(Into::into)
-                    .unwrap_or_default();
+                // Convert the wire feature flag once. `use_disguise` stays
                 // `None` while the route metadata is missing: the satisfied
                 // checks then rank with the last negotiated preference and
                 // leave the negotiated state untouched instead of flipping
                 // it to "no disguise".
-                let use_disguise = route.feature_flag.as_ref().map(|feature_flag| {
-                    let flags: PeerDisguiseP2pFlags = feature_flag.into();
-                    self.p2p_policy_flags().use_wss_http3_with_peer(&flags)
-                });
+                let (peer_disguise_flags, use_disguise) = match route.feature_flag.as_ref() {
+                    Some(feature_flag) => {
+                        let flags: PeerDisguiseP2pFlags = feature_flag.into();
+                        let use_disguise = self.p2p_policy_flags().use_wss_http3_with_peer(&flags);
+                        (flags, Some(use_disguise))
+                    }
+                    None => (PeerDisguiseP2pFlags::default(), None),
+                };
                 Some(UdpPunchCandidate {
                     peer_id: route.peer_id,
                     udp_nat_type,
@@ -171,17 +171,16 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
             .await
             .into_iter()
             .map(|route| {
-                let peer_disguise_flags = route
-                    .feature_flag
-                    .as_ref()
-                    .map(Into::into)
-                    .unwrap_or_default();
-                // `None` while the route metadata is missing; see the UDP
-                // candidate builder above.
-                let use_disguise = route.feature_flag.as_ref().map(|feature_flag| {
-                    let flags: PeerDisguiseP2pFlags = feature_flag.into();
-                    self.p2p_policy_flags().use_wss_http3_with_peer(&flags)
-                });
+                // Single conversion; `use_disguise` stays `None` while the
+                // route metadata is missing (see the UDP builder above).
+                let (peer_disguise_flags, use_disguise) = match route.feature_flag.as_ref() {
+                    Some(feature_flag) => {
+                        let flags: PeerDisguiseP2pFlags = feature_flag.into();
+                        let use_disguise = self.p2p_policy_flags().use_wss_http3_with_peer(&flags);
+                        (flags, Some(use_disguise))
+                    }
+                    None => (PeerDisguiseP2pFlags::default(), None),
+                };
                 TcpPunchCandidate {
                     tcp_satisfied: self.has_connection_at_least_as_preferred(
                         route.peer_id,

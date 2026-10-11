@@ -356,7 +356,10 @@ impl NetworkConfigExt for NetworkConfig {
                     continue;
                 }
                 let rule = |detail: String| {
-                    format!("port forward #{} ({}:{} -> {}:{}): {}", index, pf.bind_ip, pf.bind_port, pf.dst_ip, pf.dst_port, detail)
+                    format!(
+                        "port forward #{} ({}:{} -> {}:{}): {}",
+                        index, pf.bind_ip, pf.bind_port, pf.dst_ip, pf.dst_port, detail
+                    )
                 };
                 let parse_ip = |field: &str, ip: &str| -> anyhow::Result<std::net::IpAddr> {
                     ip.parse().with_context(|| {
@@ -371,10 +374,7 @@ impl NetworkConfigExt for NetworkConfig {
                 };
                 let proto = pf.proto.to_lowercase();
                 if !matches!(proto.as_str(), "tcp" | "udp") {
-                    anyhow::bail!(rule(format!(
-                        "protocol {:?} must be tcp or udp",
-                        pf.proto
-                    )));
+                    anyhow::bail!(rule(format!("protocol {:?} must be tcp or udp", pf.proto)));
                 }
                 forwards.push(PortForwardConfig {
                     bind_addr: SocketAddr::new(

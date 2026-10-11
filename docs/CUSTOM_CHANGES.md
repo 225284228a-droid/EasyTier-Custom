@@ -17,7 +17,7 @@
 - CLI 默认使用 `config.d` 配置目录，保存网络配置，启动时加载配置并恢复启用状态。
 - 保留官方每实例运行时，`--state-dir` / `ET_STATE_DIR` 控制机器身份的状态目录；默认配置目录、停用状态及多服务器管理继续采用上述定制行为。
 - 引入共享的 `InstanceStateStore`，持久化实例启用/停用状态，供 RPC 管理与配置服务器客户端共用。
-- 桌面 GUI 普通模式与服务模式共用服务配置目录（默认 `config.d`）和持久化状态；切换模式时停用网络保持停用，旧普通模式目录不再参与运行。
+- 桌面 GUI 普通模式与服务模式共用服务配置目录（默认 `config.d`）和持久化状态；切换模式时停用网络保持停用，旧普通模式目录不再参与运行。GUI 普通模式恢复目录与 CLI 启动共用同一套隔离策略（`easytier::instance::config_dir_startup`）：非法文件、重复 UUID 与无法启动的条目逐项跳过，不阻塞其他网络加载。
 - 离开服务模式时卸载 GUI 安装的系统服务；切入本地模式时，Windows GUI 会按配置目录或 RPC 端口识别并移除冲突的 EasyTier 服务。所有桌面平台都会在 RPC 端口未释放时阻止新服务启动并报错。
 - 心跳和实例列表按实际构建与 Host 能力声明管理、配置扩展及传输能力；缺少能力的节点不收到扩展字段，包括 `false` 或清空值。
 - 官方节点继续使用官方 `User` / `Web` 来源与中央编排流程。定制节点的本地 TOML 是配置权威；网页数据库只保存独立的只读镜像，不用于恢复或离线下发。旧定制节点保留原有单节点入口；若旧接口无法保留未声明能力的既有扩展配置，会保留编辑草稿并提示升级。
@@ -47,9 +47,9 @@
 ### 3. WSS / HTTP3 传输与伪装参数
 
 - 新增 HTTP3 隧道实现和协议适配，扩展 WSS 传输，并将 HTTP3 默认监听端口设为 `11014`。
-- WSS URL 支持 SNI、Host、请求路径、User-Agent、Accept-Language 和 padding 参数；padding 间隔/长度有边界限制。文本 padding 通过真实 HTTP Upgrade 请求与响应的 `X-EasyTier-Transport-Features: ws-text-padding-v1` 协商，双方声明后才启用；官方、旧节点及缺少声明的 JS/WASI 入口保持 binary。
+- WSS URL 支持 SNI、Host、请求路径、User-Agent、Accept-Language 和 padding 参数；padding 间隔/长度有边界限制。文本 padding 通过真实 HTTP Upgrade 请求与响应的 `X-EasyTier-Transport-Features: ws-text-padding-v1` 协商，双方声明后才启用；padding 双向生效——监听 URL 配置了 `?padding=` 且对端在 Upgrade 请求中声明该能力时，服务端出站帧同样填充；官方、旧节点及缺少声明的 JS/WASI 入口保持 binary。
 - 增加全局 `sni` 配置，用于出站 WSS/HTTP3 连接。
-- 全局 SNI 为空时保留 URL 中显式配置的 SNI；HTTP3 使用 IPv6 地址作为默认服务器名时移除 URL 方括号，避免 TLS 服务器名校验失败。
+- 全局 SNI 为空时保留 URL 中显式配置的 SNI；HTTP3 使用 IPv6 地址作为默认服务器名时移除 URL 方括号，避免 TLS 服务器名校验失败。WSS 伪装参数生效时，请求行中的 IPv6 字面量主机同样保持完整（含方括号），不会被截断或改写。
 - GUI/Web 编辑 URL 时保留路径、查询参数和 fragment。
 
 相关代码：`easytier/src/tunnel/http3.rs`、`websocket.rs`、`protocol/adapters/`。这里的“伪装”描述传输格式与握手参数，不是不可识别或不可封锁的保证。HTTP3 隧道使用 TLS 1.3 和 `h3` ALPN，但应用流仍为自定义隧道帧，并非完整的浏览器 HTTP/3 请求；原生 QUIC 打洞的数据包已去除外层 EasyTier UDP 头部，NAT 控制探测包仍沿用现有 EasyTier 格式。
