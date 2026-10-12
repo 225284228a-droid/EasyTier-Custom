@@ -99,6 +99,7 @@ pub async fn run_vpn_route_manager(
     let mut event_receiver = global_ctx.subscribe();
     let mut state = VpnRouteManagerState::default();
 
+    seed_endpoints_from_config(&global_ctx, &mut state).await;
     reconcile(&global_ctx, &ifcfg, &ifname, &net_ns, &status, &mut state).await;
 
     loop {
@@ -174,6 +175,59 @@ fn peer_conn_remote_ip(info: &easytier_proto::api::instance::PeerConnInfo) -> Op
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
+/// The host of a configured peer URL when it is a literal IP address.
+/// Non-special schemes (tcp://, udp://, ...) keep literal IPv4 hosts as
+/// opaque domains, so domains are tried as address literals too.
+fn peer_url_host_ip(uri: &url::Url) -> Option<IpAddr> {
+    let ip = match uri.host()? {
+        url::Host::Ipv4(v4) => IpAddr::V4(v4),
+        url::Host::Ipv6(v6) => IpAddr::V6(v6),
+        url::Host::Domain(host) => host.parse().ok()?,
+    };
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Best-effort single resolution of a configured peer domain, so its
+/// underlay IP can be pinned before the first connection exists.
+async fn resolve_peer_domain(domain: &str) -> Option<IpAddr> {
+    match tokio::net::lookup_host((domain, 0)).await {
+        Ok(addrs) => addrs
+            .map(|addr| addr.ip())
+            .find(|ip| !ip.is_loopback() && !ip.is_unspecified()),
+        Err(err) => {
+            tracing::debug!(
+                domain,
+                ?err,
+                "could not resolve configured peer domain for vpn endpoint pin"
+            );
+            None
+        }
+    }
+}
+
+/// Pre-seeds the underlay endpoints of the configured peers. The
+/// PeerConnAdded learning path only fires after a connection exists, so
+/// without seeding the /1 takeover routes could capture the very
+/// connections EasyTier needs to build the mesh.
+async fn seed_endpoints_from_config(
+    global_ctx: &ArcGlobalCtx,
+    state: &mut VpnRouteManagerState,
+) {
+    for peer in global_ctx.config.get_peers() {
+        let host = match peer.uri.host() {
+            Some(url::Host::Domain(domain)) if domain.parse::<IpAddr>().is_err() => {
+                resolve_peer_domain(domain).await
+            }
+            _ => peer_url_host_ip(&peer.uri),
+        };
+        if let Some(ip) = host
+            && state.endpoints.insert(ip)
+        {
+            tracing::debug!(%ip, url = %peer.uri, "seeded vpn endpoint pin from configured peer");
+        }
+    }
+}
+
 async fn reconcile(
     global_ctx: &ArcGlobalCtx,
     ifcfg: &BoxedIfCfg,
@@ -187,28 +241,31 @@ async fn reconcile(
     let mut dns_servers = Vec::new();
 
     if config.enabled {
-        // Capture the physical gateways before installing any takeover
-        // route; keep the first successful capture so later reconciles (after
-        // takeover) still see the original gateway.
-        if state.captured_gateway_v4.is_none() && state.captured_gateway_v6.is_none() {
-            state.captured_gateway_v4 = ifcfg
-                .default_route(false, Some(ifname))
+        // Refresh the physical gateways on every reconcile. default_route
+        // scans the routing table with the TUN excluded, so the physical
+        // default stays visible after the /1 takeover routes are installed;
+        // when the host switches networks, the direct-rule and endpoint-pin
+        // routes follow the new gateway on the next diff. A family with no
+        // result keeps its previous capture (a stale pin beats none while
+        // offline).
+        for (ipv6, slot) in [
+            (false, &mut state.captured_gateway_v4),
+            (true, &mut state.captured_gateway_v6),
+        ] {
+            if let Some(gateway) = ifcfg
+                .default_route(ipv6, Some(ifname))
                 .await
                 .ok()
                 .flatten()
-                .and_then(|route| usable_gateway(route.gateway));
-            state.captured_gateway_v6 = ifcfg
-                .default_route(true, Some(ifname))
-                .await
-                .ok()
-                .flatten()
-                .and_then(|route| usable_gateway(route.gateway));
-            if state.captured_gateway_v4.is_some() || state.captured_gateway_v6.is_some() {
+                .and_then(|route| usable_gateway(route.gateway))
+                && slot.is_none_or(|old| old != gateway)
+            {
                 tracing::info!(
-                    v4 = ?state.captured_gateway_v4,
-                    v6 = ?state.captured_gateway_v6,
-                    "captured physical default gateways for vpn"
+                    family = if ipv6 { "v6" } else { "v4" },
+                    ?gateway,
+                    "physical default gateway for vpn updated"
                 );
+                *slot = Some(gateway);
             }
         }
 
@@ -719,6 +776,23 @@ mod tests {
         // reachable v4 exit is still "not available"
         let v6_down = exit_up(&[("a", false)]);
         assert!(!global_exit_available(&config, false, &v6_down));
+    }
+
+    #[test]
+    fn peer_url_host_ip_extracts_literal_hosts_only() {
+        assert_eq!(
+            peer_url_host_ip(&"tcp://1.2.3.4:11010".parse().unwrap()),
+            Some("1.2.3.4".parse().unwrap())
+        );
+        assert_eq!(
+            peer_url_host_ip(&"udp://[fd00::9]:11010".parse().unwrap()),
+            Some("fd00::9".parse().unwrap())
+        );
+        assert_eq!(
+            peer_url_host_ip(&"tcp://public.easytier.cn:11010".parse().unwrap()),
+            None
+        );
+        assert_eq!(peer_url_host_ip(&"tcp://127.0.0.1:11010".parse().unwrap()), None);
     }
 
     #[test]
