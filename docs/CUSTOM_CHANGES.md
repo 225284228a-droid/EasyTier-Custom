@@ -106,14 +106,14 @@
 | --- | --- | --- |
 | 顶层 `sni` | 未设置 | 出站 WSS/HTTP3 的全局 SNI |
 | `[flags] default_protocol` | `"udp"` | 自动P2P优先 UDP，协商伪装时优先 HTTP3 |
-| `[flags] prefer_wss_http3_for_p2p` | `false` | 启用后优先协商 WSS/HTTP3；默认仅响应需要伪装的对端 |
+| `[flags] prefer_wss_http3_for_p2p` | `true` | 自动 P2P 默认优先协商 WSS/HTTP3（双方均开启或一方强制时生效），可回退 TCP/UDP；显式 `false` 则仅响应需要伪装的对端 |
 | `[flags] disable_wss_http3_for_p2p` | `false` | 禁止自动 P2P 使用 WSS/HTTP3 |
 | `[flags] only_use_wss_http3_for_hole_punching` | `false` | 限制自动 P2P/打洞使用伪装传输 |
 | `[flags] close_redundant_conns_when_disguised` | `true` | 双方协商并验证连接可用后，优先保留一条手动初始节点连接；否则优先保留 WSS/HTTP3（显式禁止伪装除外），清理较低优先级自动连接 |
 
 这些策略受本机构建能力和对端能力影响。与原版混用时不要假定扩展功能全部可用；强制仅使用 WSS/HTTP3 可能减少可连接路径。启用互相冲突的策略可能使连接无法建立。
 
-配置标志使用官方 schema 生成的 `Flags` / `FlagsPatch`、CLI 和管理表单。未设置、显式 `false` 和 `0` 独立保存；`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。保留定制 protobuf 字段编号、既有 CLI 参数和 `ET_*` 环境变量，省略参数时仍优先 UDP 并开启冗余连接清理。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
+配置标志使用官方 schema 生成的 `Flags` / `FlagsPatch`、CLI 和管理表单。未设置、显式 `false` 和 `0` 独立保存；`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。保留定制 protobuf 字段编号、既有 CLI 参数和 `ET_*` 环境变量，省略参数时仍优先 UDP、优先 WSS/HTTP3 伪装并开启冗余连接清理。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
 
 已合入官方 UDP 绑定的虚拟端口所有权和分片缓存：未先发送的绑定 socket 可接收数据；关闭后重绑不会接收旧绑定的残留分片。`PeerPacketFilterResult::PassBatch` 中的包按原顺序从产生批次的下一个过滤器继续处理。本地实际监听端口的防回环检查与上述虚拟端口所有权共同生效。
 

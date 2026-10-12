@@ -500,7 +500,7 @@ describe('Config.vue network config projection', () => {
     wrapper.unmount()
   })
 
-  it('shows passive disguise use, UDP and enabled cleanup for new and missing settings', async () => {
+  it('shows preferred disguise, UDP and enabled cleanup for new and missing settings', async () => {
     for (const legacy of [false, true]) {
       const config = DEFAULT_NETWORK_CONFIG()
       config.advanced_settings = true
@@ -513,7 +513,9 @@ describe('Config.vue network config projection', () => {
       }
       const { curNetwork, wrapper } = mountConfig(config)
       await nextTick()
-      expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('default')
+      // The schema default prefers disguise, so both an explicitly defaulted
+      // and an unset configuration render as prefer.
+      expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('prefer')
       expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('udp')
       expect(input(wrapper, '#close_redundant_conns_when_disguised').checked).toBe(true)
       if (legacy) {

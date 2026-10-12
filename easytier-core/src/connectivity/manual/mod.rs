@@ -26,6 +26,7 @@ use crate::{
         transport::{self, ConnectedByteStream, ConnectedTransport, IpTransport, UdpSessionMode},
     },
     events::{CoreEvent, CoreEventSink},
+    foundation::bandwidth::TransmissionWindowSource,
     host::dns::{DnsQuery, DnsResolver},
     peers::{PeerConnectionOrigin, peer_manager::PeerManagerCore},
     proto::common::TunnelInfo,
@@ -245,6 +246,10 @@ impl Tunnel for ResolvedManualTunnel {
 
     fn info(&self) -> Option<TunnelInfo> {
         Some(self.info.clone())
+    }
+
+    fn bandwidth_source(&self) -> Option<Arc<dyn TransmissionWindowSource>> {
+        self.inner.bandwidth_source()
     }
 }
 
@@ -1572,6 +1577,54 @@ mod tests {
         assert_eq!(url::Url::from(info.remote_addr.unwrap()), requested);
         assert_eq!(url::Url::from(info.resolved_remote_addr.unwrap()), resolved);
         assert_eq!(info.tunnel_type, "wss");
+    }
+
+    #[test]
+    fn manual_conn_wrapper_keeps_the_upgraded_tunnels_window_source() {
+        // The upgraded TCP/WS/QUIC tunnel already measures its send window; the
+        // endpoint-identity wrapper must forward it so a manually connected
+        // PeerConn reports an upload bandwidth estimate like automatic P2P does.
+        #[derive(Debug)]
+        struct FixedWindowSource;
+
+        impl crate::foundation::bandwidth::TransmissionWindowSource for FixedWindowSource {
+            fn transmission_window(
+                &self,
+            ) -> Option<crate::foundation::bandwidth::TransmissionWindow> {
+                Some(crate::foundation::bandwidth::TransmissionWindow {
+                    congestion_window_bytes: 1_000_000,
+                    peer_receive_window_bytes: None,
+                    rtt: Duration::from_millis(100),
+                })
+            }
+        }
+
+        let (socket, _remote_socket) = crate::tunnel::ring::create_ring_socket_pair(16);
+        let inner = crate::tunnel::ring::RingTunnel::new(
+            socket,
+            Some(TunnelInfo {
+                tunnel_type: "tcp".to_owned(),
+                local_addr: None,
+                remote_addr: Some("tcp://192.0.2.1:11010".parse::<Url>().unwrap().into()),
+                resolved_remote_addr: None,
+            }),
+        );
+        let (reader, writer) = inner.split();
+        let inner = Box::new(
+            crate::tunnel::wrapper::TunnelWrapper::new(reader, writer, inner.info())
+                .with_bandwidth_source(Some(Arc::new(FixedWindowSource))),
+        ) as Box<dyn Tunnel>;
+
+        let wrapped =
+            apply_resolved_endpoint_info(inner, "tcp://192.0.2.1:11010".parse().unwrap(), vec!["txt".to_owned()]);
+
+        assert_eq!(
+            wrapped
+                .bandwidth_source()
+                .and_then(|source| source.transmission_window())
+                .and_then(|window| window.estimated_bps()),
+            Some(80_000_000),
+        );
     }
 
     #[test]

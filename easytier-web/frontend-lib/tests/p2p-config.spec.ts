@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_NETWORK_CONFIG, normalizeNetworkConfig, toBackendNetworkConfig } from '../src/types/network'
+import { DEFAULT_NETWORK_CONFIG, defaultFlagValue, normalizeNetworkConfig, toBackendNetworkConfig } from '../src/types/network'
 
 describe('P2P configuration defaults', () => {
-  it('defaults new configurations to passive disguise use, UDP and enabled cleanup', () => {
+  it('defaults new configurations to preferring disguise, UDP and enabled cleanup', () => {
     const config = DEFAULT_NETWORK_CONFIG()
-    expect(config.prefer_wss_http3_for_p2p).toBe(false)
+    expect(config.prefer_wss_http3_for_p2p).toBe(true)
     expect(config.only_use_wss_http3_for_hole_punching).toBe(false)
     expect(config.disable_wss_http3_for_p2p).toBe(false)
     expect(config.p2p_prefer_protocol).toBe('udp')
     expect(config.close_redundant_conns_when_disguised).toBe(true)
+  })
+
+  it('reads the disguise preference back from the schema default when unset', () => {
+    // A network that states nothing runs with the annotation default, so an
+    // unset config displays as preferring disguise rather than as "do not
+    // initiate".
+    expect(defaultFlagValue('prefer_wss_http3_for_p2p')).toBe(true)
+    expect(defaultFlagValue('only_use_wss_http3_for_hole_punching')).toBe(false)
+    expect(defaultFlagValue('disable_wss_http3_for_p2p')).toBe(false)
   })
 
   it('keeps legacy settings unset through normalization, saving and readback', () => {

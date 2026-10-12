@@ -607,7 +607,7 @@ mod tests {
         let defaults = Flags::defaults();
         assert_eq!(defaults.default_protocol, "udp");
         assert!(!defaults.only_use_wss_http3_for_hole_punching);
-        assert!(!defaults.prefer_wss_http3_for_p2p);
+        assert!(defaults.prefer_wss_http3_for_p2p);
         assert!(!defaults.disable_wss_http3_for_p2p);
         assert!(defaults.close_redundant_conns_when_disguised);
 

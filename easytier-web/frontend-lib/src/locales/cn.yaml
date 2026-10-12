@@ -253,11 +253,11 @@ only_use_wss_http3_for_hole_punching: 仅使用 WSS/HTTP3 进行P2P
 only_use_wss_http3_for_hole_punching_help: 自动P2P和NAT打洞仅使用 WSS 和 HTTP/3；不影响普通直连或手动连接。
 
 p2p_disguise_mode: 自动P2P协议
-p2p_disguise_mode_default: 默认（不主动使用）
+p2p_disguise_mode_default: 不主动使用（普通协议优先）
 p2p_disguise_mode_prefer: 优先使用 WSS/HTTP3
 p2p_disguise_mode_disable: 禁用 WSS/HTTP3
 p2p_disguise_mode_only: 仅使用 WSS/HTTP3
-p2p_disguise_mode_help: 默认不主动使用伪装协议，但响应需要伪装的对端；优先模式会尝试 WSS 和 HTTP/3，并允许回退到 TCP/UDP；也可禁用两个伪装协议，或仅使用这两个协议进行自动P2P。手动连接不受影响。
+p2p_disguise_mode_help: 未设置时默认优先使用 WSS/HTTP3（尝试伪装打洞并优先保留伪装连接，可回退 TCP/UDP），需对端同样开启或显式要求；"不主动使用"仅发起普通协议打洞，但仍响应需要伪装的对端；也可禁用两个伪装协议，或仅使用这两个协议进行自动P2P。手动连接不受影响。
 
 p2p_prefer_protocol: P2P 优先协议
 p2p_prefer_protocol_tcp: 优先 TCP（可用时 WSS）

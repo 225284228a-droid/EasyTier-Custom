@@ -252,11 +252,11 @@ only_use_wss_http3_for_hole_punching: Only Use WSS/HTTP3 for P2P
 only_use_wss_http3_for_hole_punching_help: Use only WSS and HTTP/3 for automatic P2P and NAT hole punching; ordinary direct connections and manual connections are unaffected.
 
 p2p_disguise_mode: Automatic P2P Protocol
-p2p_disguise_mode_default: Default (do not initiate)
+p2p_disguise_mode_default: Do not initiate (raw protocols)
 p2p_disguise_mode_prefer: Prefer WSS/HTTP3
 p2p_disguise_mode_disable: Disable WSS/HTTP3
 p2p_disguise_mode_only: Only WSS/HTTP3
-p2p_disguise_mode_help: By default, do not initiate disguised P2P, but accept peers that require it. Prefer mode tries WSS and HTTP/3 while allowing TCP/UDP fallback. You can also disable both disguise protocols or restrict automatic P2P to them. Manual connections are unaffected.
+p2p_disguise_mode_help: When unset, WSS/HTTP3 are preferred by default (disguised punching is attempted and disguised connections are kept first, with TCP/UDP fallback) as long as the peer also prefers them or requires them. "Do not initiate" only punches with raw protocols but still serves peers that require disguise. You can also disable both disguise protocols or restrict automatic P2P to them. Manual connections are unaffected.
 
 p2p_prefer_protocol: P2P Preferred Protocol
 p2p_prefer_protocol_tcp: Prefer TCP (WSS if available)

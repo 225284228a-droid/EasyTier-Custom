@@ -161,14 +161,23 @@ const bool_flags: BoolFlag[] = [
 ]
 const visibleBoolFlags = computed(() => bool_flags.filter(flag => extensionSupported(flag.field)))
 
+/// What a disguise flag states, or the schema default the network runs with
+/// when it states nothing — the same rule the boolean flag checkboxes use.
+const disguiseFlagState = (field: keyof NetworkConfig): boolean => {
+  const value = curNetwork.value[field]
+
+  return typeof value === 'boolean' ? value : defaultFlagValue(field)
+}
+
 const disguisedP2pMode = computed<DisguisedP2pMode>({
   get() {
-    if (curNetwork.value.only_use_wss_http3_for_hole_punching) return 'only'
-    if (curNetwork.value.disable_wss_http3_for_p2p) return 'disable'
-    if (curNetwork.value.prefer_wss_http3_for_p2p) return 'prefer'
-    // All three flags false is a distinct state: never initiate disguised
-    // P2P, but still serve peers that require it. Rendering it as "prefer"
-    // would silently flip the flag to true on the next save.
+    if (disguiseFlagState('only_use_wss_http3_for_hole_punching')) return 'only'
+    if (disguiseFlagState('disable_wss_http3_for_p2p')) return 'disable'
+    if (disguiseFlagState('prefer_wss_http3_for_p2p')) return 'prefer'
+    // All three flags explicitly false is a distinct state: never initiate
+    // disguised P2P, but still serve peers that require it. Rendering it as
+    // "prefer" would silently flip the flag to true on the next save. An
+    // unset flag instead shows the schema default the network runs with.
     return 'default'
   },
   set(value: DisguisedP2pMode) {

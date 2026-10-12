@@ -974,7 +974,7 @@ mod tests {
     #[test]
     fn p2p_defaults_and_explicit_settings_round_trip_through_toml() {
         let defaults = TomlConfigLoader::default().get_flags();
-        assert!(!defaults.prefer_wss_http3_for_p2p);
+        assert!(defaults.prefer_wss_http3_for_p2p);
         assert_eq!(defaults.default_protocol, "udp");
         assert!(!defaults.only_use_wss_http3_for_hole_punching);
         assert!(!defaults.disable_wss_http3_for_p2p);
@@ -994,7 +994,7 @@ mod tests {
                 close_redundant_conns_when_disguised: cleanup,
                 ..standalone_config()
             };
-            let expected_prefer = prefer.unwrap_or(false);
+            let expected_prefer = prefer.unwrap_or(true);
             let expected_protocol = protocol
                 .map(str::trim)
                 .filter(|value| !value.is_empty())

@@ -95,7 +95,10 @@ message Flags {
   bool only_use_wss_http3_for_hole_punching = 45 [(easytier.flag) = { default: "false" }];
 
   // Prefer WSS/HTTP3 for automatic P2P while still allowing TCP/UDP fallback.
-  bool prefer_wss_http3_for_p2p = 46 [(easytier.flag) = { default: "false" }];
+  // Enabled by default: both peers must advertise the preference (or one side
+  // must require it) before disguised punches and WSS/HTTP3 ranking apply, so
+  // nodes that explicitly disable it keep the raw protocol ordering.
+  bool prefer_wss_http3_for_p2p = 46 [(easytier.flag) = { default: "true" }];
 
   // Do not use WSS/HTTP3 for automatic P2P at all.
   bool disable_wss_http3_for_p2p = 47 [(easytier.flag) = { default: "false" }];
