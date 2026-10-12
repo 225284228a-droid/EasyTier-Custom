@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -273,6 +273,7 @@ where
         &self,
         entry_id: UdpNatEntryId,
         response_sink: Weak<dyn UdpProxyResponseSink>,
+        ipv6: bool,
     ) -> Result<Arc<UdpSocketNatEntry<F::Socket>>, ProxyRuntimeError> {
         if self.closing.load(Ordering::Acquire) {
             return Err(ProxyRuntimeError::Other(anyhow::anyhow!(
@@ -302,7 +303,12 @@ where
         let mut creation =
             UdpSocketCreationGuard::new(self.entries.clone(), entry_id, slot.clone());
 
-        let socket = match self.factory.bind_udp(self.bind_options.clone()).await {
+        let mut bind_options = self.bind_options.clone();
+        if ipv6 && bind_options.local_addr.is_none() {
+            // The default bind is 0.0.0.0, which cannot send IPv6 datagrams.
+            bind_options.local_addr = Some(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0));
+        }
+        let socket = match self.factory.bind_udp(bind_options).await {
             Ok(socket) => socket,
             Err(error) => {
                 let error = ProxyRuntimeError::Other(error);
@@ -382,7 +388,9 @@ where
         payload: Bytes,
         response_sink: Weak<dyn UdpProxyResponseSink>,
     ) -> Result<(), ProxyRuntimeError> {
-        let entry = self.ensure_socket_entry(entry_id, response_sink).await?;
+        let entry = self
+            .ensure_socket_entry(entry_id, response_sink, dst.is_ipv6())
+            .await?;
         if entry.closed.load(Ordering::Acquire) {
             return Err(ProxyRuntimeError::Other(anyhow::anyhow!(
                 "UDP proxy socket entry is closed"

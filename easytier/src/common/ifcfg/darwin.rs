@@ -1,12 +1,54 @@
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 
 use super::{Error, IfConfiguerTrait, cidr_to_subnet_mask, run_shell_cmd};
 use async_trait::async_trait;
 use cidr::{Ipv4Inet, Ipv6Inet};
 
 pub struct MacIfConfiger {}
+
+/// pf anchor and rule management for IPv6 exit forwarding (NAT66); the rule
+/// text and pf.conf editing helpers live in `instance::vpn_exit_pf`.
+use crate::instance::vpn_exit_pf::{
+    IPV6_EXIT_ANCHOR_NAME, IPV6_EXIT_PF_CONF, ensure_ipv6_exit_anchor_directive,
+    ipv6_exit_pf_rule, remove_ipv6_exit_anchor_directive,
+};
+
 #[async_trait]
 impl IfConfiguerTrait for MacIfConfiger {
+    async fn sync_ipv6_exit_forwarding(
+        &self,
+        tun_ifname: &str,
+        mesh_prefix: Option<&str>,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        match (enabled, mesh_prefix) {
+            (true, Some(mesh_prefix)) => {
+                run_shell_cmd("sysctl -w net.inet6.ip6.forwarding=1").await?;
+                self.sync_pf_conf_directive(true).await?;
+                // NAT out through the physical interface the default route
+                // points at; the TUN itself is excluded in the rule anyway.
+                let ext_ifname = self
+                    .default_route(false, Some(tun_ifname))
+                    .await?
+                    .map(|route| route.interface_name)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| {
+                        Error::AnyhowError(anyhow::anyhow!("no physical default route for pf nat66"))
+                    })?;
+                let rule = ipv6_exit_pf_rule(tun_ifname, mesh_prefix, &ext_ifname);
+                self.load_anchor_rule(&rule).await
+            }
+            (false, _) => {
+                // Keep forwarding on (Linux behaves the same): only EasyTier's
+                // own pf rules are removed.
+                self.load_anchor_rule_flush_only().await?;
+                self.sync_pf_conf_directive(false).await
+            }
+            (true, None) => Ok(()),
+        }
+    }
+
     async fn add_route_via_gateway(
         &self,
         gateway: std::net::IpAddr,

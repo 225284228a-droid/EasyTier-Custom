@@ -200,6 +200,7 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
             },
         ) {
             IcmpProxyAction::Pass => Some(packet),
+            IcmpProxyAction::Drop => None,
             IcmpProxyAction::SendToSocket {
                 destination,
                 packet: request,

@@ -144,6 +144,11 @@ proxy-packet = [
     "dep:smoltcp",
     "smoltcp/std",
     "smoltcp/proto-ipv4",
+    # The v6 exit NAT rewrites IPv6/TCP wire packets through smoltcp;
+    # proto-ipv6 needs a medium and a socket feature to compile.
+    "smoltcp/proto-ipv6",
+    "smoltcp/medium-ip",
+    "smoltcp/socket-raw",
     "smoltcp/proto-ipv4-fragmentation",
     "smoltcp/fragmentation-buffer-size-65536",
     "smoltcp/assembler-max-segment-count-16",

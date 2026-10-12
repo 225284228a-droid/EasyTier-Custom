@@ -25,6 +25,7 @@ pub(crate) mod listeners;
 #[cfg(feature = "tun")]
 pub mod virtual_nic;
 pub mod vpn_exit_forwarding;
+pub mod vpn_exit_pf;
 pub mod vpn_routes;
 
 #[cfg(any(all(windows, feature = "tun"), test))]

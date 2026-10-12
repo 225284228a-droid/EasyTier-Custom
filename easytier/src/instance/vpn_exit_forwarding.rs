@@ -1,28 +1,38 @@
 //! Exit-side platform setup for the multi-exit VPN.
 //!
-//! IPv4 exit traffic is NATed by the userspace proxy engines. IPv6 exit
-//! traffic is instead written into the exit node's TUN and forwarded by the
-//! kernel, which requires IPv6 forwarding plus a MASQUERADE rule so replies
-//! return to the right client. This module owns that platform state on Linux
-//! and warns on platforms without kernel NAT66.
-
-use std::net::Ipv6Addr;
+//! IPv4 exit traffic is always NATed by the userspace proxy engines. IPv6
+//! exit traffic is handled per platform:
+//!
+//! * Linux: kernel forwarding plus an ip6tables MASQUERADE rule;
+//! * macOS: kernel forwarding plus a pf anchor (`com.easytier.vpn66`);
+//! * Windows: no kernel NAT66 — TCP and UDP are relayed by the userspace
+//!   proxy engines instead, so nothing is configured here.
 
 /// Enables or disables exit forwarding for the given TUN interface.
 ///
 /// `v6_prefix` is the network's IPv6 prefix; `None` means the network has no
-/// IPv6 addressing, in which case only the warning bookkeeping runs.
+/// IPv6 addressing, in which case kernel platforms have nothing to install.
 pub async fn sync_vpn_exit_forwarding(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) {
     #[cfg(target_os = "linux")]
     {
         sync_linux(enabled, tun_ifname, v6_prefix).await;
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        sync_macos(enabled, tun_ifname, v6_prefix).await;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Kernel forwarding stays off; the userspace proxy engines relay v6
+        // exit TCP and UDP, and ICMPv6 exit packets are dropped by design.
+        let _ = (enabled, tun_ifname, v6_prefix);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         if enabled && v6_prefix.is_some() {
             tracing::warn!(
-                "IPv6 exit forwarding needs kernel NAT66; not supported on this platform. \
-                 IPv4 exit traffic still works."
+                "ipv6 exit forwarding has no platform support here; \
+                 ipv4 exit traffic still works"
             );
         }
         let _ = (enabled, tun_ifname);
@@ -119,8 +129,25 @@ async fn sync_linux(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) 
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn sync_macos(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) {
+    use crate::common::ifcfg::{IfConfiger, IfConfiguerTrait as _};
+
+    let ifcfg = IfConfiger {};
+    if let Err(err) = ifcfg
+        .sync_ipv6_exit_forwarding(tun_ifname, v6_prefix.as_deref(), enabled)
+        .await
+    {
+        tracing::warn!(
+            ?err,
+            enabled,
+            "failed to sync ipv6 exit forwarding via pf; \
+             ipv6 exit traffic may not work (ipv4 is unaffected)"
+        );
+    }
+}
+
 /// Formats the network prefix used for the masquerade rule.
 pub fn v6_masquerade_prefix(prefix: &cidr::Ipv6Inet) -> String {
-    let _ = Ipv6Addr::UNSPECIFIED;
     prefix.to_string()
 }

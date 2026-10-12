@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn all_exits_down_honors_fail_mode() {
         let r = rule("0.0.0.0/0", VpnRuleAction::Exit, Some("a"));
-        let mut engine = engine_with(
+        let engine = engine_with(
             vec![r.clone()],
             vec![VpnExitConfig {
                 name: "a".into(),

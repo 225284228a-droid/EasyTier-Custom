@@ -238,7 +238,9 @@ where
             packet,
             TcpProxyNicContext {
                 local_inet: snapshot.local_inet,
+                local_ipv6: snapshot.local_ipv6,
                 local_port: engine.local_port(),
+                v6_local_port: engine.v6_local_port(),
                 my_peer_id: self.peer_manager.my_peer_id(),
                 smoltcp_enabled: snapshot.smoltcp_enabled,
             },

@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     sync::{
         Arc,
         atomic::{AtomicU16, Ordering},
@@ -10,7 +10,7 @@ use std::{
 use cidr::Ipv4Inet;
 use crossbeam_utils::atomic::AtomicCell;
 use dashmap::{DashMap, mapref::entry::Entry};
-use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, TcpPacket};
+use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket};
 
 use crate::packet::{PacketType, ZCPacket};
 
@@ -126,6 +126,8 @@ impl TcpNatEntry {
 pub(crate) struct TcpProxyPeerContext {
     pub local_inet: Option<Ipv4Inet>,
     pub virtual_ipv4: Option<Ipv4Addr>,
+    /// This node's mesh IPv6 address, required to relay v6 exit traffic.
+    pub local_ipv6: Option<Ipv6Addr>,
     pub local_port: u16,
     pub vpn_exit: bool,
     pub no_tun: bool,
@@ -135,7 +137,9 @@ pub(crate) struct TcpProxyPeerContext {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TcpProxyNicContext {
     pub local_inet: Option<Ipv4Inet>,
+    pub local_ipv6: Option<Ipv6Addr>,
     pub local_port: u16,
+    pub v6_local_port: u16,
     pub my_peer_id: u32,
     pub smoltcp_enabled: bool,
 }
@@ -151,6 +155,7 @@ pub(crate) enum TcpProxyPacketAction {
 pub(crate) struct TcpProxyEngine {
     cidr_table: Arc<ProxyCidrTable>,
     local_port: AtomicU16,
+    v6_local_port: AtomicU16,
     next_translated_port: AtomicU16,
     flow_map: DashMap<TcpNatFlowKey, Arc<TcpNatEntry>>,
     translated_src_map: DashMap<SocketAddr, Arc<TcpNatEntry>>,
@@ -162,6 +167,7 @@ impl TcpProxyEngine {
         Self {
             cidr_table,
             local_port: AtomicU16::new(0),
+            v6_local_port: AtomicU16::new(0),
             next_translated_port: AtomicU16::new(1),
             flow_map: DashMap::new(),
             translated_src_map: DashMap::new(),
@@ -175,6 +181,14 @@ impl TcpProxyEngine {
 
     pub fn local_port(&self) -> u16 {
         self.local_port.load(Ordering::Relaxed)
+    }
+
+    pub fn set_v6_local_port(&self, port: u16) {
+        self.v6_local_port.store(port, Ordering::Relaxed);
+    }
+
+    pub fn v6_local_port(&self) -> u16 {
+        self.v6_local_port.load(Ordering::Relaxed)
     }
 
     fn allocate_entry(
@@ -253,16 +267,23 @@ impl TcpProxyEngine {
             return TcpProxyPacketAction::Pass;
         }
 
-        let Some(local_inet) = ctx.local_inet else {
-            return TcpProxyPacketAction::Pass;
-        };
-        let local_ip = local_inet.address();
         let Some(hdr) = packet.peer_manager_header() else {
             return TcpProxyPacketAction::Pass;
         };
         if hdr.is_no_proxy() {
             return TcpProxyPacketAction::Pass;
         }
+
+        // The version nibble dispatches before the v4-only gates below: a
+        // v6-only exit node has no local IPv4 inet but still relays v6.
+        if packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
+            return self.try_handle_peer_packet_v6(packet, &ctx, hdr.is_vpn_exit());
+        }
+
+        let Some(local_inet) = ctx.local_inet else {
+            return TcpProxyPacketAction::Pass;
+        };
+        let local_ip = local_inet.address();
 
         let allowed_packet_type = match mode {
             TcpProxyMode::Tcp => hdr.packet_type == PacketType::Data as u8,
@@ -355,7 +376,160 @@ impl TcpProxyEngine {
         TcpProxyPacketAction::Handled { new_syn }
     }
 
+    /// Relays one IPv6 TCP packet from a peer through the local kernel
+    /// listener: the destination is rewritten to this node's mesh IPv6 with
+    /// the listener port, and the reply is translated back by
+    /// [`Self::try_process_v6_packet_from_nic`]. Only VPN-exit traffic is
+    /// eligible; the v6 side has no proxy-CIDR mapping.
+    fn try_handle_peer_packet_v6(
+        &self,
+        packet: &mut ZCPacket,
+        ctx: &TcpProxyPeerContext,
+        is_vpn_exit: bool,
+    ) -> TcpProxyPacketAction {
+        if !ctx.vpn_exit
+            || !is_vpn_exit
+            || ctx.smoltcp_enabled
+            || ctx.local_ipv6.is_none()
+        {
+            return TcpProxyPacketAction::Pass;
+        }
+        let v6_local_port = self.v6_local_port();
+        if v6_local_port == 0 {
+            return TcpProxyPacketAction::Pass;
+        }
+
+        let Ok(ip_packet) = Ipv6Packet::new_checked(packet.payload()) else {
+            return TcpProxyPacketAction::Pass;
+        };
+        if ip_packet.next_header() != IpProtocol::Tcp {
+            return TcpProxyPacketAction::Pass;
+        }
+
+        let payload_bytes = packet.mut_payload();
+        let ip_packet = Ipv6Packet::new_checked(&payload_bytes[..]).expect("checked ipv6 packet");
+        let tcp_packet = TcpPacket::new_checked(ip_packet.payload()).expect("checked tcp packet");
+
+        let source_ip = ip_packet.src_addr();
+        let source_port = tcp_packet.src_port();
+        let dest_ip = ip_packet.dst_addr();
+        let dest_port = tcp_packet.dst_port();
+        let flow = TcpNatFlowKey {
+            src: SocketAddr::new(source_ip.into(), source_port),
+            mapped_dst: SocketAddr::new(dest_ip.into(), dest_port),
+        };
+
+        let is_syn = tcp_packet.syn() && !tcp_packet.ack();
+        let (entry, new_syn) = if is_syn {
+            let real_dst = SocketAddr::new(dest_ip.into(), dest_port);
+            let Some(entry) = self.entry_for_syn(flow, real_dst) else {
+                tracing::error!(?flow, "tcp proxy translated source ports exhausted");
+                return TcpProxyPacketAction::Drop;
+            };
+            entry
+        } else {
+            let Some(entry) = self.flow_map.get(&flow) else {
+                return TcpProxyPacketAction::Pass;
+            };
+            (entry.clone(), false)
+        };
+
+        if new_syn {
+            tracing::info!(
+                src = ?entry.src(),
+                translated_src = ?entry.translated_src,
+                real_dst = ?entry.real_dst(),
+                "tcp v6 syn received"
+            );
+        }
+
+        let local_ipv6 = ctx.local_ipv6.expect("checked local ipv6");
+        let mut ip_packet = Ipv6Packet::new_checked(payload_bytes).expect("checked ipv6 packet");
+        ip_packet.set_dst_addr(local_ipv6);
+        let src = ip_packet.src_addr();
+        {
+            let mut tcp_packet =
+                TcpPacket::new_checked(ip_packet.payload_mut()).expect("checked tcp packet");
+            tcp_packet.set_src_port(entry.translated_src.port());
+            tcp_packet.set_dst_port(v6_local_port);
+            tcp_packet.fill_checksum(&IpAddress::Ipv6(src), &IpAddress::Ipv6(local_ipv6));
+        }
+        // IPv6 has no header checksum, so only the TCP checksum above changes.
+
+        tracing::trace!(?src, %local_ipv6, "tcp v6 packet after modified");
+        TcpProxyPacketAction::Handled { new_syn }
+    }
+
     pub fn try_process_packet_from_nic(
+        &self,
+        zc_packet: &mut ZCPacket,
+        ctx: TcpProxyNicContext,
+    ) -> bool {
+        if zc_packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
+            return self.try_process_v6_packet_from_nic(zc_packet, ctx);
+        }
+        Self::try_process_v4_packet_from_nic(self, zc_packet, ctx)
+    }
+
+    /// Translates one reply packet of the v6 NAT back into the peer's view:
+    /// the kernel listener's source becomes the real destination, and the
+    /// destination becomes the peer's original source socket.
+    fn try_process_v6_packet_from_nic(
+        &self,
+        zc_packet: &mut ZCPacket,
+        ctx: TcpProxyNicContext,
+    ) -> bool {
+        let Some(local_ipv6) = ctx.local_ipv6 else {
+            return false;
+        };
+        let data = zc_packet.payload();
+        let Ok(ip_packet) = Ipv6Packet::new_checked(data) else {
+            return false;
+        };
+        if ip_packet.src_addr() != local_ipv6 {
+            return false;
+        }
+        let Ok(tcp_packet) = TcpPacket::new_checked(ip_packet.payload()) else {
+            return false;
+        };
+        if tcp_packet.src_port() != ctx.v6_local_port {
+            return false;
+        }
+
+        let dst_addr = SocketAddr::new(ip_packet.dst_addr().into(), tcp_packet.dst_port());
+        let Some(entry) = self.translated_src_map.get(&dst_addr) else {
+            return false;
+        };
+        let entry = entry.clone();
+        assert_eq!(entry.translated_src, dst_addr);
+
+        let IpAddr::V6(real_dst_ip) = entry.real_dst().ip() else {
+            panic!("v6 nat entry dst ip is not v6");
+        };
+
+        let hdr = zc_packet
+            .mut_peer_manager_header()
+            .expect("peer manager header");
+        hdr.set_no_proxy(true);
+
+        let mut ip_packet =
+            Ipv6Packet::new_checked(zc_packet.mut_payload()).expect("checked ipv6 packet");
+        ip_packet.set_src_addr(real_dst_ip);
+        let src = ip_packet.src_addr();
+        let dst = ip_packet.dst_addr();
+        {
+            let mut tcp_packet =
+                TcpPacket::new_checked(ip_packet.payload_mut()).expect("checked tcp packet");
+            tcp_packet.set_src_port(entry.real_dst().port());
+            tcp_packet.set_dst_port(entry.src().port());
+            tcp_packet.fill_checksum(&IpAddress::Ipv6(src), &IpAddress::Ipv6(dst));
+        }
+
+        tracing::trace!(?dst_addr, nat_entry = ?entry, "tcp v6 packet after modified");
+        true
+    }
+
+    fn try_process_v4_packet_from_nic(
         &self,
         zc_packet: &mut ZCPacket,
         ctx: TcpProxyNicContext,
@@ -568,6 +742,7 @@ mod tests {
         gateway::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
         packet::PeerManagerHeader,
     };
+    use std::net::SocketAddrV6;
     use smoltcp::wire::{IpAddress, TcpPacket};
 
     fn build_tcp_packet(src: SocketAddrV4, dst: SocketAddrV4, syn: bool, ack: bool) -> ZCPacket {
@@ -613,6 +788,7 @@ mod tests {
         TcpProxyPeerContext {
             local_inet: Some("10.144.144.204/24".parse().unwrap()),
             virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
+            local_ipv6: Some("fd00:abcd::204".parse().unwrap()),
             local_port: 8899,
             vpn_exit: false,
             no_tun: false,
@@ -629,7 +805,9 @@ mod tests {
     fn nic_ctx() -> TcpProxyNicContext {
         TcpProxyNicContext {
             local_inet: Some("10.144.144.204/24".parse().unwrap()),
+            local_ipv6: Some("fd00:abcd::204".parse().unwrap()),
             local_port: 8899,
+            v6_local_port: 9000,
             my_peer_id: 2,
             smoltcp_enabled: false,
         }
@@ -1085,5 +1263,144 @@ mod tests {
         assert_eq!(engine.flow_map.len(), 1);
         assert_eq!(engine.translated_src_map.len(), 1);
         assert_eq!(engine.conn_map.len(), 1);
+    }
+
+    fn build_tcp_v6_packet(src: SocketAddrV6, dst: SocketAddrV6, syn: bool, ack: bool) -> ZCPacket {
+        let mut raw = vec![0; smoltcp::wire::IPV6_HEADER_LEN + smoltcp::wire::TCP_HEADER_LEN];
+        {
+            let mut ipv6 = Ipv6Packet::new_unchecked(&mut raw);
+            ipv6.set_version(6);
+            ipv6.set_traffic_class(0);
+            ipv6.set_flow_label(0);
+            ipv6.set_payload_len(smoltcp::wire::TCP_HEADER_LEN as u16);
+            ipv6.set_next_header(IpProtocol::Tcp);
+            ipv6.set_hop_limit(64);
+            ipv6.set_src_addr(*src.ip());
+            ipv6.set_dst_addr(*dst.ip());
+        }
+        {
+            let mut tcp =
+                TcpPacket::new_unchecked(&mut raw[smoltcp::wire::IPV6_HEADER_LEN..]);
+            tcp.set_src_port(src.port());
+            tcp.set_dst_port(dst.port());
+            tcp.set_header_len(smoltcp::wire::TCP_HEADER_LEN as u8);
+            tcp.set_syn(syn);
+            tcp.set_ack(ack);
+            tcp.fill_checksum(&IpAddress::Ipv6(*src.ip()), &IpAddress::Ipv6(*dst.ip()));
+        }
+
+        let mut packet = ZCPacket::new_with_payload(&raw);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        packet
+    }
+
+    fn v6_exit_peer_ctx() -> TcpProxyPeerContext {
+        TcpProxyPeerContext {
+            vpn_exit: true,
+            ..peer_ctx()
+        }
+    }
+
+    fn empty_cidr() -> Arc<ProxyCidrTable> {
+        Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot { rules: vec![] }))
+    }
+
+    #[test]
+    fn tcp_v6_exit_syn_is_rewritten_to_local_listener() {
+        let engine = TcpProxyEngine::new(empty_cidr());
+        engine.set_v6_local_port(9000);
+        let client: SocketAddrV6 = "[fd00:abcd::1]:55555".parse().unwrap();
+        let internet: SocketAddrV6 = "[2606:4700::1]:443".parse().unwrap();
+        let mut packet = build_tcp_v6_packet(client, internet, true, false);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_vpn_exit(true);
+
+        let action = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, v6_exit_peer_ctx());
+        assert!(matches!(action, TcpProxyPacketAction::Handled { new_syn: true }));
+
+        let ip = Ipv6Packet::new_checked(packet.payload()).unwrap();
+        assert_eq!(
+            ip.dst_addr(),
+            "fd00:abcd::204".parse::<std::net::Ipv6Addr>().unwrap()
+        );
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert_eq!(tcp.dst_port(), 9000);
+
+        let entry = engine
+            .flow_map
+            .get(&TcpNatFlowKey {
+                src: SocketAddr::from(client),
+                mapped_dst: SocketAddr::from(internet),
+            })
+            .unwrap();
+        assert_eq!(entry.real_dst(), SocketAddr::from(internet));
+        assert_eq!(entry.translated_src.ip(), *client.ip());
+        assert_ne!(entry.translated_src.port(), client.port());
+        assert_eq!(tcp.src_port(), entry.translated_src.port());
+        assert_ne!(tcp.src_port(), client.port());
+    }
+
+    #[test]
+    fn tcp_v6_exit_reply_is_translated_back() {
+        let engine = TcpProxyEngine::new(empty_cidr());
+        engine.set_v6_local_port(9000);
+        let client: SocketAddrV6 = "[fd00:abcd::1]:55555".parse().unwrap();
+        let internet: SocketAddrV6 = "[2606:4700::1]:443".parse().unwrap();
+        let mut packet = build_tcp_v6_packet(client, internet, true, false);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_vpn_exit(true);
+        let _ = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, v6_exit_peer_ctx());
+
+        let translated_port = engine
+            .flow_map
+            .get(&TcpNatFlowKey {
+                src: SocketAddr::from(client),
+                mapped_dst: SocketAddr::from(internet),
+            })
+            .unwrap()
+            .translated_src
+            .port();
+        let local_ipv6: std::net::Ipv6Addr = "fd00:abcd::204".parse().unwrap();
+        let mut reply = build_tcp_v6_packet(
+            SocketAddrV6::new(local_ipv6, 9000, 0, 0),
+            SocketAddrV6::new(*client.ip(), translated_port, 0, 0),
+            false,
+            true,
+        );
+
+        assert!(engine.try_process_packet_from_nic(&mut reply, nic_ctx()));
+
+        let ip = Ipv6Packet::new_checked(reply.payload()).unwrap();
+        assert_eq!(ip.src_addr(), *internet.ip());
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert_eq!(tcp.src_port(), internet.port());
+        assert_eq!(tcp.dst_port(), client.port());
+        assert!(reply.peer_manager_header().unwrap().is_no_proxy());
+    }
+
+    #[test]
+    fn tcp_v6_non_exit_traffic_passes_through() {
+        let engine = TcpProxyEngine::new(empty_cidr());
+        let client: SocketAddrV6 = "[fd00:abcd::1]:55555".parse().unwrap();
+        let internet: SocketAddrV6 = "[2606:4700::1]:443".parse().unwrap();
+        let mut packet = build_tcp_v6_packet(client, internet, true, false);
+
+        let action = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, peer_ctx());
+        assert!(matches!(action, TcpProxyPacketAction::Pass));
+        assert!(engine.flow_map.is_empty());
+
+        // the vpn-exit header flag alone is not enough without ctx.vpn_exit
+        let mut packet = build_tcp_v6_packet(client, internet, true, false);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_vpn_exit(true);
+        let action = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, peer_ctx());
+        assert!(matches!(action, TcpProxyPacketAction::Pass));
+        assert!(engine.flow_map.is_empty());
     }
 }

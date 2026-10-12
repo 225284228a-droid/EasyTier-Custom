@@ -55,6 +55,21 @@ pub trait IfConfiguerTrait: Send + Sync {
     ) -> Result<(), Error> {
         Err(Error::AnyhowError(anyhow::anyhow!("route via gateway is unsupported on this platform")))
     }
+    /// Turns kernel IPv6 exit forwarding (NAT66) for the multi-exit VPN on
+    /// or off: mesh traffic from `mesh_prefix` leaving through any interface
+    /// except the TUN gets masqueraded. Platforms without kernel NAT66 keep
+    /// the default error; their exits relay v6 in the userspace proxy
+    /// engines instead.
+    async fn sync_ipv6_exit_forwarding(
+        &self,
+        _tun_ifname: &str,
+        _mesh_prefix: Option<&str>,
+        _enabled: bool,
+    ) -> Result<(), Error> {
+        Err(Error::AnyhowError(anyhow::anyhow!(
+            "kernel NAT66 is unsupported on this platform"
+        )))
+    }
     /// Discovers the current default route. `None` when no default route of
     /// that family exists.
     async fn default_route(

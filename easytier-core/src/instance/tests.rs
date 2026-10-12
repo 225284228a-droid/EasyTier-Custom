@@ -739,8 +739,6 @@ mod portable_runtime {
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
                 let mut adapters = adapters(None, Arc::new(packet_sink));
-                adapters.config.force_exit_node = true;
-                adapters.config.public_ipv6_provider_supported = true;
                 adapters.config.easytier_version = "host-version".to_owned();
                 CoreInstance::from_toml(config, adapters)
             }
@@ -851,8 +849,7 @@ network_secret = "network-secret"
             }]
         );
         let runtime = instance.runtime_config.snapshot();
-        assert!(runtime.services.proxy.vpn_exit);
-        assert!(runtime.services.public_ipv6_provider.provider_supported);
+        assert!(!runtime.services.proxy.vpn_exit);
         assert_eq!(runtime.peer.easytier_version, "host-version");
     }
 

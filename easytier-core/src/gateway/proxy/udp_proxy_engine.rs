@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU16, Ordering},
@@ -9,7 +9,7 @@ use std::{
 
 use bytes::Bytes;
 use dashmap::{DashMap, mapref::entry::Entry};
-use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, UdpPacket};
+use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, Ipv6Packet, UdpPacket, IPV6_HEADER_LEN};
 
 use crate::{
     config::PeerId,
@@ -58,9 +58,11 @@ pub struct UdpNatEntry {
     src_peer_id: PeerId,
     my_peer_id: PeerId,
     src_socket: SocketAddr,
-    real_dst_ip: Ipv4Addr,
-    mapped_dst_ip: Ipv4Addr,
-    virtual_ipv4: Ipv4Addr,
+    real_dst_ip: IpAddr,
+    mapped_dst_ip: IpAddr,
+    /// The address the reply source is rewritten to when the OS socket sees
+    /// a loopback response (the destination was this node's own IP).
+    virtual_ip: IpAddr,
     last_active_time: parking_lot::Mutex<Instant>,
     stopped: AtomicBool,
     denied: bool,
@@ -71,9 +73,9 @@ impl UdpNatEntry {
         src_peer_id: PeerId,
         my_peer_id: PeerId,
         src_socket: SocketAddr,
-        real_dst_ip: Ipv4Addr,
-        mapped_dst_ip: Ipv4Addr,
-        virtual_ipv4: Ipv4Addr,
+        real_dst_ip: IpAddr,
+        mapped_dst_ip: IpAddr,
+        virtual_ip: IpAddr,
         denied: bool,
     ) -> Self {
         Self {
@@ -83,7 +85,7 @@ impl UdpNatEntry {
             src_socket,
             real_dst_ip,
             mapped_dst_ip,
-            virtual_ipv4,
+            virtual_ip,
             last_active_time: parking_lot::Mutex::new(Instant::now()),
             stopped: AtomicBool::new(false),
             denied,
@@ -199,14 +201,21 @@ impl UdpProxyEngine {
             return UdpProxyAction::Pass;
         }
 
-        let Some(virtual_ipv4) = ctx.virtual_ipv4 else {
-            return UdpProxyAction::Pass;
-        };
         let Some(hdr) = packet.peer_manager_header() else {
             return UdpProxyAction::Pass;
         };
         let is_vpn_exit = hdr.is_vpn_exit();
         if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
+            return UdpProxyAction::Pass;
+        };
+
+        // The version nibble dispatches before the v4-only gates below: a
+        // v6-only exit node has no virtual IPv4 but still relays v6.
+        if packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
+            return self.handle_peer_packet_v6(packet, ctx, runtime, is_vpn_exit);
+        }
+
+        let Some(virtual_ipv4) = ctx.virtual_ipv4 else {
             return UdpProxyAction::Pass;
         };
 
@@ -270,13 +279,87 @@ impl UdpProxyEngine {
                     hdr.from_peer_id.get(),
                     hdr.to_peer_id.get(),
                     nat_key.src_socket,
-                    real_dst_ip,
-                    origin_dst_ip,
-                    virtual_ipv4,
+                    IpAddr::V4(real_dst_ip),
+                    IpAddr::V4(origin_dst_ip),
+                    IpAddr::V4(virtual_ipv4),
                     denied,
                 ));
                 self.nat_ids.insert(nat_entry.id(), nat_key);
                 tracing::info!(?packet, ?ipv4, ?udp_packet, "udp nat table entry created");
+                entry.insert(nat_entry).clone()
+            }
+        };
+
+        if nat_entry.is_denied() {
+            tracing::debug!(
+                dst_port = udp_packet.dst_port(),
+                "dst socket is in running listeners, ignore it"
+            );
+            return UdpProxyAction::Drop;
+        }
+
+        nat_entry.mark_active();
+        UdpProxyAction::ForwardToSocket {
+            entry_id: nat_entry.id(),
+            dst: dst_socket,
+            payload: Bytes::copy_from_slice(udp_packet.payload()),
+        }
+    }
+
+    /// Relays one IPv6 UDP datagram from a peer: VPN-exit traffic only, no
+    /// v6 proxy-CIDR mapping exists. The OS socket reply is translated back
+    /// by [`Self::compose_udp_ipv6_response`].
+    fn handle_peer_packet_v6(
+        &self,
+        packet: &ZCPacket,
+        ctx: UdpProxyPeerContext,
+        runtime: &impl UdpProxyRuntime,
+        is_vpn_exit: bool,
+    ) -> UdpProxyAction {
+        if !ctx.vpn_exit || !is_vpn_exit {
+            return UdpProxyAction::Pass;
+        }
+        let Some(hdr) = packet.peer_manager_header() else {
+            return UdpProxyAction::Pass;
+        };
+        let Ok(ipv6) = Ipv6Packet::new_checked(packet.payload()) else {
+            return UdpProxyAction::Pass;
+        };
+        if ipv6.next_header() != IpProtocol::Udp {
+            return UdpProxyAction::Pass;
+        }
+        let Ok(udp_packet) = UdpPacket::new_checked(ipv6.payload()) else {
+            return UdpProxyAction::Pass;
+        };
+
+        let origin_dst_ip = ipv6.dst_addr();
+        let real_dst_ip = origin_dst_ip;
+        let dst_socket = if runtime.is_ip_local_virtual_ip(&IpAddr::V6(real_dst_ip)) {
+            SocketAddr::new(Ipv6Addr::LOCALHOST.into(), udp_packet.dst_port())
+        } else {
+            SocketAddr::new(real_dst_ip.into(), udp_packet.dst_port())
+        };
+
+        let nat_key = UdpNatKey::new(
+            SocketAddr::new(ipv6.src_addr().into(), udp_packet.src_port()),
+            SocketAddr::new(origin_dst_ip.into(), udp_packet.dst_port()),
+        );
+        let deny_dst = SocketAddr::new(real_dst_ip.into(), udp_packet.dst_port());
+        let nat_entry = match self.nat_table.entry(nat_key) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let denied = runtime.should_deny_udp_proxy(deny_dst);
+                let nat_entry = Arc::new(UdpNatEntry::new(
+                    hdr.from_peer_id.get(),
+                    hdr.to_peer_id.get(),
+                    nat_key.src_socket,
+                    IpAddr::V6(real_dst_ip),
+                    IpAddr::V6(origin_dst_ip),
+                    IpAddr::V6(origin_dst_ip),
+                    denied,
+                ));
+                self.nat_ids.insert(nat_entry.id(), nat_key);
+                tracing::info!(?packet, ?ipv6, ?udp_packet, "udp v6 nat table entry created");
                 entry.insert(nat_entry).clone()
             }
         };
@@ -312,6 +395,10 @@ impl UdpProxyEngine {
         };
         entry.mark_active();
 
+        if entry.real_dst_ip.is_ipv6() {
+            return compose_udp_ipv6_response(&entry, src_socket, payload);
+        }
+
         let SocketAddr::V4(mut src_v4) = src_socket else {
             return Ok(Vec::new());
         };
@@ -320,16 +407,19 @@ impl UdpProxyEngine {
         };
 
         let has_mapped_dst = entry.real_dst_ip != entry.mapped_dst_ip;
-        let mut reply_src_ip = *src_v4.ip();
+        let mut reply_src_ip = IpAddr::V4(*src_v4.ip());
         if has_mapped_dst && reply_src_ip == entry.real_dst_ip {
             reply_src_ip = entry.mapped_dst_ip;
         } else if reply_src_ip.is_loopback() {
-            reply_src_ip = entry.virtual_ipv4;
+            reply_src_ip = entry.virtual_ip;
         }
         if has_mapped_dst && reply_src_ip == entry.real_dst_ip {
             reply_src_ip = entry.mapped_dst_ip;
         }
-        src_v4.set_ip(reply_src_ip);
+        let IpAddr::V4(reply_src_v4) = reply_src_ip else {
+            return Ok(Vec::new());
+        };
+        src_v4.set_ip(reply_src_v4);
 
         let payload_mtu = ipv4_mtu
             .saturating_sub(smoltcp::wire::IPV4_HEADER_LEN)
@@ -396,9 +486,76 @@ fn compose_udp_ipv4_response(
     Ok(packets)
 }
 
+/// Builds one IPv6 UDP reply from the OS socket's datagram. IPv6 is never
+/// fragmented in transit, so datagrams beyond the minimum link MTU cannot
+/// enter the tunnel and are dropped instead.
+fn compose_udp_ipv6_response(
+    entry: &UdpNatEntry,
+    src_socket: SocketAddr,
+    payload: &[u8],
+) -> anyhow::Result<Vec<ZCPacket>> {
+    let SocketAddr::V6(nat_dst_v6) = entry.src_socket else {
+        return Ok(Vec::new());
+    };
+    let mut reply_src_ip = src_socket.ip();
+    if reply_src_ip.is_loopback() {
+        reply_src_ip = entry.virtual_ip;
+    }
+    let IpAddr::V6(reply_src_v6) = reply_src_ip else {
+        return Ok(Vec::new());
+    };
+
+    const IPV6_UDP_PAYLOAD_LIMIT: usize = 1280 - IPV6_HEADER_LEN - smoltcp::wire::UDP_HEADER_LEN;
+    if payload.len() > IPV6_UDP_PAYLOAD_LIMIT {
+        tracing::warn!(
+            len = payload.len(),
+            limit = IPV6_UDP_PAYLOAD_LIMIT,
+            "udp v6 response exceeds the ipv6 minimum mtu, dropped"
+        );
+        return Ok(Vec::new());
+    }
+
+    let udp_len = smoltcp::wire::UDP_HEADER_LEN + payload.len();
+    let mut buf = vec![0; IPV6_HEADER_LEN + udp_len];
+    {
+        let mut udp_packet = UdpPacket::new_unchecked(&mut buf[IPV6_HEADER_LEN..]);
+        udp_packet.set_src_port(src_socket.port());
+        udp_packet.set_dst_port(nat_dst_v6.port());
+        udp_packet.set_len(udp_len as u16);
+        udp_packet.payload_mut().copy_from_slice(payload);
+        udp_packet.fill_checksum(
+            &IpAddress::Ipv6(reply_src_v6),
+            &IpAddress::Ipv6(*nat_dst_v6.ip()),
+        );
+    }
+    {
+        let mut ipv6_packet = Ipv6Packet::new_unchecked(&mut buf);
+        ipv6_packet.set_traffic_class(0);
+        ipv6_packet.set_flow_label(0);
+        ipv6_packet.set_payload_len(udp_len as u16);
+        ipv6_packet.set_next_header(IpProtocol::Udp);
+        ipv6_packet.set_hop_limit(64);
+        ipv6_packet.set_src_addr(reply_src_v6);
+        ipv6_packet.set_dst_addr(*nat_dst_v6.ip());
+    }
+
+    let mut packet = ZCPacket::new_with_payload(&buf);
+    packet.fill_peer_manager_hdr(
+        entry.my_peer_id,
+        entry.src_peer_id,
+        PacketType::Data as u8,
+    );
+    packet
+        .mut_peer_manager_header()
+        .expect("peer manager header")
+        .set_no_proxy(true);
+    Ok(vec![packet])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddrV6;
     use crate::gateway::proxy::{
         cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
         traits::{ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink},
@@ -503,5 +660,110 @@ mod tests {
         assert_eq!(udp.src_port(), 12345);
         assert_eq!(udp.dst_port(), 53864);
         assert_eq!(udp.payload(), b"reply");
+    }
+
+    fn empty_cidr() -> Arc<ProxyCidrTable> {
+        Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot { rules: vec![] }))
+    }
+
+    fn build_udp_v6_packet(
+        src: SocketAddrV6,
+        dst: SocketAddrV6,
+        payload: &[u8],
+    ) -> ZCPacket {
+        let mut raw =
+            vec![0; smoltcp::wire::IPV6_HEADER_LEN + smoltcp::wire::UDP_HEADER_LEN + payload.len()];
+        {
+            let mut udp =
+                UdpPacket::new_unchecked(&mut raw[smoltcp::wire::IPV6_HEADER_LEN..]);
+            udp.set_src_port(src.port());
+            udp.set_dst_port(dst.port());
+            udp.set_len((smoltcp::wire::UDP_HEADER_LEN + payload.len()) as u16);
+            udp.payload_mut().copy_from_slice(payload);
+            udp.fill_checksum(
+                &IpAddress::Ipv6(*src.ip()),
+                &IpAddress::Ipv6(*dst.ip()),
+            );
+        }
+        {
+            let mut ipv6 = Ipv6Packet::new_unchecked(&mut raw);
+            ipv6.set_version(6);
+            ipv6.set_traffic_class(0);
+            ipv6.set_flow_label(0);
+            ipv6.set_payload_len((smoltcp::wire::UDP_HEADER_LEN + payload.len()) as u16);
+            ipv6.set_next_header(IpProtocol::Udp);
+            ipv6.set_hop_limit(64);
+            ipv6.set_src_addr(*src.ip());
+            ipv6.set_dst_addr(*dst.ip());
+        }
+
+        let mut packet = ZCPacket::new_with_payload(&raw);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        packet
+    }
+
+    fn v6_exit_ctx() -> UdpProxyPeerContext {
+        UdpProxyPeerContext {
+            virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
+            vpn_exit: true,
+            no_tun: false,
+        }
+    }
+
+    #[test]
+    fn udp_v6_exit_request_forwards_to_socket() {
+        let engine = UdpProxyEngine::new(empty_cidr(), Duration::from_secs(10));
+        let client: SocketAddrV6 = "[fd00:abcd::1]:53864".parse().unwrap();
+        let internet: SocketAddrV6 = "[2606:4700:4700::1111]:53".parse().unwrap();
+        let mut packet = build_udp_v6_packet(client, internet, b"query");
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_vpn_exit(true);
+
+        let action = engine.handle_peer_packet(&packet, v6_exit_ctx(), &TestRuntime);
+        let UdpProxyAction::ForwardToSocket { entry_id, dst, payload } = action else {
+            panic!("expected forward action, got {action:?}");
+        };
+        assert_eq!(dst, SocketAddr::from(internet));
+        assert_eq!(payload.as_ref(), b"query");
+
+        let reply = engine
+            .handle_socket_response(entry_id, "[2606:4700:4700::1111]:53".parse().unwrap(), b"answer", 1280)
+            .unwrap();
+        assert_eq!(reply.len(), 1);
+        let ip = Ipv6Packet::new_checked(reply[0].payload()).unwrap();
+        assert_eq!(ip.src_addr(), *internet.ip());
+        assert_eq!(ip.dst_addr(), *client.ip());
+        let udp = UdpPacket::new_checked(ip.payload()).unwrap();
+        assert_eq!(udp.src_port(), internet.port());
+        assert_eq!(udp.dst_port(), client.port());
+        assert_eq!(udp.payload(), b"answer");
+        assert!(reply[0].peer_manager_header().unwrap().is_no_proxy());
+    }
+
+    #[test]
+    fn udp_v6_non_exit_traffic_passes_through() {
+        let engine = UdpProxyEngine::new(empty_cidr(), Duration::from_secs(10));
+        let client: SocketAddrV6 = "[fd00:abcd::1]:53864".parse().unwrap();
+        let internet: SocketAddrV6 = "[2606:4700:4700::1111]:53".parse().unwrap();
+        let client_ctx = UdpProxyPeerContext {
+            vpn_exit: false,
+            ..v6_exit_ctx()
+        };
+
+        // without ctx.vpn_exit nothing is relayed, whatever the header says
+        let mut packet = build_udp_v6_packet(client, internet, b"query");
+        let action = engine.handle_peer_packet(&packet, client_ctx, &TestRuntime);
+        assert!(matches!(action, UdpProxyAction::Pass));
+        assert!(engine.nat_table.is_empty());
+
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_vpn_exit(true);
+        let action = engine.handle_peer_packet(&packet, client_ctx, &TestRuntime);
+        assert!(matches!(action, UdpProxyAction::Pass));
+        assert!(engine.nat_table.is_empty());
     }
 }

@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::net::IpAddr;
 use std::sync::{Arc, Weak, atomic::Ordering};
 use std::time::Duration;
 
@@ -61,6 +62,7 @@ pub struct TcpProxyService<
     peer_pipeline_guard: Mutex<Option<PipelineRegistrationGuard>>,
     nic_pipeline_guard: Mutex<Option<PipelineRegistrationGuard>>,
     kernel_listener: Mutex<Option<Arc<F::Listener>>>,
+    kernel_v6_listener: Mutex<Option<Arc<F::Listener>>>,
     #[cfg(feature = "proxy-smoltcp-stack")]
     smoltcp_stack: Mutex<Option<Arc<SmolTcpStack>>>,
     tasks: Mutex<JoinSet<()>>,
@@ -90,6 +92,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             peer_pipeline_guard: Mutex::new(None),
             nic_pipeline_guard: Mutex::new(None),
             kernel_listener: Mutex::new(None),
+            kernel_v6_listener: Mutex::new(None),
             #[cfg(feature = "proxy-smoltcp-stack")]
             smoltcp_stack: Mutex::new(None),
             tasks: Mutex::new(JoinSet::new()),
@@ -300,6 +303,53 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             }
         });
 
+        // IPv6 exit traffic re-enters through its own v6-only listener: the
+        // two families cannot share one bound port portably.
+        let v6_listen_addr = std::net::SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), 0);
+        match self
+            .listener_factory
+            .bind_tcp(
+                TcpListenOptions::proxy_nat(v6_listen_addr).with_bind(
+                    TcpBindOptions::default()
+                        .with_need_protect(false)
+                        .with_context(
+                            self.socket_context
+                                .clone()
+                                .with_ip_version(crate::socket::IpVersion::V6),
+                        )
+                        .with_local_addr(Some(v6_listen_addr)),
+                ),
+            )
+            .await
+        {
+            Ok(v6_listener) => {
+                let v6_port = v6_listener
+                    .local_addr()
+                    .map(|addr| addr.port())
+                    .unwrap_or_default();
+                self.engine.set_v6_local_port(v6_port);
+                self.kernel_v6_listener.lock().replace(v6_listener.clone());
+                let service = Arc::downgrade(self);
+                let _ = spawn_tcp_proxy_task(&self.lifecycle, generation, &self.tasks, async move {
+                    loop {
+                        let Ok((src_stream, socket_addr)) = v6_listener.accept().await else {
+                            tracing::error!("nat tcp v6 listener accept failed");
+                            continue;
+                        };
+                        let Some(service) = service.upgrade() else {
+                            break;
+                        };
+                        service
+                            .handle_accept(generation, socket_addr, Box::new(src_stream))
+                            .await;
+                    }
+                });
+            }
+            Err(err) => {
+                tracing::warn!(?err, "v6 nat tcp listener unavailable, ipv6 exit relaying disabled");
+            }
+        }
+
         Ok(())
     }
 
@@ -412,7 +462,11 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             mapped_dst: entry.mapped_dst(),
         };
         let socket_dst = if service.runtime.is_ip_local_virtual_ip(&ctx.real_dst.ip()) {
-            std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), ctx.real_dst.port())
+            let loopback = match ctx.real_dst.ip() {
+                IpAddr::V4(_) => std::net::IpAddr::from([127, 0, 0, 1]),
+                IpAddr::V6(_) => std::net::IpAddr::from([0u16, 0, 0, 0, 0, 0, 0, 1]),
+            };
+            std::net::SocketAddr::new(loopback, ctx.real_dst.port())
         } else {
             ctx.real_dst
         };
@@ -458,6 +512,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             TcpProxyPeerContext {
                 local_inet: snapshot.local_inet,
                 virtual_ipv4: snapshot.virtual_ipv4,
+                local_ipv6: snapshot.local_ipv6,
                 local_port: self.engine.local_port(),
                 vpn_exit: snapshot.vpn_exit,
                 no_tun: snapshot.no_tun,
@@ -506,7 +561,9 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
             packet,
             TcpProxyNicContext {
                 local_inet: snapshot.local_inet,
+                local_ipv6: snapshot.local_ipv6,
                 local_port: self.engine.local_port(),
+                v6_local_port: self.engine.v6_local_port(),
                 my_peer_id: self.peer_manager.my_peer_id(),
                 smoltcp_enabled: snapshot.smoltcp_enabled,
             },
