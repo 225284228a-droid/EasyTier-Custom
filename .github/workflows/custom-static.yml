@@ -63,7 +63,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$COMMIT_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
-          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${COMMIT_SHA}" --jq .status)"
+          status="$(curl --http1.1 --fail --silent --show-error --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 90 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/compare/main...${COMMIT_SHA}" \
+            | jq -r .status)"
           case "$status" in
             behind|identical) ;;
             *) echo "commit is not an ancestor of main: $status" >&2; exit 1 ;;
