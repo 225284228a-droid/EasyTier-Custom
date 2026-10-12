@@ -14,8 +14,6 @@ mod packet_io;
 mod packet_plane;
 #[cfg(feature = "proxy-packet")]
 mod packet_proxy_extension;
-#[cfg(feature = "public-ipv6-provider")]
-mod public_ipv6_extension;
 #[cfg(feature = "vpn-portal")]
 mod vpn_portal_extension;
 
@@ -78,7 +76,6 @@ use crate::{
         context::PeerStunInfoSource,
         credential_manager::CredentialStorage,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig},
-        public_ipv6::{CorePublicIpv6Runtime, PublicIpv6Host},
     },
     process_runtime::CoreProcessRuntime,
     socket::{tcp::VirtualTcpSocketFactory, udp::VirtualUdpSocketFactory},
@@ -92,9 +89,6 @@ use crate::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 #[cfg(feature = "vpn-portal")]
 use crate::gateway::vpn_portal::PortalHost;
 use crate::gateway::vpn_portal::PortalRuntimeConfig;
-
-#[cfg(feature = "public-ipv6-provider")]
-use crate::peers::public_ipv6::provider::PublicIpv6ProviderPlatform;
 
 #[cfg(feature = "dhcp-ipv4")]
 use crate::gateway::dhcp::DhcpIpv4Runtime;
@@ -110,8 +104,6 @@ use crate::gateway::vpn_portal::PortalModule;
 use crate::gateway::{
     DataPlaneRuntime, DataPlaneSession, PortForwardAdapter, Socks5GatewayAdapter,
 };
-#[cfg(feature = "public-ipv6-provider")]
-use crate::peers::public_ipv6::provider::PublicIpv6ProviderRuntime;
 pub use config::CoreInstanceHostConfig;
 use management_state::ManagementState;
 pub use packet_io::PacketEgressHost;
@@ -321,12 +313,10 @@ where
     pub icmp_proxy_host: Option<Arc<dyn IcmpProxyHost>>,
     #[cfg(feature = "proxy-cidr-monitor")]
     pub proxy_cidr_monitor_enabled: bool,
-    #[cfg(feature = "public-ipv6-provider")]
-    pub public_ipv6_host: Option<Arc<dyn PublicIpv6Host>>,
-    #[cfg(feature = "public-ipv6-provider")]
-    pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderPlatform>>,
     #[cfg(feature = "vpn-portal")]
     pub vpn_portal: Option<Arc<dyn PortalHost>>,
+    /// Optional host adapter exposing VPN route-manager state for status.
+    pub vpn_route_state: Option<Arc<dyn crate::peers::vpn_policy::VpnRouteStateHost>>,
 }
 
 impl<H> CoreHostAdapters<H>
@@ -380,12 +370,9 @@ where
             icmp_proxy_host: None,
             #[cfg(feature = "proxy-cidr-monitor")]
             proxy_cidr_monitor_enabled: false,
-            #[cfg(feature = "public-ipv6-provider")]
-            public_ipv6_host: None,
-            #[cfg(feature = "public-ipv6-provider")]
-            public_ipv6_provider: None,
             #[cfg(feature = "vpn-portal")]
             vpn_portal: None,
+            vpn_route_state: None,
         }
     }
 }
@@ -415,6 +402,8 @@ where
     pub(super) operation: Mutex<()>,
     pub(super) cancel: CancellationToken,
     pub(super) peer_manager: Arc<PeerManagerCore>,
+    vpn_engine: Arc<crate::peers::vpn_policy::VpnPolicyEngine>,
+    vpn_route_state: Option<Arc<dyn crate::peers::vpn_policy::VpnRouteStateHost>>,
     packet_plane: Arc<CorePacketPlane>,
     pub(super) manual: Option<ManualConnectorManager<H>>,
     pub(super) direct: Option<DirectConnectorManager<H>>,
@@ -443,8 +432,6 @@ where
     pub(super) packet_egress: Arc<dyn PacketEgressHost>,
     pub(super) packet_receiver: Mutex<Option<HostPacketReceiver>>,
     pub(super) peer_center: Arc<PeerCenterInstance>,
-    #[cfg(feature = "public-ipv6-provider")]
-    public_ipv6_provider: PublicIpv6ProviderRuntime,
     #[cfg(feature = "vpn-portal")]
     vpn_portal: Arc<PortalModule>,
     #[cfg(feature = "proxy-packet")]
@@ -536,22 +523,9 @@ where
             Arc::new(config.peer.snapshot.clone()),
         );
         let events = adapters.events.clone();
-        #[cfg(feature = "public-ipv6-provider")]
-        let public_ipv6_host: Arc<dyn PublicIpv6Host> = adapters
-            .public_ipv6_host
-            .take()
-            .unwrap_or_else(|| Arc::new(()));
-        #[cfg(not(feature = "public-ipv6-provider"))]
-        let public_ipv6_host: Arc<dyn PublicIpv6Host> = Arc::new(());
-        #[cfg(feature = "public-ipv6-provider")]
-        let public_ipv6_events = events.clone();
-        #[cfg(not(feature = "public-ipv6-provider"))]
-        let public_ipv6_events: Arc<dyn CoreEventSink> = Arc::new(());
-        let public_ipv6_runtime = CorePublicIpv6Runtime::new(
-            runtime_config.clone(),
-            public_ipv6_host,
-            public_ipv6_events,
-        );
+        let vpn_engine = Arc::new(crate::peers::vpn_policy::VpnPolicyEngine::new(
+            config.peer.vpn.clone(),
+        )?);
         let stun = (connectivity_mode == CoreConnectivityMode::Full)
             .then(|| Self::prepare_stun(&adapters, &config.connectivity));
         let (peer_stun, foreign_rpc_registrar): (
@@ -573,7 +547,7 @@ where
             runtime_config.clone(),
             peer_stun,
             packet_tx,
-            public_ipv6_runtime.clone(),
+            vpn_engine.clone(),
             events.clone(),
             adapters.credential_storage.take(),
             foreign_rpc_registrar,
@@ -611,12 +585,9 @@ where
             icmp_proxy_host,
             #[cfg(feature = "proxy-cidr-monitor")]
             proxy_cidr_monitor_enabled,
-            #[cfg(feature = "public-ipv6-provider")]
-                public_ipv6_host: _,
-            #[cfg(feature = "public-ipv6-provider")]
-            public_ipv6_provider,
             #[cfg(feature = "vpn-portal")]
             vpn_portal,
+            vpn_route_state,
         } = adapters;
         let host_listener_registrations = if connectivity_mode == CoreConnectivityMode::OutboundOnly
         {
@@ -867,12 +838,6 @@ where
             _ => None,
         };
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
-        #[cfg(feature = "public-ipv6-provider")]
-        let public_ipv6_provider = PublicIpv6ProviderRuntime::new(
-            public_ipv6_provider,
-            runtime_config.clone(),
-            public_ipv6_runtime,
-        );
         #[cfg(feature = "vpn-portal")]
         let vpn_portal = PortalModule::new(
             peer_manager.clone(),
@@ -897,6 +862,8 @@ where
         Ok(Arc::new(Self {
             instance_name,
             management: ManagementState::new(toml_config, host_config),
+            vpn_engine: vpn_engine.clone(),
+            vpn_route_state,
             instance_runtime,
             state: AtomicU8::new(CoreInstanceState::Created as u8),
             latest_error: RwLock::new(None),
@@ -931,8 +898,6 @@ where
             packet_egress,
             packet_receiver: Mutex::new(Some(packet_rx)),
             peer_center,
-            #[cfg(feature = "public-ipv6-provider")]
-            public_ipv6_provider,
             #[cfg(feature = "vpn-portal")]
             vpn_portal,
             #[cfg(feature = "proxy-packet")]

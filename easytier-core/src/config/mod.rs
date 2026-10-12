@@ -15,6 +15,7 @@ pub mod gateway;
 pub mod peers;
 pub mod runtime;
 pub mod toml;
+pub mod vpn;
 
 pub use encryption::EncryptionAlgorithm;
 

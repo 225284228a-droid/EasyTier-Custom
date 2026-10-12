@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    config::peers::HostRoutingPolicy,
     instance::{CoreConnectivityMode, CoreInstanceHostConfig},
     peers::credential_manager::CredentialStorage,
 };
@@ -22,10 +21,6 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
     CoreInstanceHostConfig {
         hostname_fallback: (!hostname.is_empty()).then_some(hostname),
-        host_routing: HostRoutingPolicy {
-            local_exit_node_fallback: cfg!(target_env = "ohos"),
-        },
-        force_exit_node: cfg!(target_env = "ohos"),
         allow_interface_bind: !cfg!(any(
             target_os = "android",
             target_os = "ios",
@@ -45,10 +40,6 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
             all(target_os = "macos", feature = "macos-ne"),
             target_env = "ohos"
         ))),
-        public_ipv6_provider_supported: cfg!(all(
-            target_os = "linux",
-            feature = "public-ipv6-provider"
-        )),
         gateway_enabled: cfg!(feature = "socks5"),
         proxy_enabled: cfg!(any(feature = "kcp", feature = "quic")),
         vpn_portal_enabled: cfg!(feature = "wireguard"),
@@ -68,9 +59,6 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
 
 pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
     let mut config = runtime_core_host_config();
-    config.force_exit_node = false;
-    config.host_routing.local_exit_node_fallback = false;
-    config.public_ipv6_provider_supported = false;
     config.gateway_enabled = false;
     config.proxy_enabled = false;
     config.vpn_portal_enabled = false;
@@ -149,10 +137,6 @@ mod tests {
         );
         assert_eq!(config.gateway_enabled, cfg!(feature = "socks5"));
         assert_eq!(config.smoltcp_available, cfg!(feature = "smoltcp"));
-        assert_eq!(
-            config.public_ipv6_provider_supported,
-            cfg!(all(target_os = "linux", feature = "public-ipv6-provider"))
-        );
         assert_eq!(config.easytier_version, EASYTIER_VERSION);
     }
 

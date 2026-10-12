@@ -47,7 +47,6 @@ use super::{
     },
     error::Error,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
-    public_ipv6::{DisabledPublicIpv6Runtime, PublicIpv6Runtime},
     relay_peer_map::RelayPeerMap,
     route::{NextHopPolicy, Route, RouteInterface, peer_ospf_route::PeerRoute},
     traffic_metrics::{
@@ -115,7 +114,6 @@ fn build_foreign_peer_context(
         stun_info: parent_context_dyn.stun_info(),
         feature_flags,
         secure_mode: parent_context_dyn.secure_mode(),
-        host_routing: parent_context_dyn.host_routing_policy(),
     };
     let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
     snapshot.easytier_version = parent_context_dyn.easytier_version();
@@ -510,15 +508,9 @@ impl ForeignNetworkEntry {
     }
 
     async fn prepare_route(&self, global_peer_map: Weak<PeerMap>) {
-        let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> =
-            Arc::new(DisabledPublicIpv6Runtime::new(
-                self.peer_context.instance_id(),
-                self.network.network_name.clone(),
-            ));
         let route = PeerRoute::new(
             self.my_peer_id,
             self.peer_context.clone(),
-            public_ipv6_runtime,
             self.peer_rpc.clone(),
         );
         route
@@ -1625,7 +1617,6 @@ mod tests {
                 CoreRuntimeConfig::default(),
                 Arc::new(PeerRuntimeSnapshot::default()),
             ),
-            Arc::new(()),
             CorePeerContextAdapters {
                 stun_info_source: None,
                 events: Arc::new(()),
@@ -1908,10 +1899,6 @@ mod tests {
             public_ip: vec!["198.51.100.1".to_owned()],
             ..Default::default()
         };
-        parent_snapshot
-            .runtime
-            .host_routing
-            .local_exit_node_fallback = true;
         parent_snapshot.flags.enable_relay_foreign_network_kcp = true;
         parent_snapshot.flags.enable_relay_foreign_network_quic = false;
         parent_snapshot.flags.socket_mark = Some(7);
@@ -1924,7 +1911,6 @@ mod tests {
             no_relay_quic: false,
             need_p2p: true,
             disable_p2p: true,
-            ipv6_public_addr_provider: true,
             ..Default::default()
         };
         let parent_config = CoreRuntimeConfigStore::new(
@@ -1933,7 +1919,6 @@ mod tests {
         );
         let parent = Arc::new(CorePeerContext::new(
             parent_config.clone(),
-            Arc::new(()),
             CorePeerContextAdapters {
                 stun_info_source: None,
                 events: Arc::new(()),
@@ -1979,9 +1964,7 @@ mod tests {
         assert!(!foreign.feature_flags().no_relay_quic);
         assert!(foreign.feature_flags().need_p2p);
         assert!(foreign.feature_flags().disable_p2p);
-        assert!(foreign.feature_flags().ipv6_public_addr_provider);
         assert_eq!(foreign.stun_info().public_ip, vec!["198.51.100.1"]);
-        assert!(foreign.host_routing_policy().local_exit_node_fallback);
         assert!(foreign.hmac_secret_digest());
 
         parent_snapshot.runtime.stun_info.public_ip = vec!["203.0.113.2".to_owned()];

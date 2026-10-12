@@ -35,7 +35,6 @@ const CONFIG_FLAG_FIELDS = [
 
     return [field]
   }),
-  'ipv6_public_addr_auto',
 ] as const satisfies readonly (keyof NetworkConfig)[]
 
 const CONFIG_CHECKBOX_FIELDS = [
@@ -232,6 +231,72 @@ const MultiSelectStub = defineComponent({
   },
 })
 
+const SelectStub = defineComponent({
+  name: 'Select',
+  props: {
+    modelValue: [String, Object],
+    inputId: String,
+    options: Array,
+    optionLabel: String,
+    optionValue: String,
+    disabled: Boolean,
+    placeholder: String,
+  },
+  emits: ['update:modelValue'],
+  setup(props, { attrs, emit }) {
+    const valueOf = (option: unknown) => {
+      if (option === null || typeof option !== 'object') return option
+      const record = option as Record<string, unknown>
+      return props.optionValue ? record[props.optionValue] : record
+    }
+    return () => h('select', {
+      ...attrs,
+      id: props.inputId,
+      disabled: props.disabled,
+      'data-stub': 'select',
+      value: props.modelValue ?? '',
+      onChange: (event: Event) => emit('update:modelValue', (event.target as HTMLSelectElement).value),
+    }, [
+      ...(props.placeholder ? [h('option', { value: '' }, props.placeholder)] : []),
+      ...(props.options ?? []).map((option) => {
+        const value = valueOf(option)
+        const label = typeof option === 'object' && option !== null && props.optionLabel
+          ? String((option as Record<string, unknown>)[props.optionLabel])
+          : String(option)
+        return h('option', { value: value === undefined || value === null ? '' : String(value) }, label)
+      }),
+    ])
+  },
+})
+
+const DataTableStub = defineComponent({
+  name: 'DataTable',
+  props: {
+    value: Array,
+    dataKey: String,
+    size: String,
+    empty: String,
+  },
+  setup(props, { slots }) {
+    return () => h('table', { 'data-stub': 'data-table' }, [
+      h('tbody', (props.value ?? []).map((row, index) =>
+        h('tr', { 'data-index': index }, slots.default?.()),
+      )),
+    ])
+  },
+})
+
+const ColumnStub = defineComponent({
+  name: 'Column',
+  props: {
+    field: String,
+    header: String,
+  },
+  setup(props, { slots }) {
+    return () => h('td', { 'data-field': props.field, 'data-header': props.header }, slots.body?.({ data: {}, index: 0 }) ?? '')
+  },
+})
+
 const UrlListInputStub = defineComponent({
   name: 'UrlListInput',
   props: {
@@ -355,7 +420,15 @@ function makeConfig(): NetworkConfig {
     routes: ['192.168.0.0/16'],
     enable_socks5: true,
     socks5_port: 1086,
-    exit_nodes: ['exit-a'],
+    vpn: {
+      enabled: true,
+      exit_enabled: false,
+      dns_protect: true,
+      ipv6_protect: true,
+      fail_mode: 'direct',
+      exits: [{ name: 'exit-a', node: '10.144.144.2', note: undefined }],
+      rules: [{ cidr: '0.0.0.0/0', action: 'exit', exit: 'exit-a', fallback_exits: [], priority: 0 }],
+    },
     mapped_listeners: ['tcp://127.0.0.1:22000'],
     port_forwards: [{
       proto: 'udp',
@@ -394,6 +467,9 @@ function mountConfig(config: NetworkConfig = makeConfig(), runtimeCapabilities?:
         InputText: InputTextStub,
         MultiSelect: MultiSelectStub,
         Panel: PanelStub,
+        Select: SelectStub,
+        DataTable: DataTableStub,
+        Column: ColumnStub,
         Password: PasswordStub,
         SelectButton: SelectButtonStub,
         ToggleButton: ToggleButtonStub,
@@ -568,7 +644,9 @@ describe('Config.vue network config projection', () => {
     expect(input(wrapper, '#relay_network_whitelist').value).toBe('network-a')
     expect(input(wrapper, '#routes').value).toBe('192.168.0.0/16')
     expect(input(wrapper, '#socks5_port').value).toBe('1086')
-    expect(input(wrapper, '#exit_nodes').value).toBe('exit-a')
+    expect(input(wrapper, '#vpn_enabled').checked).toBe(true)
+    expect(input(wrapper, '#vpn_exit_enabled').checked).toBe(false)
+    expect(input(wrapper, '#vpn_dns_protect').checked).toBe(true)
     expect(input(wrapper, 'input[data-add-label="add_listener_url"]').value).toBe('tcp://0.0.0.0:12010')
     expect(input(wrapper, 'input[data-add-label="add_mapped_listener"]').value).toBe('tcp://127.0.0.1:22000')
 
@@ -631,7 +709,7 @@ describe('Config.vue network config projection', () => {
     await setInput(wrapper, '#relay_network_whitelist', 'network-edited')
     await setInput(wrapper, '#routes', '192.168.10.0/24')
     await setInput(wrapper, '#socks5_port', '1089')
-    await setInput(wrapper, '#exit_nodes', 'exit-edited')
+    await wrapper.find('#vpn_enabled').setValue(false)
     await setInput(wrapper, 'input[data-add-label="add_mapped_listener"]', 'tcp://127.0.0.1:23000')
     await wrapper.find('select#port_forward_proto').setValue('tcp')
     await setInput(wrapper, 'input[placeholder="port_forwards_bind_addr"]', '127.0.0.1')
@@ -671,7 +749,15 @@ describe('Config.vue network config projection', () => {
       relay_network_whitelist: ['network-edited'],
       routes: ['192.168.10.0/24'],
       socks5_port: 1089,
-      exit_nodes: ['exit-edited'],
+      vpn: {
+        enabled: false,
+        exit_enabled: false,
+        dns_protect: true,
+        ipv6_protect: true,
+        fail_mode: 'direct',
+        exits: [{ name: 'exit-a', node: '10.144.144.2' }],
+        rules: [{ cidr: '0.0.0.0/0', action: 'exit', exit: 'exit-a', fallback_exits: [], priority: 0 }],
+      },
       mapped_listeners: ['tcp://127.0.0.1:23000'],
       port_forwards: [{
         proto: 'tcp',

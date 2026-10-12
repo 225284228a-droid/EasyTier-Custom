@@ -35,15 +35,10 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
         result.network_length = Some(ipv4.network_length() as i32);
     }
 
-    if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider() {
-        result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
+    let vpn = config.get_vpn();
+    if vpn != default_config.get_vpn() {
+        result.vpn = Some(crate::config::vpn::pb::to_pb(&vpn));
     }
-    if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
-        result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
-    }
-    result.ipv6_public_addr_prefix = config
-        .get_ipv6_public_addr_prefix()
-        .map(|prefix| prefix.to_string());
 
     let peers = config.get_peers();
     result.networking_method = Some(NetworkingMethod::Manual as i32);
@@ -109,10 +104,6 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     {
         result.enable_manual_routes = Some(true);
         result.routes = routes.iter().map(ToString::to_string).collect();
-    }
-    let exit_nodes = config.get_exit_nodes();
-    if !exit_nodes.is_empty() {
-        result.exit_nodes = exit_nodes.iter().map(ToString::to_string).collect();
     }
     if let Some(socks5_portal) = config.get_socks5_portal() {
         result.enable_socks5 = Some(true);

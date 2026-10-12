@@ -71,6 +71,11 @@ export async function getVpnPortalInfo(instanceId: string) {
   return info ? NetworkTypes.normalizeVpnPortalInfo(info) : undefined
 }
 
+export async function getVpnStatus(instanceId: string) {
+  const status = await invoke<NetworkTypes.GetVpnStatusResponse | undefined>('get_vpn_status', { instanceId })
+  return status ? NetworkTypes.normalizeVpnStatus(status) : undefined
+}
+
 export async function addVpnPortalClient(instanceId: string, client: { name: string, virtual_ip: string, groups: string[] }) {
   return invoke('patch_vpn_portal_clients', { instanceId, action: 'add', name: client.name, virtualIp: client.virtual_ip, groups: client.groups })
 }

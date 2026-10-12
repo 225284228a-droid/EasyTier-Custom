@@ -12,7 +12,6 @@ const SMOLTCP_GATEWAY_AVAILABLE: bool = cfg!(feature = "proxy-smoltcp-stack");
 const PACKET_PROXY_AVAILABLE: bool = cfg!(feature = "proxy-packet");
 const PROXY_CIDR_MONITOR_AVAILABLE: bool = cfg!(feature = "proxy-cidr-monitor");
 const WRAPPED_TRANSPORT_AVAILABLE: bool = cfg!(feature = "wrapped-transport");
-const PUBLIC_IPV6_AVAILABLE: bool = cfg!(feature = "public-ipv6-provider");
 const VPN_PORTAL_AVAILABLE: bool = cfg!(feature = "vpn-portal");
 
 fn require(available: bool, requested: bool, capability: &str) -> anyhow::Result<()> {
@@ -52,13 +51,6 @@ fn validate_snapshot(
             .proxy
             .should_start(!core.routes.proxy_networks.is_empty()),
         "packet proxy services",
-    )?;
-    require(
-        PUBLIC_IPV6_AVAILABLE,
-        runtime.public_ipv6_auto
-            || runtime.public_ipv6_provider.provider_enabled
-            || runtime.public_ipv6_provider.configured_prefix.is_some(),
-        "public IPv6 services",
     )?;
     Ok(())
 }

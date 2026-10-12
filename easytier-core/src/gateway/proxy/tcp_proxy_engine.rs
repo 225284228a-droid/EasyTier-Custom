@@ -127,7 +127,7 @@ pub(crate) struct TcpProxyPeerContext {
     pub local_inet: Option<Ipv4Inet>,
     pub virtual_ipv4: Option<Ipv4Addr>,
     pub local_port: u16,
-    pub enable_exit_node: bool,
+    pub vpn_exit: bool,
     pub no_tun: bool,
     pub smoltcp_enabled: bool,
 }
@@ -238,7 +238,7 @@ impl TcpProxyEngine {
         ctx: &TcpProxyPeerContext,
     ) -> bool {
         match mode {
-            TcpProxyMode::Tcp => !self.cidr_table.is_empty() || ctx.enable_exit_node || ctx.no_tun,
+            TcpProxyMode::Tcp => !self.cidr_table.is_empty() || ctx.vpn_exit || ctx.no_tun,
             TcpProxyMode::KcpSrc | TcpProxyMode::QuicSrc => true,
         }
     }
@@ -288,7 +288,7 @@ impl TcpProxyEngine {
         let origin_ip = ip_packet.dst_addr();
 
         let Some(real_dst_ip) =
-            self.real_dst_ip_for_mode(mode, origin_ip, hdr.is_exit_node(), &ctx)
+            self.real_dst_ip_for_mode(mode, origin_ip, hdr.is_vpn_exit(), &ctx)
         else {
             return TcpProxyPacketAction::Pass;
         };
@@ -545,7 +545,7 @@ impl TcpProxyEngine {
         &self,
         mode: TcpProxyMode,
         origin_ip: Ipv4Addr,
-        is_exit_node: bool,
+        is_vpn_exit: bool,
         ctx: &TcpProxyPeerContext,
     ) -> Option<Ipv4Addr> {
         match mode {
@@ -554,7 +554,7 @@ impl TcpProxyEngine {
                     return Some(real_ip);
                 }
                 let no_tun_local_virtual_ip = ctx.no_tun && Some(origin_ip) == ctx.virtual_ipv4;
-                (is_exit_node || no_tun_local_virtual_ip).then_some(origin_ip)
+                (is_vpn_exit || no_tun_local_virtual_ip).then_some(origin_ip)
             }
             TcpProxyMode::KcpSrc | TcpProxyMode::QuicSrc => Some(origin_ip),
         }
@@ -614,7 +614,7 @@ mod tests {
             local_inet: Some("10.144.144.204/24".parse().unwrap()),
             virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
             local_port: 8899,
-            enable_exit_node: false,
+            vpn_exit: false,
             no_tun: false,
             smoltcp_enabled: false,
         }
@@ -744,9 +744,9 @@ mod tests {
         real_request
             .mut_peer_manager_header()
             .unwrap()
-            .set_exit_node(true);
+            .set_vpn_exit(true);
         let mut real_ctx = peer_ctx();
-        real_ctx.enable_exit_node = true;
+        real_ctx.vpn_exit = true;
         assert_eq!(
             engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut real_request, real_ctx),
             TcpProxyPacketAction::Handled { new_syn: true }

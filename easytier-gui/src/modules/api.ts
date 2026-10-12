@@ -44,6 +44,9 @@ export class GUIRemoteClient implements Api.RemoteClient {
     async get_vpn_portal_info(inst_id: string): Promise<NetworkTypes.VpnPortalInfo | undefined> {
         return backend.getVpnPortalInfo(inst_id);
     }
+    async get_vpn_status(inst_id: string): Promise<NetworkTypes.GetVpnStatusResponse | undefined> {
+        return backend.getVpnStatus(inst_id);
+    }
     async add_vpn_portal_client(inst_id: string, client: { name: string, virtual_ip: string, groups: string[] }): Promise<undefined> {
         this.ensureScope();
         await backend.addVpnPortalClient(inst_id, client);

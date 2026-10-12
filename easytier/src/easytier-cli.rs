@@ -47,13 +47,13 @@ use easytier::{
                 ConnectorManageRpcClientFactory, CredentialInfo, CredentialManageRpc,
                 CredentialManageRpcClientFactory, DumpRouteRequest, ForeignNetworkEntryPb,
                 GenerateCredentialRequest, GetAclStatsRequest, GetPrometheusStatsRequest,
-                GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest,
+                GetStatsRequest, GetVpnPortalInfoRequest, GetVpnStatusRequest,
+                GetVpnStatusResponse, GetWhitelistRequest,
                 GetWhitelistResponse, InstanceIdentifier, ListConnectorRequest,
                 ListCredentialsRequest, ListCredentialsResponse, ListForeignNetworkRequest,
                 ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
                 ListPeerResponse, ListPortForwardRequest, ListPortForwardResponse,
-                ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
-                ListRouteResponse, MappedListener, MappedListenerManageRpc,
+                ListRouteRequest, ListRouteResponse, MappedListener, MappedListenerManageRpc,
                 MappedListenerManageRpcClientFactory, MetricSnapshot, NodeInfo, PeerInfo,
                 PeerManageRpc, PeerManageRpcClientFactory, PortForwardManageRpc,
                 PortForwardManageRpcClientFactory, RevokeCredentialRequest, Route as ApiRoute,
@@ -200,8 +200,8 @@ struct PeerArgs {
 enum PeerSubCommand {
     /// List connected peers
     List,
-    /// Show public IPv6 address information
-    Ipv6,
+    /// Show multi-exit VPN status
+    Vpn,
     /// List foreign networks discovered by this instance
     ListForeign {
         #[arg(
@@ -1138,12 +1138,6 @@ struct RouteListData {
     peer_routes: Vec<PeerRoutePair>,
 }
 
-struct PeerIpv6DataRaw {
-    node_info: NodeInfo,
-    routes: Vec<ApiRoute>,
-    provider_info: ListPublicIpv6InfoResponse,
-}
-
 #[derive(serde::Serialize)]
 struct PeerCenterRowData {
     node_id: String,
@@ -1577,25 +1571,17 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
-    async fn fetch_local_public_ipv6_info(&self) -> Result<ListPublicIpv6InfoResponse, Error> {
+    async fn fetch_vpn_status(&self) -> Result<GetVpnStatusResponse, Error> {
         Ok(self
             .get_peer_manager_client()
             .await?
-            .list_public_ipv6_info(
+            .get_vpn_status(
                 BaseController::default(),
-                ListPublicIpv6InfoRequest {
+                GetVpnStatusRequest {
                     instance: Some(self.instance_selector.clone()),
                 },
             )
             .await?)
-    }
-
-    async fn fetch_peer_ipv6_data(&self) -> Result<PeerIpv6DataRaw, Error> {
-        Ok(PeerIpv6DataRaw {
-            node_info: self.fetch_node_info().await?,
-            routes: self.list_routes().await?.routes,
-            provider_info: self.fetch_local_public_ipv6_info().await?,
-        })
     }
 
     async fn fetch_connector_list(&self) -> Result<Vec<Connector>, Error> {
@@ -2014,150 +2000,120 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
-    async fn handle_peer_ipv6(&self) -> Result<(), Error> {
+    async fn handle_peer_vpn(&self) -> Result<(), Error> {
         #[derive(tabled::Tabled, serde::Serialize)]
-        struct PeerIpv6NodeRow {
+        struct VpnExitRow {
+            name: String,
+            node: String,
             peer_id: u32,
-            hostname: String,
-            inst_id: String,
-            ipv4: String,
-            public_ipv6_addr: String,
-            provider_prefix: String,
+            state: String,
+            latency_ms: i32,
+            tx_packets: u64,
+            tx_bytes: u64,
         }
 
         #[derive(tabled::Tabled, serde::Serialize)]
-        struct ProviderLeaseRow {
-            peer_id: u32,
-            inst_id: String,
-            leased_addr: String,
-            valid_until: String,
-            reused: bool,
+        struct VpnRuleRow {
+            cidr: String,
+            action: String,
+            exit: String,
+            fallbacks: String,
+            priority: u32,
+            effective: String,
+            packets: u64,
+            bytes: u64,
         }
 
         #[derive(serde::Serialize)]
-        struct ProviderLeaseSection {
-            provider_prefix: String,
-            leases: Vec<ProviderLeaseRow>,
+        struct VpnView {
+            enabled: bool,
+            exit_enabled: bool,
+            fail_mode: String,
+            dns_protect: bool,
+            ipv6_protect: bool,
+            routes_active: bool,
+            routes_installed: u32,
+            protected_endpoints: u32,
+            system_dns_servers: Vec<String>,
+            exits: Vec<VpnExitRow>,
+            rules: Vec<VpnRuleRow>,
         }
 
-        #[derive(serde::Serialize)]
-        struct PeerIpv6View {
-            nodes: Vec<PeerIpv6NodeRow>,
-            local_provider: Option<ProviderLeaseSection>,
-        }
-
-        fn fmt_ipv6_inet(value: Option<easytier::proto::common::Ipv6Inet>) -> String {
-            value
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        }
-
-        fn fmt_valid_until(unix_seconds: i64) -> String {
-            chrono::DateTime::<chrono::Utc>::from_timestamp(unix_seconds, 0)
-                .map(|ts| {
-                    ts.with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M:%S")
-                        .to_string()
+        let build_view = |status: &GetVpnStatusResponse| {
+            let exits = status
+                .exits
+                .iter()
+                .map(|exit| VpnExitRow {
+                    name: exit.name.clone(),
+                    node: exit.node_addr.clone(),
+                    peer_id: exit.peer_id,
+                    state: exit.state.clone(),
+                    latency_ms: exit.latency_ms,
+                    tx_packets: exit.tx_packets,
+                    tx_bytes: exit.tx_bytes,
                 })
-                .unwrap_or_else(|| unix_seconds.to_string())
-        }
-
-        let build_view = |data: &PeerIpv6DataRaw| {
-            let mut nodes = Vec::with_capacity(data.routes.len() + 1);
-            nodes.push(PeerIpv6NodeRow {
-                peer_id: data.node_info.peer_id,
-                hostname: data.node_info.hostname.clone(),
-                inst_id: data.node_info.inst_id.clone(),
-                ipv4: data.node_info.ipv4_addr.clone(),
-                public_ipv6_addr: fmt_ipv6_inet(data.node_info.public_ipv6_addr),
-                provider_prefix: fmt_ipv6_inet(data.node_info.ipv6_public_addr_prefix),
-            });
-            nodes.extend(data.routes.iter().map(|route| {
-                PeerIpv6NodeRow {
-                    peer_id: route.peer_id,
-                    hostname: route.hostname.clone(),
-                    inst_id: route.inst_id.clone(),
-                    ipv4: route
-                        .ipv4_addr
-                        .map(|ipv4| ipv4.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    public_ipv6_addr: fmt_ipv6_inet(route.public_ipv6_addr),
-                    provider_prefix: fmt_ipv6_inet(route.ipv6_public_addr_prefix),
-                }
-            }));
-            nodes.sort_by_key(|row| {
-                (
-                    row.peer_id != data.node_info.peer_id,
-                    row.peer_id,
-                    row.inst_id.clone(),
-                )
-            });
-
-            let local_provider = data.provider_info.provider_prefix.map(|provider_prefix| {
-                let mut leases = data
-                    .provider_info
-                    .provider_leases
-                    .iter()
-                    .map(|lease| ProviderLeaseRow {
-                        peer_id: lease.peer_id,
-                        inst_id: lease.inst_id.clone(),
-                        leased_addr: fmt_ipv6_inet(lease.leased_addr),
-                        valid_until: fmt_valid_until(lease.valid_until_unix_seconds),
-                        reused: lease.reused,
-                    })
-                    .collect::<Vec<_>>();
-                leases.sort_by_key(|lease| {
-                    (
-                        lease.peer_id,
-                        lease.inst_id.clone(),
-                        lease.leased_addr.clone(),
-                    )
-                });
-                ProviderLeaseSection {
-                    provider_prefix: provider_prefix.to_string(),
-                    leases,
-                }
-            });
-
-            PeerIpv6View {
-                nodes,
-                local_provider,
+                .collect::<Vec<_>>();
+            let rules = status
+                .rules
+                .iter()
+                .map(|rule| VpnRuleRow {
+                    cidr: rule.cidr.clone(),
+                    action: rule.action.clone(),
+                    exit: rule.exit.clone(),
+                    fallbacks: rule.fallback_exits.join(","),
+                    priority: rule.priority,
+                    effective: rule.effective_exit.clone(),
+                    packets: rule.packets,
+                    bytes: rule.bytes,
+                })
+                .collect::<Vec<_>>();
+            VpnView {
+                enabled: status.enabled,
+                exit_enabled: status.exit_enabled,
+                fail_mode: status.fail_mode.clone(),
+                dns_protect: status.dns_protect,
+                ipv6_protect: status.ipv6_protect,
+                routes_active: status.routes_active,
+                routes_installed: status.routes_installed,
+                protected_endpoints: status.protected_endpoints,
+                system_dns_servers: status.system_dns_servers.clone(),
+                exits,
+                rules,
             }
         };
 
         let results = self
-            .collect_instance_results(|handler| Box::pin(handler.fetch_peer_ipv6_data()))
+            .collect_instance_results(|handler| Box::pin(handler.fetch_vpn_status()))
             .await?;
 
         if self.verbose || *self.output_format == OutputFormat::Json {
             return self.print_json_results(
                 results
                     .into_iter()
-                    .map(|result| result.map(|data| build_view(&data)))
+                    .map(|result| result.map(|status| build_view(&status)))
                     .collect(),
             );
         }
 
-        self.print_results(&results, |data| {
-            let view = build_view(data);
-            print_output(&view.nodes, self.output_format, &[], &[], self.no_trunc)?;
-
-            if let Some(local_provider) = view.local_provider {
+        self.print_results(&results, |status| {
+            let view = build_view(status);
+            println!(
+                "vpn enabled: {}  exit_enabled: {}  fail_mode: {}  dns_protect: {}  ipv6_protect: {}",
+                view.enabled, view.exit_enabled, view.fail_mode, view.dns_protect, view.ipv6_protect
+            );
+            println!(
+                "routes: active={} installed={}  protected_endpoints={}  dns_servers={}",
+                view.routes_active,
+                view.routes_installed,
+                view.protected_endpoints,
+                view.system_dns_servers.join(",")
+            );
+            println!();
+            print_output(&view.exits, self.output_format, &[], &[], self.no_trunc)?;
+            if !view.rules.is_empty() {
                 println!();
-                println!("Local provider prefix: {}", local_provider.provider_prefix);
-                if local_provider.leases.is_empty() {
-                    println!("No active provider leases");
-                } else {
-                    print_output(
-                        &local_provider.leases,
-                        self.output_format,
-                        &[],
-                        &[],
-                        self.no_trunc,
-                    )?;
-                }
+                print_output(&view.rules, self.output_format, &[], &[], self.no_trunc)?;
             }
-
             Ok(())
         })
     }
@@ -3729,8 +3685,8 @@ async fn main() -> Result<(), Error> {
             Some(PeerSubCommand::List) => {
                 handler.handle_peer_list().await?;
             }
-            Some(PeerSubCommand::Ipv6) => {
-                handler.handle_peer_ipv6().await?;
+            Some(PeerSubCommand::Vpn) => {
+                handler.handle_peer_vpn().await?;
             }
             Some(PeerSubCommand::ListForeign { trusted_keys }) => {
                 handler.handle_foreign_network_list(*trusted_keys).await?;

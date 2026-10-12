@@ -9,7 +9,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
+use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Inet};
 use dashmap::DashMap;
 use easytier_proto::{
     acl::Acl,
@@ -21,7 +21,7 @@ use sha2::Sha256;
 
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
 use crate::{
-    config::peers::{HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot},
+    config::peers::{PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot},
     config::runtime::CoreRuntimeConfigStore,
     config::{
         CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, ProxyNetworkConfig,
@@ -73,7 +73,6 @@ pub struct PeerRuntimeSnapshotInput {
     pub stun_info: StunInfo,
     pub flags: Flags,
     pub secure_mode: Option<SecureModeConfig>,
-    pub host_routing: HostRoutingPolicy,
     pub acl: Option<Acl>,
     pub easytier_version: String,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
@@ -122,7 +121,6 @@ impl PeerRuntimeSnapshot {
             stun_info,
             flags,
             secure_mode,
-            host_routing,
             acl,
             easytier_version,
             pinned_peers,
@@ -179,7 +177,6 @@ impl PeerRuntimeSnapshot {
                 stun_info,
                 feature_flags,
                 secure_mode,
-                host_routing,
             },
             easytier_version,
             avoid_relay_data_preference,
@@ -235,23 +232,6 @@ pub(crate) trait PeerStunInfoSource: Send + Sync {
 
 impl PeerStunInfoSource for () {}
 
-/// Supplies public-IPv6 state observed or leased by the host.
-pub(crate) trait PeerPublicIpv6State: Send + Sync {
-    fn public_ipv6_lease_contains(&self, _ip: &std::net::Ipv6Addr) -> bool {
-        false
-    }
-
-    fn public_ipv6_provider_enabled(&self) -> bool {
-        false
-    }
-
-    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
-        None
-    }
-}
-
-impl PeerPublicIpv6State for () {}
-
 /// Host adapters used to assemble the core-owned peer context. Each field stays
 /// narrow so peer modules cannot reach unrelated host state after construction.
 pub(crate) struct CorePeerContextAdapters {
@@ -266,7 +246,6 @@ pub(crate) struct CorePeerContext {
     config: CoreRuntimeConfigStore,
     avoid_relay_data_preference: AtomicBool,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
-    public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     limiter_state: Mutex<CoreLimiterState>,
     stats_manager: Arc<StatsManager>,
     credentials: Arc<CredentialManager>,
@@ -276,17 +255,8 @@ pub(crate) struct CorePeerContext {
 }
 
 impl CorePeerContext {
-    pub(crate) fn new(
-        config: CoreRuntimeConfigStore,
-        public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
-        adapters: CorePeerContextAdapters,
-    ) -> Self {
-        Self::new_with_stats_manager(
-            config,
-            public_ipv6_state,
-            adapters,
-            Arc::new(StatsManager::new()),
-        )
+    pub(crate) fn new(config: CoreRuntimeConfigStore, adapters: CorePeerContextAdapters) -> Self {
+        Self::new_with_stats_manager(config, adapters, Arc::new(StatsManager::new()))
     }
 
     /// Builds a foreign-network context that contributes to the same
@@ -297,12 +267,11 @@ impl CorePeerContext {
         adapters: CorePeerContextAdapters,
         parent: &CorePeerContext,
     ) -> Self {
-        Self::new_with_stats_manager(config, Arc::new(()), adapters, parent.stats_manager())
+        Self::new_with_stats_manager(config, adapters, parent.stats_manager())
     }
 
     fn new_with_stats_manager(
         config: CoreRuntimeConfigStore,
-        public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
         adapters: CorePeerContextAdapters,
         stats_manager: Arc<StatsManager>,
     ) -> Self {
@@ -317,7 +286,6 @@ impl CorePeerContext {
             config,
             avoid_relay_data_preference,
             stun_info_source: adapters.stun_info_source,
-            public_ipv6_state,
             limiter_state: Mutex::new(CoreLimiterState::default()),
             stats_manager,
             credentials,
@@ -542,10 +510,6 @@ impl PeerPacketPolicy {
 }
 
 pub(crate) trait PeerContext: Send + Sync {
-    fn host_routing_policy(&self) -> HostRoutingPolicy {
-        HostRoutingPolicy::default()
-    }
-
     fn network_identity(&self) -> NetworkIdentity;
 
     fn network_name(&self) -> String {
@@ -642,10 +606,6 @@ pub(crate) trait PeerContext: Send + Sync {
 
     fn hmac_secret_digest(&self) -> bool {
         false
-    }
-
-    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
-        None
     }
 
     fn is_ip_in_same_network(&self, _ip: &IpAddr) -> bool {
@@ -759,10 +719,6 @@ impl PeerContext for CorePeerContext {
             .with_snapshot(|snapshot| PeerPacketPolicy::from_flags(&snapshot.peer.flags))
     }
 
-    fn host_routing_policy(&self) -> HostRoutingPolicy {
-        self.snapshot().runtime.host_routing
-    }
-
     fn secure_mode(&self) -> Option<SecureModeConfig> {
         self.snapshot().runtime.secure_mode.clone()
     }
@@ -809,7 +765,6 @@ impl PeerContext for CorePeerContext {
 
     fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
         self.ipv6().is_some_and(|address| address.address() == *ip)
-            || self.public_ipv6_state.public_ipv6_lease_contains(ip)
     }
 
     fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
@@ -842,7 +797,6 @@ impl PeerContext for CorePeerContext {
         let mut flags = snapshot.runtime.feature_flags;
         flags.avoid_relay_data = snapshot.flags.disable_relay_data
             || self.avoid_relay_data_preference.load(Ordering::Acquire);
-        flags.ipv6_public_addr_provider |= self.public_ipv6_state.public_ipv6_provider_enabled();
         flags
     }
 
@@ -867,10 +821,6 @@ impl PeerContext for CorePeerContext {
 
     fn hmac_secret_digest(&self) -> bool {
         self.snapshot().hmac_secret_digest
-    }
-
-    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
-        self.public_ipv6_state.advertised_ipv6_public_addr_prefix()
     }
 
     fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
@@ -1120,7 +1070,6 @@ pub(crate) mod tests {
                 stun_info: StunInfo::default(),
                 feature_flags: PeerFeatureFlag::default(),
                 secure_mode: None,
-                host_routing: HostRoutingPolicy::default(),
             },
             flags,
         )
@@ -1142,9 +1091,6 @@ pub(crate) mod tests {
             stun_info: StunInfo::default(),
             flags,
             secure_mode: None,
-            host_routing: HostRoutingPolicy {
-                local_exit_node_fallback: true,
-            },
             acl,
             easytier_version: "host-version".to_owned(),
             pinned_peers: vec![(
@@ -1236,7 +1182,6 @@ pub(crate) mod tests {
         assert_eq!(snapshot.ospf_update_my_foreign_network_interval_sec, 17);
         assert_eq!(snapshot.max_direct_conns_per_peer_in_foreign_network, 5);
         assert!(snapshot.hmac_secret_digest);
-        assert!(snapshot.runtime.host_routing.local_exit_node_fallback);
         assert_eq!(
             snapshot.acl_group_declarations,
             vec![
@@ -1266,7 +1211,6 @@ pub(crate) mod tests {
                 CoreRuntimeConfig::default(),
                 Arc::new(PeerRuntimeSnapshot::default()),
             ),
-            Arc::new(()),
             test_core_context_adapters(Arc::new(())),
         );
         let labels =
@@ -1352,7 +1296,6 @@ pub(crate) mod tests {
         let config = submitted_config(submitted_snapshot("before", false));
         let context = CorePeerContext::new(
             config.clone(),
-            Arc::new(()),
             test_core_context_adapters(Arc::new(())),
         );
 
@@ -1377,7 +1320,6 @@ pub(crate) mod tests {
         let sink = Arc::new(TestPeerEventSink::default());
         let context = CorePeerContext::new(
             config,
-            Arc::new(()),
             test_core_context_adapters(sink.clone()),
         );
         let mut events = context.subscribe_peer_events().unwrap();
@@ -1397,7 +1339,6 @@ pub(crate) mod tests {
         let events = Arc::new(TestPeerEventSink::default());
         let context = CorePeerContext::new(
             config,
-            Arc::new(()),
             test_core_context_adapters(events.clone()),
         );
         let public_key = vec![7; 32];
@@ -1425,7 +1366,6 @@ pub(crate) mod tests {
         let config = submitted_config(snapshot);
         let context = CorePeerContext::new(
             config,
-            Arc::new(()),
             test_core_context_adapters(Arc::new(())),
         );
 
@@ -1445,7 +1385,6 @@ pub(crate) mod tests {
         let config = submitted_config(snapshot);
         let context = CorePeerContext::new(
             config,
-            Arc::new(()),
             test_core_context_adapters(Arc::new(())),
         );
 
@@ -1569,9 +1508,6 @@ pub(crate) mod tests {
                 enabled: true,
                 ..Default::default()
             }),
-            host_routing: HostRoutingPolicy {
-                local_exit_node_fallback: true,
-            },
         };
         let mut flags = Flags::default();
         flags.p2p_only = true;
@@ -1607,7 +1543,6 @@ pub(crate) mod tests {
             ]
         );
         assert!(context.secure_mode().unwrap().enabled);
-        assert!(context.host_routing_policy().local_exit_node_fallback);
 
         let groups = context.peer_groups(7);
         assert_eq!(groups.len(), 1);
@@ -1676,7 +1611,6 @@ pub(crate) mod tests {
         let config = CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot));
         CorePeerContext::new(
             config,
-            Arc::new(()),
             CorePeerContextAdapters {
                 stun_info_source,
                 events: Arc::new(()),
@@ -1700,7 +1634,6 @@ pub(crate) mod tests {
                 stun_info: StunInfo::default(),
                 feature_flags: PeerFeatureFlag::default(),
                 secure_mode: None,
-                host_routing: HostRoutingPolicy::default(),
             },
             Flags::default(),
             None,

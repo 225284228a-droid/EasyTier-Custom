@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { v4 as uuidv4 } from 'uuid'
 import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputSwitch, InputText, MultiSelect, Panel, Password, SelectButton, ToggleButton } from 'primevue'
+import VpnConfig from './VpnConfig.vue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
@@ -124,14 +125,6 @@ function searchInetSuggestions(e: { query: string }) {
   }
 }
 
-const exitNodesSuggestions = ref([''])
-
-function searchExitNodesSuggestions(e: { query: string }) {
-  const ret = []
-  ret.push(e.query)
-  exitNodesSuggestions.value = ret
-}
-
 const whitelistSuggestions = ref([''])
 
 function searchWhitelistSuggestions(e: { query: string }) {
@@ -157,7 +150,6 @@ const bool_flags: BoolFlag[] = [
   // The disguise flags share a dedicated selector; all other schema flags
   // use a checkbox, plus the one network option the form adds itself.
   ...formFlags().filter(flag => !disguisedP2pFields.has(flag.field)),
-  { field: 'ipv6_public_addr_auto', help: 'ipv6_public_addr_auto_help' },
 ]
 const visibleBoolFlags = computed(() => bool_flags.filter(flag => extensionSupported(flag.field)))
 
@@ -660,15 +652,13 @@ function removeVpnPortalClient(index: number) {
                 </div>
               </div>
 
-              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+              <div v-if="extensionSupported('vpn')" class="flex flex-row gap-x-9 flex-wrap w-full">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <div class="flex">
-                    <label for="exit_nodes">{{ t('exit_nodes') }}</label>
-                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('exit_nodes_help')"></span>
+                    <label>{{ t('vpn_section') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('vpn_section_help')"></span>
                   </div>
-                  <AutoComplete id="exit_nodes" v-model="curNetwork.exit_nodes"
-                    :placeholder="t('chips_placeholder', ['192.168.8.8'])" class="w-full" multiple fluid
-                    :suggestions="exitNodesSuggestions" @complete="searchExitNodesSuggestions" />
+                  <VpnConfig :network="curNetwork" />
                 </div>
               </div>
 

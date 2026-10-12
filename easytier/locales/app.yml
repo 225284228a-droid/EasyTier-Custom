@@ -40,15 +40,6 @@ core_clap:
   ipv6:
     en: "ipv6 address of this vpn node, can be used together with ipv4 for dual-stack operation"
     zh-CN: "此VPN节点的IPv6地址，可与IPv4一起使用以进行双栈操作"
-  ipv6_public_addr_provider:
-    en: "share this node's public IPv6 subnet with other peers so they can obtain public IPv6 addresses (Linux only)"
-    zh-CN: "将此节点的公网 IPv6 子网共享给其他节点，使它们也能获得公网 IPv6 地址（仅 Linux 支持）"
-  ipv6_public_addr_auto:
-    en: "auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet"
-    zh-CN: "自动从共享了 IPv6 子网的对等节点获取一个公网 IPv6 地址"
-  ipv6_public_addr_prefix:
-    en: "manually specify the public IPv6 subnet to share, instead of auto-detecting from system routes"
-    zh-CN: "手动指定要共享的公网 IPv6 子网，不自动从系统路由检测"
   dhcp:
     en: "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed."
     zh-CN: "由Easytier自动确定并设置IP地址，默认从10.0.0.1开始。警告：在使用DHCP时，如果网络中出现IP冲突，IP将自动更改。"
@@ -144,12 +135,6 @@ core_clap:
   latency_first:
     en: "latency first mode, will try to relay traffic with lowest latency path, default is using shortest path"
     zh-CN: "延迟优先模式，将尝试使用最低延迟路径转发流量，默认使用最短路径"
-  exit_nodes:
-    en: "exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list"
-    zh-CN: "转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定"
-  enable_exit_node:
-    en: "allow this node to be an exit node"
-    zh-CN: "允许此节点成为出口节点"
   proxy_forward_by_system:
     en: "forward packet to proxy networks via system kernel, disable internal nat for network proxy"
     zh-CN: "通过系统内核转发子网代理数据包，禁用内置NAT"

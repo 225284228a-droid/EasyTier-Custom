@@ -27,7 +27,7 @@ pub(crate) const RTM_GETNEIGH: u16 = 30;
 
 const NLMSG_HEADER_LEN: usize = 16;
 const ATTRIBUTE_HEADER_LEN: usize = 4;
-const NLA_TYPE_MASK: u16 = 0x3fff;
+pub(crate) const NLA_TYPE_MASK: u16 = 0x3fff;
 
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
@@ -36,7 +36,8 @@ const IFA_BROADCAST: u16 = 4;
 const RTA_DST: u16 = 1;
 const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
-const RTA_PRIORITY: u16 = 6;
+const RTA_GATEWAY: u16 = 5;
+pub(crate) const RTA_PRIORITY: u16 = 6;
 const RTA_TABLE: u16 = 15;
 
 const NDA_DST: u16 = 1;
@@ -173,7 +174,7 @@ pub(crate) fn netlink_error_code(payload: &[u8]) -> io::Result<i32> {
 }
 
 #[derive(Clone, Debug)]
-struct Attribute {
+pub(crate) struct Attribute {
     kind: u16,
     value: Vec<u8>,
 }
@@ -341,6 +342,7 @@ pub(crate) struct RouteMessage {
     attributes: Vec<Attribute>,
     destination: Option<IpAddr>,
     source: Option<IpAddr>,
+    gateway: Option<IpAddr>,
     oif: Option<u32>,
 }
 
@@ -367,6 +369,14 @@ impl RouteMessage {
 
     pub(crate) fn source(&self) -> Option<&IpAddr> {
         self.source.as_ref()
+    }
+
+    pub(crate) fn gateway(&self) -> Option<&IpAddr> {
+        self.gateway.as_ref()
+    }
+
+    pub(crate) fn attributes(&self) -> &[Attribute] {
+        &self.attributes
     }
 
     pub(crate) fn oif(&self) -> Option<u32> {
@@ -397,6 +407,10 @@ impl NetlinkDecode for RouteMessage {
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_SRC)
             .and_then(|attribute| parse_ip(family, &attribute.value));
+        let gateway = attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_GATEWAY)
+            .and_then(|attribute| parse_ip(family, &attribute.value));
         let oif = attributes
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_OIF)
@@ -415,6 +429,7 @@ impl NetlinkDecode for RouteMessage {
             attributes,
             destination,
             source,
+            gateway,
             oif,
         })
     }
@@ -458,6 +473,7 @@ impl RouteMessageBuilder {
                 attributes: Vec::new(),
                 destination: None,
                 source: None,
+                gateway: None,
                 oif: None,
             },
         }
@@ -469,6 +485,14 @@ impl RouteMessageBuilder {
         self.message
             .attributes
             .push(Attribute::new(RTA_DST, ip_bytes(address)));
+        self
+    }
+
+    pub(crate) fn gateway(mut self, gateway: IpAddr) -> Self {
+        self.message.gateway = Some(gateway);
+        self.message
+            .attributes
+            .push(Attribute::new(RTA_GATEWAY, ip_bytes(gateway)));
         self
     }
 

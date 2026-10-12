@@ -118,7 +118,7 @@ impl UdpNatEntry {
 #[derive(Clone, Copy, Debug)]
 pub struct UdpProxyPeerContext {
     pub virtual_ipv4: Option<Ipv4Addr>,
-    pub enable_exit_node: bool,
+    pub vpn_exit: bool,
     pub no_tun: bool,
 }
 
@@ -195,7 +195,7 @@ impl UdpProxyEngine {
         ctx: UdpProxyPeerContext,
         runtime: &impl UdpProxyRuntime,
     ) -> UdpProxyAction {
-        if self.cidr_table.is_empty() && !ctx.enable_exit_node && !ctx.no_tun {
+        if self.cidr_table.is_empty() && !ctx.vpn_exit && !ctx.no_tun {
             return UdpProxyAction::Pass;
         }
 
@@ -205,7 +205,7 @@ impl UdpProxyEngine {
         let Some(hdr) = packet.peer_manager_header() else {
             return UdpProxyAction::Pass;
         };
-        let is_exit_node = hdr.is_exit_node();
+        let is_vpn_exit = hdr.is_vpn_exit();
         if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
             return UdpProxyAction::Pass;
         };
@@ -223,7 +223,7 @@ impl UdpProxyEngine {
             ctx.no_tun && Some(origin_dst_ip) == ctx.virtual_ipv4.as_ref().copied();
         if let Some(mapped_real_ip) = self.cidr_table.lookup_v4(origin_dst_ip) {
             real_dst_ip = mapped_real_ip;
-        } else if !is_exit_node && !no_tun_local_virtual_ip {
+        } else if !is_vpn_exit && !no_tun_local_virtual_ip {
             return UdpProxyAction::Pass;
         }
 
@@ -483,7 +483,7 @@ mod tests {
             &zc,
             UdpProxyPeerContext {
                 virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
-                enable_exit_node: false,
+                vpn_exit: false,
                 no_tun: false,
             },
             &TestRuntime,

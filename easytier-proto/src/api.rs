@@ -17,15 +17,6 @@ pub mod config {
         }
     }
 
-    impl From<ExitNodePatch> for Patchable<std::net::IpAddr> {
-        fn from(value: ExitNodePatch) -> Self {
-            Patchable {
-                action: ConfigPatchAction::try_from(value.action).ok(),
-                value: value.node.map(Into::into),
-            }
-        }
-    }
-
     impl From<StringPatch> for Patchable<String> {
         fn from(value: StringPatch) -> Self {
             Patchable {
@@ -141,29 +132,6 @@ pub mod instance {
                 cost_latency_first: value.cost_latency_first,
                 path_latency_latency_first: value.path_latency_latency_first,
                 ipv6_addr: value.ipv6_addr,
-                public_ipv6_addr: value.public_ipv6_addr,
-                ipv6_public_addr_prefix: value.ipv6_public_addr_prefix,
-            }
-        }
-    }
-
-    impl From<crate::core_peer::peer::PublicIpv6LeaseInfo> for PublicIpv6LeaseInfo {
-        fn from(value: crate::core_peer::peer::PublicIpv6LeaseInfo) -> Self {
-            Self {
-                peer_id: value.peer_id,
-                inst_id: value.inst_id,
-                leased_addr: value.leased_addr,
-                valid_until_unix_seconds: value.valid_until_unix_seconds,
-                reused: value.reused,
-            }
-        }
-    }
-
-    impl From<crate::core_peer::peer::ListPublicIpv6InfoResponse> for ListPublicIpv6InfoResponse {
-        fn from(value: crate::core_peer::peer::ListPublicIpv6InfoResponse) -> Self {
-            Self {
-                provider_prefix: value.provider_prefix,
-                provider_leases: value.provider_leases.into_iter().map(Into::into).collect(),
             }
         }
     }

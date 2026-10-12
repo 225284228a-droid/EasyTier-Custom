@@ -17,6 +17,7 @@ export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = {
   prefer_wss_http3_for_p2p: 'config:prefer_wss_http3_for_p2p',
   disable_wss_http3_for_p2p: 'config:disable_wss_http3_for_p2p',
   close_redundant_conns_when_disguised: 'config:close_redundant_conns_when_disguised',
+  vpn: 'config:vpn-exits-v1',
 }
 
 export function configFieldSupported(field: string, capabilities: readonly string[] = []): boolean {

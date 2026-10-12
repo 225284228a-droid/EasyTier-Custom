@@ -73,7 +73,6 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.bind_device = flags.bind_device;
     result.socket_mark = flags.socket_mark;
     result.no_tun = flags.no_tun;
-    result.enable_exit_node = flags.enable_exit_node;
     result.relay_all_peer_rpc = flags.relay_all_peer_rpc;
     result.need_p2p = flags.need_p2p;
     result.multi_thread = flags.multi_thread;
@@ -123,14 +122,11 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "sni",
     "instance_id",
     "ipv4",
-    "ipv6_public_addr_provider",
-    "ipv6_public_addr_auto",
-    "ipv6_public_addr_prefix",
+    "vpn",
     "dhcp",
     "network_identity",
     "listeners",
     "mapped_listeners",
-    "exit_nodes",
     "peer",
     "proxy_network",
     "vpn_portal_config",
@@ -438,15 +434,10 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_routes(Some(routes));
         }
 
-        if !self.exit_nodes.is_empty() {
-            let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
-            for node in self.exit_nodes.iter() {
-                exit_nodes.push(
-                    node.parse()
-                        .with_context(|| format!("failed to parse exit node: {}", node))?,
-                );
-            }
-            cfg.set_exit_nodes(exit_nodes);
+        if let Some(vpn) = self.vpn.as_ref() {
+            let vpn = crate::config::vpn::pb::from_pb(vpn.clone())
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            cfg.set_vpn(vpn);
         }
 
         if self.enable_socks5.unwrap_or_default()
@@ -492,24 +483,6 @@ impl NetworkConfigExt for NetworkConfig {
                     .map(normalize_secure_mode_config)
                     .transpose()?,
             );
-        }
-
-        if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {
-            cfg.set_ipv6_public_addr_provider(ipv6_public_addr_provider);
-        }
-
-        if let Some(ipv6_public_addr_auto) = self.ipv6_public_addr_auto {
-            cfg.set_ipv6_public_addr_auto(ipv6_public_addr_auto);
-        }
-
-        if let Some(ipv6_public_addr_prefix) = self
-            .ipv6_public_addr_prefix
-            .as_ref()
-            .filter(|prefix| !prefix.is_empty())
-        {
-            cfg.set_ipv6_public_addr_prefix(Some(ipv6_public_addr_prefix.parse().with_context(
-                || format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}"),
-            )?));
         }
 
         if let Some(acl) = self.acl.as_ref()
@@ -558,7 +531,6 @@ impl NetworkConfigExt for NetworkConfig {
             lazy_p2p: self.lazy_p2p,
             bind_device: self.bind_device,
             no_tun: self.no_tun,
-            enable_exit_node: self.enable_exit_node,
             relay_all_peer_rpc: self.relay_all_peer_rpc,
             need_p2p: self.need_p2p,
             multi_thread: self.multi_thread,
@@ -611,16 +583,10 @@ impl NetworkConfigExt for NetworkConfig {
             result.network_length = Some(ipv4.network_length() as i32);
         }
 
-        if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider()
-        {
-            result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
+        let vpn = config.get_vpn();
+        if vpn != default_config.get_vpn() {
+            result.vpn = Some(crate::config::vpn::pb::to_pb(&vpn));
         }
-        if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
-            result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
-        }
-        result.ipv6_public_addr_prefix = config
-            .get_ipv6_public_addr_prefix()
-            .map(|prefix| prefix.to_string());
 
         let peers = config.get_peers();
         result.networking_method = Some(NetworkingMethod::Manual as i32);
@@ -690,11 +656,6 @@ impl NetworkConfigExt for NetworkConfig {
         {
             result.enable_manual_routes = Some(true);
             result.routes = routes.iter().map(|r| r.to_string()).collect();
-        }
-
-        let exit_nodes = config.get_exit_nodes();
-        if !exit_nodes.is_empty() {
-            result.exit_nodes = exit_nodes.iter().map(|n| n.to_string()).collect();
         }
 
         if let Some(socks5_portal) = config.get_socks5_portal() {

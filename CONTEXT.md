@@ -122,3 +122,39 @@ publication workers are disabled in Console mode.
 Device deletion uses the upstream disconnect semantics: an already in-flight
 validation may register the device again. A persisted ban rejects subsequent
 validations. Deletion does not introduce device generations or session fences.
+
+## Multi-exit policy VPN
+
+The multi-exit policy VPN replaces the legacy exit-node list and the legacy
+public-IPv6 provider lease protocol. One `[vpn]` TOML section (mirrored by
+`NetworkConfig.vpn`) owns named exits and per-destination CIDR rules whose
+actions are exit, direct, or block. Matching is longest-prefix first, with
+rule priority then rule order breaking ties; a rule's fallback exits are
+tried in order when its primary exit has no usable route, and the configured
+fail mode decides what remains-unreachable traffic does.
+
+The client-side `VpnPolicyEngine` (`easytier-core/src/peers/vpn_policy.rs`)
+owns the compiled rule set, per-rule and per-exit counters, and the exit
+liveness view refreshed by the peer manager from route snapshots. The
+per-packet decision point is `get_msg_dst_peer_ipv4/ipv6`; an Exit decision
+marks the packet with the VPN-exit header flag so the receiving exit accepts
+and NATs it. Block and Direct destinations never enter the overlay.
+
+Exit forwarding stays in the existing proxy NAT engines for IPv4. IPv6 exit
+traffic is written into the exit node's TUN and forwarded by the kernel:
+Linux exit nodes enable IPv6 forwarding and install a MASQUERADE rule for the
+mesh prefix; platforms without kernel NAT66 reject v6 exit traffic with a
+startup warning.
+
+The host-side route manager (`easytier/src/instance/vpn_routes.rs`) owns the
+client's system routing table while the VPN is enabled. Global exit rules are
+installed as the 0.0.0.0/1 + 128.0.0.0/1 split (and ::/1 + 8000::/1 for
+IPv6), so the physical default route is never replaced. Direct rules and
+EasyTier's own underlay endpoint addresses are pinned through the captured
+pre-VPN physical gateway. DNS servers are pinned into the tunnel while a
+global IPv4 exit is active, and non-mesh IPv6 is blackholed when no global
+IPv6 exit exists. Every installed route is removed on disable and shutdown.
+
+Official unmodified kernels do not advertise `config:vpn-exits-v1`; the web
+and GUI forms then hide the VPN section and show only the official
+configuration surface.

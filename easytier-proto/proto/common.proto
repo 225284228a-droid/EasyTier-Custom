@@ -13,7 +13,6 @@ message Flags {
   bool enable_ipv6 = 4 [(easytier.flag) = { default: "true", api: { field: "disable_ipv6", negate: true } }];
   uint32 mtu = 5 [(easytier.flag) = { default: "1380", form: true }];
   bool latency_first = 6 [(easytier.flag) = { default: "false" }];
-  bool enable_exit_node = 7 [(easytier.flag) = { default: "false" }];
   bool no_tun = 8 [(easytier.flag) = { default: "false" }];
   bool use_smoltcp = 9 [(easytier.flag) = { default: "false" }];
   string relay_network_whitelist = 10 [(easytier.flag) = { default: "*", form: true }];
@@ -283,7 +282,6 @@ message PeerFeatureFlag {
   bool is_credential_peer = 8;
   bool need_p2p = 9;
   bool disable_p2p = 10;
-  bool ipv6_public_addr_provider = 11;
   bool prefer_wss_http3_for_p2p = 12;
   bool disable_wss_http3_for_p2p = 13;
   bool only_use_wss_http3_for_p2p = 14;

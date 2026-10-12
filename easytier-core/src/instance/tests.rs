@@ -209,7 +209,6 @@ fn core_instance_config_round_trips_as_normalized_json() {
             stun_info: crate::proto::common::StunInfo::default(),
             feature_flags: crate::proto::common::PeerFeatureFlag::default(),
             secure_mode: None,
-            host_routing: crate::config::peers::HostRoutingPolicy::default(),
         },
     );
     let config = CoreInstanceConfig {
@@ -290,7 +289,7 @@ mod portable_runtime {
 
     use super::*;
     use crate::{
-        config::peers::{HostRoutingPolicy, PeerRuntimeConfig},
+        config::peers::PeerRuntimeConfig,
         config::runtime::CoreInstanceRuntimeConfig,
         config::{
             CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig, gateway::PortForwardConfig,
@@ -369,7 +368,6 @@ mod portable_runtime {
             stun_info: StunInfo::default(),
             feature_flags: Default::default(),
             secure_mode: None,
-            host_routing: HostRoutingPolicy::default(),
         });
         let connectivity = CoreConnectivityConfig::default();
         CoreInstanceConfig {
@@ -853,7 +851,7 @@ network_secret = "network-secret"
             }]
         );
         let runtime = instance.runtime_config.snapshot();
-        assert!(runtime.services.proxy.enable_exit_node);
+        assert!(runtime.services.proxy.vpn_exit);
         assert!(runtime.services.public_ipv6_provider.provider_supported);
         assert_eq!(runtime.peer.easytier_version, "host-version");
     }
@@ -3157,28 +3155,11 @@ virtual_ip = "10.82.0.2/24"
         assert_eq!(instance.state(), CoreInstanceState::Stopped);
     }
 
-    #[cfg(feature = "public-ipv6-provider")]
-    #[tokio::test]
-    async fn runtime_core_accepts_explicit_public_ipv6_runtime_snapshot() {
-        let config = test_config("explicit-public-ipv6");
-        let instance = build_instance(config.clone()).unwrap();
-        let mut updated = runtime_snapshot(&config);
-        updated.services.public_ipv6_provider.provider_enabled = true;
-        updated.services.public_ipv6_provider.provider_supported = true;
-        updated.services.public_ipv6_provider.configured_prefix =
-            Some("fd00::/64".parse().unwrap());
-        instance.update_runtime_config(updated).await.unwrap();
-
-        let error = instance.start().await.unwrap_err();
-        assert!(error.to_string().contains("not a valid global unicast"));
-        assert_eq!(instance.state(), CoreInstanceState::Stopped);
-    }
-
     #[cfg(not(feature = "proxy-packet"))]
     #[test]
     fn runtime_core_rejects_packet_proxy_requests_when_unavailable() {
         let mut config = test_config("packet-proxy-unavailable");
-        config.connectivity.runtime.proxy.enable_exit_node = true;
+        config.connectivity.runtime.proxy.vpn_exit = true;
 
         let error = match build_instance(config) {
             Ok(_) => panic!("packet proxy request unexpectedly succeeded"),

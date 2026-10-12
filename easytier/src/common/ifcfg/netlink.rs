@@ -12,13 +12,13 @@ use std::{
 };
 
 use super::{
-    Error, IfConfiguerTrait,
+    DefaultRouteInfo, Error, IfConfiguerTrait,
     netlink_wire::{
-        AddressMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
-        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NeighborMessage,
-        NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH,
-        RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder,
-        RouteType, netlink_error_code,
+        AddressMessage, Attribute, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE,
+        NLM_F_DUMP, NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR,
+        NLA_TYPE_MASK, NeighborMessage, NetlinkDecode, NetlinkEncode, RTA_PRIORITY, RTM_DELADDR,
+        RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH, RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH,
+        RTM_NEWROUTE, RouteMessage, RouteMessageBuilder, RouteType, netlink_error_code,
     },
 };
 use crate::common::network::ip_mask_to_prefix;
@@ -337,8 +337,138 @@ impl NetlinkIfConfiger {
     }
 }
 
+impl NetlinkIfConfiger {
+    fn interface_name(ifindex: u32) -> Option<String> {
+        unsafe {
+            let mut buf = [0u8; libc::IF_NAMESIZE];
+            if libc::if_indextoname(ifindex, buf.as_mut_ptr()).is_null() {
+                return None;
+            }
+            let name = std::ffi::CStr::from_ptr(buf.as_ptr());
+            Some(name.to_string_lossy().into_owned())
+        }
+    }
+}
+
 #[async_trait]
 impl IfConfiguerTrait for NetlinkIfConfiger {
+    async fn add_route_via_gateway(
+        &self,
+        gateway: std::net::IpAddr,
+        destination: std::net::IpAddr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let family = match gateway {
+            IpAddr::V4(_) => libc::AF_INET as u8,
+            IpAddr::V6(_) => libc::AF_INET6 as u8,
+        };
+        let mut builder = RouteMessageBuilder::new(family)
+            .gateway(gateway)
+            .priority(10)
+            .table(libc::RT_TABLE_MAIN.into())
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast);
+        if cidr_prefix != 0 {
+            builder = builder.destination(destination, cidr_prefix);
+        }
+        let message = builder.build();
+        let request = message_request(
+            RTM_NEWROUTE,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
+    }
+
+    async fn remove_route_via_gateway(
+        &self,
+        gateway: std::net::IpAddr,
+        destination: std::net::IpAddr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let family = match gateway {
+            IpAddr::V4(_) => libc::AF_INET as u8,
+            IpAddr::V6(_) => libc::AF_INET6 as u8,
+        };
+        let routes = Self::list_route_messages(family)?;
+        for msg in routes {
+            let msg_destination = msg
+                .destination()
+                .copied()
+                .unwrap_or(if family == libc::AF_INET as u8 {
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+                } else {
+                    IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                });
+            if msg_destination == destination
+                && msg.dst_len() == cidr_prefix
+                && msg.gateway() == Some(&gateway)
+            {
+                let request = message_request(RTM_DELROUTE, NLM_F_ACK | NLM_F_REQUEST, &msg)?;
+                send_netlink_req_and_wait_ack(request)?;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    async fn default_route(
+        &self,
+        ipv6: bool,
+        exclude_interface: Option<&str>,
+    ) -> Result<Option<DefaultRouteInfo>, Error> {
+        let family = if ipv6 {
+            libc::AF_INET6 as u8
+        } else {
+            libc::AF_INET as u8
+        };
+        let exclude_ifindex = exclude_interface
+            .map(NetlinkIfConfiger::get_interface_index)
+            .transpose()?
+            .unwrap_or(0);
+        let routes = Self::list_route_messages(family)?;
+        let mut best: Option<(u32, DefaultRouteInfo)> = None;
+        for msg in routes {
+            if msg.route_type() != RouteType::Unicast {
+                continue;
+            }
+            if msg.dst_len() != 0 {
+                continue;
+            }
+            let Some(gateway) = msg.gateway().copied() else {
+                continue;
+            };
+            let Some(ifindex) = msg.oif() else {
+                continue;
+            };
+            if exclude_ifindex != 0 && ifindex == exclude_ifindex {
+                continue;
+            }
+            let priority = msg
+                .attributes()
+                .iter()
+                .find(|attr: &Attribute| attr.kind & NLA_TYPE_MASK == RTA_PRIORITY)
+                .and_then(|attr| {
+                    let raw = &attr.value;
+                    if raw.len() == 4 {
+                        Some(u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            let info = DefaultRouteInfo {
+                gateway,
+                interface_name: Self::interface_name(ifindex).unwrap_or_default(),
+            };
+            if best.as_ref().is_none_or(|(p, _)| priority < *p) {
+                best = Some((priority, info));
+            }
+        }
+        Ok(best.map(|(_, info)| info))
+    }
+
     async fn add_ipv4_route(
         &self,
         name: &str,

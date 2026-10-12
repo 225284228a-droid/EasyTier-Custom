@@ -15,7 +15,7 @@ pub(crate) struct ProxyRuntimeSnapshot {
     pub local_inet: Option<Ipv4Inet>,
     pub virtual_ipv4: Option<Ipv4Addr>,
     pub no_tun: bool,
-    pub enable_exit_node: bool,
+    pub vpn_exit: bool,
     pub smoltcp_enabled: bool,
     pub latency_first: bool,
 }

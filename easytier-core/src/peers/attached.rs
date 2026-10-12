@@ -26,7 +26,7 @@ use crate::{
     peers::{
         conn::peer_conn::PeerConnId,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig, RouteAlgoType},
-        public_ipv6::CorePublicIpv6Runtime,
+        vpn_policy::VpnPolicyEngine,
     },
     tunnel::ring::create_ring_tunnel_pair,
 };
@@ -196,21 +196,22 @@ impl AttachedPeerRuntime {
         let services = build_attached_services(&network.services, credential_public_key.is_some());
         let runtime_config = CoreRuntimeConfigStore::new(services, Arc::new(peer_snapshot.clone()));
         let (packet_sender, packet_receiver) = host_packet_channel();
-        let public_ipv6_runtime =
-            CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
+        let vpn_engine = Arc::new(
+            VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap(),
+        );
         let flags = peer_snapshot.flags.clone();
         let peer_manager = Arc::new(PeerManagerCore::new(
             PortablePeerManagerConfig {
                 snapshot: peer_snapshot,
                 route_algo: RouteAlgoType::Ospf,
-                exit_nodes: Vec::new(),
+                vpn: crate::config::vpn::VpnConfig::default(),
                 foreign_context_default_flags: flags,
             },
             Vec::new(),
             runtime_config,
             Arc::new(()),
             packet_sender,
-            public_ipv6_runtime,
+            vpn_engine,
             Arc::new(()),
             None,
             Arc::new(()),
@@ -516,7 +517,7 @@ mod tests {
     use crate::{
         config::{
             CoreConfig, NetworkIdentity, NodeConfig,
-            peers::{HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig},
+            peers::{PeerGroupIdentity, PeerRuntimeConfig},
             runtime::CoreRuntimeConfig,
         },
         proto::{
@@ -570,7 +571,6 @@ mod tests {
             stun_info: StunInfo::default(),
             feature_flags: PeerFeatureFlag::default(),
             secure_mode,
-            host_routing: HostRoutingPolicy::default(),
         };
         let mut portable = PortablePeerManagerConfig::new(runtime);
         portable.snapshot.acl_group_declarations = vec![PeerGroupIdentity {
@@ -598,8 +598,9 @@ mod tests {
         };
         let store = CoreRuntimeConfigStore::new(services, Arc::new(portable.snapshot.clone()));
         let (packet_sender, _packet_receiver) = host_packet_channel();
-        let public_ipv6_runtime =
-            CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
+        let vpn_engine = Arc::new(
+            VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap(),
+        );
         let peer_manager = Arc::new(
             PeerManagerCore::new(
                 portable,
@@ -607,7 +608,7 @@ mod tests {
                 store.clone(),
                 Arc::new(()),
                 packet_sender,
-                public_ipv6_runtime,
+                vpn_engine,
                 Arc::new(()),
                 None,
                 Arc::new(()),

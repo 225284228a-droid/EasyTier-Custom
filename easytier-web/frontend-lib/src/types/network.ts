@@ -13,8 +13,10 @@ import type { FlagMeta } from '../generated/proto/annotations'
 import {
   VpnPortalClientState,
   VpnPortalInfo as VpnPortalInfoPb,
+  GetVpnStatusResponse as GetVpnStatusResponsePb,
   type VpnPortalClientInfo,
   type VpnPortalInfo,
+  type GetVpnStatusResponse,
 } from '../generated/proto/api_instance'
 import {
   Action as AclAction,
@@ -39,6 +41,7 @@ import { filterConfigPayload } from '../modules/capabilities'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
 export { VpnPortalClientState }
+export type { GetVpnStatusResponse, VpnExitStatus, VpnRuleStatus } from '../generated/proto/api_instance'
 export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig, VpnPortalClientConfig, VpnPortalClientInfo, VpnPortalConfig, VpnPortalInfo }
 
 export type NetworkConfig = Omit<
@@ -183,13 +186,11 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     ...newFlagValues(),
     dev_name: '',
 
-    ipv6_public_addr_auto: false,
     p2p_prefer_protocol: 'udp',
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,
     routes: [],
-    exit_nodes: [],
     enable_socks5: false,
     socks5_port: 1080,
     mtu: null,
@@ -360,9 +361,12 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.listener_urls ??= []
   normalized.relay_network_whitelist ??= []
   normalized.routes ??= []
-  normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
+  if (normalized.vpn) {
+    normalized.vpn.exits ??= []
+    normalized.vpn.rules ??= []
+  }
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
     normalized.vpn_portal_config.clients.forEach((client) => {
@@ -412,6 +416,10 @@ export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: rea
 
 export function normalizeVpnPortalInfo(info: unknown): VpnPortalInfo {
   return VpnPortalInfoPb.fromJson(info as any, { ignoreUnknownFields: true })
+}
+
+export function normalizeVpnStatus(info: unknown): GetVpnStatusResponse {
+  return GetVpnStatusResponsePb.fromJson(info as any, { ignoreUnknownFields: true })
 }
 
 export interface NetworkInstance {

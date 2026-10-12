@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair, type GetVpnStatusResponse } from '../types/network'
 import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
@@ -280,6 +280,31 @@ const rxRate = ref('0')
 // 控制节点详细信息chips的显示/隐藏
 const showNodeDetails = ref(false)
 
+// Multi-exit VPN live status (only when the connected kernel implements the
+// fork's GetVpnStatus RPC; official kernels simply show no VPN section).
+const vpnStatus = ref<GetVpnStatusResponse | undefined>()
+let vpnStatusTimer: number | undefined
+
+async function loadVpnStatus() {
+  const instanceId = props.curNetworkInst?.instance_id
+  if (!instanceId || !props.api.get_vpn_status) return
+  try {
+    vpnStatus.value = await props.api.get_vpn_status(instanceId)
+  } catch (error) {
+    console.warn('Failed to load vpn status', error)
+    vpnStatus.value = undefined
+  }
+}
+
+onMounted(() => {
+  vpnStatusTimer = window.setInterval(() => { loadVpnStatus() }, 2000)
+  loadVpnStatus()
+})
+
+onUnmounted(() => {
+  if (vpnStatusTimer) clearInterval(vpnStatusTimer)
+})
+
 onMounted(() => {
   rateIntervalId = window.setInterval(() => {
     const curTxSum = txGlobalSum()
@@ -371,6 +396,63 @@ function showEventLogs() {
     </Card>
 
     <template v-else>
+      <Card v-if="vpnStatus && (vpnStatus.enabled || vpnStatus.exit_enabled || vpnStatus.rules.length > 0)">
+        <template #title>
+          {{ t('vpn_status_title') }}
+        </template>
+        <template #content>
+          <div class="flex w-full flex-col gap-y-3">
+            <div class="flex flex-wrap gap-3 text-sm">
+              <Tag :value="vpnStatus.enabled ? t('vpn_status_enabled') : t('vpn_status_disabled')"
+                :severity="vpnStatus.enabled ? 'success' : 'secondary'" />
+              <Tag v-if="vpnStatus.exit_enabled" :value="t('vpn_status_exit_offering')" severity="info" />
+              <Tag :value="`${t('vpn_status_fail_mode')}: ${vpnStatus.fail_mode}`" severity="secondary" />
+              <Tag v-if="vpnStatus.dns_protect" :value="t('vpn_dns_protect')" severity="contrast" />
+              <Tag v-if="vpnStatus.ipv6_protect" :value="t('vpn_ipv6_protect')" severity="contrast" />
+              <Tag :value="`${t('vpn_status_routes')}: ${vpnStatus.routes_active ? t('vpn_status_routes_active') : t('vpn_status_routes_inactive')} (${vpnStatus.routes_installed})`"
+                severity="secondary" />
+            </div>
+            <DataTable v-if="vpnStatus.exits.length > 0" :value="vpnStatus.exits" size="small"
+              data-key="name">
+              <Column field="name" :header="t('vpn_exit_name')" />
+              <Column field="node_addr" :header="t('vpn_exit_node')" />
+              <Column field="state" :header="t('vpn_exit_state')">
+                <template #body="slotProps">
+                  <Tag :value="slotProps.data.state"
+                    :severity="slotProps.data.state === 'up' ? 'success' : 'danger'" />
+                </template>
+              </Column>
+              <Column field="latency_ms" :header="t('vpn_exit_latency')">
+                <template #body="slotProps">
+                  {{ slotProps.data.latency_ms >= 0 ? `${slotProps.data.latency_ms} ms` : '-' }}
+                </template>
+              </Column>
+              <Column field="tx_packets" :header="t('vpn_exit_tx')" />
+              <Column field="tx_bytes" :header="t('vpn_exit_tx_bytes')" />
+            </DataTable>
+            <DataTable v-if="vpnStatus.rules.length > 0" :value="vpnStatus.rules" size="small"
+              data-key="cidr">
+              <Column field="cidr" :header="t('vpn_rule_cidr')" />
+              <Column field="action" :header="t('vpn_rule_action')" />
+              <Column field="exit" :header="t('vpn_rule_exit')" />
+              <Column field="fallback_exits" :header="t('vpn_rule_fallbacks')">
+                <template #body="slotProps">
+                  {{ (slotProps.data.fallback_exits || []).join(',') || '-' }}
+                </template>
+              </Column>
+              <Column field="priority" :header="t('vpn_rule_priority')" />
+              <Column field="effective_exit" :header="t('vpn_rule_effective')">
+                <template #body="slotProps">
+                  {{ slotProps.data.effective_exit || '-' }}
+                </template>
+              </Column>
+              <Column field="packets" :header="t('vpn_rule_packets')" />
+              <Column field="bytes" :header="t('vpn_rule_bytes')" />
+            </DataTable>
+          </div>
+        </template>
+      </Card>
+
       <Card>
         <template #title>
           {{ t('my_node_info') }}

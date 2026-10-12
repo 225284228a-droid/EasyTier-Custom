@@ -269,7 +269,7 @@ domains, not permission for lower socket or Host layers to depend on peers.
 - OSPF route calculation and graph algorithms;
 - peer and credential RPC registration;
 - foreign-network admission, identity, relay, and lifecycle;
-- peer-center state and public IPv6 policy;
+- peer-center state and the multi-exit VPN policy engine;
 - traffic metrics and peer snapshots.
 
 Submodules progress from kernel types and utilities, through ACL/context,

@@ -459,7 +459,7 @@ mod tests {
         },
     };
     use crate::{
-        config::peers::{HostRoutingPolicy, PeerRuntimeConfig, PeerRuntimeSnapshot},
+        config::peers::{PeerRuntimeConfig, PeerRuntimeSnapshot},
         config::runtime::CoreRuntimeConfig,
         config::{CoreConfig, NetworkIdentity, NodeConfig},
         peers::peer_manager::PortablePeerManagerConfig,
@@ -765,7 +765,6 @@ mod tests {
                     stun_info: Default::default(),
                     feature_flags: Default::default(),
                     secure_mode: None,
-                    host_routing: HostRoutingPolicy::default(),
                 }),
                 packet_tx,
             )

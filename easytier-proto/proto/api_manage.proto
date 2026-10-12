@@ -56,14 +56,12 @@ message NetworkConfig {
   optional bool bind_device = 25;
   optional bool no_tun = 26;
 
-  optional bool enable_exit_node = 27;
   optional bool relay_all_peer_rpc = 28;
   optional bool multi_thread = 29;
   optional bool enable_relay_network_whitelist = 30;
   repeated string relay_network_whitelist = 31;
   optional bool enable_manual_routes = 32;
   repeated string routes = 33;
-  repeated string exit_nodes = 34;
   optional bool proxy_forward_by_system = 35;
   optional bool disable_encryption = 36;
   optional bool enable_socks5 = 37;
@@ -96,9 +94,6 @@ message NetworkConfig {
   optional bool need_p2p = 59;
   optional uint64 instance_recv_bps_limit = 60;
   optional bool disable_upnp = 61;
-  optional bool ipv6_public_addr_provider = 62;
-  optional bool ipv6_public_addr_auto = 63;
-  optional string ipv6_public_addr_prefix = 64;
   optional bool disable_relay_data = 65;
   optional bool enable_udp_broadcast_relay = 66;
   optional uint32 socket_mark = 67;
@@ -128,6 +123,43 @@ message NetworkConfig {
   // connections. Equally ranked automatic connections remain. This does not
   // change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
   optional bool close_redundant_conns_when_disguised = 79;
+
+  // Custom multi-exit policy VPN (fork feature).
+  optional VpnConfig vpn = 80;
+}
+
+// One exit definition. `node` is the exit node's virtual IP inside the
+// EasyTier network. Multiple exits may be configured; rules select one.
+message VpnExitConfig {
+  string name = 1;
+  string node = 2;
+  optional string note = 3;
+}
+
+// One traffic-splitting rule. Matching uses longest-prefix first, ties are
+// broken by lower `priority` value, then rule order.
+message VpnRuleConfig {
+  string cidr = 1;
+  // exit | direct | block
+  string action = 2;
+  // exit name, required when action is "exit"
+  optional string exit = 3;
+  repeated string fallback_exits = 4;
+  optional uint32 priority = 5;
+}
+
+message VpnConfig {
+  bool enabled = 1;
+  // this node forwards and NATs exit traffic for peers
+  bool exit_enabled = 2;
+  // pin system DNS servers into the tunnel when a global exit is active
+  bool dns_protect = 3;
+  // blackhole non-mesh IPv6 when no IPv6 exit is active
+  bool ipv6_protect = 4;
+  // what to do when all exits of a rule are unreachable: direct | block
+  string fail_mode = 5;
+  repeated VpnExitConfig exits = 6;
+  repeated VpnRuleConfig rules = 7;
 }
 
 message ManagedCredentialConfig {

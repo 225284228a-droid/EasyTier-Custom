@@ -1,14 +1,10 @@
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv6Addr},
+    net::IpAddr,
     sync::{Arc, Mutex},
 };
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
-use easytier_core::connectivity::composite::ConnectorRuntime as _;
-use easytier_core::peers::public_ipv6::PublicIpv6Host;
-use easytier_core::socket::{NetNamespace, SocketContext};
 use easytier_core::tunnel::effective_encryption_uses_xor;
 use easytier_core::{
     config::{PeerId, peers::PeerRuntimeSnapshot, runtime::CoreInstanceRuntimeConfig},
@@ -56,8 +52,6 @@ pub enum GlobalCtxEvent {
 
     DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
-    PublicIpv6Changed(Option<cidr::Ipv6Inet>, Option<cidr::Ipv6Inet>), // (old, new)
-    PublicIpv6RoutesUpdated(Vec<cidr::Ipv6Inet>, Vec<cidr::Ipv6Inet>), // (added, removed)
 
     PortForwardAdded(PortForwardConfigPb),
 
@@ -94,6 +88,8 @@ pub struct GlobalCtx {
 
     flags: ArcSwap<Flags>,
     runtime_endpoint_protocols: Option<HashSet<String>>,
+
+    vpn_route_status: crate::instance::vpn_routes::VpnRouteStatusCell,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -109,37 +105,6 @@ impl std::fmt::Debug for GlobalCtx {
 }
 
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
-
-#[async_trait]
-impl PublicIpv6Host for GlobalCtx {
-    async fn collect_reserved_public_ipv6_addrs(
-        &self,
-        prefix: cidr::Ipv6Cidr,
-    ) -> HashSet<Ipv6Addr> {
-        let context = SocketContext::default()
-            .with_socket_mark(self.get_flags().socket_mark)
-            .with_netns(self.net_ns.name().map(NetNamespace::new));
-        let ip_list = crate::host_runtime::native_host_runtime()
-            .collect_ip_addrs(&context)
-            .await;
-        let mut reserved = HashSet::new();
-        reserved.extend(
-            ip_list
-                .interface_ipv6s
-                .into_iter()
-                .map(Ipv6Addr::from)
-                .filter(|addr| prefix.contains(addr)),
-        );
-        reserved.extend(
-            ip_list
-                .public_ipv6
-                .into_iter()
-                .map(Ipv6Addr::from)
-                .filter(|addr| prefix.contains(addr)),
-        );
-        reserved
-    }
-}
 
 impl GlobalCtx {
     pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
@@ -208,7 +173,14 @@ impl GlobalCtx {
 
             flags: ArcSwap::new(Arc::new(flags)),
             runtime_endpoint_protocols,
+            vpn_route_status: Default::default(),
         }
+    }
+
+    /// Shared cell holding the VPN route-manager state, read by the VPN
+    /// status RPC.
+    pub fn vpn_route_status(&self) -> crate::instance::vpn_routes::VpnRouteStatusCell {
+        self.vpn_route_status.clone()
     }
 
     pub(crate) fn runtime_ipv4(peer: &PeerRuntimeSnapshot) -> Option<cidr::Ipv4Inet> {
@@ -329,10 +301,6 @@ impl GlobalCtx {
         self.flags.load_full()
     }
 
-    pub fn enable_exit_node(&self) -> bool {
-        self.flags.load().enable_exit_node || cfg!(target_env = "ohos")
-    }
-
     pub fn proxy_forward_by_system(&self) -> bool {
         self.flags.load().proxy_forward_by_system
     }
@@ -446,7 +414,7 @@ pub mod tests {
         let config = TomlConfigLoader::default();
         let global_ctx = GlobalCtx::new(config.clone());
         let mut runtime_flags = global_ctx.get_flags();
-        runtime_flags.enable_exit_node = true;
+        runtime_flags.latency_first = true;
 
         global_ctx.set_ipv4(Some("10.144.144.7/24".parse().unwrap()));
         global_ctx.set_ipv6(Some("fd00::7/64".parse().unwrap()));
@@ -454,13 +422,13 @@ pub mod tests {
 
         assert_eq!(config.get_ipv4(), None);
         assert_eq!(config.get_ipv6(), None);
-        assert!(!config.get_flags().enable_exit_node);
+        assert!(!config.get_flags().latency_first);
         assert_eq!(
             global_ctx.get_ipv4(),
             Some("10.144.144.7/24".parse().unwrap())
         );
         assert_eq!(global_ctx.get_ipv6(), Some("fd00::7/64".parse().unwrap()));
-        assert!(global_ctx.get_flags().enable_exit_node);
+        assert!(global_ctx.get_flags().latency_first);
     }
 
     #[test]

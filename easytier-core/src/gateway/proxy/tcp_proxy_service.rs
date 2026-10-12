@@ -459,7 +459,7 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 local_inet: snapshot.local_inet,
                 virtual_ipv4: snapshot.virtual_ipv4,
                 local_port: self.engine.local_port(),
-                enable_exit_node: snapshot.enable_exit_node,
+                vpn_exit: snapshot.vpn_exit,
                 no_tun: snapshot.no_tun,
                 smoltcp_enabled: snapshot.smoltcp_enabled,
             },

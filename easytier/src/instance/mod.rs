@@ -22,11 +22,10 @@ pub(crate) mod udp_hole_punch;
 
 pub(crate) mod listeners;
 
-#[cfg(feature = "public-ipv6-provider")]
-pub(crate) mod public_ipv6_provider;
-
 #[cfg(feature = "tun")]
 pub mod virtual_nic;
+pub mod vpn_exit_forwarding;
+pub mod vpn_routes;
 
 #[cfg(any(all(windows, feature = "tun"), test))]
 pub(crate) mod windows_udp_broadcast;

@@ -5,7 +5,6 @@
 //! `crate::peers`.
 
 use anyhow::Context as _;
-use cidr::Ipv6Cidr;
 use easytier_proto::common::{Flags, PeerFeatureFlag, SecureModeConfig, StunInfo};
 use serde::{Deserialize, Serialize};
 
@@ -200,19 +199,6 @@ impl AclRuleConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicIpv6ProviderConfig {
-    pub provider_enabled: bool,
-    pub configured_prefix: Option<Ipv6Cidr>,
-    pub provider_supported: bool,
-}
-
-impl PublicIpv6ProviderConfig {
-    pub fn should_run_reconcile(self) -> bool {
-        self.provider_enabled
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRuntimeConfig {
     pub core: CoreConfig,
@@ -220,14 +206,6 @@ pub struct PeerRuntimeConfig {
     pub stun_info: StunInfo,
     pub feature_flags: PeerFeatureFlag,
     pub secure_mode: Option<SecureModeConfig>,
-    pub host_routing: HostRoutingPolicy,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostRoutingPolicy {
-    /// Route otherwise-unreachable external IPv4 traffic through this node and
-    /// keep self-delivered packets eligible for the host TUN/proxy path.
-    pub local_exit_node_fallback: bool,
 }
 
 /// One normalized peer configuration version submitted by a host.
@@ -272,7 +250,6 @@ impl Default for PeerRuntimeSnapshot {
                 stun_info: StunInfo::default(),
                 feature_flags: PeerFeatureFlag::default(),
                 secure_mode: None,
-                host_routing: HostRoutingPolicy::default(),
             },
             Flags::defaults(),
         )

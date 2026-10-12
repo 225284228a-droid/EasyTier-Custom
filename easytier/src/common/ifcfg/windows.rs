@@ -179,8 +179,173 @@ impl WindowsIfConfiger {
     }
 }
 
+impl WindowsIfConfiger {
+    /// Discovers the best (lowest metric) default route for one family,
+    /// skipping the given interface (the EasyTier TUN).
+    fn query_default_route(
+        ipv6: bool,
+        exclude_interface: Option<&str>,
+    ) -> Result<Option<super::DefaultRouteInfo>, Error> {
+        use windows::Win32::Foundation::LocalFree;
+        use windows::Win32::NetworkManagement::IpHelper::{
+            GetIpForwardTable2, MIB_IPFORWARD_TABLE2,
+        };
+        use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+
+        let family = if ipv6 { AF_INET6 } else { AF_INET };
+        let mut table_ptr: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+        let result = unsafe { GetIpForwardTable2(family, &mut table_ptr) };
+        if result.0 != 0 {
+            return Err(Error::AnyhowError(anyhow::anyhow!(
+                "GetIpForwardTable2 failed: {}",
+                result.0
+            )));
+        }
+        let table = unsafe { &*(table_ptr.cast::<MIB_IPFORWARD_TABLE2>()) };
+
+        let exclude_index = exclude_interface.and_then(Self::get_interface_index);
+        let mut best: Option<(u32, super::DefaultRouteInfo)> = None;
+        for row in &table.Table[0..table.NumEntries as usize] {
+            if row.DestinationPrefix.PrefixLength != 0 {
+                continue;
+            }
+            let if_index = row.InterfaceIndex;
+            if let Some(exclude) = exclude_index
+                && if_index == exclude
+            {
+                continue;
+            }
+            let gateway = unsafe {
+                if ipv6 {
+                    let sockaddr = row.NextHop.Ipv6;
+                    let bytes = sockaddr.sin6_addr.u.Byte;
+                    std::net::IpAddr::V6(Ipv6Addr::from(bytes))
+                } else {
+                    let sockaddr = row.NextHop.Ipv4;
+                    let bytes = sockaddr.sin_addr.S_un.S_un_b;
+                    std::net::IpAddr::V4(Ipv4Addr::new(
+                        bytes.s_b1, bytes.s_b2, bytes.s_b3, bytes.s_b4,
+                    ))
+                }
+            };
+            if gateway.is_unspecified() {
+                continue;
+            }
+            let metric = row.Metric;
+            let info = super::DefaultRouteInfo {
+                gateway,
+                interface_name: format!("if{if_index}"),
+            };
+            if best.as_ref().is_none_or(|(m, _)| metric < *m) {
+                best = Some((metric, info));
+            }
+        }
+        unsafe {
+            LocalFree(Some(windows::Win32::Foundation::HLOCAL(table_ptr.cast())));
+        }
+        Ok(best.map(|(_, info)| info))
+    }
+
+    fn parse_interface_index(name: &str) -> Option<u32> {
+        name.strip_prefix("if").and_then(|rest| rest.parse().ok())
+    }
+
+    fn list_candidate_interface_indexes() -> Vec<u32> {
+        // The default route's owning index first, plus common physical
+        // indexes 1..64 as a removal fallback.
+        let mut indexes = Vec::new();
+        if let Ok(Some(route)) = Self::query_default_route(false, None) {
+            if let Some(index) = Self::parse_interface_index(&route.interface_name) {
+                indexes.push(index);
+            }
+        }
+        for index in 1..64u32 {
+            if !indexes.contains(&index) {
+                indexes.push(index);
+            }
+        }
+        indexes
+    }
+}
+
 #[async_trait]
 impl IfConfiguerTrait for WindowsIfConfiger {
+    async fn add_route_via_gateway(
+        &self,
+        gateway: std::net::IpAddr,
+        destination: std::net::IpAddr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let (ipv6, gw_v6, gw_v4) = match gateway {
+            std::net::IpAddr::V4(gw) => (false, None, Some(gw)),
+            std::net::IpAddr::V6(gw) => (true, Some(gw), None),
+        };
+        let Some(route) = Self::query_default_route(ipv6, None)? else {
+            return Err(Error::NotFound);
+        };
+        let Some(if_index) = Self::parse_interface_index(&route.interface_name) else {
+            return Err(Error::NotFound);
+        };
+        let luid = InterfaceLuid::luid_from_index(if_index)
+            .map_err(|e| anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e)))?;
+        let result = match (gateway, destination) {
+            (std::net::IpAddr::V4(_), std::net::IpAddr::V4(dest)) => luid.add_route_ipv4(
+                &Ipv4Inet::new(dest, cidr_prefix).unwrap(),
+                &gw_v4.unwrap(),
+                1,
+            ),
+            (std::net::IpAddr::V6(_), std::net::IpAddr::V6(dest)) => luid.add_route_ipv6(
+                &Ipv6Inet::new(dest, cidr_prefix).unwrap(),
+                &gw_v6.unwrap(),
+                1,
+            ),
+            _ => return Err(Error::AnyhowError(anyhow::anyhow!(
+                "gateway and destination family mismatch"
+            ))),
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(status) if status != 0 => Err(Error::AnyhowError(anyhow::anyhow!(
+                "add route via gateway failed: {}",
+                format_win_error(status)
+            ))),
+            Err(_) => Ok(()),
+        }
+    }
+
+    async fn remove_route_via_gateway(
+        &self,
+        gateway: std::net::IpAddr,
+        destination: std::net::IpAddr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        for if_index in Self::list_candidate_interface_indexes() {
+            let Ok(luid) = InterfaceLuid::luid_from_index(if_index) else {
+                continue;
+            };
+            match (gateway, destination) {
+                (std::net::IpAddr::V4(gw), std::net::IpAddr::V4(dest)) => {
+                    let _ =
+                        luid.delete_route_ipv4(&Ipv4Inet::new(dest, cidr_prefix).unwrap(), &gw);
+                }
+                (std::net::IpAddr::V6(gw), std::net::IpAddr::V6(dest)) => {
+                    let _ =
+                        luid.delete_route_ipv6(&Ipv6Inet::new(dest, cidr_prefix).unwrap(), &gw);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    async fn default_route(
+        &self,
+        ipv6: bool,
+        exclude_interface: Option<&str>,
+    ) -> Result<Option<super::DefaultRouteInfo>, Error> {
+        Self::query_default_route(ipv6, exclude_interface)
+    }
+
     async fn add_ipv4_route(
         &self,
         name: &str,

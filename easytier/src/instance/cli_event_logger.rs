@@ -187,18 +187,6 @@ fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
         GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
             event!(info, ?ip, "[{}] dhcp ip conflict", instance_id);
         }
-        GlobalCtxEvent::PublicIpv6Changed(old, new) => {
-            event!(info, ?old, ?new, "[{}] public ipv6 changed", instance_id);
-        }
-        GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed) => {
-            event!(
-                info,
-                ?added,
-                ?removed,
-                "[{}] public ipv6 routes updated",
-                instance_id
-            );
-        }
         GlobalCtxEvent::PortForwardAdded(cfg) => {
             event!(
                 info,

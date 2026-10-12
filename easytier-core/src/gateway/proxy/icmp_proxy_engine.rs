@@ -14,7 +14,7 @@ use super::{
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IcmpProxyContext {
     pub virtual_ipv4: Option<Ipv4Addr>,
-    pub enable_exit_node: bool,
+    pub vpn_exit: bool,
     pub no_tun: bool,
 }
 
@@ -67,7 +67,7 @@ impl IcmpProxyEngine {
         packet: &ZCPacket,
         context: IcmpProxyContext,
     ) -> IcmpProxyAction {
-        if self.cidr_table.is_empty() && !context.enable_exit_node && !context.no_tun {
+        if self.cidr_table.is_empty() && !context.vpn_exit && !context.no_tun {
             return IcmpProxyAction::Pass;
         }
         let Some(virtual_ipv4) = context.virtual_ipv4 else {
@@ -92,7 +92,7 @@ impl IcmpProxyEngine {
         let mapped_destination = ipv4.dst_addr();
         let real_destination = self.cidr_table.lookup_v4(mapped_destination);
         let is_local_no_tun = context.no_tun && mapped_destination == virtual_ipv4;
-        if real_destination.is_none() && !header.is_exit_node() && !is_local_no_tun {
+        if real_destination.is_none() && !header.is_vpn_exit() && !is_local_no_tun {
             return IcmpProxyAction::Pass;
         }
 

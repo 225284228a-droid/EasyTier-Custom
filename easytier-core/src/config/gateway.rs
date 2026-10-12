@@ -49,7 +49,9 @@ impl From<PortForwardConfig> for PortForwardConfigPb {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxyRuntimeConfig {
-    pub enable_exit_node: bool,
+    /// This node accepts and NATs VPN-exit traffic from peers
+    /// (`[vpn] exit_enabled`).
+    pub vpn_exit: bool,
     pub no_tun: bool,
     pub forward_by_system: bool,
     pub force_smoltcp: bool,
@@ -59,7 +61,7 @@ pub struct ProxyRuntimeConfig {
 
 impl ProxyRuntimeConfig {
     pub fn should_start(self, has_proxy_networks: bool) -> bool {
-        if !has_proxy_networks && !self.enable_exit_node && !self.no_tun {
+        if !has_proxy_networks && !self.vpn_exit && !self.no_tun {
             return false;
         }
 
@@ -70,7 +72,7 @@ impl ProxyRuntimeConfig {
 impl Default for ProxyRuntimeConfig {
     fn default() -> Self {
         Self {
-            enable_exit_node: false,
+            vpn_exit: false,
             no_tun: false,
             forward_by_system: false,
             force_smoltcp: false,
@@ -90,7 +92,7 @@ mod tests {
         assert!(ProxyRuntimeConfig::default().should_start(true));
         assert!(
             ProxyRuntimeConfig {
-                enable_exit_node: true,
+                vpn_exit: true,
                 ..Default::default()
             }
             .should_start(false)
@@ -115,7 +117,7 @@ mod tests {
         );
         assert!(
             !ProxyRuntimeConfig {
-                enable_exit_node: true,
+                vpn_exit: true,
                 forward_by_system: true,
                 ..Default::default()
             }

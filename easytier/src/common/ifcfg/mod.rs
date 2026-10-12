@@ -1,7 +1,4 @@
-#![cfg_attr(
-    not(any(feature = "public-ipv6-provider", feature = "tun")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(feature = "tun"), allow(dead_code))]
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
@@ -29,8 +26,44 @@ use tokio::process::Command;
 
 use super::error::Error;
 
+/// The system's current default route for one address family, captured
+/// before a VPN takes over routing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultRouteInfo {
+    pub gateway: std::net::IpAddr,
+    pub interface_name: String,
+}
+
 #[async_trait]
 pub trait IfConfiguerTrait: Send + Sync {
+    /// Adds a route to `destination` through `gateway` (the pre-VPN default
+    /// gateway). Used for VPN "direct" exclusion rules and for protecting
+    /// EasyTier's own underlay connections from the tunneled default route.
+    async fn add_route_via_gateway(
+        &self,
+        _gateway: std::net::IpAddr,
+        _destination: std::net::IpAddr,
+        _cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        Err(Error::AnyhowError(anyhow::anyhow!("route via gateway is unsupported on this platform")))
+    }
+    async fn remove_route_via_gateway(
+        &self,
+        _gateway: std::net::IpAddr,
+        _destination: std::net::IpAddr,
+        _cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        Err(Error::AnyhowError(anyhow::anyhow!("route via gateway is unsupported on this platform")))
+    }
+    /// Discovers the current default route. `None` when no default route of
+    /// that family exists.
+    async fn default_route(
+        &self,
+        _ipv6: bool,
+        _exclude_interface: Option<&str>,
+    ) -> Result<Option<DefaultRouteInfo>, Error> {
+        Ok(None)
+    }
     async fn add_ipv4_route(
         &self,
         _name: &str,

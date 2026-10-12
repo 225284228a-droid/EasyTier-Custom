@@ -18,8 +18,6 @@ use easytier_core::{
 };
 
 use crate::common::global_ctx::GlobalCtxEvent;
-#[cfg(feature = "public-ipv6-provider")]
-use crate::instance::public_ipv6_provider::runtime_public_ipv6_provider_platform;
 use crate::{
     common::global_ctx::ArcGlobalCtx,
     common::{config::TomlConfig, global_ctx::GlobalCtx},
@@ -133,12 +131,6 @@ impl CoreEventSink for GlobalCtx {
             },
             CoreEvent::ProxyCidrsUpdated { added, removed } => {
                 GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
-            }
-            CoreEvent::PublicIpv6LeaseChanged { old, new } => {
-                GlobalCtxEvent::PublicIpv6Changed(old, new)
-            }
-            CoreEvent::PublicIpv6RoutesChanged { added, removed } => {
-                GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
             }
             CoreEvent::VpnPortalStarted(portal) => GlobalCtxEvent::VpnPortalStarted(portal),
             CoreEvent::VpnPortalClientConnected { portal, client } => {
@@ -257,11 +249,7 @@ fn configure_runtime_core_host_adapters(
     {
         adapters.proxy_cidr_monitor_enabled = true;
     }
-    #[cfg(feature = "public-ipv6-provider")]
-    if host_config.public_ipv6_provider_supported {
-        adapters.public_ipv6_host = Some(global_ctx.clone());
-        adapters.public_ipv6_provider = Some(runtime_public_ipv6_provider_platform(&global_ctx));
-    }
+    adapters.vpn_route_state = Some(std::sync::Arc::new(global_ctx.vpn_route_status()));
     #[cfg(feature = "wireguard")]
     if host_config.vpn_portal_enabled {
         use crate::common::config::ConfigLoader as _;

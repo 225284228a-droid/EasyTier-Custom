@@ -88,8 +88,6 @@ message Route {
   optional int32 path_latency_latency_first = 14;
 
   common.Ipv6Inet ipv6_addr = 15;
-  common.Ipv6Inet public_ipv6_addr = 16;
-  common.Ipv6Inet ipv6_public_addr_prefix = 17;
 }
 
 message PeerRoutePair {
@@ -109,28 +107,11 @@ message NodeInfo {
   string version = 9;
   common.PeerFeatureFlag feature_flag = 10;
   peer_rpc.GetIpListResponse ip_list = 11;
-  common.Ipv6Inet public_ipv6_addr = 12;
-  common.Ipv6Inet ipv6_public_addr_prefix = 13;
 }
 
 message ShowNodeInfoRequest { InstanceIdentifier instance = 1; }
 
 message ShowNodeInfoResponse { NodeInfo node_info = 1; }
-
-message PublicIpv6LeaseInfo {
-  uint32 peer_id = 1;
-  string inst_id = 2;
-  common.Ipv6Inet leased_addr = 3;
-  int64 valid_until_unix_seconds = 4;
-  bool reused = 5;
-}
-
-message ListPublicIpv6InfoRequest { InstanceIdentifier instance = 1; }
-
-message ListPublicIpv6InfoResponse {
-  common.Ipv6Inet provider_prefix = 1;
-  repeated PublicIpv6LeaseInfo provider_leases = 2;
-}
 
 message ListRouteRequest { InstanceIdentifier instance = 1; }
 
@@ -193,8 +174,7 @@ message GetForeignNetworkSummaryResponse {
 
 service PeerManageRpc {
   rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
-  rpc ListPublicIpv6Info(ListPublicIpv6InfoRequest)
-      returns (ListPublicIpv6InfoResponse);
+  rpc GetVpnStatus(GetVpnStatusRequest) returns (GetVpnStatusResponse);
   rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
   rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
   rpc ListForeignNetwork(ListForeignNetworkRequest)
@@ -424,4 +404,49 @@ service CredentialManageRpc {
   rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse);
   rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
   rpc UpsertCredential(UpsertCredentialRequest) returns (UpsertCredentialResponse);
+}
+
+// Custom multi-exit policy VPN status (fork feature, fields >= 50000).
+
+message VpnExitStatus {
+  string name = 1;
+  string node_addr = 2;
+  uint32 peer_id = 3;
+  // up | down | unknown
+  string state = 4;
+  int32 latency_ms = 5;
+  uint64 tx_packets = 6;
+  uint64 tx_bytes = 7;
+}
+
+message VpnRuleStatus {
+  string cidr = 1;
+  // direct | block | exit
+  string action = 2;
+  string exit = 3;
+  repeated string fallback_exits = 4;
+  uint32 priority = 5;
+  // Currently selected exit name for action=exit rules (empty when not active).
+  string effective_exit = 6;
+  uint64 packets = 7;
+  uint64 bytes = 8;
+}
+
+message GetVpnStatusRequest { InstanceIdentifier instance = 1; }
+
+message GetVpnStatusResponse {
+  bool enabled = 1;
+  // this node offers exit forwarding for peers
+  bool exit_enabled = 2;
+  repeated VpnExitStatus exits = 3;
+  repeated VpnRuleStatus rules = 4;
+  // direct | block
+  string fail_mode = 5;
+  bool dns_protect = 6;
+  bool ipv6_protect = 7;
+  // host-side route manager state, filled when available
+  bool routes_active = 8;
+  uint32 routes_installed = 9;
+  uint32 protected_endpoints = 10;
+  repeated string system_dns_servers = 11;
 }

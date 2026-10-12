@@ -171,8 +171,6 @@ impl From<RoutePeerInfo> for crate::core_peer::peer::Route {
             path_latency_latency_first: None,
 
             ipv6_addr: val.ipv6_addr,
-            public_ipv6_addr: val.ipv6_public_addr_lease,
-            ipv6_public_addr_prefix: val.ipv6_public_addr_prefix,
         }
     }
 }
@@ -216,8 +214,6 @@ impl From<RoutePeerInfo> for crate::api::instance::Route {
             path_latency_latency_first: None,
 
             ipv6_addr: val.ipv6_addr,
-            public_ipv6_addr: val.ipv6_public_addr_lease,
-            ipv6_public_addr_prefix: val.ipv6_public_addr_prefix,
         }
     }
 }

@@ -108,6 +108,24 @@ fn main() -> anyhow::Result<()> {
 
     let out = PathBuf::from(env::var("OUT_DIR")?);
 
+    // protoc on Windows cannot write outputs into a non-ASCII OUT_DIR (repo
+    // paths may contain non-ASCII characters). Stage descriptor sets in the
+    // ASCII temp dir and copy them back after protoc succeeds.
+    let descriptor_out = |name: &str| -> (PathBuf, Option<PathBuf>) {
+        let dest = out.join(name);
+        let needs_staging = dest
+            .to_str()
+            .is_none_or(|s| !s.is_ascii());
+        if !needs_staging {
+            return (dest.clone(), None);
+        }
+        let staged = std::env::temp_dir().join(format!(
+            "easytier-proto-{}-{name}",
+            std::process::id()
+        ));
+        (dest, Some(staged))
+    };
+
     let mut config = prost_build::Config::new();
     if env::var_os("CARGO_FEATURE_JSON_RPC").is_some() {
         config
@@ -120,8 +138,13 @@ fn main() -> anyhow::Result<()> {
             .extern_path(".google.protobuf.Timestamp", "::prost_types::Timestamp")
             .extern_path(".google.protobuf.Value", "::prost_types::Value");
     }
+    let (descriptors_dest, descriptors_staged) = descriptor_out("descriptors.bin");
+    if let Some(staged) = &descriptors_staged {
+        config.file_descriptor_set_path(staged);
+    } else {
+        config.file_descriptor_set_path(&descriptors_dest);
+    }
     config
-        .file_descriptor_set_path(out.join("descriptors.bin"))
         .service_generator(Box::new(ServiceGenerator::default()))
         .btree_map(["."])
         .skip_debug([
@@ -142,10 +165,14 @@ fn main() -> anyhow::Result<()> {
         .field_attribute(".common.CompressionAlgoPb.Invalid", "#[strum(disabled)]");
 
     let mut descriptor_set = config.load_fds(&proto_files, &["proto/"])?;
+    if let Some(staged) = &descriptors_staged {
+        std::fs::copy(staged, &descriptors_dest)?;
+        let _ = std::fs::remove_file(staged);
+    }
     // What protoc wrote (this set carries every file, imports included), read
     // before anything else may touch it: the annotations are extension fields,
     // which a prost-types round-trip drops.
-    let annotated = std::fs::read(out.join("descriptors.bin"))?;
+    let annotated = std::fs::read(&descriptors_dest)?;
 
     {
         let common = descriptor_set
@@ -195,8 +222,17 @@ fn main() -> anyhow::Result<()> {
 
     let descriptors = prost::Message::encode_to_vec(&descriptor_set);
 
-    config.file_descriptor_set_path(out.join("file_descriptor_set.bin"));
+    let (fds_dest, fds_staged) = descriptor_out("file_descriptor_set.bin");
+    if let Some(staged) = &fds_staged {
+        config.file_descriptor_set_path(staged);
+    } else {
+        config.file_descriptor_set_path(&fds_dest);
+    }
     config.compile_protos(&proto_files_reflect, &["proto/"])?;
+    if let Some(staged) = &fds_staged {
+        std::fs::copy(staged, &fds_dest)?;
+        let _ = std::fs::remove_file(staged);
+    }
     config.compile_fds(descriptor_set)?;
     flags::write(&annotated, &out)?;
 

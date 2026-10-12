@@ -7,6 +7,92 @@ use cidr::{Ipv4Inet, Ipv6Inet};
 pub struct MacIfConfiger {}
 #[async_trait]
 impl IfConfiguerTrait for MacIfConfiger {
+    async fn add_route_via_gateway(
+        &self,
+        gateway: std::net::IpAddr,
+        destination: std::net::IpAddr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        match gateway {
+            std::net::IpAddr::V4(gw) => run_shell_cmd(
+                format!(
+                    "route -n add -net {} -netmask {} {}",
+                    destination,
+                    cidr_to_subnet_mask(cidr_prefix),
+                    gw
+                )
+                .as_str(),
+            )
+            .await,
+            std::net::IpAddr::V6(gw) => run_shell_cmd(
+                format!("route -n add -inet6 {}/{} {}", destination, cidr_prefix, gw).as_str()
+            )
+            .await,
+        }
+    }
+
+    async fn remove_route_via_gateway(
+        &self,
+        gateway: std::net::IpAddr,
+        destination: std::net::IpAddr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        match gateway {
+            std::net::IpAddr::V4(_gw) => run_shell_cmd(
+                format!(
+                    "route -n delete -net {} -netmask {}",
+                    destination,
+                    cidr_to_subnet_mask(cidr_prefix)
+                )
+                .as_str(),
+            )
+            .await,
+            std::net::IpAddr::V6(_gw) => run_shell_cmd(
+                format!("route -n delete -inet6 {}/{}", destination, cidr_prefix).as_str()
+            )
+            .await,
+        }
+    }
+
+    async fn default_route(
+        &self,
+        ipv6: bool,
+        exclude_interface: Option<&str>,
+    ) -> Result<Option<super::DefaultRouteInfo>, Error> {
+        let output = tokio::process::Command::new("route")
+            .arg("-n")
+            .arg("get")
+            .arg(if ipv6 { "-inet6" } else { "-inet" })
+            .arg("default")
+            .output()
+            .await
+            .map_err(|e| Error::AnyhowError(anyhow::anyhow!("{e}")))?;
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        let mut gateway = None;
+        let mut interface = None;
+        for line in text.lines() {
+            let mut parts = line.trim().split(':');
+            match parts.next().map(str::trim) {
+                Some("gateway") => {
+                    gateway = parts.next().map(str::trim).and_then(|g| g.parse().ok());
+                }
+                Some("interface") => {
+                    interface = parts.next().map(str::trim).map(ToString::to_string);
+                }
+                _ => {}
+            }
+        }
+        if let Some(exclude) = exclude_interface
+            && interface.as_deref() == Some(exclude)
+        {
+            return Ok(None);
+        }
+        Ok(gateway.map(|gateway| super::DefaultRouteInfo {
+            gateway,
+            interface_name: interface.unwrap_or_default(),
+        }))
+    }
+
     async fn add_ipv4_route(
         &self,
         name: &str,

@@ -110,7 +110,7 @@ bitflags::bitflags! {
     struct PeerManagerHeaderFlags: u8 {
         const ENCRYPTED = 0b0000_0001;
         const LATENCY_FIRST = 0b0000_0010;
-        const EXIT_NODE = 0b0000_0100;
+        const VPN_EXIT = 0b0000_0100;
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
         // deprecated flags, can be reused.
@@ -158,10 +158,10 @@ impl PeerManagerHeader {
             .contains(PeerManagerHeaderFlags::LATENCY_FIRST)
     }
 
-    pub fn is_exit_node(&self) -> bool {
+    pub fn is_vpn_exit(&self) -> bool {
         PeerManagerHeaderFlags::from_bits(self.flags)
             .unwrap()
-            .contains(PeerManagerHeaderFlags::EXIT_NODE)
+            .contains(PeerManagerHeaderFlags::VPN_EXIT)
     }
 
     pub fn is_no_proxy(&self) -> bool {
@@ -187,12 +187,12 @@ impl PeerManagerHeader {
         self
     }
 
-    pub fn set_exit_node(&mut self, exit_node: bool) -> &mut Self {
+    pub fn set_vpn_exit(&mut self, vpn_exit: bool) -> &mut Self {
         let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
-        if exit_node {
-            flags.insert(PeerManagerHeaderFlags::EXIT_NODE);
+        if vpn_exit {
+            flags.insert(PeerManagerHeaderFlags::VPN_EXIT);
         } else {
-            flags.remove(PeerManagerHeaderFlags::EXIT_NODE);
+            flags.remove(PeerManagerHeaderFlags::VPN_EXIT);
         }
         self.flags = flags.bits();
         self

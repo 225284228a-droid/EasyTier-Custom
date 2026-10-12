@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cidr::{Ipv4Cidr, Ipv6Inet};
+use cidr::Ipv4Cidr;
 use url::Url;
 
 use crate::{
@@ -74,15 +74,6 @@ pub enum CoreEvent {
         added: Vec<Ipv4Cidr>,
         removed: Vec<Ipv4Cidr>,
     },
-    PublicIpv6LeaseChanged {
-        old: Option<Ipv6Inet>,
-        new: Option<Ipv6Inet>,
-    },
-    PublicIpv6RoutesChanged {
-        added: Vec<Ipv6Inet>,
-        removed: Vec<Ipv6Inet>,
-    },
-
     VpnPortalStarted(String),
     VpnPortalClientConnected {
         portal: String,

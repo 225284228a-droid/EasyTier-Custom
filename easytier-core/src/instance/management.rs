@@ -1,4 +1,4 @@
-use std::{any::Any, net::IpAddr, sync::Arc};
+use std::{any::Any, sync::Arc};
 
 use url::Url;
 
@@ -118,12 +118,6 @@ where
         self.peer_manager.dump_route().await
     }
 
-    pub async fn local_public_ipv6_info(
-        &self,
-    ) -> crate::proto::core_peer::peer::ListPublicIpv6InfoResponse {
-        self.peer_manager.local_public_ipv6_info().await
-    }
-
     pub async fn foreign_network_route_infos(
         &self,
     ) -> crate::proto::peer_rpc::RouteForeignNetworkInfos {
@@ -236,8 +230,71 @@ where
         self.peer_manager.close_peer_conn(peer_id, conn_id).await
     }
 
-    pub async fn update_exit_nodes(&self, exit_nodes: Vec<IpAddr>) {
-        self.peer_manager.update_exit_nodes(exit_nodes).await;
+    pub async fn update_vpn_config(&self, vpn: crate::config::vpn::VpnConfig) -> anyhow::Result<()> {
+        self.peer_manager.update_vpn_config(vpn)
+    }
+
+    /// Complete VPN status: policy snapshot, per-rule counters, exit liveness,
+    /// and (when provided by the host) route-manager state.
+    pub async fn vpn_status(&self) -> easytier_proto::api::instance::GetVpnStatusResponse {
+        use easytier_proto::api::instance::{
+            GetVpnStatusResponse, VpnExitStatus, VpnRuleStatus,
+        };
+
+        let config = self.vpn_engine.config();
+        let (rules, exits) = self.vpn_engine.status();
+        let host_state = self
+            .vpn_route_state
+            .as_ref()
+            .and_then(|adapter| adapter.vpn_route_state());
+
+        GetVpnStatusResponse {
+            enabled: config.enabled,
+            exit_enabled: config.exit_enabled,
+            fail_mode: config.fail_mode.as_str().to_owned(),
+            dns_protect: config.dns_protect,
+            ipv6_protect: config.ipv6_protect,
+            routes_active: host_state.as_ref().is_some_and(|state| state.routes_active),
+            routes_installed: host_state
+                .as_ref()
+                .map_or(0, |s| s.routes_installed as u32),
+            protected_endpoints: host_state
+                .as_ref()
+                .map_or(0, |s| s.protected_endpoints.len() as u32),
+            system_dns_servers: host_state
+                .map(|s| {
+                    s.system_dns_servers
+                        .iter()
+                        .map(|ip| ip.to_string())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            rules: rules
+                .into_iter()
+                .map(|rule| VpnRuleStatus {
+                    cidr: rule.cidr,
+                    action: rule.action.to_owned(),
+                    exit: rule.exit.unwrap_or_default(),
+                    fallback_exits: rule.fallback_exits,
+                    priority: rule.priority,
+                    effective_exit: rule.effective_exit.unwrap_or_default(),
+                    packets: rule.packets,
+                    bytes: rule.bytes,
+                })
+                .collect(),
+            exits: exits
+                .into_iter()
+                .map(|exit| VpnExitStatus {
+                    name: exit.name,
+                    node_addr: exit.node_addr,
+                    peer_id: exit.peer_id.unwrap_or_default(),
+                    state: if exit.up { "up".into() } else { "down".into() },
+                    latency_ms: exit.latency_ms.map(|ms| ms as i32).unwrap_or(-1),
+                    tx_packets: exit.tx_packets,
+                    tx_bytes: exit.tx_bytes,
+                })
+                .collect(),
+        }
     }
 
     pub async fn refresh_acl_groups(&self) {

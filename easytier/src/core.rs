@@ -191,31 +191,6 @@ struct NetworkOptions {
     ipv6: Option<String>,
 
     #[arg(
-        long,
-        env = "ET_IPV6_PUBLIC_ADDR_PROVIDER",
-        help = t!("core_clap.ipv6_public_addr_provider").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    ipv6_public_addr_provider: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_IPV6_PUBLIC_ADDR_AUTO",
-        help = t!("core_clap.ipv6_public_addr_auto").to_string(),
-        num_args = 0..=1,
-        default_missing_value = "true"
-    )]
-    ipv6_public_addr_auto: Option<bool>,
-
-    #[arg(
-        long,
-        env = "ET_IPV6_PUBLIC_ADDR_PREFIX",
-        help = t!("core_clap.ipv6_public_addr_prefix").to_string()
-    )]
-    ipv6_public_addr_prefix: Option<String>,
-
-    #[arg(
         short,
         long,
         env = "ET_DHCP",
@@ -330,15 +305,6 @@ struct NetworkOptions {
         help = t!("core_clap.vpn_portal_client_group").to_string()
     )]
     vpn_portal_client_groups: Vec<String>,
-
-    #[arg(
-        long,
-        env = "ET_EXIT_NODES",
-        value_delimiter = ',',
-        help = t!("core_clap.exit_nodes").to_string(),
-        num_args = 0..
-    )]
-    exit_nodes: Vec<IpAddr>,
 
     #[arg(
         long,
@@ -718,20 +684,6 @@ impl NetworkOptions {
             })?))
         }
 
-        if let Some(enabled) = self.ipv6_public_addr_provider {
-            cfg.set_ipv6_public_addr_provider(enabled);
-        }
-
-        if let Some(enabled) = self.ipv6_public_addr_auto {
-            cfg.set_ipv6_public_addr_auto(enabled);
-        }
-
-        if let Some(prefix) = &self.ipv6_public_addr_prefix {
-            cfg.set_ipv6_public_addr_prefix(Some(prefix.parse().with_context(|| {
-                format!("failed to parse ipv6 public address prefix: {}", prefix)
-            })?));
-        }
-
         if !self.peers.is_empty() {
             let mut peers = cfg.get_peers();
             peers.reserve(peers.len() + self.peers.len());
@@ -923,10 +875,6 @@ impl NetworkOptions {
             no_tun: Some(true),
             ..Default::default()
         });
-
-        if !self.exit_nodes.is_empty() {
-            cfg.set_exit_nodes(self.exit_nodes.clone());
-        }
 
         let mut old_tcp_whitelist = cfg.get_tcp_whitelist();
         old_tcp_whitelist.extend(self.tcp_whitelist.clone());

@@ -1,5 +1,5 @@
 import { UUID } from './utils';
-import { NetworkConfig, NetworkInstanceRunningInfo, VpnPortalInfo } from '../types/network';
+import { NetworkConfig, NetworkInstanceRunningInfo, VpnPortalInfo, type GetVpnStatusResponse } from '../types/network';
 import type { LocalConfigSnapshot, LocalConfigPatchRequest, LocalConfigPatchResult } from './localConfigPatch';
 
 export interface ValidateConfigResponse {
@@ -64,6 +64,7 @@ export interface RemoteClient {
     run_network(config: NetworkConfig, save: boolean): Promise<undefined>;
     get_network_info(inst_id: string): Promise<NetworkInstanceRunningInfo | undefined>;
     get_vpn_portal_info(inst_id: string): Promise<VpnPortalInfo | undefined>;
+    get_vpn_status?(inst_id: string): Promise<GetVpnStatusResponse | undefined>;
     add_vpn_portal_client(inst_id: string, client: { name: string, virtual_ip: string, groups: string[] }): Promise<undefined>;
     remove_vpn_portal_client(inst_id: string, name: string): Promise<undefined>;
     clear_vpn_portal_clients(inst_id: string): Promise<undefined>;
