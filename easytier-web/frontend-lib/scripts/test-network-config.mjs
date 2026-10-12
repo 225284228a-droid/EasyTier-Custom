@@ -35,7 +35,6 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_p2p',
   'bind_device',
   'no_tun',
-  'enable_exit_node',
   'relay_all_peer_rpc',
   'multi_thread',
   'enable_relay_network_whitelist',
@@ -53,8 +52,6 @@ const BOOLEAN_CONFIG_FIELDS = [
   'lazy_p2p',
   'need_p2p',
   'disable_upnp',
-  'ipv6_public_addr_provider',
-  'ipv6_public_addr_auto',
   'disable_relay_data',
   'enable_udp_broadcast_relay',
   'disable_tcp_hole_punching',
@@ -148,7 +145,6 @@ function allFieldFixture() {
     disable_p2p: true,
     bind_device: false,
     no_tun: true,
-    enable_exit_node: true,
     relay_all_peer_rpc: true,
     prefer_peer_relay: true,
     multi_thread: false,
@@ -156,7 +152,21 @@ function allFieldFixture() {
     relay_network_whitelist: ['10.0.0.0/8', 'fd00::/8'],
     enable_manual_routes: true,
     routes: ['10.20.0.0/16', 'fd00:20::/64'],
-    exit_nodes: ['10.9.8.1', 'fd00::1'],
+    vpn: {
+      enabled: true,
+      exitEnabled: true,
+      dnsProtect: true,
+      ipv6Protect: true,
+      failMode: 'direct',
+      exits: [{ name: 'hk', node: '10.144.144.2', note: 'primary' }],
+      rules: [{
+        cidr: '0.0.0.0/0',
+        action: 'exit',
+        exit: 'hk',
+        fallbackExits: ['us'],
+        priority: 5,
+      }],
+    },
     proxy_forward_by_system: true,
     disable_encryption: true,
     enable_socks5: true,
@@ -253,9 +263,6 @@ function allFieldFixture() {
     prefer_peer_relay: true,
     instance_recv_bps_limit: '9007199254740993',
     disable_upnp: true,
-    ipv6_public_addr_provider: true,
-    ipv6_public_addr_auto: true,
-    ipv6_public_addr_prefix: '2001:db8:1::/64',
     disable_relay_data: true,
     enable_udp_broadcast_relay: true,
     socket_mark: 1234,
@@ -308,6 +315,15 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
   assert.equal(backend.prefer_peer_relay, true)
+  assert.equal(backend.vpn.enabled, true)
+  assert.equal(backend.vpn.exit_enabled, true)
+  assert.equal(backend.vpn.fail_mode, 'direct')
+  assert.equal(backend.vpn.exits[0].name, 'hk')
+  assert.equal(backend.vpn.exits[0].node, '10.144.144.2')
+  assert.equal(backend.vpn.rules[0].cidr, '0.0.0.0/0')
+  assert.equal(backend.vpn.rules[0].exit, 'hk')
+  assert.deepEqual(backend.vpn.rules[0].fallback_exits, ['us'])
+  assert.equal(backend.vpn.rules[0].priority, 5)
   assert.equal(backend.managed_credentials[0].credential_id, input.managed_credentials[0].credential_id)
   assert.equal(backend.managed_credentials[0].expiry_unix, input.managed_credentials[0].expiry_unix)
   assert.deepEqual(backend.managed_credentials[0].allowed_proxy_cidrs, input.managed_credentials[0].allowed_proxy_cidrs)

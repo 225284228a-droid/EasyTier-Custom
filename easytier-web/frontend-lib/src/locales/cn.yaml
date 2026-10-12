@@ -221,8 +221,6 @@ bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网�
 no_tun: 无 TUN 模式
 no_tun_help: 不使用 TUN 网卡，适合无管理员权限时使用。本节点仅允许被访问。访问其他节点需要使用 SOCK5
 
-enable_exit_node: 启用出口节点
-enable_exit_node_help: 允许此节点成为出口节点
 
 relay_all_peer_rpc: 转发RPC包
 relay_all_peer_rpc_help: |

@@ -220,8 +220,6 @@ bind_device_help: Use only the physical network interface to prevent EasyTier fr
 no_tun: No TUN Mode
 no_tun_help: Do not use a TUN interface, suitable for environments without administrator privileges. This node is only accessible; accessing other nodes requires SOCKS5.
 
-enable_exit_node: Enable Exit Node
-enable_exit_node_help: Allow this node to be an exit node
 
 relay_all_peer_rpc: Relay RPC Packets
 relay_all_peer_rpc_help: |
