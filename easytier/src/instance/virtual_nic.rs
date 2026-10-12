@@ -799,8 +799,51 @@ pub struct NicCtx {
     nic: Arc<Mutex<VirtualNic>>,
     tasks: JoinSet<()>,
 
+    /// Exit-forwarding state this NIC activated, so the disable path can
+    /// remove exactly what the enable path installed. Shared with the
+    /// config-patch watcher; taken by `Drop` for shutdown cleanup.
+    vpn_exit_active: std::sync::Arc<std::sync::Mutex<Option<VpnExitActive>>>,
+
     #[cfg(target_os = "windows")]
     windows_udp_broadcast_relay: Option<AbortOnDropHandle<()>>,
+}
+
+/// Platform state installed when this node offers VPN exit forwarding.
+#[derive(Clone)]
+struct VpnExitActive {
+    ifname: String,
+    v6_prefix: Option<String>,
+}
+
+impl Drop for NicCtx {
+    fn drop(&mut self) {
+        let active = self.vpn_exit_active.lock().unwrap().take();
+        let Some(active) = active else {
+            return;
+        };
+        // Best effort: normal instance shutdown happens inside the tokio
+        // runtime, so the spawned cleanup gets polled to completion; a hard
+        // process kill leaves the platform rules in place.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                tracing::info!(
+                    ifname = %active.ifname,
+                    "removing vpn exit forwarding on nic shutdown"
+                );
+                super::vpn_exit_forwarding::sync_vpn_exit_forwarding(
+                    false,
+                    &active.ifname,
+                    active.v6_prefix,
+                )
+                .await;
+            });
+        } else {
+            tracing::warn!(
+                ifname = %active.ifname,
+                "no tokio runtime at nic drop; vpn exit forwarding left installed"
+            );
+        }
+    }
 }
 
 impl NicCtx {
@@ -819,6 +862,8 @@ impl NicCtx {
 
             nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
             tasks: JoinSet::new(),
+
+            vpn_exit_active: std::sync::Arc::new(std::sync::Mutex::new(None)),
 
             #[cfg(target_os = "windows")]
             windows_udp_broadcast_relay: None,
@@ -1069,12 +1114,10 @@ impl NicCtx {
     }
 
     /// Configures exit-side platform state (IPv6 forwarding + NAT66 on
-    /// Linux) when this node offers VPN exit forwarding.
+    /// Linux) to match the current config, tracking what was installed so it
+    /// can be removed again on disable and on shutdown.
     async fn sync_vpn_exit_forwarding(&self) {
         let vpn = self.global_ctx.config.get_vpn();
-        if !vpn.exit_enabled {
-            return;
-        }
         let ifname = {
             let nic = self.nic.lock().await;
             nic.ifname().to_owned()
@@ -1083,7 +1126,76 @@ impl NicCtx {
             .global_ctx
             .get_ipv6()
             .map(|inet| inet.network().to_string());
-        super::vpn_exit_forwarding::sync_vpn_exit_forwarding(true, &ifname, prefix).await;
+        super::vpn_exit_forwarding::sync_vpn_exit_forwarding(
+            vpn.exit_enabled,
+            &ifname,
+            prefix.clone(),
+        )
+        .await;
+        let mut active = self.vpn_exit_active.lock().unwrap();
+        if vpn.exit_enabled {
+            *active = Some(VpnExitActive {
+                ifname,
+                v6_prefix: prefix,
+            });
+        } else {
+            *active = None;
+        }
+    }
+
+    /// Re-syncs exit forwarding when the VPN config is hot-patched.
+    #[cfg(feature = "management")]
+    async fn run_vpn_exit_forwarding_updater(&mut self) -> Result<(), Error> {
+        let global_ctx = self.global_ctx.clone();
+        let state = self.vpn_exit_active.clone();
+        let ifname = {
+            let nic = self.nic.lock().await;
+            nic.ifname().to_owned()
+        };
+        let mut event_receiver = global_ctx.subscribe();
+        self.tasks.spawn(async move {
+            loop {
+                let event = match event_receiver.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        continue;
+                    }
+                };
+                if !matches!(
+                    event,
+                    crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(_)
+                ) {
+                    continue;
+                }
+                let vpn = global_ctx.config.get_vpn();
+                let enabled = vpn.exit_enabled;
+                let already_active = state.lock().unwrap().is_some();
+                if enabled == already_active {
+                    continue;
+                }
+                let prefix = global_ctx
+                    .get_ipv6()
+                    .map(|inet| inet.network().to_string());
+                super::vpn_exit_forwarding::sync_vpn_exit_forwarding(
+                    enabled,
+                    &ifname,
+                    prefix.clone(),
+                )
+                .await;
+                let mut slot = state.lock().unwrap();
+                if enabled {
+                    *slot = Some(VpnExitActive {
+                        ifname: ifname.clone(),
+                        v6_prefix: prefix,
+                    });
+                } else {
+                    slot.take();
+                }
+            }
+        });
+        Ok(())
     }
 
     /// Runs the client-side VPN route manager for the lifetime of the NIC.
@@ -1162,6 +1274,8 @@ impl NicCtx {
         self.run_proxy_cidrs_route_updater().await?;
         self.run_vpn_route_updater().await?;
         self.sync_vpn_exit_forwarding().await;
+        #[cfg(feature = "management")]
+        self.run_vpn_exit_forwarding_updater().await?;
 
         Ok(())
     }
