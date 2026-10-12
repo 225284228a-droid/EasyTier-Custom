@@ -1688,20 +1688,30 @@ impl PeerManagerCore {
             .await
     }
 
+    pub async fn get_msg_dst_peer_ipv4(
+        &self,
+        ipv4_addr: &Ipv4Addr,
+        bytes: u32,
+    ) -> (Vec<PeerId>, bool) {
+        self.outbound_packet_router
+            .get_msg_dst_peer_ipv4(ipv4_addr, bytes)
+            .await
+    }
+
+    pub async fn get_msg_dst_peer_ipv6(
+        &self,
+        ipv6_addr: &Ipv6Addr,
+        bytes: u32,
+    ) -> (Vec<PeerId>, bool) {
+        self.outbound_packet_router
+            .get_msg_dst_peer_ipv6(ipv6_addr, bytes)
+            .await
+    }
+
+    /// Address-family dispatch without a packet at hand (flow setup
+    /// decisions); traffic counters are unaffected.
     pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
-        self.outbound_packet_router.get_msg_dst_peer(addr).await
-    }
-
-    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
-        self.outbound_packet_router
-            .get_msg_dst_peer_ipv4(ipv4_addr)
-            .await
-    }
-
-    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
-        self.outbound_packet_router
-            .get_msg_dst_peer_ipv6(ipv6_addr)
-            .await
+        self.outbound_packet_router.get_msg_dst_peer(addr, 0).await
     }
 
     pub async fn send_msg_by_ip(
@@ -2675,10 +2685,10 @@ impl PeerOutboundPacketRouter {
         result
     }
 
-    pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer(&self, addr: &IpAddr, bytes: u32) -> (Vec<PeerId>, bool) {
         match addr {
-            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(ipv4_addr).await,
-            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(ipv6_addr).await,
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(ipv4_addr, bytes).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(ipv6_addr, bytes).await,
         }
     }
 
@@ -2716,7 +2726,11 @@ impl PeerOutboundPacketRouter {
             .collect()
     }
 
-    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer_ipv4(
+        &self,
+        ipv4_addr: &Ipv4Addr,
+        bytes: u32,
+    ) -> (Vec<PeerId>, bool) {
         let mut is_vpn_exit = false;
         let mut dst_peers = vec![];
         if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
@@ -2731,7 +2745,7 @@ impl PeerOutboundPacketRouter {
             .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
         {
             if let super::vpn_policy::VpnDecision::Exit(peer_id) =
-                self.vpn_engine.resolve(&IpAddr::V4(*ipv4_addr), 0)
+                self.vpn_engine.resolve(&IpAddr::V4(*ipv4_addr), bytes)
             {
                 dst_peers.push(peer_id);
                 is_vpn_exit = true;
@@ -2740,7 +2754,11 @@ impl PeerOutboundPacketRouter {
         (dst_peers, is_vpn_exit)
     }
 
-    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer_ipv6(
+        &self,
+        ipv6_addr: &Ipv6Addr,
+        bytes: u32,
+    ) -> (Vec<PeerId>, bool) {
         let mut is_vpn_exit = false;
         let mut dst_peers = vec![];
         if self.is_all_peers_broadcast_ipv6(ipv6_addr) {
@@ -2750,7 +2768,7 @@ impl PeerOutboundPacketRouter {
         } else if !ipv6_addr.is_unicast_link_local() {
             // NOTE: never route link local address to a VPN exit.
             if let super::vpn_policy::VpnDecision::Exit(peer_id) =
-                self.vpn_engine.resolve(&IpAddr::V6(*ipv6_addr), 0)
+                self.vpn_engine.resolve(&IpAddr::V6(*ipv6_addr), bytes)
             {
                 dst_peers.push(peer_id);
                 is_vpn_exit = true;
@@ -2791,9 +2809,10 @@ impl PeerOutboundPacketRouter {
             .await;
         }
 
+        let packet_bytes = msg.buf_len() as u32;
         let (dst_peers, is_vpn_exit) = match ip_addr {
-            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(&ipv4_addr).await,
-            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(&ipv6_addr).await,
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(&ipv4_addr, packet_bytes).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(&ipv6_addr, packet_bytes).await,
         };
 
         if dst_peers.is_empty() {
@@ -3879,7 +3898,7 @@ mod tests {
         let core = build_portable_for_test(portable_runtime_config("ipv6-net")).unwrap();
         let unknown = "fd00::2".parse().unwrap();
 
-        let (peers, is_self) = core.get_msg_dst_peer_ipv6(&unknown).await;
+        let (peers, is_self) = core.get_msg_dst_peer_ipv6(&unknown, 0).await;
 
         assert!(peers.is_empty());
         assert!(!is_self);
@@ -4168,7 +4187,7 @@ mod tests {
         let default_core =
             build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
         assert_eq!(
-            default_core.get_msg_dst_peer_ipv4(&external_ipv4).await,
+            default_core.get_msg_dst_peer_ipv4(&external_ipv4, 0).await,
             (Vec::new(), false)
         );
 
@@ -4194,7 +4213,7 @@ mod tests {
         });
         core.update_vpn_config(vpn).unwrap();
         assert_eq!(
-            core.get_msg_dst_peer_ipv4(&external_ipv4).await,
+            core.get_msg_dst_peer_ipv4(&external_ipv4, 0).await,
             (Vec::new(), false)
         );
     }

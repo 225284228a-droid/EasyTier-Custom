@@ -85,6 +85,9 @@ struct VpnRouteManagerState {
     /// Latest per-exit liveness view (exit name -> reachable), fed by the
     /// peer manager through `GlobalCtxEvent::VpnExitLivenessUpdated`.
     exit_up: BTreeMap<String, bool>,
+    /// System DNS servers with their capture time, refreshed at most once
+    /// a minute.
+    dns_servers_cache: Option<(std::time::Instant, Vec<IpAddr>)>,
 }
 
 /// Spawns the route-manager task. It runs until the GlobalCtx event bus
@@ -307,7 +310,7 @@ async fn reconcile(
 
         // DNS leak protection: pin system DNS servers into the tunnel while a
         // global exit covers their family, so queries cannot bypass the exit.
-        dns_servers = list_system_dns_servers();
+        dns_servers = refreshed_system_dns(state);
         if config.dns_protect && global_exit_available(&config, true, &state.exit_up) {
             for dns in &dns_servers {
                 let covered = match dns {
@@ -604,25 +607,7 @@ fn list_system_dns_servers() -> Vec<IpAddr> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = std::process::Command::new("ipconfig")
-            .arg("/all")
-            .output()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines() {
-                let lowered = line.to_lowercase();
-                if !(lowered.contains("dns servers") || lowered.contains("dns 服务器")) {
-                    continue;
-                }
-                if let Some(pos) = line.find(':') {
-                    for token in line[pos + 1..].split_whitespace() {
-                        if let Ok(ip) = token.trim_end_matches(',').parse::<IpAddr>() {
-                            servers.insert(ip);
-                        }
-                    }
-                }
-            }
-        }
+        servers.extend(list_windows_dns_servers());
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -639,6 +624,103 @@ fn list_system_dns_servers() -> Vec<IpAddr> {
     }
 
     servers.into_iter().filter(is_pinnable_dns).collect()
+}
+
+/// Lists DNS servers of all up adapters through GetAdaptersAddresses.
+/// Replaces the previous `ipconfig /all` text scrape, which only matched
+/// English/Chinese labels and missed IPv6 servers on wrapped lines.
+#[cfg(target_os = "windows")]
+fn list_windows_dns_servers() -> Vec<IpAddr> {
+    use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST,
+        GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR, SOCKADDR_IN};
+
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    let mut size: u32 = 16 * 1024;
+    let mut buffer = vec![0u8; size as usize];
+    let table_ptr;
+    loop {
+        let result = unsafe {
+            GetAdaptersAddresses(
+                0, // AF_UNSPEC: both families
+                flags,
+                None,
+                Some(buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+                &mut size,
+            )
+        };
+        if result == ERROR_BUFFER_OVERFLOW.0 {
+            buffer.resize(size as usize, 0);
+            continue;
+        }
+        if result != 0 {
+            tracing::warn!(result, "GetAdaptersAddresses failed");
+            return Vec::new();
+        }
+        table_ptr = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        break;
+    }
+
+    let mut servers = BTreeSet::new();
+    let mut adapter = table_ptr;
+    while !adapter.is_null() {
+        let adapter_ref = unsafe { &*adapter };
+        if adapter_ref.OperStatus == IfOperStatusUp {
+            let mut entry = adapter_ref.FirstDnsServerAddress;
+            while !entry.is_null() {
+                let entry_ref = unsafe { &*entry };
+                let sockaddr = entry_ref.Address.lpSockaddr as *const SOCKADDR;
+                if !sockaddr.is_null() {
+                    let family = unsafe { (*sockaddr).sa_family };
+                    let ip = unsafe {
+                        if family == AF_INET {
+                            let v4 = &*(sockaddr as *const SOCKADDR_IN);
+                            Some(IpAddr::V4(Ipv4Addr::new(
+                                v4.sin_addr.S_un.S_un_b.s_b1,
+                                v4.sin_addr.S_un.S_un_b.s_b2,
+                                v4.sin_addr.S_un.S_un_b.s_b3,
+                                v4.sin_addr.S_un.S_un_b.s_b4,
+                            )))
+                        } else if family == AF_INET6 {
+                            let v6 = &*(sockaddr as *const windows::Win32::Networking::WinSock::SOCKADDR_IN6);
+                            Some(IpAddr::V6(Ipv6Addr::from(v6.sin6_addr.u.Byte)))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(ip) = ip {
+                        servers.insert(ip);
+                    }
+                }
+                entry = entry_ref.Next;
+            }
+        }
+        adapter = adapter_ref.Next;
+    }
+    // The API wrote into our own buffer; there is nothing to free.
+    drop(buffer);
+    servers.into_iter().filter(is_pinnable_dns).collect()
+}
+
+/// The system resolver's servers, refreshed at most once a minute: the
+/// route manager reconciles every five seconds and must not hit the OS
+/// each time.
+fn refreshed_system_dns(state: &mut VpnRouteManagerState) -> Vec<IpAddr> {
+    const DNS_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+    let fresh = state
+        .dns_servers_cache
+        .as_ref()
+        .is_some_and(|(at, _)| at.elapsed() < DNS_REFRESH_INTERVAL);
+    if fresh {
+        return state.dns_servers_cache.as_ref().expect("checked").1.clone();
+    }
+    let servers = list_system_dns_servers();
+    state.dns_servers_cache = Some((std::time::Instant::now(), servers.clone()));
+    servers
 }
 
 #[cfg(test)]
