@@ -4,13 +4,11 @@ This directory describes the single repository-level Linux runner for
 `225284228a-droid/EasyTier-Custom`. The workflow keeps Windows on
 GitHub-hosted runners and schedules only the Linux build here.
 
-The image contains Privoxy. GitHub Actions control-plane traffic to
-`api.github.com` and `*.actions.githubusercontent.com` uses the server's
-direct network path because the SOCKS5 service drops long-lived runner
-connections. Release, artifact, package, and container-registry traffic still
-uses `10.126.126.5:1080`; other destinations use the container's normal
-network. The runner package is downloaded and checked on the server before the
-Docker build, so an unstable SSH connection does not affect it.
+The image contains Privoxy. Its direct rule is first, and the GitHub rules are
+last, so GitHub API, Actions, artifact, package, and release traffic uses the
+SOCKS5 service at `10.126.126.5:1080`; other destinations use the container's
+normal network. The runner package is downloaded and checked on the server
+before the Docker build, so an unstable SSH connection does not affect it.
 
 On the server, copy this directory to `/opt/easytier-runner`, then run:
 
@@ -47,8 +45,7 @@ systemctl enable --now easytier-runner-cache-cleaner.timer
 
 Generate a repository-level registration token in **Settings > Actions >
 Runners** and start the runner. The token is consumed only on first
-registration; the state volume keeps the registration across restarts. The
-entrypoint invokes the runner's official `bin/runsvc.sh` service entrypoint.
+registration; the state volume keeps the registration across restarts.
 
 ```bash
 docker run -d --name easytier-owner-runner \
