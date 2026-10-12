@@ -44,7 +44,7 @@ jobs:
             name: linux-x86_64
             frontend-filter: './easytier-web/*'
             local_cache: 'true'
-          - runner: '["windows-latest"]'
+          - runner: 'windows-latest'
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
             frontend-filter: ''
