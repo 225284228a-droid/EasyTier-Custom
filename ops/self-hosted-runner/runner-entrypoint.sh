@@ -42,4 +42,5 @@ if [[ ! -s .runner ]]; then
     --unattended --replace --disableupdate
 fi
 unset ACCESS_TOKEN
-exec ./run.sh
+# GitHub requires customized service integrations to invoke runsvc.sh.
+exec ./bin/runsvc.sh
