@@ -132,6 +132,9 @@ impl CoreEventSink for GlobalCtx {
             CoreEvent::ProxyCidrsUpdated { added, removed } => {
                 GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
             }
+            CoreEvent::VpnExitLivenessUpdated(liveness) => {
+                GlobalCtxEvent::VpnExitLivenessUpdated(liveness)
+            }
             CoreEvent::VpnPortalStarted(portal) => GlobalCtxEvent::VpnPortalStarted(portal),
             CoreEvent::VpnPortalClientConnected { portal, client } => {
                 GlobalCtxEvent::VpnPortalClientConnected(portal, client)

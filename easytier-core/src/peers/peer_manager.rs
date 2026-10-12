@@ -767,6 +767,7 @@ pub struct PeerManagerCore {
     encryptor: Arc<dyn Encryptor + 'static>,
     data_compress_algo: CompressorAlgo,
     vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
+    events: Arc<dyn CoreEventSink>,
     acl_filter: Arc<AclFilter>,
     context: Arc<CorePeerContext>,
     runtime_config: CoreRuntimeConfigStore,
@@ -919,7 +920,7 @@ impl PeerManagerCore {
             runtime_config,
             CorePeerContextAdapters {
                 stun_info_source: Some(stun_info_source),
-                events,
+                events: events.clone(),
                 credential_storage,
             },
         ));
@@ -932,6 +933,7 @@ impl PeerManagerCore {
             my_peer_id,
             context,
             vpn_engine,
+            events,
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
@@ -949,6 +951,7 @@ impl PeerManagerCore {
         my_peer_id: PeerId,
         core_context: Arc<CorePeerContext>,
         vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
+        events: Arc<dyn CoreEventSink>,
         nic_channel: HostPacketSender,
         encryptor: Arc<dyn Encryptor + 'static>,
         is_secure_mode_enabled: bool,
@@ -1137,6 +1140,7 @@ impl PeerManagerCore {
             encryptor,
             data_compress_algo,
             vpn_engine,
+            events,
             acl_filter,
             runtime_config: core_context.runtime_config_store(),
             runtime_config_update: Mutex::new(()),
@@ -1817,16 +1821,22 @@ impl PeerManagerCore {
 
         self.tasks.lock().await.spawn(router.run());
 
-        // Keep exit liveness fresh for the per-packet VPN policy decisions.
+        // Keep exit liveness fresh for the per-packet VPN policy decisions,
+        // and tell the host when the liveness view changes so the route
+        // manager can honor fail_mode = direct by withdrawing takeover
+        // routes while the exits of a rule are all unreachable.
         let vpn_engine = self.vpn_engine.clone();
         let peers = self.peers.clone();
         let route = self.route.clone();
+        let events = self.events.clone();
         self.tasks.lock().await.spawn(async move {
+            let mut last_liveness: Option<Vec<(String, bool)>> = None;
             loop {
                 let config = vpn_engine.config();
                 if config.client_active() && !config.exits.is_empty() {
                     let routes = route.list_routes().await;
                     let mut updates = Vec::with_capacity(config.exits.len());
+                    let mut liveness = Vec::with_capacity(config.exits.len());
                     for exit in &config.exits {
                         let peer_id = match exit.node {
                             IpAddr::V4(v4) => peers.get_peer_id_by_ipv4(&v4).await,
@@ -1845,8 +1855,13 @@ impl PeerManagerCore {
                             None => (peer_id, false, None),
                         };
                         updates.push((exit.name.clone(), peer_id, up, latency_ms));
+                        liveness.push((exit.name.clone(), up));
                     }
                     vpn_engine.update_exit_states(updates);
+                    if last_liveness.as_ref() != Some(&liveness) {
+                        last_liveness = Some(liveness.clone());
+                        events.emit(crate::events::CoreEvent::VpnExitLivenessUpdated(liveness));
+                    }
                 }
                 crate::foundation::time::sleep(std::time::Duration::from_secs(2)).await;
             }
@@ -4157,8 +4172,11 @@ mod tests {
             (Vec::new(), false)
         );
 
-        // With a global exit rule but no reachable exit peer, fail-mode direct
-        // keeps the destination untunneled instead of blackholing it.
+        // With a global exit rule but no reachable exit peer, the engine
+        // decides "direct" and no peer is selected. At the packet level that
+        // still drops (nothing outside the mesh to send to); failing open is
+        // achieved by the host route manager withdrawing the takeover route
+        // while the exits are down.
         let core = build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
         let mut vpn = crate::config::vpn::VpnConfig::default();
         vpn.enabled = true;

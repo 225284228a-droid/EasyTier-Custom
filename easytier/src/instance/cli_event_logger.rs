@@ -234,6 +234,14 @@ fn log_event(instance_id: Uuid, event: GlobalCtxEvent) {
         GlobalCtxEvent::CredentialChanged => {
             event!(info, "[{}] credential changed", instance_id);
         }
+        GlobalCtxEvent::VpnExitLivenessUpdated(liveness) => {
+            event!(
+                info,
+                ?liveness,
+                "[{}] vpn exit liveness updated",
+                instance_id
+            );
+        }
     }
 }
 

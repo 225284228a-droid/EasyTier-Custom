@@ -15,16 +15,20 @@
 //!   exists (IPv6 leak protection);
 //! * EasyTier's own underlay endpoint addresses are pinned through the
 //!   physical gateway so the tunnel cannot route through itself;
+//! * under fail-mode direct, Exit-rule routes are held only while one of
+//!   the rule's exits is reachable (liveness is pushed by the peer manager
+//!   through `VpnExitLivenessUpdated`), so dead exits fail open onto the
+//!   physical network instead of blackholing inside the tunnel;
 //! * every route this manager installed is removed on disable and on
 //!   shutdown.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use easytier_core::config::vpn::{VpnCidr, VpnConfig, VpnRuleAction};
+use easytier_core::config::vpn::{VpnCidr, VpnConfig, VpnFailMode, VpnRuleAction, VpnRuleConfig};
 use easytier_core::peers::vpn_policy::{VpnHostRouteState, VpnRouteStateHost};
 
 use crate::common::config::ConfigLoader as _;
@@ -78,6 +82,9 @@ struct VpnRouteManagerState {
     captured_gateway_v4: Option<IpAddr>,
     captured_gateway_v6: Option<IpAddr>,
     endpoints: BTreeSet<IpAddr>,
+    /// Latest per-exit liveness view (exit name -> reachable), fed by the
+    /// peer manager through `GlobalCtxEvent::VpnExitLivenessUpdated`.
+    exit_up: BTreeMap<String, bool>,
 }
 
 /// Spawns the route-manager task. It runs until the GlobalCtx event bus
@@ -125,6 +132,13 @@ pub async fn run_vpn_route_manager(
                 GlobalCtxEvent::PeerConnRemoved(info) => {
                     if let Some(ip) = peer_conn_remote_ip(info) {
                         changed |= state.endpoints.remove(&ip);
+                    }
+                }
+                GlobalCtxEvent::VpnExitLivenessUpdated(liveness) => {
+                    let view: BTreeMap<String, bool> = liveness.iter().cloned().collect();
+                    if view != state.exit_up {
+                        state.exit_up = view;
+                        changed = true;
                     }
                 }
                 _ => {}
@@ -201,7 +215,14 @@ async fn reconcile(
         for rule in &config.rules {
             match rule.action {
                 VpnRuleAction::Exit | VpnRuleAction::Block => {
-                    add_tun_routes(&mut desired, rule.cidr);
+                    if rule_routable(rule, &config, &state.exit_up) {
+                        add_tun_routes(&mut desired, rule.cidr);
+                    } else {
+                        tracing::info!(
+                            cidr = %rule.cidr,
+                            "vpn rule exits all unreachable; fail-mode direct leaves destinations on the physical network"
+                        );
+                    }
                 }
                 VpnRuleAction::Direct => {
                     let gateway = match rule.cidr {
@@ -230,11 +251,11 @@ async fn reconcile(
         // DNS leak protection: pin system DNS servers into the tunnel while a
         // global exit covers their family, so queries cannot bypass the exit.
         dns_servers = list_system_dns_servers();
-        if config.dns_protect && config.has_global_v4_exit() {
+        if config.dns_protect && global_exit_available(&config, true, &state.exit_up) {
             for dns in &dns_servers {
                 let covered = match dns {
-                    IpAddr::V4(_) => config.has_global_v4_exit(),
-                    IpAddr::V6(_) => config.has_global_v6_exit(),
+                    IpAddr::V4(_) => global_exit_available(&config, true, &state.exit_up),
+                    IpAddr::V6(_) => global_exit_available(&config, false, &state.exit_up),
                 };
                 if covered {
                     desired.insert(VpnRoute::Tun {
@@ -247,9 +268,13 @@ async fn reconcile(
 
         // IPv6 leak protection: blackhole non-mesh IPv6 when a global IPv4
         // exit is active but no global IPv6 exit exists.
+        // Leak protection trumps fail-open: while a global v4 exit is
+        // reachable, v6 stays blackholed unless a global v6 exit is also
+        // reachable (not merely configured), so v6 cannot slip around the
+        // v4 tunnel when the v6 exit is down.
         if config.ipv6_protect
-            && config.has_global_v4_exit()
-            && !config.has_global_v6_exit()
+            && global_exit_available(&config, true, &state.exit_up)
+            && !global_exit_available(&config, false, &state.exit_up)
         {
             desired.insert(VpnRoute::Tun {
                 destination: IpAddr::V6(Ipv6Addr::new(0x2000, 0, 0, 0, 0, 0, 0, 0)),
@@ -306,7 +331,9 @@ async fn reconcile(
             .iter()
             .map(|ip| ip.to_string())
             .collect::<Vec<_>>(),
-        system_dns_servers: if config.dns_protect && config.has_global_v4_exit() {
+        system_dns_servers: if config.dns_protect
+            && global_exit_available(&config, true, &state.exit_up)
+        {
             dns_servers.clone()
         } else {
             Vec::new()
@@ -325,6 +352,50 @@ async fn reconcile(
 
 fn usable_gateway(gateway: IpAddr) -> Option<IpAddr> {
     (!gateway.is_unspecified() && !gateway.is_loopback()).then_some(gateway)
+}
+
+/// Whether any of the rule's exits (primary then fallbacks) is currently
+/// reachable. Exits missing from the liveness view count as down.
+fn rule_exit_available(rule: &VpnRuleConfig, exit_up: &BTreeMap<String, bool>) -> bool {
+    rule.exit
+        .iter()
+        .chain(rule.fallback_exits.iter())
+        .any(|name| exit_up.get(name).copied().unwrap_or(false))
+}
+
+/// Whether the rule's routes may hold the destination right now. Block and
+/// Direct rules always apply; Exit rules apply under fail-mode block, and
+/// under fail-mode direct only while one of their exits is reachable (the
+/// takeover route is withdrawn otherwise, so traffic fails open onto the
+/// physical network instead of blackholing inside the tunnel).
+fn rule_routable(
+    rule: &VpnRuleConfig,
+    config: &VpnConfig,
+    exit_up: &BTreeMap<String, bool>,
+) -> bool {
+    match rule.action {
+        VpnRuleAction::Exit => match config.fail_mode {
+            VpnFailMode::Block => true,
+            VpnFailMode::Direct => rule_exit_available(rule, exit_up),
+        },
+        VpnRuleAction::Direct | VpnRuleAction::Block => true,
+    }
+}
+
+/// Whether a global (default-route) exit rule of the given family is both
+/// configured and currently routable.
+fn global_exit_available(
+    config: &VpnConfig,
+    ipv4: bool,
+    exit_up: &BTreeMap<String, bool>,
+) -> bool {
+    config.enabled
+        && config.rules.iter().any(|rule| {
+            rule.action == VpnRuleAction::Exit
+                && rule.cidr.is_default_route()
+                && rule.cidr.is_ipv4() == ipv4
+                && rule_routable(rule, config, exit_up)
+        })
 }
 
 fn host_prefix(ip: &IpAddr) -> u8 {
@@ -516,6 +587,7 @@ fn list_system_dns_servers() -> Vec<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use easytier_core::config::vpn::VpnExitConfig;
 
     #[test]
     fn default_routes_split_into_halves() {
@@ -554,6 +626,99 @@ mod tests {
         assert!(is_pinnable_dns(&"2001:4860:4860::8888".parse().unwrap()));
         assert!(!is_pinnable_dns(&"fd00::100".parse().unwrap()));
         assert!(!is_pinnable_dns(&"fe80::1".parse().unwrap()));
+    }
+
+    fn vpn_config_with_global_exit(fail_mode: VpnFailMode) -> VpnConfig {
+        VpnConfig {
+            enabled: true,
+            fail_mode,
+            exits: vec![VpnExitConfig {
+                name: "a".to_owned(),
+                node: "10.144.144.2".parse().unwrap(),
+                note: None,
+            }],
+            rules: vec![VpnRuleConfig {
+                cidr: "0.0.0.0/0".parse().unwrap(),
+                action: VpnRuleAction::Exit,
+                exit: Some("a".to_owned()),
+                fallback_exits: vec![],
+                priority: 0,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn exit_up(entries: &[(&str, bool)]) -> BTreeMap<String, bool> {
+        entries
+            .iter()
+            .map(|(name, up)| ((*name).to_owned(), *up))
+            .collect()
+    }
+
+    #[test]
+    fn fail_mode_direct_withdraws_rules_when_exits_down() {
+        let config = vpn_config_with_global_exit(VpnFailMode::Direct);
+        let rule = &config.rules[0];
+
+        // unknown liveness (startup, before the first refresh) or down:
+        // nothing is routable, so no takeover route is installed
+        assert!(!rule_routable(rule, &config, &BTreeMap::new()));
+        assert!(!rule_routable(rule, &config, &exit_up(&[("a", false)])));
+        assert!(!global_exit_available(&config, true, &exit_up(&[("a", false)])));
+
+        // exit reachable again: routes come back
+        assert!(rule_routable(rule, &config, &exit_up(&[("a", true)])));
+        assert!(global_exit_available(&config, true, &exit_up(&[("a", true)])));
+    }
+
+    #[test]
+    fn fail_mode_block_keeps_rules_installed() {
+        let config = vpn_config_with_global_exit(VpnFailMode::Block);
+        let rule = &config.rules[0];
+        assert!(rule_routable(rule, &config, &BTreeMap::new()));
+        assert!(rule_routable(rule, &config, &exit_up(&[("a", false)])));
+        assert!(global_exit_available(&config, true, &exit_up(&[("a", false)])));
+    }
+
+    #[test]
+    fn fallback_exit_counts_as_available() {
+        let mut config = vpn_config_with_global_exit(VpnFailMode::Direct);
+        config.exits.push(VpnExitConfig {
+            name: "b".to_owned(),
+            node: "10.144.144.3".parse().unwrap(),
+            note: None,
+        });
+        config.rules[0].fallback_exits = vec!["b".to_owned()];
+        let rule = &config.rules[0];
+        assert!(rule_routable(rule, &config, &exit_up(&[("a", false), ("b", true)])));
+        assert!(!rule_routable(rule, &config, &exit_up(&[("a", false), ("b", false)])));
+    }
+
+    #[test]
+    fn v6_blackhole_requires_reachable_v4_global_exit() {
+        let mut config = vpn_config_with_global_exit(VpnFailMode::Direct);
+        config.rules.push(VpnRuleConfig {
+            cidr: "::/0".parse().unwrap(),
+            action: VpnRuleAction::Exit,
+            exit: Some("a".to_owned()),
+            fallback_exits: vec![],
+            priority: 0,
+        });
+
+        // v4 exit down: neither family is available
+        let down = exit_up(&[("a", false)]);
+        assert!(!global_exit_available(&config, true, &down));
+        assert!(!global_exit_available(&config, false, &down));
+
+        // both up: v4 available, v6 available too (no blackhole)
+        let up = exit_up(&[("a", true)]);
+        assert!(global_exit_available(&config, true, &up));
+        assert!(global_exit_available(&config, false, &up));
+
+        // v6-only availability does not leak: unreachable v6 exit with a
+        // reachable v4 exit is still "not available"
+        let v6_down = exit_up(&[("a", false)]);
+        assert!(!global_exit_available(&config, false, &v6_down));
     }
 
     #[test]

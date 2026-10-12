@@ -60,6 +60,10 @@ pub enum GlobalCtxEvent {
 
     ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
 
+    /// Per-exit liveness view of the multi-exit VPN (exit name -> reachable);
+    /// emitted only when the view changes.
+    VpnExitLivenessUpdated(Vec<(String, bool)>),
+
     UdpBroadcastRelayStartResult {
         capture_backend: Option<String>,
         error: Option<String>,

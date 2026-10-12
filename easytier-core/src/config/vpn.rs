@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VpnFailMode {
-    /// Fail open: traffic that cannot be tunneled is left to the system
-    /// routing table (direct).
+    /// Fail open: while every exit of a rule is unreachable, the rule's
+    /// takeover routes are withdrawn from the system routing table so
+    /// matching traffic uses the physical network. Packets that still enter
+    /// the tunnel in that state are dropped.
     #[default]
     Direct,
     /// Fail closed: traffic is dropped while no exit is reachable.
