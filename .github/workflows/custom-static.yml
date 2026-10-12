@@ -39,7 +39,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: '["self-hosted", "linux", "x64", "easytier-owner-static"]'
+          - runner: 'easytier-owner-static'
             target: x86_64-unknown-linux-musl
             name: linux-x86_64
             frontend-filter: './easytier-web/*'
@@ -49,7 +49,7 @@ jobs:
             name: windows-x86_64
             frontend-filter: ''
             local_cache: 'false'
-    runs-on: ${{ fromJSON(matrix.runner) }}
+    runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
       EASYTIER_LOCAL_CACHE: ${{ matrix.local_cache }}
