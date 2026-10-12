@@ -221,13 +221,6 @@ pub use windows::RegistryManager;
 
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(crate) use netlink_wire::RouteMessage;
-#[cfg(all(
-    target_os = "linux",
-    feature = "linux-netlink",
-    feature = "public-ipv6-provider"
-))]
-pub(crate) use netlink_wire::RouteType;
-
 #[cfg(all(target_os = "linux", feature = "linux-netlink"))]
 pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
     netlink::NetlinkIfConfiger::list_ipv6_route_messages()
