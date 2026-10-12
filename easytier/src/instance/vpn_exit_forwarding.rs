@@ -4,9 +4,8 @@
 //! exit traffic is handled per platform:
 //!
 //! * Linux: kernel forwarding plus an ip6tables MASQUERADE rule;
-//! * macOS: kernel forwarding plus a pf anchor (`com.easytier.vpn66`);
-//! * Windows: no kernel NAT66 — TCP and UDP are relayed by the userspace
-//!   proxy engines instead, so nothing is configured here.
+//! * other platforms: no kernel NAT66 — TCP and UDP are relayed by the
+//!   userspace proxy engines instead, so nothing is configured here.
 
 /// Enables or disables exit forwarding for the given TUN interface.
 ///
@@ -17,17 +16,7 @@ pub async fn sync_vpn_exit_forwarding(enabled: bool, tun_ifname: &str, v6_prefix
     {
         sync_linux(enabled, tun_ifname, v6_prefix).await;
     }
-    #[cfg(target_os = "macos")]
-    {
-        sync_macos(enabled, tun_ifname, v6_prefix).await;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // Kernel forwarding stays off; the userspace proxy engines relay v6
-        // exit TCP and UDP, and ICMPv6 exit packets are dropped by design.
-        let _ = (enabled, tun_ifname, v6_prefix);
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "linux"))]
     {
         if enabled && v6_prefix.is_some() {
             tracing::warn!(
@@ -40,8 +29,7 @@ pub async fn sync_vpn_exit_forwarding(enabled: bool, tun_ifname: &str, v6_prefix
 }
 
 #[cfg(target_os = "linux")]
-async fn sync_linux(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) {
-    use std::process::Command;
+async fn sync_linux(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) {    use std::process::Command;
 
     fn run(cmd: &mut Command) -> bool {
         match cmd.output() {
@@ -129,25 +117,3 @@ async fn sync_linux(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) 
     }
 }
 
-#[cfg(target_os = "macos")]
-async fn sync_macos(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) {
-    use crate::common::ifcfg::{IfConfiger, IfConfiguerTrait as _};
-
-    let ifcfg = IfConfiger {};
-    if let Err(err) = ifcfg
-        .sync_ipv6_exit_forwarding(tun_ifname, v6_prefix.as_deref(), enabled)
-        .await
-    {
-        tracing::warn!(
-            ?err,
-            enabled,
-            "failed to sync ipv6 exit forwarding via pf; \
-             ipv6 exit traffic may not work (ipv4 is unaffected)"
-        );
-    }
-}
-
-/// Formats the network prefix used for the masquerade rule.
-pub fn v6_masquerade_prefix(prefix: &cidr::Ipv6Inet) -> String {
-    prefix.to_string()
-}

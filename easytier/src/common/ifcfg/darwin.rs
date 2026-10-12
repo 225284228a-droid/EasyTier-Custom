@@ -1,5 +1,4 @@
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
 
 use super::{Error, IfConfiguerTrait, cidr_to_subnet_mask, run_shell_cmd};
 use async_trait::async_trait;
@@ -7,47 +6,12 @@ use cidr::{Ipv4Inet, Ipv6Inet};
 
 pub struct MacIfConfiger {}
 
-/// pf anchor and rule management for IPv6 exit forwarding (NAT66); the rule
-/// text and pf.conf editing helpers live in `instance::vpn_exit_pf`.
-use crate::instance::vpn_exit_pf::{
-    IPV6_EXIT_ANCHOR_NAME, IPV6_EXIT_PF_CONF, ensure_ipv6_exit_anchor_directive,
-    ipv6_exit_pf_rule, remove_ipv6_exit_anchor_directive,
-};
-
 #[async_trait]
 impl IfConfiguerTrait for MacIfConfiger {
-    async fn sync_ipv6_exit_forwarding(
-        &self,
-        tun_ifname: &str,
-        mesh_prefix: Option<&str>,
-        enabled: bool,
-    ) -> Result<(), Error> {
-        match (enabled, mesh_prefix) {
-            (true, Some(mesh_prefix)) => {
-                run_shell_cmd("sysctl -w net.inet6.ip6.forwarding=1").await?;
-                self.sync_pf_conf_directive(true).await?;
-                // NAT out through the physical interface the default route
-                // points at; the TUN itself is excluded in the rule anyway.
-                let ext_ifname = self
-                    .default_route(false, Some(tun_ifname))
-                    .await?
-                    .map(|route| route.interface_name)
-                    .filter(|name| !name.is_empty())
-                    .ok_or_else(|| {
-                        Error::AnyhowError(anyhow::anyhow!("no physical default route for pf nat66"))
-                    })?;
-                let rule = ipv6_exit_pf_rule(tun_ifname, mesh_prefix, &ext_ifname);
-                self.load_anchor_rule(&rule).await
-            }
-            (false, _) => {
-                // Keep forwarding on (Linux behaves the same): only EasyTier's
-                // own pf rules are removed.
-                self.load_anchor_rule_flush_only().await?;
-                self.sync_pf_conf_directive(false).await
-            }
-            (true, None) => Ok(()),
-        }
-    }
+    // Kernel NAT66 via pf was reverted: the anchor executor shipped in
+    // b9ad4cff never compiled (missing methods). macOS keeps the trait
+    // default (`sync_ipv6_exit_forwarding` -> unsupported); IPv4 exit
+    // forwarding is unaffected.
 
     async fn add_route_via_gateway(
         &self,
@@ -101,38 +65,19 @@ impl IfConfiguerTrait for MacIfConfiger {
         ipv6: bool,
         exclude_interface: Option<&str>,
     ) -> Result<Option<super::DefaultRouteInfo>, Error> {
-        let output = tokio::process::Command::new("route")
-            .arg("-n")
-            .arg("get")
-            .arg(if ipv6 { "-inet6" } else { "-inet" })
-            .arg("default")
+        // Scan the routing table instead of `route get default`: a route
+        // lookup for 0.0.0.0 is captured by the VPN's 0.0.0.0/1 takeover
+        // route, while the physical default entry remains visible in the
+        // table itself.
+        let output = tokio::process::Command::new("netstat")
+            .arg("-rn")
+            .arg("-f")
+            .arg(if ipv6 { "inet6" } else { "inet" })
             .output()
             .await
             .map_err(|e| Error::AnyhowError(anyhow::anyhow!("{e}")))?;
         let text = String::from_utf8_lossy(&output.stdout).to_string();
-        let mut gateway = None;
-        let mut interface = None;
-        for line in text.lines() {
-            let mut parts = line.trim().split(':');
-            match parts.next().map(str::trim) {
-                Some("gateway") => {
-                    gateway = parts.next().map(str::trim).and_then(|g| g.parse().ok());
-                }
-                Some("interface") => {
-                    interface = parts.next().map(str::trim).map(ToString::to_string);
-                }
-                _ => {}
-            }
-        }
-        if let Some(exclude) = exclude_interface
-            && interface.as_deref() == Some(exclude)
-        {
-            return Ok(None);
-        }
-        Ok(gateway.map(|gateway| super::DefaultRouteInfo {
-            gateway,
-            interface_name: interface.unwrap_or_default(),
-        }))
+        Ok(parse_netstat_default_route(&text, exclude_interface))
     }
 
     async fn add_ipv4_route(
@@ -260,5 +205,93 @@ impl IfConfiguerTrait for MacIfConfiger {
             .as_str(),
         )
         .await
+    }
+}
+
+/// Parses `netstat -rn` output for the default route of one family. Rows are
+/// `Destination Gateway Flags Netif [Expire]`; interface-scoped or link-level
+/// defaults whose gateway is not a plain address are skipped, as is the
+/// excluded interface (the EasyTier TUN).
+fn parse_netstat_default_route(
+    text: &str,
+    exclude_interface: Option<&str>,
+) -> Option<super::DefaultRouteInfo> {
+    for line in text.lines() {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.first().copied() != Some("default") || tokens.len() < 4 {
+            continue;
+        }
+        let Some(gateway) = tokens[1].split('%').next().and_then(|g| g.parse().ok()) else {
+            // `link#N` gateways (interface routes) have no usable next hop.
+            continue;
+        };
+        let interface = tokens[3];
+        if let Some(exclude) = exclude_interface
+            && interface == exclude
+        {
+            continue;
+        }
+        return Some(super::DefaultRouteInfo {
+            gateway,
+            interface_name: interface.to_owned(),
+        });
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_netstat_default_route;
+
+    const MACOS_MIXED: &str = "\
+Routing tables
+
+Internet:
+Destination        Gateway            Flags               Netif Expire
+default            192.168.1.1        UGScg                 en0
+10.0.0/8           link#4             UCS                   en0
+127                127.0.0.1          UCS                   lo0
+
+Internet6:
+Destination        Gateway            Flags         Netif Expire
+default            fe80::1%en0        UGcIg            en0
+default            link#12            UCSIg            utun8
+::1                ::1                UHL              lo0
+";
+
+    #[test]
+    fn parses_v4_default_with_gateway() {
+        let route = parse_netstat_default_route(MACOS_MIXED, None).unwrap();
+        assert_eq!(route.gateway, "192.168.1.1".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(route.interface_name, "en0");
+    }
+
+    #[test]
+    fn v6_zone_suffix_is_stripped() {
+        let v6 = "\
+Internet6:
+Destination        Gateway            Flags         Netif Expire
+default            fe80::1%en0        UGcIg            en0
+";
+        let route = parse_netstat_default_route(v6, None).unwrap();
+        assert_eq!(
+            route.gateway,
+            "fe80::1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn excluded_interface_is_skipped_and_link_gateways_ignored() {
+        // With en0 excluded, the v4 match must fail (only link# row remains
+        // for the other interfaces in this table).
+        let table = "\
+Internet:
+Destination        Gateway            Flags     Netif Expire
+default            192.168.1.1        UGS       en0
+default            link#9             UCSI      utun8
+";
+        assert!(parse_netstat_default_route(table, Some("en0")).is_none());
+        let route = parse_netstat_default_route(table, None).unwrap();
+        assert_eq!(route.interface_name, "en0");
     }
 }

@@ -67,11 +67,11 @@ impl IcmpProxyEngine {
 
     /// ICMPv6 exit traffic has no userspace relay (raw ICMPv6 sockets are
     /// restricted on Windows and the echo proxy is v4-only). Platforms with
-    /// kernel NAT66 forward it there, so only those without are dropped
-    /// here to keep exit traffic from leaking un-NATed.
+    /// kernel NAT66 (Linux) forward it there, so only those without are
+    /// dropped here to keep exit traffic from leaking un-NATed.
     /// TODO: relay ICMPv6 echo requests through a platform ICMPv6 socket.
     fn handle_peer_packet_v6(context: IcmpProxyContext, is_vpn_exit: bool) -> IcmpProxyAction {
-        if cfg!(windows) && context.vpn_exit && is_vpn_exit {
+        if cfg!(any(windows, target_os = "macos")) && context.vpn_exit && is_vpn_exit {
             return IcmpProxyAction::Drop;
         }
         IcmpProxyAction::Pass
