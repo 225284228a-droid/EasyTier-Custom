@@ -1321,6 +1321,7 @@ mod tests {
         assert!(matches!(action, TcpProxyPacketAction::Handled { new_syn: true }));
 
         let ip = Ipv6Packet::new_checked(packet.payload()).unwrap();
+        assert_eq!(ip.version(), 6);
         assert_eq!(
             ip.dst_addr(),
             "fd00:abcd::204".parse::<std::net::Ipv6Addr>().unwrap()
@@ -1375,6 +1376,7 @@ mod tests {
         assert!(engine.try_process_packet_from_nic(&mut reply, nic_ctx()));
 
         let ip = Ipv6Packet::new_checked(reply.payload()).unwrap();
+        assert_eq!(ip.version(), 6);
         assert_eq!(ip.src_addr(), *internet.ip());
         let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
         assert_eq!(tcp.src_port(), internet.port());

@@ -530,6 +530,11 @@ fn compose_udp_ipv6_response(
     }
     {
         let mut ipv6_packet = Ipv6Packet::new_unchecked(&mut buf);
+        // The buffer starts zeroed, so the version nibble must be stamped
+        // explicitly or the reply is not a valid IPv6 packet. smoltcp's
+        // new_checked does not validate the version, so this is invisible
+        // to the unit tests below without the explicit assertions.
+        ipv6_packet.set_version(6);
         ipv6_packet.set_traffic_class(0);
         ipv6_packet.set_flow_label(0);
         ipv6_packet.set_payload_len(udp_len as u16);
@@ -733,6 +738,7 @@ mod tests {
             .unwrap();
         assert_eq!(reply.len(), 1);
         let ip = Ipv6Packet::new_checked(reply[0].payload()).unwrap();
+        assert_eq!(ip.version(), 6);
         assert_eq!(ip.src_addr(), *internet.ip());
         assert_eq!(ip.dst_addr(), *client.ip());
         let udp = UdpPacket::new_checked(ip.payload()).unwrap();
