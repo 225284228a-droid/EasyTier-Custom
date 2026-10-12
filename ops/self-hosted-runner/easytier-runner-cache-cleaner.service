@@ -1,0 +1,14 @@
+[Unit]
+Description=Prune EasyTier runner build caches
+After=docker.service
+RequiresMountsFor=/srv/easytier-runner/cache
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/easytier-runner/cache-cleaner.env
+ExecStart=/usr/bin/python3 /opt/easytier-runner/cache-cleaner.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/easytier-runner/cache

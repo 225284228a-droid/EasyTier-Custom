@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit from main to build'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,23 +27,52 @@ defaults:
 jobs:
   build:
     timeout-minutes: 120
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' &&
+      format('{0}', github.repository_id) == '1381150697' &&
+      format('{0}', github.repository_owner_id) == '239500008' &&
+      format('{0}', github.actor_id) == '239500008' &&
+      github.triggering_actor == '225284228a-droid' &&
+      (github.event_name == 'push' || inputs.commit_sha != '')
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - runner: '["self-hosted", "linux", "x64", "easytier-owner-static"]'
             target: x86_64-unknown-linux-musl
             name: linux-x86_64
             frontend-filter: './easytier-web/*'
-          - os: windows-latest
+            local_cache: 'true'
+          - runner: '["windows-latest"]'
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
             frontend-filter: ''
-    runs-on: ${{ matrix.os }}
+            local_cache: 'false'
+    runs-on: ${{ fromJSON(matrix.runner) }}
     env:
       TARGET: ${{ matrix.target }}
+      EASYTIER_LOCAL_CACHE: ${{ matrix.local_cache }}
+      EASYTIER_CACHE: /cache
     steps:
+      - name: Validate manually approved commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${COMMIT_SHA}" --jq .status)"
+          case "$status" in
+            behind|identical) ;;
+            *) echo "commit is not an ancestor of main: $status" >&2; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.sha }}
+          persist-credentials: false
 
       - name: Prepare compiler and embedded web frontend
         uses: ./.github/actions/prepare-build
@@ -47,6 +81,7 @@ jobs:
           gui: 'false'
           pnpm: 'true'
           pnpm-build-filter: ${{ matrix.frontend-filter }}
+          install-system-packages: ${{ matrix.local_cache != 'true' }}
           token: ${{ github.token }}
 
       - uses: mlugg/setup-zig@v2
@@ -66,7 +101,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          sudo apt-get install -qqy clang lld
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=clang \
             RUSTFLAGS='-C target-feature=+crt-static -C link-arg=-fuse-ld=lld' \
             cargo build --locked --profile mini --target "$TARGET" -p easytier-mini
@@ -142,7 +176,7 @@ jobs:
           ARTIFACT_NAME: custom-static-${{ matrix.name }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$GITHUB_SHA" > artifacts/COMMIT.txt
+          git rev-parse HEAD > artifacts/COMMIT.txt
           # Cover every shipped file: the kernel drivers (WinDivert64.sys,
           # wintun.dll, Packet.dll) are exactly the files users most need to
           # verify. nullglob keeps this working on runners without drivers.

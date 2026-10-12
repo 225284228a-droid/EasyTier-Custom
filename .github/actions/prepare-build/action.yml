@@ -20,6 +20,10 @@ inputs:
   token:
     description: 'GitHub token, used by setup-protoc action'
     required: false
+  install-system-packages:
+    description: 'Install Linux system packages with apt'
+    required: false
+    default: 'true'
 runs:
   using: 'composite'
   steps:
@@ -27,7 +31,7 @@ runs:
       shell: bash
 
     - name: Install dependencies
-      if: ${{ runner.os == 'Linux' }}
+      if: ${{ runner.os == 'Linux' && inputs.install-system-packages == 'true' }}
       run: |
         sudo apt-get update
         sudo apt-get install -qqy build-essential mold musl-tools
@@ -54,7 +58,7 @@ runs:
         build-filter: ${{ inputs.pnpm-build-filter }}
 
     - name: Install GUI dependencies (Linux)
-      if: ${{ inputs.gui == 'true' && runner.os == 'Linux' }}
+      if: ${{ inputs.gui == 'true' && runner.os == 'Linux' && inputs.install-system-packages == 'true' }}
       run: |
         sudo apt-get install -qq xdg-utils \
         libappindicator3-dev \

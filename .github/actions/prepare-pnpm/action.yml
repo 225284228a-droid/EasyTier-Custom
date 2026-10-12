@@ -41,12 +41,24 @@ runs:
         version: 10
         run_install: false
 
+    - name: Configure local pnpm store
+      if: env.EASYTIER_LOCAL_CACHE == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -n "${EASYTIER_CACHE:-}"
+        mkdir -p "$EASYTIER_CACHE/pnpm"
+        pnpm config set store-dir "$EASYTIER_CACHE/pnpm"
+        echo "STORE_PATH=$EASYTIER_CACHE/pnpm" >> "$GITHUB_ENV"
+
     - name: Get pnpm store directory
+      if: env.EASYTIER_LOCAL_CACHE != 'true'
       shell: bash
       run: |
         echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
 
     - name: Setup pnpm cache
+      if: env.EASYTIER_LOCAL_CACHE != 'true'
       uses: actions/cache@v5
       with:
         path: ${{ env.STORE_PATH }}
