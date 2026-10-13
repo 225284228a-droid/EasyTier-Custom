@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+#[cfg(any(feature = "web-client", test))]
+use easytier_core::config::runtime::CoreInstanceRuntimeConfig;
 use easytier_core::{
-    config::runtime::CoreInstanceRuntimeConfig, gateway::dhcp::DhcpIpv4Host,
-    host::packet::HostPacketReceiver, instance::CorePacketPlane,
+    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;

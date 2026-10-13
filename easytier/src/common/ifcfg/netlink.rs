@@ -1,7 +1,4 @@
-#![cfg_attr(
-    not(any(feature = "public-ipv6-provider", feature = "tun")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(feature = "tun"), allow(dead_code))]
 
 use std::{
     collections::BTreeSet,
@@ -14,11 +11,11 @@ use std::{
 use super::{
     DefaultRouteInfo, Error, IfConfiguerTrait,
     netlink_wire::{
-        AddressMessage, Attribute, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE,
-        NLM_F_DUMP, NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR,
-        NLA_TYPE_MASK, NeighborMessage, NetlinkDecode, NetlinkEncode, RTA_PRIORITY, RTM_DELADDR,
-        RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH, RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH,
-        RTM_NEWROUTE, RouteMessage, RouteMessageBuilder, RouteType, netlink_error_code,
+        AddressMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
+        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NeighborMessage,
+        NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH,
+        RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder,
+        RouteType, netlink_error_code,
     },
 };
 use crate::common::network::ip_mask_to_prefix;
@@ -340,7 +337,7 @@ impl NetlinkIfConfiger {
 impl NetlinkIfConfiger {
     fn interface_name(ifindex: u32) -> Option<String> {
         unsafe {
-            let mut buf = [0u8; libc::IF_NAMESIZE];
+            let mut buf = [0 as libc::c_char; libc::IF_NAMESIZE];
             if libc::if_indextoname(ifindex, buf.as_mut_ptr()).is_null() {
                 return None;
             }
@@ -393,14 +390,14 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         };
         let routes = Self::list_route_messages(family)?;
         for msg in routes {
-            let msg_destination = msg
-                .destination()
-                .copied()
-                .unwrap_or(if family == libc::AF_INET as u8 {
-                    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-                } else {
-                    IpAddr::V6(Ipv6Addr::UNSPECIFIED)
-                });
+            let msg_destination =
+                msg.destination()
+                    .copied()
+                    .unwrap_or(if family == libc::AF_INET as u8 {
+                        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+                    } else {
+                        IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                    });
             if msg_destination == destination
                 && msg.dst_len() == cidr_prefix
                 && msg.gateway() == Some(&gateway)
@@ -445,19 +442,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             if exclude_ifindex != 0 && ifindex == exclude_ifindex {
                 continue;
             }
-            let priority = msg
-                .attributes()
-                .iter()
-                .find(|attr: &Attribute| attr.kind & NLA_TYPE_MASK == RTA_PRIORITY)
-                .and_then(|attr| {
-                    let raw = &attr.value;
-                    if raw.len() == 4 {
-                        Some(u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(0);
+            let priority = msg.priority().unwrap_or(0);
             let info = DefaultRouteInfo {
                 gateway,
                 interface_name: Self::interface_name(ifindex).unwrap_or_default(),

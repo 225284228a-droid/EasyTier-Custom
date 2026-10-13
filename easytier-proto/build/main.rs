@@ -113,16 +113,12 @@ fn main() -> anyhow::Result<()> {
     // ASCII temp dir and copy them back after protoc succeeds.
     let descriptor_out = |name: &str| -> (PathBuf, Option<PathBuf>) {
         let dest = out.join(name);
-        let needs_staging = dest
-            .to_str()
-            .is_none_or(|s| !s.is_ascii());
+        let needs_staging = dest.to_str().is_none_or(|s| !s.is_ascii());
         if !needs_staging {
             return (dest.clone(), None);
         }
-        let staged = std::env::temp_dir().join(format!(
-            "easytier-proto-{}-{name}",
-            std::process::id()
-        ));
+        let staged =
+            std::env::temp_dir().join(format!("easytier-proto-{}-{name}", std::process::id()));
         (dest, Some(staged))
     };
 

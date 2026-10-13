@@ -425,10 +425,12 @@ pub mod pb {
         };
         let mut exits = Vec::with_capacity(vpn.exits.len());
         for exit in vpn.exits {
-            let node: IpAddr = exit
-                .node
-                .parse()
-                .map_err(|e| err(format!("exit {}: invalid node address {exit:?}: {e}", exit.name)))?;
+            let node: IpAddr = exit.node.parse().map_err(|e| {
+                err(format!(
+                    "exit {}: invalid node address {exit:?}: {e}",
+                    exit.name
+                ))
+            })?;
             exits.push(VpnExitConfig {
                 name: exit.name,
                 node,

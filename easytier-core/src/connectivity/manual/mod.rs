@@ -1615,8 +1615,11 @@ mod tests {
                 .with_bandwidth_source(Some(Arc::new(FixedWindowSource))),
         ) as Box<dyn Tunnel>;
 
-        let wrapped =
-            apply_resolved_endpoint_info(inner, "tcp://192.0.2.1:11010".parse().unwrap(), vec!["txt".to_owned()]);
+        let wrapped = apply_resolved_endpoint_info(
+            inner,
+            "tcp://192.0.2.1:11010".parse().unwrap(),
+            vec!["txt".to_owned()],
+        );
 
         assert_eq!(
             wrapped

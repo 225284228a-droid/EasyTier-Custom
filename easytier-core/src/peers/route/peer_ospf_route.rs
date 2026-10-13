@@ -49,10 +49,9 @@ use crate::{
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
             OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion,
-            PeerIdentityType, RouteForeignNetworkInfos,
-            RouteForeignNetworkSummary, RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError,
-            SyncRouteInfoRequest, SyncRouteInfoResponse, TrustedCredentialPubkey,
-            TrustedCredentialPubkeyProof, route_foreign_network_infos,
+            PeerIdentityType, RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
+            RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest, SyncRouteInfoResponse,
+            TrustedCredentialPubkey, TrustedCredentialPubkeyProof, route_foreign_network_infos,
             route_foreign_network_summary, sync_route_info_request::ConnInfo,
         },
         rpc_types::{
@@ -703,7 +702,6 @@ static FORCE_USE_CONN_LIST: AtomicBool = AtomicBool::new(false);
 // 2. all the dst_saved_peer_info_version in all sessions already remove the peer info, the peer info will be propagated
 //    in another zone when two zone restore the conneciton.
 static REMOVE_UNREACHABLE_PEER_INFO_AFTER: Duration = Duration::from_secs(90);
-
 
 fn is_foreign_network_info_newer(
     next: &ForeignNetworkRouteInfoEntry,
@@ -1476,8 +1474,7 @@ impl SyncedRouteInfo {
         my_peer_route_id: u64,
         context: &dyn PeerContext,
     ) -> bool {
-        let mut new =
-            new_updated_self_route_peer_info(my_peer_id, my_peer_route_id, context);
+        let mut new = new_updated_self_route_peer_info(my_peer_id, my_peer_route_id, context);
         let mut guard = self.peer_infos.upgradable_read();
         let old = guard.get(&my_peer_id);
         let new_version = old.map(|x| x.version).unwrap_or(0) + 1;

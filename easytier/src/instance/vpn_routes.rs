@@ -40,10 +40,7 @@ type BoxedIfCfg = Arc<dyn crate::common::ifcfg::IfConfiguerTrait>;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum VpnRoute {
     /// On-link route through the EasyTier TUN.
-    Tun {
-        destination: IpAddr,
-        prefix: u8,
-    },
+    Tun { destination: IpAddr, prefix: u8 },
     /// Route through the captured pre-VPN physical gateway.
     ViaGateway {
         gateway: IpAddr,
@@ -123,9 +120,11 @@ pub async fn run_vpn_route_manager(
         let mut changed = trigger.is_none();
         if let Some(event) = trigger {
             match &event {
-                GlobalCtxEvent::TunDeviceReady(_)
-                | GlobalCtxEvent::DhcpIpv4Changed(_, _)
-                | GlobalCtxEvent::ConfigPatched(_) => {
+                GlobalCtxEvent::TunDeviceReady(_) | GlobalCtxEvent::DhcpIpv4Changed(_, _) => {
+                    changed = true;
+                }
+                #[cfg(feature = "management")]
+                GlobalCtxEvent::ConfigPatched(_) => {
                     changed = true;
                 }
                 GlobalCtxEvent::PeerConnAdded(info) => {
@@ -212,10 +211,7 @@ async fn resolve_peer_domain(domain: &str) -> Option<IpAddr> {
 /// PeerConnAdded learning path only fires after a connection exists, so
 /// without seeding the /1 takeover routes could capture the very
 /// connections EasyTier needs to build the mesh.
-async fn seed_endpoints_from_config(
-    global_ctx: &ArcGlobalCtx,
-    state: &mut VpnRouteManagerState,
-) {
+async fn seed_endpoints_from_config(global_ctx: &ArcGlobalCtx, state: &mut VpnRouteManagerState) {
     for peer in global_ctx.config.get_peers() {
         let host = match peer.uri.host() {
             Some(url::Host::Domain(domain)) if domain.parse::<IpAddr>().is_err() => {
@@ -367,7 +363,10 @@ async fn reconcile(
         .difference(&desired)
         .cloned()
         .collect::<Vec<_>>();
-    let to_add = desired.difference(&state.installed).cloned().collect::<Vec<_>>();
+    let to_add = desired
+        .difference(&state.installed)
+        .cloned()
+        .collect::<Vec<_>>();
     let mut failures = 0usize;
 
     for route in to_remove {
@@ -444,11 +443,7 @@ fn rule_routable(
 
 /// Whether a global (default-route) exit rule of the given family is both
 /// configured and currently routable.
-fn global_exit_available(
-    config: &VpnConfig,
-    ipv4: bool,
-    exit_up: &BTreeMap<String, bool>,
-) -> bool {
+fn global_exit_available(config: &VpnConfig, ipv4: bool, exit_up: &BTreeMap<String, bool>) -> bool {
     config.enabled
         && config.rules.iter().any(|rule| {
             rule.action == VpnRuleAction::Exit
@@ -532,7 +527,11 @@ async fn add_route(
             gateway,
             destination,
             prefix,
-        } => ifcfg.add_route_via_gateway(*gateway, *destination, *prefix).await,
+        } => {
+            ifcfg
+                .add_route_via_gateway(*gateway, *destination, *prefix)
+                .await
+        }
     };
     match result {
         Ok(()) => true,
@@ -686,7 +685,8 @@ fn list_windows_dns_servers() -> Vec<IpAddr> {
                                 v4.sin_addr.S_un.S_un_b.s_b4,
                             )))
                         } else if family == AF_INET6 {
-                            let v6 = &*(sockaddr as *const windows::Win32::Networking::WinSock::SOCKADDR_IN6);
+                            let v6 = &*(sockaddr
+                                as *const windows::Win32::Networking::WinSock::SOCKADDR_IN6);
                             Some(IpAddr::V6(Ipv6Addr::from(v6.sin6_addr.u.Byte)))
                         } else {
                             None
@@ -803,11 +803,19 @@ mod tests {
         // nothing is routable, so no takeover route is installed
         assert!(!rule_routable(rule, &config, &BTreeMap::new()));
         assert!(!rule_routable(rule, &config, &exit_up(&[("a", false)])));
-        assert!(!global_exit_available(&config, true, &exit_up(&[("a", false)])));
+        assert!(!global_exit_available(
+            &config,
+            true,
+            &exit_up(&[("a", false)])
+        ));
 
         // exit reachable again: routes come back
         assert!(rule_routable(rule, &config, &exit_up(&[("a", true)])));
-        assert!(global_exit_available(&config, true, &exit_up(&[("a", true)])));
+        assert!(global_exit_available(
+            &config,
+            true,
+            &exit_up(&[("a", true)])
+        ));
     }
 
     #[test]
@@ -816,7 +824,11 @@ mod tests {
         let rule = &config.rules[0];
         assert!(rule_routable(rule, &config, &BTreeMap::new()));
         assert!(rule_routable(rule, &config, &exit_up(&[("a", false)])));
-        assert!(global_exit_available(&config, true, &exit_up(&[("a", false)])));
+        assert!(global_exit_available(
+            &config,
+            true,
+            &exit_up(&[("a", false)])
+        ));
     }
 
     #[test]
@@ -829,8 +841,16 @@ mod tests {
         });
         config.rules[0].fallback_exits = vec!["b".to_owned()];
         let rule = &config.rules[0];
-        assert!(rule_routable(rule, &config, &exit_up(&[("a", false), ("b", true)])));
-        assert!(!rule_routable(rule, &config, &exit_up(&[("a", false), ("b", false)])));
+        assert!(rule_routable(
+            rule,
+            &config,
+            &exit_up(&[("a", false), ("b", true)])
+        ));
+        assert!(!rule_routable(
+            rule,
+            &config,
+            &exit_up(&[("a", false), ("b", false)])
+        ));
     }
 
     #[test]
@@ -874,7 +894,10 @@ mod tests {
             peer_url_host_ip(&"tcp://public.easytier.cn:11010".parse().unwrap()),
             None
         );
-        assert_eq!(peer_url_host_ip(&"tcp://127.0.0.1:11010".parse().unwrap()), None);
+        assert_eq!(
+            peer_url_host_ip(&"tcp://127.0.0.1:11010".parse().unwrap()),
+            None
+        );
     }
 
     #[test]

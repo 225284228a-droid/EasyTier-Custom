@@ -8,14 +8,14 @@
 //! per-packet path stays synchronous and allocation-free.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
-use crate::config::vpn::{VpnConfig, VpnRuleAction};
 use crate::config::PeerId;
+use crate::config::vpn::{VpnConfig, VpnRuleAction};
 
 /// Decision produced for one outbound destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,7 +100,10 @@ struct VpnCompiledState {
 impl VpnCompiledState {
     /// Longest-prefix match; ties are broken by lower priority, then by rule
     /// order.
-    fn best_match(candidates: impl Iterator<Item = usize>, rules: &[VpnCompiledRule]) -> Option<usize> {
+    fn best_match(
+        candidates: impl Iterator<Item = usize>,
+        rules: &[VpnCompiledRule],
+    ) -> Option<usize> {
         candidates.max_by(|&a, &b| {
             let ra = &rules[a].config;
             let rb = &rules[b].config;
@@ -181,9 +184,7 @@ impl VpnPolicyEngine {
         let mut keep = std::collections::BTreeSet::new();
         for exit in &state.config.exits {
             keep.insert(exit.name.clone());
-            self.exit_states
-                .entry(exit.name.clone())
-                .or_insert_with(VpnExitRuntimeState::default);
+            self.exit_states.entry(exit.name.clone()).or_default();
         }
         self.exit_states.retain(|name, _| keep.contains(name));
     }
@@ -468,7 +469,10 @@ mod tests {
                 },
             ],
         );
-        engine.update_exit_states([("a", Some(1u32), false, None), ("b", Some(2u32), true, None)]);
+        engine.update_exit_states([
+            ("a", Some(1u32), false, None),
+            ("b", Some(2u32), true, None),
+        ]);
         assert_eq!(
             engine.resolve(&"1.1.1.1".parse().unwrap(), 10),
             VpnDecision::Exit(2)
@@ -529,7 +533,9 @@ mod tests {
 
         let mut config = engine.config();
         config.rules.clear();
-        config.rules.push(rule("8.8.8.0/24", VpnRuleAction::Exit, Some("a")));
+        config
+            .rules
+            .push(rule("8.8.8.0/24", VpnRuleAction::Exit, Some("a")));
         engine.install(config).unwrap();
 
         // counters on the exit slot survive the swap

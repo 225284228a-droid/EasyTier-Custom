@@ -402,7 +402,9 @@ where
     pub(super) operation: Mutex<()>,
     pub(super) cancel: CancellationToken,
     pub(super) peer_manager: Arc<PeerManagerCore>,
+    #[cfg(feature = "management-rpc")]
     vpn_engine: Arc<crate::peers::vpn_policy::VpnPolicyEngine>,
+    #[cfg(feature = "management-rpc")]
     vpn_route_state: Option<Arc<dyn crate::peers::vpn_policy::VpnRouteStateHost>>,
     packet_plane: Arc<CorePacketPlane>,
     pub(super) manual: Option<ManualConnectorManager<H>>,
@@ -587,7 +589,10 @@ where
             proxy_cidr_monitor_enabled,
             #[cfg(feature = "vpn-portal")]
             vpn_portal,
+            #[cfg(feature = "management-rpc")]
             vpn_route_state,
+            #[cfg(not(feature = "management-rpc"))]
+                vpn_route_state: _,
         } = adapters;
         let host_listener_registrations = if connectivity_mode == CoreConnectivityMode::OutboundOnly
         {
@@ -862,7 +867,9 @@ where
         Ok(Arc::new(Self {
             instance_name,
             management: ManagementState::new(toml_config, host_config),
+            #[cfg(feature = "management-rpc")]
             vpn_engine: vpn_engine.clone(),
+            #[cfg(feature = "management-rpc")]
             vpn_route_state,
             instance_runtime,
             state: AtomicU8::new(CoreInstanceState::Created as u8),

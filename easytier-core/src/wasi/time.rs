@@ -230,7 +230,10 @@ mod tracked {
     }
 }
 
-pub use tracked::{Duration, Instant, Interval, error, interval, sleep, sleep_until, timeout};
+pub use tracked::{Duration, Instant, Interval, error, interval, sleep, timeout};
+
+#[cfg(feature = "proxy-smoltcp-stack")]
+pub use tracked::sleep_until;
 
 pub(crate) use tracked::{clear_domain, enter_domain, next_deadline_millis};
 

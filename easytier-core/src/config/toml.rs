@@ -47,7 +47,6 @@ pub trait ConfigLoader: Send + Sync {
     fn get_ipv6(&self) -> Option<cidr::Ipv6Inet>;
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>);
 
-
     fn get_dhcp(&self) -> bool;
     fn set_dhcp(&self, dhcp: bool);
 
@@ -873,12 +872,7 @@ impl ConfigLoader for TomlConfig {
     }
 
     fn get_vpn(&self) -> crate::config::vpn::VpnConfig {
-        self.config
-            .lock()
-            .unwrap()
-            .vpn
-            .clone()
-            .unwrap_or_default()
+        self.config.lock().unwrap().vpn.clone().unwrap_or_default()
     }
 
     fn set_vpn(&self, vpn: crate::config::vpn::VpnConfig) {

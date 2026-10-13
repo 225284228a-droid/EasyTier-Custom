@@ -196,9 +196,8 @@ impl AttachedPeerRuntime {
         let services = build_attached_services(&network.services, credential_public_key.is_some());
         let runtime_config = CoreRuntimeConfigStore::new(services, Arc::new(peer_snapshot.clone()));
         let (packet_sender, packet_receiver) = host_packet_channel();
-        let vpn_engine = Arc::new(
-            VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap(),
-        );
+        let vpn_engine =
+            Arc::new(VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap());
         let flags = peer_snapshot.flags.clone();
         let peer_manager = Arc::new(PeerManagerCore::new(
             PortablePeerManagerConfig {
@@ -598,9 +597,8 @@ mod tests {
         };
         let store = CoreRuntimeConfigStore::new(services, Arc::new(portable.snapshot.clone()));
         let (packet_sender, _packet_receiver) = host_packet_channel();
-        let vpn_engine = Arc::new(
-            VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap(),
-        );
+        let vpn_engine =
+            Arc::new(VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap());
         let peer_manager = Arc::new(
             PeerManagerCore::new(
                 portable,

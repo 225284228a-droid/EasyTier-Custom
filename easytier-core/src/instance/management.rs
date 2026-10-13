@@ -230,16 +230,18 @@ where
         self.peer_manager.close_peer_conn(peer_id, conn_id).await
     }
 
-    pub async fn update_vpn_config(&self, vpn: crate::config::vpn::VpnConfig) -> anyhow::Result<()> {
+    pub async fn update_vpn_config(
+        &self,
+        vpn: crate::config::vpn::VpnConfig,
+    ) -> anyhow::Result<()> {
         self.peer_manager.update_vpn_config(vpn)
     }
 
     /// Complete VPN status: policy snapshot, per-rule counters, exit liveness,
     /// and (when provided by the host) route-manager state.
+    #[cfg(feature = "management-rpc")]
     pub async fn vpn_status(&self) -> easytier_proto::api::instance::GetVpnStatusResponse {
-        use easytier_proto::api::instance::{
-            GetVpnStatusResponse, VpnExitStatus, VpnRuleStatus,
-        };
+        use easytier_proto::api::instance::{GetVpnStatusResponse, VpnExitStatus, VpnRuleStatus};
 
         let config = self.vpn_engine.config();
         let (rules, exits) = self.vpn_engine.status();
@@ -255,9 +257,7 @@ where
             dns_protect: config.dns_protect,
             ipv6_protect: config.ipv6_protect,
             routes_active: host_state.as_ref().is_some_and(|state| state.routes_active),
-            routes_installed: host_state
-                .as_ref()
-                .map_or(0, |s| s.routes_installed as u32),
+            routes_installed: host_state.as_ref().map_or(0, |s| s.routes_installed as u32),
             protected_endpoints: host_state
                 .as_ref()
                 .map_or(0, |s| s.protected_endpoints.len() as u32),

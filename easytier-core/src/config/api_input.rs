@@ -888,7 +888,7 @@ mod tests {
             let value = projected
                 .get(&api_field)
                 .cloned()
-                .unwrap_or_else(|| serde_json::json!(false));
+                .unwrap_or(serde_json::json!(false));
             assert_eq!(
                 value, expected,
                 "flipping {name} should leave {api_field} as the annotation declares"

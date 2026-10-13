@@ -20,20 +20,24 @@ impl IfConfiguerTrait for MacIfConfiger {
         cidr_prefix: u8,
     ) -> Result<(), Error> {
         match gateway {
-            std::net::IpAddr::V4(gw) => run_shell_cmd(
-                format!(
-                    "route -n add -net {} -netmask {} {}",
-                    destination,
-                    cidr_to_subnet_mask(cidr_prefix),
-                    gw
+            std::net::IpAddr::V4(gw) => {
+                run_shell_cmd(
+                    format!(
+                        "route -n add -net {} -netmask {} {}",
+                        destination,
+                        cidr_to_subnet_mask(cidr_prefix),
+                        gw
+                    )
+                    .as_str(),
                 )
-                .as_str(),
-            )
-            .await,
-            std::net::IpAddr::V6(gw) => run_shell_cmd(
-                format!("route -n add -inet6 {}/{} {}", destination, cidr_prefix, gw).as_str()
-            )
-            .await,
+                .await
+            }
+            std::net::IpAddr::V6(gw) => {
+                run_shell_cmd(
+                    format!("route -n add -inet6 {}/{} {}", destination, cidr_prefix, gw).as_str(),
+                )
+                .await
+            }
         }
     }
 
@@ -44,19 +48,23 @@ impl IfConfiguerTrait for MacIfConfiger {
         cidr_prefix: u8,
     ) -> Result<(), Error> {
         match gateway {
-            std::net::IpAddr::V4(_gw) => run_shell_cmd(
-                format!(
-                    "route -n delete -net {} -netmask {}",
-                    destination,
-                    cidr_to_subnet_mask(cidr_prefix)
+            std::net::IpAddr::V4(_gw) => {
+                run_shell_cmd(
+                    format!(
+                        "route -n delete -net {} -netmask {}",
+                        destination,
+                        cidr_to_subnet_mask(cidr_prefix)
+                    )
+                    .as_str(),
                 )
-                .as_str(),
-            )
-            .await,
-            std::net::IpAddr::V6(_gw) => run_shell_cmd(
-                format!("route -n delete -inet6 {}/{}", destination, cidr_prefix).as_str()
-            )
-            .await,
+                .await
+            }
+            std::net::IpAddr::V6(_gw) => {
+                run_shell_cmd(
+                    format!("route -n delete -inet6 {}/{}", destination, cidr_prefix).as_str(),
+                )
+                .await
+            }
         }
     }
 
@@ -262,7 +270,10 @@ default            link#12            UCSIg            utun8
     #[test]
     fn parses_v4_default_with_gateway() {
         let route = parse_netstat_default_route(MACOS_MIXED, None).unwrap();
-        assert_eq!(route.gateway, "192.168.1.1".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(
+            route.gateway,
+            "192.168.1.1".parse::<std::net::IpAddr>().unwrap()
+        );
         assert_eq!(route.interface_name, "en0");
     }
 

@@ -375,8 +375,12 @@ impl RouteMessage {
         self.gateway.as_ref()
     }
 
-    pub(crate) fn attributes(&self) -> &[Attribute] {
-        &self.attributes
+    pub(crate) fn priority(&self) -> Option<u32> {
+        self.attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_PRIORITY)
+            .and_then(|attribute| attribute.value.as_slice().try_into().ok())
+            .map(u32::from_ne_bytes)
     }
 
     pub(crate) fn oif(&self) -> Option<u32> {
@@ -652,6 +656,7 @@ mod tests {
         let decoded = RouteMessage::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.destination(), message.destination());
         assert_eq!(decoded.oif(), Some(7));
+        assert_eq!(decoded.priority(), Some(42));
         assert_eq!(decoded.route_type(), RouteType::Unicast);
         assert_eq!(encode(&decoded), bytes);
     }
@@ -683,6 +688,26 @@ mod tests {
         let message = RouteMessage::from_bytes(&bytes).unwrap();
         assert_eq!(message.src_len(), 56);
         assert_eq!(message.source(), Some(&"2001:db8:1::".parse().unwrap()));
+    }
+
+    #[test]
+    fn route_priority_handles_missing_malformed_and_flagged_attributes() {
+        let mut message = RouteMessageBuilder::new(libc::AF_INET as u8).build();
+        assert_eq!(message.priority(), None);
+
+        message
+            .attributes
+            .push(Attribute::new(RTA_PRIORITY, vec![1, 2, 3]));
+        let decoded = RouteMessage::from_bytes(&encode(&message)).unwrap();
+        assert_eq!(decoded.priority(), None);
+
+        message.attributes.clear();
+        message.attributes.push(Attribute::new(
+            RTA_PRIORITY | 0x8000,
+            17_u32.to_ne_bytes().to_vec(),
+        ));
+        let decoded = RouteMessage::from_bytes(&encode(&message)).unwrap();
+        assert_eq!(decoded.priority(), Some(17));
     }
 
     #[test]

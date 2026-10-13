@@ -9,7 +9,7 @@ use std::{
 
 use bytes::Bytes;
 use dashmap::{DashMap, mapref::entry::Entry};
-use smoltcp::wire::{IpAddress, IpProtocol, Ipv4Packet, Ipv6Packet, UdpPacket, IPV6_HEADER_LEN};
+use smoltcp::wire::{IPV6_HEADER_LEN, IpAddress, IpProtocol, Ipv4Packet, Ipv6Packet, UdpPacket};
 
 use crate::{
     config::PeerId,
@@ -359,7 +359,12 @@ impl UdpProxyEngine {
                     denied,
                 ));
                 self.nat_ids.insert(nat_entry.id(), nat_key);
-                tracing::info!(?packet, ?ipv6, ?udp_packet, "udp v6 nat table entry created");
+                tracing::info!(
+                    ?packet,
+                    ?ipv6,
+                    ?udp_packet,
+                    "udp v6 nat table entry created"
+                );
                 entry.insert(nat_entry).clone()
             }
         };
@@ -545,11 +550,7 @@ fn compose_udp_ipv6_response(
     }
 
     let mut packet = ZCPacket::new_with_payload(&buf);
-    packet.fill_peer_manager_hdr(
-        entry.my_peer_id,
-        entry.src_peer_id,
-        PacketType::Data as u8,
-    );
+    packet.fill_peer_manager_hdr(entry.my_peer_id, entry.src_peer_id, PacketType::Data as u8);
     packet
         .mut_peer_manager_header()
         .expect("peer manager header")
@@ -560,11 +561,11 @@ fn compose_udp_ipv6_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::SocketAddrV6;
     use crate::gateway::proxy::{
         cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
         traits::{ProxyRuntimeError, ProxyRuntimeInfo, ProxyRuntimeSnapshot, UdpProxyResponseSink},
     };
+    use std::net::SocketAddrV6;
 
     struct TestRuntime;
 
@@ -668,27 +669,21 @@ mod tests {
     }
 
     fn empty_cidr() -> Arc<ProxyCidrTable> {
-        Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot { rules: vec![] }))
+        Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot {
+            rules: vec![],
+        }))
     }
 
-    fn build_udp_v6_packet(
-        src: SocketAddrV6,
-        dst: SocketAddrV6,
-        payload: &[u8],
-    ) -> ZCPacket {
+    fn build_udp_v6_packet(src: SocketAddrV6, dst: SocketAddrV6, payload: &[u8]) -> ZCPacket {
         let mut raw =
             vec![0; smoltcp::wire::IPV6_HEADER_LEN + smoltcp::wire::UDP_HEADER_LEN + payload.len()];
         {
-            let mut udp =
-                UdpPacket::new_unchecked(&mut raw[smoltcp::wire::IPV6_HEADER_LEN..]);
+            let mut udp = UdpPacket::new_unchecked(&mut raw[smoltcp::wire::IPV6_HEADER_LEN..]);
             udp.set_src_port(src.port());
             udp.set_dst_port(dst.port());
             udp.set_len((smoltcp::wire::UDP_HEADER_LEN + payload.len()) as u16);
             udp.payload_mut().copy_from_slice(payload);
-            udp.fill_checksum(
-                &IpAddress::Ipv6(*src.ip()),
-                &IpAddress::Ipv6(*dst.ip()),
-            );
+            udp.fill_checksum(&IpAddress::Ipv6(*src.ip()), &IpAddress::Ipv6(*dst.ip()));
         }
         {
             let mut ipv6 = Ipv6Packet::new_unchecked(&mut raw);
@@ -721,20 +716,27 @@ mod tests {
         let client: SocketAddrV6 = "[fd00:abcd::1]:53864".parse().unwrap();
         let internet: SocketAddrV6 = "[2606:4700:4700::1111]:53".parse().unwrap();
         let mut packet = build_udp_v6_packet(client, internet, b"query");
-        packet
-            .mut_peer_manager_header()
-            .unwrap()
-            .set_vpn_exit(true);
+        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
 
         let action = engine.handle_peer_packet(&packet, v6_exit_ctx(), &TestRuntime);
-        let UdpProxyAction::ForwardToSocket { entry_id, dst, payload } = action else {
+        let UdpProxyAction::ForwardToSocket {
+            entry_id,
+            dst,
+            payload,
+        } = action
+        else {
             panic!("expected forward action, got {action:?}");
         };
         assert_eq!(dst, SocketAddr::from(internet));
         assert_eq!(payload.as_ref(), b"query");
 
         let reply = engine
-            .handle_socket_response(entry_id, "[2606:4700:4700::1111]:53".parse().unwrap(), b"answer", 1280)
+            .handle_socket_response(
+                entry_id,
+                "[2606:4700:4700::1111]:53".parse().unwrap(),
+                b"answer",
+                1280,
+            )
             .unwrap();
         assert_eq!(reply.len(), 1);
         let ip = Ipv6Packet::new_checked(reply[0].payload()).unwrap();
@@ -764,10 +766,7 @@ mod tests {
         assert!(matches!(action, UdpProxyAction::Pass));
         assert!(engine.nat_table.is_empty());
 
-        packet
-            .mut_peer_manager_header()
-            .unwrap()
-            .set_vpn_exit(true);
+        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
         let action = engine.handle_peer_packet(&packet, client_ctx, &TestRuntime);
         assert!(matches!(action, UdpProxyAction::Pass));
         assert!(engine.nat_table.is_empty());

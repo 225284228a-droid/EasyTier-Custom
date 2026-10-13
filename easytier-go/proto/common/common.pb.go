@@ -198,7 +198,6 @@ type Flags struct {
 	EnableIpv6             bool   `protobuf:"varint,4,opt,name=enable_ipv6,json=enableIpv6,proto3" json:"enable_ipv6,omitempty"`
 	Mtu                    uint32 `protobuf:"varint,5,opt,name=mtu,proto3" json:"mtu,omitempty"`
 	LatencyFirst           bool   `protobuf:"varint,6,opt,name=latency_first,json=latencyFirst,proto3" json:"latency_first,omitempty"`
-	EnableExitNode         bool   `protobuf:"varint,7,opt,name=enable_exit_node,json=enableExitNode,proto3" json:"enable_exit_node,omitempty"`
 	NoTun                  bool   `protobuf:"varint,8,opt,name=no_tun,json=noTun,proto3" json:"no_tun,omitempty"`
 	UseSmoltcp             bool   `protobuf:"varint,9,opt,name=use_smoltcp,json=useSmoltcp,proto3" json:"use_smoltcp,omitempty"`
 	RelayNetworkWhitelist  string `protobuf:"bytes,10,opt,name=relay_network_whitelist,json=relayNetworkWhitelist,proto3" json:"relay_network_whitelist,omitempty"`
@@ -264,6 +263,9 @@ type Flags struct {
 	// Restrict automatic P2P/hole-punch attempts to disguised protocols.
 	OnlyUseWssHttp3ForHolePunching bool `protobuf:"varint,45,opt,name=only_use_wss_http3_for_hole_punching,json=onlyUseWssHttp3ForHolePunching,proto3" json:"only_use_wss_http3_for_hole_punching,omitempty"`
 	// Prefer WSS/HTTP3 for automatic P2P while still allowing TCP/UDP fallback.
+	// Enabled by default: both peers must advertise the preference (or one side
+	// must require it) before disguised punches and WSS/HTTP3 ranking apply, so
+	// nodes that explicitly disable it keep the raw protocol ordering.
 	PreferWssHttp3ForP2P bool `protobuf:"varint,46,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
 	// Do not use WSS/HTTP3 for automatic P2P at all.
 	DisableWssHttp3ForP2P bool `protobuf:"varint,47,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
@@ -350,13 +352,6 @@ func (x *Flags) GetMtu() uint32 {
 func (x *Flags) GetLatencyFirst() bool {
 	if x != nil {
 		return x.LatencyFirst
-	}
-	return false
-}
-
-func (x *Flags) GetEnableExitNode() bool {
-	if x != nil {
-		return x.EnableExitNode
 	}
 	return false
 }
@@ -1901,23 +1896,22 @@ func (x *StunInfo) GetMaxPort() uint32 {
 }
 
 type PeerFeatureFlag struct {
-	state                  protoimpl.MessageState `protogen:"open.v1"`
-	IsPublicServer         bool                   `protobuf:"varint,1,opt,name=is_public_server,json=isPublicServer,proto3" json:"is_public_server,omitempty"`
-	AvoidRelayData         bool                   `protobuf:"varint,2,opt,name=avoid_relay_data,json=avoidRelayData,proto3" json:"avoid_relay_data,omitempty"`
-	KcpInput               bool                   `protobuf:"varint,3,opt,name=kcp_input,json=kcpInput,proto3" json:"kcp_input,omitempty"`
-	NoRelayKcp             bool                   `protobuf:"varint,4,opt,name=no_relay_kcp,json=noRelayKcp,proto3" json:"no_relay_kcp,omitempty"`
-	SupportConnListSync    bool                   `protobuf:"varint,5,opt,name=support_conn_list_sync,json=supportConnListSync,proto3" json:"support_conn_list_sync,omitempty"`
-	QuicInput              bool                   `protobuf:"varint,6,opt,name=quic_input,json=quicInput,proto3" json:"quic_input,omitempty"`
-	NoRelayQuic            bool                   `protobuf:"varint,7,opt,name=no_relay_quic,json=noRelayQuic,proto3" json:"no_relay_quic,omitempty"`
-	IsCredentialPeer       bool                   `protobuf:"varint,8,opt,name=is_credential_peer,json=isCredentialPeer,proto3" json:"is_credential_peer,omitempty"`
-	NeedP2P                bool                   `protobuf:"varint,9,opt,name=need_p2p,json=needP2p,proto3" json:"need_p2p,omitempty"`
-	DisableP2P             bool                   `protobuf:"varint,10,opt,name=disable_p2p,json=disableP2p,proto3" json:"disable_p2p,omitempty"`
-	Ipv6PublicAddrProvider bool                   `protobuf:"varint,11,opt,name=ipv6_public_addr_provider,json=ipv6PublicAddrProvider,proto3" json:"ipv6_public_addr_provider,omitempty"`
-	PreferWssHttp3ForP2P   bool                   `protobuf:"varint,12,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
-	DisableWssHttp3ForP2P  bool                   `protobuf:"varint,13,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
-	OnlyUseWssHttp3ForP2P  bool                   `protobuf:"varint,14,opt,name=only_use_wss_http3_for_p2p,json=onlyUseWssHttp3ForP2p,proto3" json:"only_use_wss_http3_for_p2p,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	IsPublicServer        bool                   `protobuf:"varint,1,opt,name=is_public_server,json=isPublicServer,proto3" json:"is_public_server,omitempty"`
+	AvoidRelayData        bool                   `protobuf:"varint,2,opt,name=avoid_relay_data,json=avoidRelayData,proto3" json:"avoid_relay_data,omitempty"`
+	KcpInput              bool                   `protobuf:"varint,3,opt,name=kcp_input,json=kcpInput,proto3" json:"kcp_input,omitempty"`
+	NoRelayKcp            bool                   `protobuf:"varint,4,opt,name=no_relay_kcp,json=noRelayKcp,proto3" json:"no_relay_kcp,omitempty"`
+	SupportConnListSync   bool                   `protobuf:"varint,5,opt,name=support_conn_list_sync,json=supportConnListSync,proto3" json:"support_conn_list_sync,omitempty"`
+	QuicInput             bool                   `protobuf:"varint,6,opt,name=quic_input,json=quicInput,proto3" json:"quic_input,omitempty"`
+	NoRelayQuic           bool                   `protobuf:"varint,7,opt,name=no_relay_quic,json=noRelayQuic,proto3" json:"no_relay_quic,omitempty"`
+	IsCredentialPeer      bool                   `protobuf:"varint,8,opt,name=is_credential_peer,json=isCredentialPeer,proto3" json:"is_credential_peer,omitempty"`
+	NeedP2P               bool                   `protobuf:"varint,9,opt,name=need_p2p,json=needP2p,proto3" json:"need_p2p,omitempty"`
+	DisableP2P            bool                   `protobuf:"varint,10,opt,name=disable_p2p,json=disableP2p,proto3" json:"disable_p2p,omitempty"`
+	PreferWssHttp3ForP2P  bool                   `protobuf:"varint,12,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
+	DisableWssHttp3ForP2P bool                   `protobuf:"varint,13,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
+	OnlyUseWssHttp3ForP2P bool                   `protobuf:"varint,14,opt,name=only_use_wss_http3_for_p2p,json=onlyUseWssHttp3ForP2p,proto3" json:"only_use_wss_http3_for_p2p,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *PeerFeatureFlag) Reset() {
@@ -2016,13 +2010,6 @@ func (x *PeerFeatureFlag) GetNeedP2P() bool {
 func (x *PeerFeatureFlag) GetDisableP2P() bool {
 	if x != nil {
 		return x.DisableP2P
-	}
-	return false
-}
-
-func (x *PeerFeatureFlag) GetIpv6PublicAddrProvider() bool {
-	if x != nil {
-		return x.Ipv6PublicAddrProvider
 	}
 	return false
 }
@@ -2218,7 +2205,7 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xe6\x16\n" +
+	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xae\x16\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2235,9 +2222,7 @@ const file_common_proto_rawDesc = "" +
 	"\x03mtu\x18\x05 \x01(\rB\f\x8a\xb5\x18\b\n" +
 	"\x041380\x18\x01R\x03mtu\x120\n" +
 	"\rlatency_first\x18\x06 \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\flatencyFirst\x125\n" +
-	"\x10enable_exit_node\x18\a \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x0eenableExitNode\x12\"\n" +
+	"\x05falseR\flatencyFirst\x12\"\n" +
 	"\x06no_tun\x18\b \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\x05noTun\x12,\n" +
 	"\vuse_smoltcp\x18\t \x01(\bB\v\x8a\xb5\x18\a\n" +
@@ -2322,9 +2307,10 @@ const file_common_proto_rawDesc = "" +
 	"\x11prefer_peer_relay\x18, \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\x0fpreferPeerRelay\x12Y\n" +
 	"$only_use_wss_http3_for_hole_punching\x18- \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x1eonlyUseWssHttp3ForHolePunching\x12C\n" +
-	"\x18prefer_wss_http3_for_p2p\x18. \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x14preferWssHttp3ForP2p\x12E\n" +
+	"\x05falseR\x1eonlyUseWssHttp3ForHolePunching\x12B\n" +
+	"\x18prefer_wss_http3_for_p2p\x18. \x01(\bB\n" +
+	"\x8a\xb5\x18\x06\n" +
+	"\x04trueR\x14preferWssHttp3ForP2p\x12E\n" +
 	"\x19disable_wss_http3_for_p2p\x18/ \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\x15disableWssHttp3ForP2p\x12Z\n" +
 	"$close_redundant_conns_when_disguised\x181 \x01(\bB\n" +
@@ -2432,7 +2418,7 @@ const file_common_proto_rawDesc = "" +
 	"\x10last_update_time\x18\x03 \x01(\x03R\x0elastUpdateTime\x12\x1b\n" +
 	"\tpublic_ip\x18\x04 \x03(\tR\bpublicIp\x12\x19\n" +
 	"\bmin_port\x18\x05 \x01(\rR\aminPort\x12\x19\n" +
-	"\bmax_port\x18\x06 \x01(\rR\amaxPort\"\xee\x04\n" +
+	"\bmax_port\x18\x06 \x01(\rR\amaxPort\"\xb3\x04\n" +
 	"\x0fPeerFeatureFlag\x12(\n" +
 	"\x10is_public_server\x18\x01 \x01(\bR\x0eisPublicServer\x12(\n" +
 	"\x10avoid_relay_data\x18\x02 \x01(\bR\x0eavoidRelayData\x12\x1b\n" +
@@ -2447,8 +2433,7 @@ const file_common_proto_rawDesc = "" +
 	"\bneed_p2p\x18\t \x01(\bR\aneedP2p\x12\x1f\n" +
 	"\vdisable_p2p\x18\n" +
 	" \x01(\bR\n" +
-	"disableP2p\x129\n" +
-	"\x19ipv6_public_addr_provider\x18\v \x01(\bR\x16ipv6PublicAddrProvider\x126\n" +
+	"disableP2p\x126\n" +
 	"\x18prefer_wss_http3_for_p2p\x18\f \x01(\bR\x14preferWssHttp3ForP2p\x128\n" +
 	"\x19disable_wss_http3_for_p2p\x18\r \x01(\bR\x15disableWssHttp3ForP2p\x129\n" +
 	"\x1aonly_use_wss_http3_for_p2p\x18\x0e \x01(\bR\x15onlyUseWssHttp3ForP2p\"\xaa\x01\n" +

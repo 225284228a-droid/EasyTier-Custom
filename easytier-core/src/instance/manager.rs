@@ -217,6 +217,7 @@ struct InstanceStateChanges {
 }
 
 impl InstanceStateChanges {
+    #[cfg(any(feature = "web-client", test))]
     fn generation(&self) -> usize {
         self.generation.load(Ordering::Acquire)
     }
@@ -226,6 +227,7 @@ impl InstanceStateChanges {
         self.notify.notify_waiters();
     }
 
+    #[cfg(any(feature = "web-client", test))]
     async fn wait_for_change(&self, generation: usize) -> usize {
         loop {
             let notified = self.notify.notified();
@@ -434,10 +436,12 @@ impl<F: InstanceFactory> InstanceManager<F> {
         }
     }
 
+    #[cfg(feature = "web-client")]
     pub(crate) fn instance_state_generation(&self) -> usize {
         self.instance_state_changes.generation()
     }
 
+    #[cfg(feature = "web-client")]
     pub(crate) async fn wait_for_instance_state_change(&self, generation: usize) -> usize {
         self.instance_state_changes
             .wait_for_change(generation)

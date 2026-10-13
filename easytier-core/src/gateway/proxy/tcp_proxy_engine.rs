@@ -308,8 +308,7 @@ impl TcpProxyEngine {
         }
         let origin_ip = ip_packet.dst_addr();
 
-        let Some(real_dst_ip) =
-            self.real_dst_ip_for_mode(mode, origin_ip, hdr.is_vpn_exit(), &ctx)
+        let Some(real_dst_ip) = self.real_dst_ip_for_mode(mode, origin_ip, hdr.is_vpn_exit(), &ctx)
         else {
             return TcpProxyPacketAction::Pass;
         };
@@ -387,11 +386,7 @@ impl TcpProxyEngine {
         ctx: &TcpProxyPeerContext,
         is_vpn_exit: bool,
     ) -> TcpProxyPacketAction {
-        if !ctx.vpn_exit
-            || !is_vpn_exit
-            || ctx.smoltcp_enabled
-            || ctx.local_ipv6.is_none()
-        {
+        if !ctx.vpn_exit || !is_vpn_exit || ctx.smoltcp_enabled || ctx.local_ipv6.is_none() {
             return TcpProxyPacketAction::Pass;
         }
         let v6_local_port = self.v6_local_port();
@@ -465,7 +460,11 @@ impl TcpProxyEngine {
         zc_packet: &mut ZCPacket,
         ctx: TcpProxyNicContext,
     ) -> bool {
-        if zc_packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
+        if zc_packet
+            .payload()
+            .first()
+            .is_some_and(|byte| byte >> 4 == 6)
+        {
             return self.try_process_v6_packet_from_nic(zc_packet, ctx);
         }
         Self::try_process_v4_packet_from_nic(self, zc_packet, ctx)
@@ -742,8 +741,8 @@ mod tests {
         gateway::proxy::cidr_table::{ProxyCidrRule, ProxyCidrSnapshot},
         packet::PeerManagerHeader,
     };
-    use std::net::SocketAddrV6;
     use smoltcp::wire::{IpAddress, TcpPacket};
+    use std::net::SocketAddrV6;
 
     fn build_tcp_packet(src: SocketAddrV4, dst: SocketAddrV4, syn: bool, ack: bool) -> ZCPacket {
         let mut raw = vec![0; smoltcp::wire::IPV4_HEADER_LEN + smoltcp::wire::TCP_HEADER_LEN];
@@ -1279,8 +1278,7 @@ mod tests {
             ipv6.set_dst_addr(*dst.ip());
         }
         {
-            let mut tcp =
-                TcpPacket::new_unchecked(&mut raw[smoltcp::wire::IPV6_HEADER_LEN..]);
+            let mut tcp = TcpPacket::new_unchecked(&mut raw[smoltcp::wire::IPV6_HEADER_LEN..]);
             tcp.set_src_port(src.port());
             tcp.set_dst_port(dst.port());
             tcp.set_header_len(smoltcp::wire::TCP_HEADER_LEN as u8);
@@ -1302,7 +1300,9 @@ mod tests {
     }
 
     fn empty_cidr() -> Arc<ProxyCidrTable> {
-        Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot { rules: vec![] }))
+        Arc::new(ProxyCidrTable::from_snapshot(ProxyCidrSnapshot {
+            rules: vec![],
+        }))
     }
 
     #[test]
@@ -1312,13 +1312,14 @@ mod tests {
         let client: SocketAddrV6 = "[fd00:abcd::1]:55555".parse().unwrap();
         let internet: SocketAddrV6 = "[2606:4700::1]:443".parse().unwrap();
         let mut packet = build_tcp_v6_packet(client, internet, true, false);
-        packet
-            .mut_peer_manager_header()
-            .unwrap()
-            .set_vpn_exit(true);
+        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
 
-        let action = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, v6_exit_peer_ctx());
-        assert!(matches!(action, TcpProxyPacketAction::Handled { new_syn: true }));
+        let action =
+            engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, v6_exit_peer_ctx());
+        assert!(matches!(
+            action,
+            TcpProxyPacketAction::Handled { new_syn: true }
+        ));
 
         let ip = Ipv6Packet::new_checked(packet.payload()).unwrap();
         assert_eq!(ip.version(), 6);
@@ -1350,10 +1351,7 @@ mod tests {
         let client: SocketAddrV6 = "[fd00:abcd::1]:55555".parse().unwrap();
         let internet: SocketAddrV6 = "[2606:4700::1]:443".parse().unwrap();
         let mut packet = build_tcp_v6_packet(client, internet, true, false);
-        packet
-            .mut_peer_manager_header()
-            .unwrap()
-            .set_vpn_exit(true);
+        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
         let _ = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, v6_exit_peer_ctx());
 
         let translated_port = engine
@@ -1397,10 +1395,7 @@ mod tests {
 
         // the vpn-exit header flag alone is not enough without ctx.vpn_exit
         let mut packet = build_tcp_v6_packet(client, internet, true, false);
-        packet
-            .mut_peer_manager_header()
-            .unwrap()
-            .set_vpn_exit(true);
+        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
         let action = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, peer_ctx());
         assert!(matches!(action, TcpProxyPacketAction::Pass));
         assert!(engine.flow_map.is_empty());

@@ -1260,12 +1260,13 @@ mod tests {
         let mut portable = crate::peers::peer_manager::PortablePeerManagerConfig::new(runtime);
         portable.snapshot.acl_group_declarations = snapshot.peer.acl_group_declarations.clone();
         let (packet_sender, _packet_receiver) = crate::host::packet::host_packet_channel();
-        let vpn_engine = Arc::new(
-            crate::peers::vpn_policy::VpnPolicyEngine::new(
-                crate::config::vpn::VpnConfig::default(),
-            )
-            .unwrap(),
-        );
+        let vpn_engine =
+            Arc::new(
+                crate::peers::vpn_policy::VpnPolicyEngine::new(
+                    crate::config::vpn::VpnConfig::default(),
+                )
+                .unwrap(),
+            );
         let peer = Arc::new(
             PeerManagerCore::new(
                 portable,

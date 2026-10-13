@@ -286,8 +286,9 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         let Some(if_index) = Self::parse_interface_index(&route.interface_name) else {
             return Err(Error::NotFound);
         };
-        let luid = InterfaceLuid::luid_from_index(if_index)
-            .map_err(|e| anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e)))?;
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
         let result = match (gateway, destination) {
             (std::net::IpAddr::V4(_), std::net::IpAddr::V4(dest)) => luid.add_route_ipv4(
                 &Ipv4Inet::new(dest, cidr_prefix).unwrap(),
@@ -299,9 +300,11 @@ impl IfConfiguerTrait for WindowsIfConfiger {
                 &gw_v6.unwrap(),
                 1,
             ),
-            _ => return Err(Error::AnyhowError(anyhow::anyhow!(
-                "gateway and destination family mismatch"
-            ))),
+            _ => {
+                return Err(Error::AnyhowError(anyhow::anyhow!(
+                    "gateway and destination family mismatch"
+                )));
+            }
         };
         match result {
             Ok(()) => Ok(()),
@@ -325,12 +328,10 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             };
             match (gateway, destination) {
                 (std::net::IpAddr::V4(gw), std::net::IpAddr::V4(dest)) => {
-                    let _ =
-                        luid.delete_route_ipv4(&Ipv4Inet::new(dest, cidr_prefix).unwrap(), &gw);
+                    let _ = luid.delete_route_ipv4(&Ipv4Inet::new(dest, cidr_prefix).unwrap(), &gw);
                 }
                 (std::net::IpAddr::V6(gw), std::net::IpAddr::V6(dest)) => {
-                    let _ =
-                        luid.delete_route_ipv6(&Ipv6Inet::new(dest, cidr_prefix).unwrap(), &gw);
+                    let _ = luid.delete_route_ipv6(&Ipv6Inet::new(dest, cidr_prefix).unwrap(), &gw);
                 }
                 _ => {}
             }

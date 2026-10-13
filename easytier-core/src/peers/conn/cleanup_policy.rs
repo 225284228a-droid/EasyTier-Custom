@@ -289,7 +289,7 @@ mod tests {
             "p2p-cleanup-v2:tcp:0:0:0:0:direct:00000000-0000-0000-0000-000000000000".to_owned(),
         ] {
             assert!(
-                CleanupOffer::from_features(&[invalid.clone()]).is_none(),
+                CleanupOffer::from_features(std::slice::from_ref(&invalid)).is_none(),
                 "{invalid}"
             );
         }

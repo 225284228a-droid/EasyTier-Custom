@@ -23,9 +23,7 @@ use url::Url;
 use crate::{
     config::{
         P2pPolicyFlags, PeerId, ProxyNetworkConfig,
-        peers::{
-            AclRuleConfig, PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot,
-        },
+        peers::{AclRuleConfig, PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot},
         preferred_disguised_scheme,
         runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
         toml::ManagedCredentialConfig,
@@ -343,11 +341,9 @@ impl RouteAlgoInst {
         peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
     ) -> Self {
         match route_algo {
-            RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
-                my_peer_id,
-                context,
-                peer_rpc_mgr,
-            )),
+            RouteAlgoType::Ospf => {
+                RouteAlgoInst::Ospf(PeerRoute::new(my_peer_id, context, peer_rpc_mgr))
+            }
             RouteAlgoType::None => RouteAlgoInst::None,
         }
     }
@@ -1474,6 +1470,7 @@ impl PeerManagerCore {
     pub fn get_peer_session_store(&self) -> Arc<PeerSessionStore> {
         self.peer_session_store.clone()
     }
+    #[cfg(feature = "proxy-packet")]
     pub(crate) fn get_nic_channel(&self) -> HostPacketSender {
         self.nic_channel.clone()
     }
@@ -1487,8 +1484,7 @@ impl PeerManagerCore {
     }
 
     pub async fn is_easytier_managed_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
-        self.context.is_ip_local_ipv6(ip)
-            || self.peers.get_peer_id_by_ipv6(ip).await.is_some()
+        self.context.is_ip_local_ipv6(ip) || self.peers.get_peer_id_by_ipv6(ip).await.is_some()
     }
 
     pub fn traffic_metrics(&self) -> Arc<TrafficMetricRecorder> {
@@ -2743,13 +2739,11 @@ impl PeerOutboundPacketRouter {
         } else if !self
             .context
             .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
-        {
-            if let super::vpn_policy::VpnDecision::Exit(peer_id) =
+            && let super::vpn_policy::VpnDecision::Exit(peer_id) =
                 self.vpn_engine.resolve(&IpAddr::V4(*ipv4_addr), bytes)
-            {
-                dst_peers.push(peer_id);
-                is_vpn_exit = true;
-            }
+        {
+            dst_peers.push(peer_id);
+            is_vpn_exit = true;
         }
         (dst_peers, is_vpn_exit)
     }
@@ -4197,8 +4191,10 @@ mod tests {
         // achieved by the host route manager withdrawing the takeover route
         // while the exits are down.
         let core = build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
-        let mut vpn = crate::config::vpn::VpnConfig::default();
-        vpn.enabled = true;
+        let mut vpn = crate::config::vpn::VpnConfig {
+            enabled: true,
+            ..Default::default()
+        };
         vpn.exits.push(crate::config::vpn::VpnExitConfig {
             name: "e1".to_owned(),
             node: "10.20.0.50".parse().unwrap(),

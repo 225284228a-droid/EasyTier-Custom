@@ -461,10 +461,7 @@ pub fn runtime_instance_from_config_snapshot(
         tun_required,
         tun_attached,
         magic_dns_enabled: config.enable_magic_dns.unwrap_or(false),
-        need_exit_node: config
-            .vpn
-            .as_ref()
-            .is_some_and(|vpn| vpn.enabled),
+        need_exit_node: config.vpn.as_ref().is_some_and(|vpn| vpn.enabled),
         error_message: None,
         my_node_info: Some(my_node_info),
         events: Vec::new(),

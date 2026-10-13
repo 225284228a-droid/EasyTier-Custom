@@ -45,7 +45,9 @@ pub trait IfConfiguerTrait: Send + Sync {
         _destination: std::net::IpAddr,
         _cidr_prefix: u8,
     ) -> Result<(), Error> {
-        Err(Error::AnyhowError(anyhow::anyhow!("route via gateway is unsupported on this platform")))
+        Err(Error::AnyhowError(anyhow::anyhow!(
+            "route via gateway is unsupported on this platform"
+        )))
     }
     async fn remove_route_via_gateway(
         &self,
@@ -53,7 +55,9 @@ pub trait IfConfiguerTrait: Send + Sync {
         _destination: std::net::IpAddr,
         _cidr_prefix: u8,
     ) -> Result<(), Error> {
-        Err(Error::AnyhowError(anyhow::anyhow!("route via gateway is unsupported on this platform")))
+        Err(Error::AnyhowError(anyhow::anyhow!(
+            "route via gateway is unsupported on this platform"
+        )))
     }
     /// Turns kernel IPv6 exit forwarding (NAT66) for the multi-exit VPN on
     /// or off: mesh traffic from `mesh_prefix` leaving through any interface

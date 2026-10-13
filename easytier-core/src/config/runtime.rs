@@ -12,7 +12,7 @@ use super::{
     peers::{AclRuleConfig, PeerRuntimeSnapshot},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
@@ -20,18 +20,6 @@ pub struct CoreRuntimeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
     pub proxy: ProxyRuntimeConfig,
-}
-
-impl Default for CoreRuntimeConfig {
-    fn default() -> Self {
-        Self {
-            acl: AclRuleConfig::default(),
-            dhcp_ipv4: false,
-            gateway: GatewayRuntimeConfig::default(),
-            manual_routes: None,
-            proxy: ProxyRuntimeConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -29,7 +29,8 @@ pub async fn sync_vpn_exit_forwarding(enabled: bool, tun_ifname: &str, v6_prefix
 }
 
 #[cfg(target_os = "linux")]
-async fn sync_linux(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) {    use std::process::Command;
+async fn sync_linux(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) {
+    use std::process::Command;
 
     fn run(cmd: &mut Command) -> bool {
         match cmd.output() {
@@ -116,4 +117,3 @@ async fn sync_linux(enabled: bool, tun_ifname: &str, v6_prefix: Option<String>) 
         }
     }
 }
-

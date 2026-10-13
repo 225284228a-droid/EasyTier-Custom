@@ -1175,9 +1175,7 @@ impl NicCtx {
                 if enabled == already_active {
                     continue;
                 }
-                let prefix = global_ctx
-                    .get_ipv6()
-                    .map(|inet| inet.network().to_string());
+                let prefix = global_ctx.get_ipv6().map(|inet| inet.network().to_string());
                 super::vpn_exit_forwarding::sync_vpn_exit_forwarding(
                     enabled,
                     &ifname,

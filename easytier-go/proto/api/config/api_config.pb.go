@@ -75,26 +75,25 @@ func (ConfigPatchAction) EnumDescriptor() ([]byte, []int) {
 }
 
 type InstanceConfigPatch struct {
-	state                  protoimpl.MessageState       `protogen:"open.v1"`
-	Hostname               *string                      `protobuf:"bytes,1,opt,name=hostname,proto3,oneof" json:"hostname,omitempty"`
-	Ipv4                   *common.Ipv4Inet             `protobuf:"bytes,2,opt,name=ipv4,proto3,oneof" json:"ipv4,omitempty"`
-	Ipv6                   *common.Ipv6Inet             `protobuf:"bytes,3,opt,name=ipv6,proto3,oneof" json:"ipv6,omitempty"`
-	PortForwards           []*PortForwardPatch          `protobuf:"bytes,4,rep,name=port_forwards,json=portForwards,proto3" json:"port_forwards,omitempty"`
-	Acl                    *AclPatch                    `protobuf:"bytes,5,opt,name=acl,proto3,oneof" json:"acl,omitempty"`
-	ProxyNetworks          []*ProxyNetworkPatch         `protobuf:"bytes,6,rep,name=proxy_networks,json=proxyNetworks,proto3" json:"proxy_networks,omitempty"`
-	Routes                 []*RoutePatch                `protobuf:"bytes,7,rep,name=routes,proto3" json:"routes,omitempty"`
-	ExitNodes              []*ExitNodePatch             `protobuf:"bytes,8,rep,name=exit_nodes,json=exitNodes,proto3" json:"exit_nodes,omitempty"`
-	MappedListeners        []*UrlPatch                  `protobuf:"bytes,9,rep,name=mapped_listeners,json=mappedListeners,proto3" json:"mapped_listeners,omitempty"`
-	Connectors             []*UrlPatch                  `protobuf:"bytes,10,rep,name=connectors,proto3" json:"connectors,omitempty"`
-	Ipv6PublicAddrProvider *bool                        `protobuf:"varint,11,opt,name=ipv6_public_addr_provider,json=ipv6PublicAddrProvider,proto3,oneof" json:"ipv6_public_addr_provider,omitempty"`
-	Ipv6PublicAddrAuto     *bool                        `protobuf:"varint,12,opt,name=ipv6_public_addr_auto,json=ipv6PublicAddrAuto,proto3,oneof" json:"ipv6_public_addr_auto,omitempty"`
-	Ipv6PublicAddrPrefix   *string                      `protobuf:"bytes,13,opt,name=ipv6_public_addr_prefix,json=ipv6PublicAddrPrefix,proto3,oneof" json:"ipv6_public_addr_prefix,omitempty"`
-	DisableRelayData       *bool                        `protobuf:"varint,14,opt,name=disable_relay_data,json=disableRelayData,proto3,oneof" json:"disable_relay_data,omitempty"`
-	VpnPortalClients       []*VpnPortalClientPatch      `protobuf:"bytes,15,rep,name=vpn_portal_clients,json=vpnPortalClients,proto3" json:"vpn_portal_clients,omitempty"`
-	ManagedCredentials     *manage.ManagedCredentialSet `protobuf:"bytes,16,opt,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
-	PreferPeerRelay        *bool                        `protobuf:"varint,17,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	state              protoimpl.MessageState       `protogen:"open.v1"`
+	Hostname           *string                      `protobuf:"bytes,1,opt,name=hostname,proto3,oneof" json:"hostname,omitempty"`
+	Ipv4               *common.Ipv4Inet             `protobuf:"bytes,2,opt,name=ipv4,proto3,oneof" json:"ipv4,omitempty"`
+	Ipv6               *common.Ipv6Inet             `protobuf:"bytes,3,opt,name=ipv6,proto3,oneof" json:"ipv6,omitempty"`
+	PortForwards       []*PortForwardPatch          `protobuf:"bytes,4,rep,name=port_forwards,json=portForwards,proto3" json:"port_forwards,omitempty"`
+	Acl                *AclPatch                    `protobuf:"bytes,5,opt,name=acl,proto3,oneof" json:"acl,omitempty"`
+	ProxyNetworks      []*ProxyNetworkPatch         `protobuf:"bytes,6,rep,name=proxy_networks,json=proxyNetworks,proto3" json:"proxy_networks,omitempty"`
+	Routes             []*RoutePatch                `protobuf:"bytes,7,rep,name=routes,proto3" json:"routes,omitempty"`
+	MappedListeners    []*UrlPatch                  `protobuf:"bytes,9,rep,name=mapped_listeners,json=mappedListeners,proto3" json:"mapped_listeners,omitempty"`
+	Connectors         []*UrlPatch                  `protobuf:"bytes,10,rep,name=connectors,proto3" json:"connectors,omitempty"`
+	DisableRelayData   *bool                        `protobuf:"varint,14,opt,name=disable_relay_data,json=disableRelayData,proto3,oneof" json:"disable_relay_data,omitempty"`
+	VpnPortalClients   []*VpnPortalClientPatch      `protobuf:"bytes,15,rep,name=vpn_portal_clients,json=vpnPortalClients,proto3" json:"vpn_portal_clients,omitempty"`
+	ManagedCredentials *manage.ManagedCredentialSet `protobuf:"bytes,16,opt,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
+	PreferPeerRelay    *bool                        `protobuf:"varint,17,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
+	// Custom multi-exit policy VPN (fork feature). Replaces the whole [vpn]
+	// section when present.
+	Vpn           *manage.VpnConfig `protobuf:"bytes,20,opt,name=vpn,proto3,oneof" json:"vpn,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InstanceConfigPatch) Reset() {
@@ -176,13 +175,6 @@ func (x *InstanceConfigPatch) GetRoutes() []*RoutePatch {
 	return nil
 }
 
-func (x *InstanceConfigPatch) GetExitNodes() []*ExitNodePatch {
-	if x != nil {
-		return x.ExitNodes
-	}
-	return nil
-}
-
 func (x *InstanceConfigPatch) GetMappedListeners() []*UrlPatch {
 	if x != nil {
 		return x.MappedListeners
@@ -195,27 +187,6 @@ func (x *InstanceConfigPatch) GetConnectors() []*UrlPatch {
 		return x.Connectors
 	}
 	return nil
-}
-
-func (x *InstanceConfigPatch) GetIpv6PublicAddrProvider() bool {
-	if x != nil && x.Ipv6PublicAddrProvider != nil {
-		return *x.Ipv6PublicAddrProvider
-	}
-	return false
-}
-
-func (x *InstanceConfigPatch) GetIpv6PublicAddrAuto() bool {
-	if x != nil && x.Ipv6PublicAddrAuto != nil {
-		return *x.Ipv6PublicAddrAuto
-	}
-	return false
-}
-
-func (x *InstanceConfigPatch) GetIpv6PublicAddrPrefix() string {
-	if x != nil && x.Ipv6PublicAddrPrefix != nil {
-		return *x.Ipv6PublicAddrPrefix
-	}
-	return ""
 }
 
 func (x *InstanceConfigPatch) GetDisableRelayData() bool {
@@ -244,6 +215,13 @@ func (x *InstanceConfigPatch) GetPreferPeerRelay() bool {
 		return *x.PreferPeerRelay
 	}
 	return false
+}
+
+func (x *InstanceConfigPatch) GetVpn() *manage.VpnConfig {
+	if x != nil {
+		return x.Vpn
+	}
+	return nil
 }
 
 type VpnPortalClientPatch struct {
@@ -626,58 +604,6 @@ func (x *RoutePatch) GetCidr() *common.Ipv4Inet {
 	return nil
 }
 
-type ExitNodePatch struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Action        ConfigPatchAction      `protobuf:"varint,1,opt,name=action,proto3,enum=api.config.ConfigPatchAction" json:"action,omitempty"`
-	Node          *common.IpAddr         `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ExitNodePatch) Reset() {
-	*x = ExitNodePatch{}
-	mi := &file_api_config_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ExitNodePatch) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ExitNodePatch) ProtoMessage() {}
-
-func (x *ExitNodePatch) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ExitNodePatch.ProtoReflect.Descriptor instead.
-func (*ExitNodePatch) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *ExitNodePatch) GetAction() ConfigPatchAction {
-	if x != nil {
-		return x.Action
-	}
-	return ConfigPatchAction_ADD
-}
-
-func (x *ExitNodePatch) GetNode() *common.IpAddr {
-	if x != nil {
-		return x.Node
-	}
-	return nil
-}
-
 type PatchConfigRequest struct {
 	state         protoimpl.MessageState       `protogen:"open.v1"`
 	Patch         *InstanceConfigPatch         `protobuf:"bytes,1,opt,name=patch,proto3" json:"patch,omitempty"`
@@ -688,7 +614,7 @@ type PatchConfigRequest struct {
 
 func (x *PatchConfigRequest) Reset() {
 	*x = PatchConfigRequest{}
-	mi := &file_api_config_proto_msgTypes[9]
+	mi := &file_api_config_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -700,7 +626,7 @@ func (x *PatchConfigRequest) String() string {
 func (*PatchConfigRequest) ProtoMessage() {}
 
 func (x *PatchConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[9]
+	mi := &file_api_config_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -713,7 +639,7 @@ func (x *PatchConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatchConfigRequest.ProtoReflect.Descriptor instead.
 func (*PatchConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{9}
+	return file_api_config_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PatchConfigRequest) GetPatch() *InstanceConfigPatch {
@@ -738,7 +664,7 @@ type PatchConfigResponse struct {
 
 func (x *PatchConfigResponse) Reset() {
 	*x = PatchConfigResponse{}
-	mi := &file_api_config_proto_msgTypes[10]
+	mi := &file_api_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -750,7 +676,7 @@ func (x *PatchConfigResponse) String() string {
 func (*PatchConfigResponse) ProtoMessage() {}
 
 func (x *PatchConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[10]
+	mi := &file_api_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -763,7 +689,7 @@ func (x *PatchConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatchConfigResponse.ProtoReflect.Descriptor instead.
 func (*PatchConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{10}
+	return file_api_config_proto_rawDescGZIP(), []int{9}
 }
 
 type GetConfigRequest struct {
@@ -775,7 +701,7 @@ type GetConfigRequest struct {
 
 func (x *GetConfigRequest) Reset() {
 	*x = GetConfigRequest{}
-	mi := &file_api_config_proto_msgTypes[11]
+	mi := &file_api_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -787,7 +713,7 @@ func (x *GetConfigRequest) String() string {
 func (*GetConfigRequest) ProtoMessage() {}
 
 func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[11]
+	mi := &file_api_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -800,7 +726,7 @@ func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{11}
+	return file_api_config_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetConfigRequest) GetInstance() *instance.InstanceIdentifier {
@@ -820,7 +746,7 @@ type GetConfigResponse struct {
 
 func (x *GetConfigResponse) Reset() {
 	*x = GetConfigResponse{}
-	mi := &file_api_config_proto_msgTypes[12]
+	mi := &file_api_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -832,7 +758,7 @@ func (x *GetConfigResponse) String() string {
 func (*GetConfigResponse) ProtoMessage() {}
 
 func (x *GetConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[12]
+	mi := &file_api_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +771,7 @@ func (x *GetConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{12}
+	return file_api_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetConfigResponse) GetConfig() *manage.NetworkConfig {
@@ -867,7 +793,7 @@ var File_api_config_proto protoreflect.FileDescriptor
 const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_config.proto\x12\n" +
-	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\x86\t\n" +
+	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\xfa\x06\n" +
 	"\x13InstanceConfigPatch\x12\x1f\n" +
 	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01\x12)\n" +
 	"\x04ipv4\x18\x02 \x01(\v2\x10.common.Ipv4InetH\x01R\x04ipv4\x88\x01\x01\x12)\n" +
@@ -875,30 +801,24 @@ const file_api_config_proto_rawDesc = "" +
 	"\rport_forwards\x18\x04 \x03(\v2\x1c.api.config.PortForwardPatchR\fportForwards\x12+\n" +
 	"\x03acl\x18\x05 \x01(\v2\x14.api.config.AclPatchH\x03R\x03acl\x88\x01\x01\x12D\n" +
 	"\x0eproxy_networks\x18\x06 \x03(\v2\x1d.api.config.ProxyNetworkPatchR\rproxyNetworks\x12.\n" +
-	"\x06routes\x18\a \x03(\v2\x16.api.config.RoutePatchR\x06routes\x128\n" +
-	"\n" +
-	"exit_nodes\x18\b \x03(\v2\x19.api.config.ExitNodePatchR\texitNodes\x12?\n" +
+	"\x06routes\x18\a \x03(\v2\x16.api.config.RoutePatchR\x06routes\x12?\n" +
 	"\x10mapped_listeners\x18\t \x03(\v2\x14.api.config.UrlPatchR\x0fmappedListeners\x124\n" +
 	"\n" +
 	"connectors\x18\n" +
 	" \x03(\v2\x14.api.config.UrlPatchR\n" +
-	"connectors\x12>\n" +
-	"\x19ipv6_public_addr_provider\x18\v \x01(\bH\x04R\x16ipv6PublicAddrProvider\x88\x01\x01\x126\n" +
-	"\x15ipv6_public_addr_auto\x18\f \x01(\bH\x05R\x12ipv6PublicAddrAuto\x88\x01\x01\x12:\n" +
-	"\x17ipv6_public_addr_prefix\x18\r \x01(\tH\x06R\x14ipv6PublicAddrPrefix\x88\x01\x01\x121\n" +
-	"\x12disable_relay_data\x18\x0e \x01(\bH\aR\x10disableRelayData\x88\x01\x01\x12N\n" +
+	"connectors\x121\n" +
+	"\x12disable_relay_data\x18\x0e \x01(\bH\x04R\x10disableRelayData\x88\x01\x01\x12N\n" +
 	"\x12vpn_portal_clients\x18\x0f \x03(\v2 .api.config.VpnPortalClientPatchR\x10vpnPortalClients\x12Q\n" +
 	"\x13managed_credentials\x18\x10 \x01(\v2 .api.manage.ManagedCredentialSetR\x12managedCredentials\x12/\n" +
-	"\x11prefer_peer_relay\x18\x11 \x01(\bH\bR\x0fpreferPeerRelay\x88\x01\x01B\v\n" +
+	"\x11prefer_peer_relay\x18\x11 \x01(\bH\x05R\x0fpreferPeerRelay\x88\x01\x01\x12,\n" +
+	"\x03vpn\x18\x14 \x01(\v2\x15.api.manage.VpnConfigH\x06R\x03vpn\x88\x01\x01B\v\n" +
 	"\t_hostnameB\a\n" +
 	"\x05_ipv4B\a\n" +
 	"\x05_ipv6B\x06\n" +
-	"\x04_aclB\x1c\n" +
-	"\x1a_ipv6_public_addr_providerB\x18\n" +
-	"\x16_ipv6_public_addr_autoB\x1a\n" +
-	"\x18_ipv6_public_addr_prefixB\x15\n" +
+	"\x04_aclB\x15\n" +
 	"\x13_disable_relay_dataB\x14\n" +
-	"\x12_prefer_peer_relay\"\x88\x01\n" +
+	"\x12_prefer_peer_relayB\x06\n" +
+	"\x04_vpn\"\x88\x01\n" +
 	"\x14VpnPortalClientPatch\x125\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1d.api.config.ConfigPatchActionR\x06action\x129\n" +
 	"\x06client\x18\x02 \x01(\v2!.api.manage.VpnPortalClientConfigR\x06client\"x\n" +
@@ -925,10 +845,7 @@ const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"RoutePatch\x125\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1d.api.config.ConfigPatchActionR\x06action\x12$\n" +
-	"\x04cidr\x18\x02 \x01(\v2\x10.common.Ipv4InetR\x04cidr\"j\n" +
-	"\rExitNodePatch\x125\n" +
-	"\x06action\x18\x01 \x01(\x0e2\x1d.api.config.ConfigPatchActionR\x06action\x12\"\n" +
-	"\x04node\x18\x02 \x01(\v2\x0e.common.IpAddrR\x04node\"\x89\x01\n" +
+	"\x04cidr\x18\x02 \x01(\v2\x10.common.Ipv4InetR\x04cidr\"\x89\x01\n" +
 	"\x12PatchConfigRequest\x125\n" +
 	"\x05patch\x18\x01 \x01(\v2\x1f.api.config.InstanceConfigPatchR\x05patch\x12<\n" +
 	"\binstance\x18\x02 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"\x15\n" +
@@ -961,7 +878,7 @@ func file_api_config_proto_rawDescGZIP() []byte {
 }
 
 var file_api_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_api_config_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_api_config_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_api_config_proto_goTypes = []any{
 	(ConfigPatchAction)(0),               // 0: api.config.ConfigPatchAction
 	(*InstanceConfigPatch)(nil),          // 1: api.config.InstanceConfigPatch
@@ -972,34 +889,33 @@ var file_api_config_proto_goTypes = []any{
 	(*AclPatch)(nil),                     // 6: api.config.AclPatch
 	(*ProxyNetworkPatch)(nil),            // 7: api.config.ProxyNetworkPatch
 	(*RoutePatch)(nil),                   // 8: api.config.RoutePatch
-	(*ExitNodePatch)(nil),                // 9: api.config.ExitNodePatch
-	(*PatchConfigRequest)(nil),           // 10: api.config.PatchConfigRequest
-	(*PatchConfigResponse)(nil),          // 11: api.config.PatchConfigResponse
-	(*GetConfigRequest)(nil),             // 12: api.config.GetConfigRequest
-	(*GetConfigResponse)(nil),            // 13: api.config.GetConfigResponse
-	(*common.Ipv4Inet)(nil),              // 14: common.Ipv4Inet
-	(*common.Ipv6Inet)(nil),              // 15: common.Ipv6Inet
-	(*manage.ManagedCredentialSet)(nil),  // 16: api.manage.ManagedCredentialSet
+	(*PatchConfigRequest)(nil),           // 9: api.config.PatchConfigRequest
+	(*PatchConfigResponse)(nil),          // 10: api.config.PatchConfigResponse
+	(*GetConfigRequest)(nil),             // 11: api.config.GetConfigRequest
+	(*GetConfigResponse)(nil),            // 12: api.config.GetConfigResponse
+	(*common.Ipv4Inet)(nil),              // 13: common.Ipv4Inet
+	(*common.Ipv6Inet)(nil),              // 14: common.Ipv6Inet
+	(*manage.ManagedCredentialSet)(nil),  // 15: api.manage.ManagedCredentialSet
+	(*manage.VpnConfig)(nil),             // 16: api.manage.VpnConfig
 	(*manage.VpnPortalClientConfig)(nil), // 17: api.manage.VpnPortalClientConfig
 	(*common.PortForwardConfigPb)(nil),   // 18: common.PortForwardConfigPb
 	(*common.Url)(nil),                   // 19: common.Url
 	(*acl.Acl)(nil),                      // 20: acl.Acl
-	(*common.IpAddr)(nil),                // 21: common.IpAddr
-	(*instance.InstanceIdentifier)(nil),  // 22: api.instance.InstanceIdentifier
-	(*manage.NetworkConfig)(nil),         // 23: api.manage.NetworkConfig
+	(*instance.InstanceIdentifier)(nil),  // 21: api.instance.InstanceIdentifier
+	(*manage.NetworkConfig)(nil),         // 22: api.manage.NetworkConfig
 }
 var file_api_config_proto_depIdxs = []int32{
-	14, // 0: api.config.InstanceConfigPatch.ipv4:type_name -> common.Ipv4Inet
-	15, // 1: api.config.InstanceConfigPatch.ipv6:type_name -> common.Ipv6Inet
+	13, // 0: api.config.InstanceConfigPatch.ipv4:type_name -> common.Ipv4Inet
+	14, // 1: api.config.InstanceConfigPatch.ipv6:type_name -> common.Ipv6Inet
 	3,  // 2: api.config.InstanceConfigPatch.port_forwards:type_name -> api.config.PortForwardPatch
 	6,  // 3: api.config.InstanceConfigPatch.acl:type_name -> api.config.AclPatch
 	7,  // 4: api.config.InstanceConfigPatch.proxy_networks:type_name -> api.config.ProxyNetworkPatch
 	8,  // 5: api.config.InstanceConfigPatch.routes:type_name -> api.config.RoutePatch
-	9,  // 6: api.config.InstanceConfigPatch.exit_nodes:type_name -> api.config.ExitNodePatch
-	5,  // 7: api.config.InstanceConfigPatch.mapped_listeners:type_name -> api.config.UrlPatch
-	5,  // 8: api.config.InstanceConfigPatch.connectors:type_name -> api.config.UrlPatch
-	2,  // 9: api.config.InstanceConfigPatch.vpn_portal_clients:type_name -> api.config.VpnPortalClientPatch
-	16, // 10: api.config.InstanceConfigPatch.managed_credentials:type_name -> api.manage.ManagedCredentialSet
+	5,  // 6: api.config.InstanceConfigPatch.mapped_listeners:type_name -> api.config.UrlPatch
+	5,  // 7: api.config.InstanceConfigPatch.connectors:type_name -> api.config.UrlPatch
+	2,  // 8: api.config.InstanceConfigPatch.vpn_portal_clients:type_name -> api.config.VpnPortalClientPatch
+	15, // 9: api.config.InstanceConfigPatch.managed_credentials:type_name -> api.manage.ManagedCredentialSet
+	16, // 10: api.config.InstanceConfigPatch.vpn:type_name -> api.manage.VpnConfig
 	0,  // 11: api.config.VpnPortalClientPatch.action:type_name -> api.config.ConfigPatchAction
 	17, // 12: api.config.VpnPortalClientPatch.client:type_name -> api.manage.VpnPortalClientConfig
 	0,  // 13: api.config.PortForwardPatch.action:type_name -> api.config.ConfigPatchAction
@@ -1011,25 +927,23 @@ var file_api_config_proto_depIdxs = []int32{
 	4,  // 19: api.config.AclPatch.tcp_whitelist:type_name -> api.config.StringPatch
 	4,  // 20: api.config.AclPatch.udp_whitelist:type_name -> api.config.StringPatch
 	0,  // 21: api.config.ProxyNetworkPatch.action:type_name -> api.config.ConfigPatchAction
-	14, // 22: api.config.ProxyNetworkPatch.cidr:type_name -> common.Ipv4Inet
-	14, // 23: api.config.ProxyNetworkPatch.mapped_cidr:type_name -> common.Ipv4Inet
+	13, // 22: api.config.ProxyNetworkPatch.cidr:type_name -> common.Ipv4Inet
+	13, // 23: api.config.ProxyNetworkPatch.mapped_cidr:type_name -> common.Ipv4Inet
 	0,  // 24: api.config.RoutePatch.action:type_name -> api.config.ConfigPatchAction
-	14, // 25: api.config.RoutePatch.cidr:type_name -> common.Ipv4Inet
-	0,  // 26: api.config.ExitNodePatch.action:type_name -> api.config.ConfigPatchAction
-	21, // 27: api.config.ExitNodePatch.node:type_name -> common.IpAddr
-	1,  // 28: api.config.PatchConfigRequest.patch:type_name -> api.config.InstanceConfigPatch
-	22, // 29: api.config.PatchConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
-	22, // 30: api.config.GetConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
-	23, // 31: api.config.GetConfigResponse.config:type_name -> api.manage.NetworkConfig
-	10, // 32: api.config.ConfigRpc.PatchConfig:input_type -> api.config.PatchConfigRequest
-	12, // 33: api.config.ConfigRpc.GetConfig:input_type -> api.config.GetConfigRequest
-	11, // 34: api.config.ConfigRpc.PatchConfig:output_type -> api.config.PatchConfigResponse
-	13, // 35: api.config.ConfigRpc.GetConfig:output_type -> api.config.GetConfigResponse
-	34, // [34:36] is the sub-list for method output_type
-	32, // [32:34] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	13, // 25: api.config.RoutePatch.cidr:type_name -> common.Ipv4Inet
+	1,  // 26: api.config.PatchConfigRequest.patch:type_name -> api.config.InstanceConfigPatch
+	21, // 27: api.config.PatchConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
+	21, // 28: api.config.GetConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
+	22, // 29: api.config.GetConfigResponse.config:type_name -> api.manage.NetworkConfig
+	9,  // 30: api.config.ConfigRpc.PatchConfig:input_type -> api.config.PatchConfigRequest
+	11, // 31: api.config.ConfigRpc.GetConfig:input_type -> api.config.GetConfigRequest
+	10, // 32: api.config.ConfigRpc.PatchConfig:output_type -> api.config.PatchConfigResponse
+	12, // 33: api.config.ConfigRpc.GetConfig:output_type -> api.config.GetConfigResponse
+	32, // [32:34] is the sub-list for method output_type
+	30, // [30:32] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_api_config_proto_init() }
@@ -1046,7 +960,7 @@ func file_api_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_config_proto_rawDesc), len(file_api_config_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

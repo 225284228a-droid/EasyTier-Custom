@@ -149,6 +149,12 @@ pub(crate) fn algorithm_is_available(algorithm: EncryptionAlgorithm) -> bool {
     }
 }
 
+#[cfg(any(
+    feature = "aes-gcm",
+    feature = "chacha20",
+    feature = "openssl-crypto",
+    feature = "ring-crypto"
+))]
 fn is_aead_algorithm(algorithm: EncryptionAlgorithm) -> bool {
     matches!(
         algorithm,

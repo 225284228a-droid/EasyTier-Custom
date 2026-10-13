@@ -330,23 +330,27 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
                 self.engine.set_v6_local_port(v6_port);
                 self.kernel_v6_listener.lock().replace(v6_listener.clone());
                 let service = Arc::downgrade(self);
-                let _ = spawn_tcp_proxy_task(&self.lifecycle, generation, &self.tasks, async move {
-                    loop {
-                        let Ok((src_stream, socket_addr)) = v6_listener.accept().await else {
-                            tracing::error!("nat tcp v6 listener accept failed");
-                            continue;
-                        };
-                        let Some(service) = service.upgrade() else {
-                            break;
-                        };
-                        service
-                            .handle_accept(generation, socket_addr, Box::new(src_stream))
-                            .await;
-                    }
-                });
+                let _ =
+                    spawn_tcp_proxy_task(&self.lifecycle, generation, &self.tasks, async move {
+                        loop {
+                            let Ok((src_stream, socket_addr)) = v6_listener.accept().await else {
+                                tracing::error!("nat tcp v6 listener accept failed");
+                                continue;
+                            };
+                            let Some(service) = service.upgrade() else {
+                                break;
+                            };
+                            service
+                                .handle_accept(generation, socket_addr, Box::new(src_stream))
+                                .await;
+                        }
+                    });
             }
             Err(err) => {
-                tracing::warn!(?err, "v6 nat tcp listener unavailable, ipv6 exit relaying disabled");
+                tracing::warn!(
+                    ?err,
+                    "v6 nat tcp listener unavailable, ipv6 exit relaying disabled"
+                );
             }
         }
 
