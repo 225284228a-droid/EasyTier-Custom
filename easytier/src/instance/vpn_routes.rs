@@ -613,10 +613,10 @@ fn list_system_dns_servers() -> Vec<IpAddr> {
     {
         if let Ok(content) = std::fs::read_to_string("/etc/resolv.conf") {
             for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("nameserver") {
-                    if let Ok(ip) = rest.trim().parse::<IpAddr>() {
-                        servers.insert(ip);
-                    }
+                if let Some(rest) = line.strip_prefix("nameserver")
+                    && let Ok(ip) = rest.trim().parse::<IpAddr>()
+                {
+                    servers.insert(ip);
                 }
             }
         }

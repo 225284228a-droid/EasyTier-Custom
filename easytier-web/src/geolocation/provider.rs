@@ -9,6 +9,13 @@ use super::CityLocation;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const DEFAULT_RATE_LIMIT_SECONDS: i64 = 24 * 60 * 60;
 
+pub(super) fn client_builder() -> reqwest::ClientBuilder {
+    // rustls-no-provider needs a process default before building a client,
+    // including when geolocation is constructed without the web entry point.
+    easytier::utils::init_crypto_provider();
+    reqwest::Client::builder()
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Provider {
     GeoJs,
@@ -306,7 +313,7 @@ mod tests {
     }
 
     fn client() -> reqwest::Client {
-        reqwest::Client::builder()
+        super::client_builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(3))

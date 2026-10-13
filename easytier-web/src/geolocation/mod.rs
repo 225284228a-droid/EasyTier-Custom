@@ -276,7 +276,7 @@ impl CityGeoCache {
     }
 
     fn from_store(store: Store, options: Options) -> Result<Self> {
-        let client = reqwest::Client::builder()
+        let client = provider::client_builder()
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(8))
             .redirect(reqwest::redirect::Policy::none())

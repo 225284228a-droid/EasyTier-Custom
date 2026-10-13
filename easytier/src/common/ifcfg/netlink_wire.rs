@@ -21,9 +21,6 @@ pub(crate) const RTM_DELADDR: u16 = 21;
 pub(crate) const RTM_NEWROUTE: u16 = 24;
 pub(crate) const RTM_DELROUTE: u16 = 25;
 pub(crate) const RTM_GETROUTE: u16 = 26;
-pub(crate) const RTM_NEWNEIGH: u16 = 28;
-pub(crate) const RTM_DELNEIGH: u16 = 29;
-pub(crate) const RTM_GETNEIGH: u16 = 30;
 
 const NLMSG_HEADER_LEN: usize = 16;
 const ATTRIBUTE_HEADER_LEN: usize = 4;
@@ -34,15 +31,12 @@ const IFA_LOCAL: u16 = 2;
 const IFA_BROADCAST: u16 = 4;
 
 const RTA_DST: u16 = 1;
+#[cfg(test)]
 const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
 const RTA_GATEWAY: u16 = 5;
 pub(crate) const RTA_PRIORITY: u16 = 6;
 const RTA_TABLE: u16 = 15;
-
-const NDA_DST: u16 = 1;
-const NTF_PROXY: u8 = 0x08;
-const NUD_PERMANENT: u16 = 0x80;
 
 fn align4(len: usize) -> Option<usize> {
     len.checked_add(3).map(|len| len & !3)
@@ -341,6 +335,7 @@ pub(crate) struct RouteMessage {
     flags: u32,
     attributes: Vec<Attribute>,
     destination: Option<IpAddr>,
+    #[cfg(test)]
     source: Option<IpAddr>,
     gateway: Option<IpAddr>,
     oif: Option<u32>,
@@ -355,6 +350,7 @@ impl RouteMessage {
         self.dst_len
     }
 
+    #[cfg(test)]
     pub(crate) fn src_len(&self) -> u8 {
         self.src_len
     }
@@ -367,6 +363,7 @@ impl RouteMessage {
         self.destination.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn source(&self) -> Option<&IpAddr> {
         self.source.as_ref()
     }
@@ -407,6 +404,7 @@ impl NetlinkDecode for RouteMessage {
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_DST)
             .and_then(|attribute| parse_ip(family, &attribute.value));
+        #[cfg(test)]
         let source = attributes
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_SRC)
@@ -432,6 +430,7 @@ impl NetlinkDecode for RouteMessage {
             flags: read_u32(&bytes[8..])?,
             attributes,
             destination,
+            #[cfg(test)]
             source,
             gateway,
             oif,
@@ -476,6 +475,7 @@ impl RouteMessageBuilder {
                 flags: 0,
                 attributes: Vec::new(),
                 destination: None,
+                #[cfg(test)]
                 source: None,
                 gateway: None,
                 oif: None,
@@ -544,86 +544,6 @@ impl RouteMessageBuilder {
 
     pub(crate) fn build(self) -> RouteMessage {
         self.message
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct NeighborMessage {
-    family: u8,
-    ifindex: u32,
-    state: u16,
-    flags: u8,
-    kind: u8,
-    attributes: Vec<Attribute>,
-    destination: Option<IpAddr>,
-}
-
-impl NeighborMessage {
-    pub(crate) fn proxy(ifindex: u32, address: Ipv6Addr) -> Self {
-        Self {
-            family: libc::AF_INET6 as u8,
-            ifindex,
-            state: NUD_PERMANENT,
-            flags: NTF_PROXY,
-            kind: 0,
-            attributes: vec![Attribute::new(NDA_DST, address.octets().to_vec())],
-            destination: Some(IpAddr::V6(address)),
-        }
-    }
-
-    pub(crate) fn proxy_dump_header(family: u8) -> Vec<u8> {
-        let mut bytes = vec![family, 0, 0, 0];
-        bytes.extend_from_slice(&0_u32.to_ne_bytes());
-        bytes.extend_from_slice(&0_u16.to_ne_bytes());
-        bytes.extend_from_slice(&[NTF_PROXY, 0]);
-        bytes
-    }
-
-    pub(crate) fn ifindex(&self) -> u32 {
-        self.ifindex
-    }
-
-    pub(crate) fn is_proxy(&self) -> bool {
-        self.flags & NTF_PROXY != 0
-    }
-
-    pub(crate) fn destination(&self) -> Option<&IpAddr> {
-        self.destination.as_ref()
-    }
-}
-
-impl NetlinkDecode for NeighborMessage {
-    const MESSAGE_TYPE: u16 = RTM_NEWNEIGH;
-
-    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
-        if bytes.len() < 12 {
-            return Err(invalid_data("truncated neighbor message"));
-        }
-        let family = bytes[0];
-        let attributes = parse_attributes(&bytes[12..])?;
-        let destination = attributes
-            .iter()
-            .find(|attribute| attribute.kind & NLA_TYPE_MASK == NDA_DST)
-            .and_then(|attribute| parse_ip(family, &attribute.value));
-        Ok(Self {
-            family,
-            ifindex: read_u32(&bytes[4..])?,
-            state: read_u16(&bytes[8..])?,
-            flags: bytes[10],
-            kind: bytes[11],
-            attributes,
-            destination,
-        })
-    }
-}
-
-impl NetlinkEncode for NeighborMessage {
-    fn write_to(&self, bytes: &mut Vec<u8>) -> io::Result<()> {
-        bytes.extend_from_slice(&[self.family, 0, 0, 0]);
-        bytes.extend_from_slice(&self.ifindex.to_ne_bytes());
-        bytes.extend_from_slice(&self.state.to_ne_bytes());
-        bytes.extend_from_slice(&[self.flags, self.kind]);
-        write_attributes(&self.attributes, bytes)
     }
 }
 
@@ -708,15 +628,6 @@ mod tests {
         ));
         let decoded = RouteMessage::from_bytes(&encode(&message)).unwrap();
         assert_eq!(decoded.priority(), Some(17));
-    }
-
-    #[test]
-    fn neighbor_proxy_round_trip() {
-        let message = NeighborMessage::proxy(9, "2001:db8::1".parse().unwrap());
-        let decoded = NeighborMessage::from_bytes(&encode(&message)).unwrap();
-        assert_eq!(decoded.ifindex(), 9);
-        assert!(decoded.is_proxy());
-        assert_eq!(decoded.destination(), message.destination());
     }
 
     #[test]
