@@ -37,8 +37,11 @@ use easytier_proto::{
         DeleteNetworkInstanceResponse, GetNetworkInstanceConfigRequest,
         GetNetworkInstanceConfigResponse, ListNetworkInstanceMetaRequest,
         ListNetworkInstanceMetaResponse, ListNetworkInstanceRequest, ListNetworkInstanceResponse,
+        RemoveNetworkInstanceConfigRequest, RemoveNetworkInstanceConfigResponse,
         RetainNetworkInstanceRequest, RetainNetworkInstanceResponse, RunNetworkInstanceRequest,
-        RunNetworkInstanceResponse, ValidateConfigRequest, ValidateConfigResponse,
+        RunNetworkInstanceResponse, SaveNetworkInstanceConfigRequest,
+        SaveNetworkInstanceConfigResponse, SetNetworkInstanceEnabledRequest,
+        SetNetworkInstanceEnabledResponse, ValidateConfigRequest, ValidateConfigResponse,
         WebClientService, WebClientServiceClientFactory, WebClientServiceServer,
     },
     common::TunnelInfo,
@@ -341,6 +344,15 @@ impl NearbyWebClientService {
         }
     }
 
+    fn persisted_config_management_unsupported() -> RpcError {
+        // The local app owns the saved-config store. This service controls
+        // one-shot instances through the VPN Extension's host command queue.
+        anyhow::anyhow!(
+            "HarmonyOS nearby persisted configuration management is unsupported; use the local app"
+        )
+        .into()
+    }
+
     fn validate_one_shot_start(
         &self,
         request: &RunNetworkInstanceRequest,
@@ -435,7 +447,12 @@ impl WebClientService for NearbyWebClientService {
         controller: BaseController,
         request: ListNetworkInstanceRequest,
     ) -> Result<ListNetworkInstanceResponse, RpcError> {
-        self.inner.list_network_instance(controller, request).await
+        let mut response = self
+            .inner
+            .list_network_instance(controller, request)
+            .await?;
+        response.supports_persisted_config_management = Some(false);
+        Ok(response)
     }
 
     async fn delete_network_instance(
@@ -443,6 +460,9 @@ impl WebClientService for NearbyWebClientService {
         _controller: BaseController,
         request: DeleteNetworkInstanceRequest,
     ) -> Result<DeleteNetworkInstanceResponse, RpcError> {
+        if request.expected_revision.is_some() {
+            return Err(Self::persisted_config_management_unsupported());
+        }
         if request.inst_ids.len() != 1 {
             return Err(anyhow::anyhow!(
                 "HarmonyOS nearby control stops exactly one running instance"
@@ -491,6 +511,30 @@ impl WebClientService for NearbyWebClientService {
         self.inner
             .list_network_instance_meta(controller, request)
             .await
+    }
+
+    async fn save_network_instance_config(
+        &self,
+        _controller: BaseController,
+        _request: SaveNetworkInstanceConfigRequest,
+    ) -> Result<SaveNetworkInstanceConfigResponse, RpcError> {
+        Err(Self::persisted_config_management_unsupported())
+    }
+
+    async fn set_network_instance_enabled(
+        &self,
+        _controller: BaseController,
+        _request: SetNetworkInstanceEnabledRequest,
+    ) -> Result<SetNetworkInstanceEnabledResponse, RpcError> {
+        Err(Self::persisted_config_management_unsupported())
+    }
+
+    async fn remove_network_instance_config(
+        &self,
+        _controller: BaseController,
+        _request: RemoveNetworkInstanceConfigRequest,
+    ) -> Result<RemoveNetworkInstanceConfigResponse, RpcError> {
+        Err(Self::persisted_config_management_unsupported())
     }
 }
 
@@ -1076,6 +1120,108 @@ mod tests {
             "CollectNetworkInfo",
             "unexpected-domain"
         ));
+        for method in [
+            "SaveNetworkInstanceConfig",
+            "SetNetworkInstanceEnabled",
+            "RemoveNetworkInstanceConfig",
+        ] {
+            assert!(!valid_management_json_call(
+                WEB_CLIENT_SERVICE_NAME,
+                method,
+                ""
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn persisted_config_mutations_are_rejected_for_all_sources_and_revisions() {
+        use easytier_proto::api::manage::{ConfigSource, NetworkConfig};
+
+        let service = NearbyWebClientService::new();
+        let instance_id = Uuid::new_v4();
+        let assert_unsupported = |error: RpcError| {
+            assert!(
+                error
+                    .to_string()
+                    .contains("persisted configuration management is unsupported")
+            );
+        };
+
+        for source in [ConfigSource::User, ConfigSource::Web] {
+            assert_unsupported(
+                service
+                    .save_network_instance_config(
+                        BaseController::default(),
+                        SaveNetworkInstanceConfigRequest {
+                            inst_id: Some(instance_id.into()),
+                            config: Some(NetworkConfig {
+                                instance_id: Some(instance_id.to_string()),
+                                ..Default::default()
+                            }),
+                            source: source as i32,
+                        },
+                    )
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        for expected_revision in [None, Some("expected-revision".to_owned())] {
+            for enabled in [false, true] {
+                assert_unsupported(
+                    service
+                        .set_network_instance_enabled(
+                            BaseController::default(),
+                            SetNetworkInstanceEnabledRequest {
+                                inst_id: Some(instance_id.into()),
+                                enabled,
+                                expected_revision: expected_revision.clone(),
+                            },
+                        )
+                        .await
+                        .unwrap_err(),
+                );
+            }
+            assert_unsupported(
+                service
+                    .remove_network_instance_config(
+                        BaseController::default(),
+                        RemoveNetworkInstanceConfigRequest {
+                            inst_ids: vec![instance_id.into()],
+                            expected_revision,
+                        },
+                    )
+                    .await
+                    .unwrap_err(),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn nearby_does_not_advertise_persisted_config_management() {
+        let response = NearbyWebClientService::new()
+            .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+            .await
+            .unwrap();
+        assert_eq!(response.supports_persisted_config_management, Some(false));
+    }
+
+    #[tokio::test]
+    async fn one_shot_stop_does_not_ignore_a_requested_config_revision() {
+        let error = NearbyWebClientService::new()
+            .delete_network_instance(
+                BaseController::default(),
+                DeleteNetworkInstanceRequest {
+                    inst_ids: vec![Uuid::new_v4().into()],
+                    expected_revision: Some("expected-revision".to_owned()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("persisted configuration management is unsupported")
+        );
     }
 
     #[test]
