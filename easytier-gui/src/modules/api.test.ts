@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { NetworkTypes, LocalConfigs, Capabilities } from 'easytier-frontend-lib'
+import { NetworkTypes, LocalConfigs, Capabilities, Utils } from 'easytier-frontend-lib'
 import { GUIRemoteClient } from './api'
+import creationFixtures from '../../../easytier-web/frontend-lib/tests/fixtures/network-create-patches.json'
 
 const invoke = vi.hoisted(() => vi.fn())
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))
@@ -8,6 +9,17 @@ const id = '00000000-0000-0000-0000-000000000001'
 beforeEach(() => invoke.mockReset())
 
 describe('GUI management bridge capabilities and revisions', () => {
+  it.each(creationFixtures)('forwards the real Core creation fixture: $name', async (fixture) => {
+    invoke.mockImplementation(async command => command === 'list_network_instance_ids'
+      ? { running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: fixture.capabilities }
+      : { status: 'Success' })
+    await new GUIRemoteClient().patch_local_config(fixture.request)
+    expect(invoke).toHaveBeenCalledWith('patch_local_config', { request: {
+      ...fixture.request, inst_id: Utils.StrToUuid(fixture.request.inst_id),
+    } })
+    expect(invoke.mock.calls.some(([command]) => command === 'save_network_config')).toBe(false)
+  })
+
   it('gates apply-only independently and forwards an empty config/mask with the observed revision', async () => {
     const revision = Capabilities.LOCAL_CONFIG_REVISION_CAPABILITY
     invoke.mockImplementation(async command => command === 'list_network_instance_ids'

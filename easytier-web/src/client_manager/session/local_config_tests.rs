@@ -163,6 +163,68 @@ async fn await_mirrors(
 }
 
 #[tokio::test]
+async fn core_patch_diagnostics_and_not_found_survive_the_console_rpc() {
+    let machine = uuid::Uuid::new_v4();
+    let id = uuid::Uuid::new_v4();
+    let files = Arc::new(Files::default());
+    let manager = Arc::new(
+        easytier::instance::factory::native_instance_manager_with_config_dir(Some(PathBuf::from(
+            "patch-diagnostic-fixture",
+        ))),
+    );
+    let state = Arc::new(InstanceStateStore::in_memory());
+    let process = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(easytier::web_client::DefaultHooks),
+        files.clone(),
+        state.clone(),
+    );
+    let baseline = process
+        .observe_configs(BaseController::default(), ObserveConfigsRequest {})
+        .await
+        .unwrap();
+    let storage = Storage::new(Db::memory_db().await);
+    let (session, rpc) = connect_console(&storage, &process, 2103).await;
+    send_heartbeat(&rpc, machine, &baseline).await;
+
+    let invalid = session
+        .patch_local_config(PatchPersistedConfigRequest {
+            inst_id: Some(id.into()),
+            config: Some(NetworkConfig::default()),
+            field_mask: vec!["enable_vpn_portal".into()],
+            apply_mode: PersistedConfigApplyMode::PersistOnly as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        invalid,
+        LocalConfigError::Invalid(message)
+            if message == "field is not editable (fields: enable_vpn_portal)"
+    ));
+
+    let missing = session
+        .patch_local_config(PatchPersistedConfigRequest {
+            inst_id: Some(id.into()),
+            expected_revision: "removed-config-revision".into(),
+            config: Some(NetworkConfig::default()),
+            field_mask: vec!["hostname".into()],
+            apply_mode: PersistedConfigApplyMode::PersistOnly as i32,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        missing,
+        LocalConfigError::NotFound(message) if message == "configuration does not exist"
+    ));
+    assert!(files.0.lock().unwrap().is_empty());
+    assert_eq!(state.enabled_state(&id), None);
+    assert!(manager.instance_ids().is_empty());
+    session.stop().await;
+    rpc.stop().await;
+}
+
+#[tokio::test]
 async fn independent_servers_share_node_cas_and_observe_manual_edits() {
     let id = uuid::Uuid::new_v4();
     let machine = uuid::Uuid::new_v4();
@@ -476,6 +538,24 @@ fn masked_extensions_require_capability_even_when_false_or_empty() {
         )
         .is_ok()
     );
+}
+
+#[test]
+fn malformed_urls_name_the_selected_field_without_echoing_values() {
+    let request = PatchPersistedConfigRequest {
+        config: Some(NetworkConfig {
+            peer_urls: vec!["private-invalid-url-value".into()],
+            ..Default::default()
+        }),
+        field_mask: vec!["peer_urls".into()],
+        ..Default::default()
+    };
+    let error = validate_capability_mask(&request, &[]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "invalid configuration patch: invalid URL (fields: peer_urls)"
+    );
+    assert!(!format!("{error:?}").contains("private-invalid-url-value"));
 }
 
 #[test]

@@ -12,7 +12,7 @@ use easytier_proto::{
 use super::{
     ProcessManagement, ProcessManagementRpc,
     local_catalog::{raw_hash, refresh_configs},
-    persisted_merge::{merge_persisted_config, unsupported_capability},
+    persisted_merge::{merge_persisted_config, public_patch_error, unsupported_capability},
     process_rpc::InstanceRunPersistence,
 };
 use crate::{
@@ -239,12 +239,13 @@ where
             merge_persisted_config(&original, values, &request.field_mask)
         } {
             Ok(merged) => merged,
-            Err(_) => {
+            Err(error) => {
+                let message = public_patch_error(&error);
                 return Ok(response(
                     snapshot,
                     id,
                     PersistedConfigMutationStatus::Invalid,
-                    Some("invalid field mask or configuration values"),
+                    Some(&message),
                 ));
             }
         };

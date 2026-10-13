@@ -1,4 +1,4 @@
-import { NetworkConfig as NetworkConfigPb } from '../generated/proto/api_manage'
+import { NETWORK_CONFIG_FIELDS } from '../generated/proto/networkConfigFields'
 import { normalizeNetworkConfig, toBackendNetworkConfig, type NetworkConfig } from '../types/network'
 import { type UUID, UuidToStr } from './utils'
 import { ConfigFilePermission } from './api'
@@ -55,7 +55,7 @@ export interface LocalConfigPatchResult {
 }
 
 const NON_EDIT_FIELDS = new Set(['instance_id', 'advanced_settings', 'networking_method', 'public_server_url'])
-const EDIT_FIELDS = new Set(NetworkConfigPb.fields.map(field => field.name).filter(field => !NON_EDIT_FIELDS.has(field)))
+const EDIT_FIELDS = new Set<string>(NETWORK_CONFIG_FIELDS.filter(field => !NON_EDIT_FIELDS.has(field)))
 
 export function localConfigInstanceId(entry: Pick<LocalConfigEntry, 'inst_id'>): string {
   return typeof entry.inst_id === 'string' ? entry.inst_id : UuidToStr(entry.inst_id)

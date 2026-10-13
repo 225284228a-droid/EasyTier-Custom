@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use anyhow::{Context as _, bail};
+use anyhow::Context as _;
 use easytier_proto::api::manage::NetworkConfig;
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item, TableLike};
@@ -13,6 +13,49 @@ use crate::config::{
     api_input::NetworkConfigExt as _,
     toml::{ConfigLoader as _, TomlConfig},
 };
+
+/// Only fixed reasons and validated field names may cross the management RPC.
+/// Conversion errors can contain configuration values, URLs or key material.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+struct PatchDiagnostic {
+    message: String,
+}
+
+fn invalid_patch<'a>(
+    reason: &'static str,
+    fields: impl IntoIterator<Item = &'a str>,
+) -> anyhow::Error {
+    let mut names = Vec::new();
+    for field in fields {
+        if field.len() <= 128
+            && field.split('.').all(|part| {
+                part.starts_with(|ch: char| ch.is_ascii_lowercase())
+                    && part
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            })
+            && !names.contains(&field)
+        {
+            names.push(field);
+        }
+    }
+    PatchDiagnostic {
+        message: if names.is_empty() {
+            reason.to_owned()
+        } else {
+            format!("{reason} (fields: {})", names.join(", "))
+        },
+    }
+    .into()
+}
+
+pub(super) fn public_patch_error(error: &anyhow::Error) -> String {
+    error
+        .downcast_ref::<PatchDiagnostic>()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "invalid field mask or configuration values".to_owned())
+}
 
 fn snake_case(name: &str) -> String {
     let mut output = String::new();
@@ -269,7 +312,7 @@ pub(super) fn merge_persisted_config(
     field_mask: &[String],
 ) -> anyhow::Result<String> {
     if field_mask.is_empty() {
-        bail!("field_mask must not be empty");
+        return Err(invalid_patch("field_mask must not be empty", []));
     }
     if field_mask
         .iter()
@@ -279,12 +322,22 @@ pub(super) fn merge_persisted_config(
             .as_deref()
             .is_some_and(|protocol| !matches!(protocol, "" | "tcp" | "udp"))
     {
-        bail!("invalid P2P preferred protocol");
+        return Err(invalid_patch(
+            "invalid P2P preferred protocol; expected tcp or udp",
+            ["p2p_prefer_protocol"],
+        ));
     }
     let loaded = TomlConfig::new_from_str(original)
-        .map_err(|_| anyhow::anyhow!("invalid persisted TOML"))?;
-    let mut base = normalized_json(serde_json::to_value(network_config_from_toml(&loaded))?);
-    let values = normalized_json(serde_json::to_value(values)?);
+        .map_err(|_| invalid_patch("invalid persisted TOML", []))?;
+    let fields = || field_mask.iter().map(String::as_str);
+    let mut base = normalized_json(
+        serde_json::to_value(network_config_from_toml(&loaded))
+            .map_err(|_| invalid_patch("invalid persisted configuration values", []))?,
+    );
+    let values = normalized_json(
+        serde_json::to_value(values)
+            .map_err(|_| invalid_patch("invalid configuration values", fields()))?,
+    );
     let mut selected = HashSet::new();
     let mut locations = HashSet::new();
     for path in field_mask {
@@ -296,17 +349,22 @@ pub(super) fn merge_persisted_config(
                         .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
             })
         {
-            bail!("invalid field mask path");
+            return Err(invalid_patch("invalid field mask path", []));
         }
         if !selected.insert(path.as_str()) {
-            bail!("duplicate field mask path");
+            return Err(invalid_patch("duplicate field mask path", [path.as_str()]));
         }
         let parts = path.split('.').collect::<Vec<_>>();
-        let mappings = document_paths(parts[0]).context("field is not editable")?;
+        let mappings = document_paths(parts[0])
+            .ok_or_else(|| invalid_patch("field is not editable", [path.as_str()]))?;
         if parts.len() > 1 && !allowed_nested_path(path) {
-            bail!("field mask cannot traverse this field");
+            return Err(invalid_patch(
+                "field mask cannot traverse this field",
+                [path.as_str()],
+            ));
         }
-        update_json(&mut base, &values, &parts)?;
+        update_json(&mut base, &values, &parts)
+            .map_err(|_| invalid_patch("field mask traverses a non-object", [path.as_str()]))?;
         if parts.len() > 1 {
             // Nested typed edits preserve sibling settings in the same table.
             // SecureMode and Portal field names match their TOML names.
@@ -320,7 +378,7 @@ pub(super) fn merge_persisted_config(
             .iter()
             .any(|other| *other != *path && other.starts_with(&format!("{path}.")))
         {
-            bail!("overlapping field mask paths");
+            return Err(invalid_patch("overlapping field mask paths", [*path]));
         }
     }
     // URI-only edits must not be silently ignored because the existing typed
@@ -350,20 +408,24 @@ pub(super) fn merge_persisted_config(
     if selected.contains("public_server_url") && !selected.contains("peers") {
         base.as_object_mut().unwrap().remove("peers");
     }
-    let merged: NetworkConfig =
-        serde_json::from_value(base).map_err(|_| anyhow::anyhow!("invalid field mask values"))?;
+    let merged: NetworkConfig = serde_json::from_value(base)
+        .map_err(|_| invalid_patch("invalid field mask values", fields()))?;
     let generated = merged
         .gen_config()
-        .map_err(|_| anyhow::anyhow!("invalid configuration values"))?
+        .map_err(|_| invalid_patch("invalid configuration values", fields()))?
         .dump();
-    let generated = generated.parse::<DocumentMut>()?;
-    let mut original = original.parse::<DocumentMut>()?;
+    let generated = generated
+        .parse::<DocumentMut>()
+        .map_err(|_| invalid_patch("invalid resulting configuration", fields()))?;
+    let mut original = original
+        .parse::<DocumentMut>()
+        .map_err(|_| invalid_patch("invalid persisted TOML", []))?;
     for path in locations {
         set_item(&mut original, &path, get_item(&generated, &path).cloned());
     }
     let result = original.to_string();
     TomlConfig::new_from_str(&result)
-        .map_err(|_| anyhow::anyhow!("invalid resulting configuration"))?;
+        .map_err(|_| invalid_patch("invalid resulting configuration", fields()))?;
     Ok(result)
 }
 
@@ -445,6 +507,103 @@ pub(super) fn merge_legacy_form_changes(
 mod tests {
     use super::*;
     const ORIGINAL: &str = "# retained comment\ninstance_id = '11111111-1111-1111-1111-111111111111'\nhostname = 'old'\nnetns = 'keep'\nstun_servers = ['udp://stun.example:3478']\n[network_identity]\nnetwork_name = 'home'\nnetwork_secret = 'secret'\n[flags]\ndefault_protocol = 'udp'\nmtu = 1200\n";
+
+    #[test]
+    fn persisted_field_mappings_cover_the_current_management_schema() {
+        use prost_reflect::{DescriptorPool, Value};
+
+        let pool = DescriptorPool::decode(easytier_proto::ALL_DESCRIPTOR_BYTES).unwrap();
+        let config = pool
+            .get_message_by_name("api.manage.NetworkConfig")
+            .unwrap();
+        for field in config.fields() {
+            let deprecated = matches!(
+                field.options().get_field_by_name("deprecated").as_deref(),
+                Some(Value::Bool(true))
+            );
+            if deprecated || field.name() == "instance_id" {
+                assert!(
+                    document_paths(field.name()).is_none(),
+                    "{} must not become editable just because it is in NetworkConfig",
+                    field.name()
+                );
+            } else {
+                assert!(
+                    document_paths(field.name()).is_some(),
+                    "{} needs an explicit persisted TOML mapping",
+                    field.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deprecated_masks_are_rejected_even_without_values() {
+        for field in [
+            "enable_vpn_portal",
+            "vpn_portal_listen_port",
+            "vpn_portal_client_network_addr",
+            "vpn_portal_client_network_len",
+            "quic_listen_port",
+        ] {
+            let error =
+                merge_persisted_config(ORIGINAL, &NetworkConfig::default(), &[field.into()])
+                    .unwrap_err();
+            assert_eq!(
+                public_patch_error(&error),
+                format!("field is not editable (fields: {field})")
+            );
+        }
+    }
+
+    #[test]
+    fn patch_diagnostics_name_fields_without_configuration_values() {
+        let values = NetworkConfig {
+            peer_urls: vec!["private-url-value".into()],
+            network_secret: Some("private-network-secret".into()),
+            ..Default::default()
+        };
+        let error = merge_persisted_config(ORIGINAL, &values, &["peer_urls".into()]).unwrap_err();
+        assert_eq!(
+            public_patch_error(&error),
+            "invalid configuration values (fields: peer_urls)"
+        );
+        assert!(!format!("{error:#?}").contains("private-"));
+
+        let error = merge_persisted_config(
+            "network_secret = [ private-persisted-secret",
+            &values,
+            &["peer_urls".into()],
+        )
+        .unwrap_err();
+        assert_eq!(public_patch_error(&error), "invalid persisted TOML");
+        assert!(!format!("{error:#?}").contains("private-"));
+
+        let error = merge_persisted_config(
+            ORIGINAL,
+            &NetworkConfig::default(),
+            &["private-value\ninvalid".into()],
+        )
+        .unwrap_err();
+        assert_eq!(public_patch_error(&error), "invalid field mask path");
+        let error = merge_persisted_config(
+            ORIGINAL,
+            &NetworkConfig::default(),
+            &["future_option".into()],
+        )
+        .unwrap_err();
+        assert_eq!(
+            public_patch_error(&error),
+            "field is not editable (fields: future_option)"
+        );
+        let error = merge_persisted_config(ORIGINAL, &NetworkConfig::default(), &["a".repeat(129)])
+            .unwrap_err();
+        assert_eq!(public_patch_error(&error), "field is not editable");
+        assert_eq!(
+            public_patch_error(&anyhow::anyhow!("unexpected private-secret-context")),
+            "invalid field mask or configuration values"
+        );
+    }
 
     #[test]
     fn malformed_persisted_files_do_not_include_secret_snippets_in_errors() {

@@ -11,7 +11,8 @@
     "test:dashboard": "pnpm build && node scripts/test-dashboard.mjs",
     "preview": "vite preview",
     "test:browser": "pnpm build && node --test tests/dashboard.test.mjs",
-    "test:e2e": "pnpm build && cargo build -p easytier-web --features embed && node --test tests/central-e2e.test.mjs"
+    "test:e2e": "pnpm build && cargo build -p easytier-web --features embed && node --test tests/central-e2e.test.mjs",
+    "test:creation": "node --test tests/local-config-creation.test.mjs"
   },
   "dependencies": {
     "@modyfi/vite-plugin-yaml": "^1.1.0",

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_NETWORK_CONFIG, normalizeNetworkConfig } from '../src/types/network'
 import { buildLocalConfigApplyRequest, buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, localConfigEditable, LocalConfigApplyMode, type LocalConfigEntry } from '../src/modules/localConfigPatch'
 import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../src/modules/capabilities'
+import { DEPRECATED_NETWORK_CONFIG_FIELDS } from '../src/generated/proto/networkConfigFields'
+import creationFixtures from './fixtures/network-create-patches.json'
 
 const entry = (): LocalConfigEntry => ({
   entry_key: 'a.toml', inst_id: '00000000-0000-0000-0000-000000000001', revision: 'revision-a',
@@ -11,6 +13,26 @@ const entry = (): LocalConfigEntry => ({
 })
 
 describe('online local configuration patches', () => {
+  it.each(creationFixtures)('matches the Core creation contract: $name', (fixture) => {
+    const config = { ...DEFAULT_NETWORK_CONFIG(), ...fixture.overrides }
+    const patch = buildLocalConfigCreatePatch(config, fixture.capabilities)
+    // Core consumes this same fixture through its real persisted RPC. Neither
+    // side can bless a generated mask by merely mocking a successful save.
+    expect(patch).toEqual(fixture.request)
+    expect(patch.field_mask.filter(field => (DEPRECATED_NETWORK_CONFIG_FIELDS as readonly string[]).includes(field))).toEqual([])
+  })
+
+  it('excludes deprecated fields from edit diffs and rejects explicit patches for them', () => {
+    const source = entry()
+    const edited = normalizeNetworkConfig(source.config!)
+    edited.enable_vpn_portal = true
+    edited.quic_listen_port = 12345
+    expect(changedConfigFields(source.config!, edited)).toEqual([])
+    for (const field of DEPRECATED_NETWORK_CONFIG_FIELDS) {
+      expect(() => buildLocalConfigPatch(source, edited, [field], [])).toThrow(`Invalid configuration field: ${field}`)
+    }
+  })
+
   it('applies only the observed revision without copying its projected fields or TOML', () => {
     const source = entry()
     const patch = buildLocalConfigApplyRequest(source, [LOCAL_CONFIG_APPLY_CAPABILITY])

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ApiClient from '../src/modules/api'
 import { normalizeNetworkConfig } from '../../frontend-lib/src/types/network'
 import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../../frontend-lib/src/modules/capabilities'
+import { Utils } from 'easytier-frontend-lib'
+import creationFixtures from '../../frontend-lib/tests/fixtures/network-create-patches.json'
 
 const client = vi.hoisted(() => ({
   get: vi.fn(),
@@ -26,6 +28,17 @@ describe('dashboard API request limits', () => {
     client.put.mockReset()
     client.delete.mockReset()
     client.interceptors.response.use.mockClear()
+  })
+
+  it.each(creationFixtures)('forwards the real Core creation fixture: $name', async (fixture) => {
+    const remote = new ApiClient('http://localhost').get_remote_client('machine')
+    client.get.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: fixture.capabilities })
+    await remote.list_network_instance_ids()
+    await remote.patch_local_config!(fixture.request)
+    expect(client.post).toHaveBeenCalledWith('/machines/machine/local-configs/patch', {
+      ...fixture.request, inst_id: Utils.StrToUuid(fixture.request.inst_id),
+    })
+    expect(client.put).not.toHaveBeenCalled()
   })
 
   it('gates remote apply-only separately from revision-aware editing without changing the request shape', async () => {

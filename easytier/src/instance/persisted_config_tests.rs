@@ -135,6 +135,214 @@ fn path(id: uuid::Uuid) -> PathBuf {
     PathBuf::from("virtual-configs").join(format!("{id}.toml"))
 }
 
+fn frontend_creation_fixtures() -> Vec<serde_json::Value> {
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../easytier-web/frontend-lib/tests/fixtures/network-create-patches.json"
+    )))
+    .unwrap()
+}
+
+fn frontend_creation_request(fixture: &serde_json::Value) -> PatchPersistedConfigRequest {
+    let mut request = fixture["request"].clone();
+    let id: uuid::Uuid = request["inst_id"].as_str().unwrap().parse().unwrap();
+    // Both the GUI command and Web REST adapter make this same UUID conversion.
+    request["inst_id"] = serde_json::to_value(easytier_proto::common::Uuid::from(id)).unwrap();
+    serde_json::from_value(request).unwrap()
+}
+
+#[tokio::test]
+async fn frontend_creation_contract_round_trips_and_remains_disabled_after_reload() {
+    use super::config_storage::NativeConfigFileStorage;
+    use easytier_core::config::{api::network_config_from_toml, api_input::NetworkConfigExt as _};
+
+    for fixture in frontend_creation_fixtures() {
+        let request = frontend_creation_request(&fixture);
+        let id = uuid::Uuid::from(request.inst_id.unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let storage = Arc::new(NativeConfigFileStorage::new(true));
+        let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+        let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+            directory.path().to_owned(),
+        )));
+        let rpc = ProcessManagementRpc::new(
+            manager.clone(),
+            Arc::new(DefaultHooks),
+            storage.clone(),
+            state.clone(),
+        );
+        let mut expected_values = request.config.clone().unwrap();
+        expected_values.instance_id = Some(id.to_string());
+        // The frontend compiles all three form methods to concrete peers.
+        // Its sparse patch inherits Manual from the node's persisted projection.
+        expected_values.networking_method = Some(NetworkingMethod::Manual as i32);
+        let expected = network_config_from_toml(&expected_values.gen_config().unwrap());
+        let response =
+            PersistedConfigService::patch_config(&rpc, BaseController::default(), request.clone())
+                .await
+                .unwrap();
+        assert_eq!(
+            response.status,
+            PersistedConfigMutationStatus::Success as i32,
+            "{}: {:?}",
+            fixture["name"],
+            response.message
+        );
+        let entry = response.entry.unwrap();
+        assert!(!entry.enabled && !entry.running);
+        assert!(!entry.revision.is_empty());
+        assert_eq!(
+            entry.config.as_ref().unwrap(),
+            &expected,
+            "{}",
+            fixture["name"]
+        );
+        assert!(!state.is_enabled(&id));
+        assert!(manager.instance_ids().is_empty());
+        let file = directory.path().join(format!("{id}.toml"));
+        let contents = std::fs::read(&file).unwrap();
+        let loaded =
+            TomlConfigLoader::new_from_str(std::str::from_utf8(&contents).unwrap()).unwrap();
+        assert_eq!(loaded.get_id(), id);
+        assert_eq!(network_config_from_toml(&loaded), expected);
+        let duplicate =
+            PersistedConfigService::patch_config(&rpc, BaseController::default(), request)
+                .await
+                .unwrap();
+        assert_eq!(
+            duplicate.status,
+            PersistedConfigMutationStatus::Conflict as i32
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), contents);
+        drop(rpc);
+        drop(manager);
+        drop(state);
+
+        let reloaded = Arc::new(native_instance_manager_with_config_dir(Some(
+            directory.path().to_owned(),
+        )));
+        let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+        let rpc = ProcessManagementRpc::new(
+            reloaded.clone(),
+            Arc::new(DefaultHooks),
+            storage,
+            state.clone(),
+        );
+        let snapshot = observe(&rpc).await;
+        let entry = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.inst_id == Some(id.into()))
+            .unwrap();
+        assert!(!entry.enabled && !entry.running);
+        assert!(!state.is_enabled(&id));
+        assert!(reloaded.instance_ids().is_empty());
+        assert_eq!(entry.config.as_ref().unwrap(), &expected);
+    }
+}
+
+#[tokio::test]
+async fn frontend_created_config_can_be_edited_enabled_stopped_and_reloaded() {
+    use super::config_storage::NativeConfigFileStorage;
+
+    let fixture = frontend_creation_fixtures()
+        .into_iter()
+        .find(|fixture| fixture["name"] == "standalone")
+        .unwrap();
+    let request = frontend_creation_request(&fixture);
+    let id = uuid::Uuid::from(request.inst_id.unwrap());
+    let directory = tempfile::tempdir().unwrap();
+    let storage = Arc::new(NativeConfigFileStorage::new(true));
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        storage.clone(),
+        state,
+    );
+    let created = PersistedConfigService::patch_config(&rpc, BaseController::default(), request)
+        .await
+        .unwrap();
+    assert_eq!(
+        created.status,
+        PersistedConfigMutationStatus::Success as i32
+    );
+    // Lifecycle validation needs no TUN privileges or occupied listener ports.
+    let saved = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        PatchPersistedConfigRequest {
+            inst_id: Some(id.into()),
+            expected_revision: created.entry.unwrap().revision,
+            config: Some(NetworkConfig {
+                no_tun: Some(true),
+                disable_upnp: Some(true),
+                bind_device: Some(false),
+                ..Default::default()
+            }),
+            field_mask: vec!["no_tun".into(), "disable_upnp".into(), "bind_device".into()],
+            apply_mode: PersistedConfigApplyMode::PersistOnly as i32,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved.status, PersistedConfigMutationStatus::Success as i32);
+    WebClientService::set_network_instance_enabled(
+        &rpc,
+        BaseController::default(),
+        SetNetworkInstanceEnabledRequest {
+            inst_id: Some(id.into()),
+            enabled: true,
+            expected_revision: Some(saved.entry.unwrap().revision),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(manager.instance_ids(), vec![id]);
+    let active = observe(&rpc)
+        .await
+        .entries
+        .into_iter()
+        .find(|entry| entry.inst_id == Some(id.into()))
+        .unwrap();
+    assert!(active.enabled);
+    WebClientService::set_network_instance_enabled(
+        &rpc,
+        BaseController::default(),
+        SetNetworkInstanceEnabledRequest {
+            inst_id: Some(id.into()),
+            enabled: false,
+            expected_revision: Some(active.revision),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(manager.instance_ids().is_empty());
+    drop(rpc);
+    drop(manager);
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        storage,
+        Arc::new(InstanceStateStore::new(Some(directory.path()))),
+    );
+    let stopped = observe(&rpc)
+        .await
+        .entries
+        .into_iter()
+        .find(|entry| entry.inst_id == Some(id.into()))
+        .unwrap();
+    assert!(!stopped.enabled && !stopped.running);
+    assert_eq!(stopped.config.unwrap().no_tun, Some(true));
+    assert!(manager.instance_ids().is_empty());
+}
+
 fn initial(id: uuid::Uuid, hostname: &str) -> String {
     format!(
         "# keep this comment\ninstance_id = '{id}'\nhostname = '{hostname}'\nnetns = 'keep-netns'\n[network_identity]\nnetwork_name = 'mesh'\nnetwork_secret = 'secret'\n[flags]\nno_tun = true\n"

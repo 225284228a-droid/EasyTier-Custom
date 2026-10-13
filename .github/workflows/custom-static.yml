@@ -136,6 +136,12 @@ jobs:
             }
           }
 
+      - name: Verify network creation with the shipped embedded console and Core
+        run: |
+          set -euo pipefail
+          pnpm --dir easytier-web/frontend exec playwright install --with-deps chromium
+          EASYTIER_SMOKE_BIN_DIR="$PWD/artifacts" pnpm --dir easytier-web/frontend exec node --test tests/local-config-creation.test.mjs
+
       - name: Package with checksums and preserve Unix executable permissions
         id: package
         env:

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +13,11 @@ const nodeBinDir = resolve(root, 'node_modules/.bin')
 
 const protocWrapper = require.resolve('@protobuf-ts/protoc/protoc.js')
 const protobufTsPluginRoot = dirname(require.resolve('@protobuf-ts/plugin/package.json'))
+// Use the descriptor reader shipped with the existing compiler plugin. Its
+// runtime FieldInfo contains custom options, but omits standard deprecated.
+const pluginRequire = createRequire(resolve(protobufTsPluginRoot, 'package.json'))
+const { fromBinary } = pluginRequire('@bufbuild/protobuf')
+const { FileDescriptorSetSchema } = pluginRequire('@bufbuild/protobuf/wkt')
 
 const protoFiles = [
   'annotations.proto',
@@ -91,6 +96,7 @@ function getProtocCommand() {
 mkdirSync(generatedRoot, { recursive: true })
 const tmpDir = mkdtempSync(resolve(generatedRoot, '.proto-'))
 const protocCommand = getProtocCommand()
+const descriptorPath = resolve(tmpDir, 'descriptors.bin')
 
 try {
   const result = spawnSync(protocCommand.command, [
@@ -98,6 +104,8 @@ try {
     '-I',
     relative(root, protoRoot),
     `--ts_out=${relative(root, tmpDir)}`,
+    `--descriptor_set_out=${relative(root, descriptorPath)}`,
+    '--include_imports',
     '--ts_opt=use_proto_field_name,server_none,client_none,ts_nocheck',
     ...protoFiles.map((file) => relative(root, resolve(protoRoot, file))),
   ], {
@@ -113,6 +121,17 @@ try {
 
   const status = result.status ?? 1
   if (status === 0) {
+    const descriptors = fromBinary(FileDescriptorSetSchema, readFileSync(descriptorPath))
+    const networkConfig = descriptors.file.find(file => file.package === 'api.manage')
+      ?.messageType.find(message => message.name === 'NetworkConfig')
+    if (!networkConfig) throw new Error('The schema has no api.manage.NetworkConfig')
+    const active = networkConfig.field.filter(field => !field.options?.deprecated).map(field => field.name)
+    const deprecated = networkConfig.field.filter(field => field.options?.deprecated).map(field => field.name)
+    writeFileSync(resolve(tmpDir, 'networkConfigFields.ts'),
+      '// Generated from standard Protobuf field descriptors. Do not edit.\n'
+      + `export const NETWORK_CONFIG_FIELDS = ${JSON.stringify(active, null, 2)} as const\n`
+      + `export const DEPRECATED_NETWORK_CONFIG_FIELDS = ${JSON.stringify(deprecated, null, 2)} as const\n`)
+    rmSync(descriptorPath)
     installGeneratedFiles(tmpDir, outDir)
   }
 

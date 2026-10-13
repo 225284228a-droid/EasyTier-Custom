@@ -31,8 +31,10 @@ pub(crate) enum LocalConfigError {
     Conflict(Option<String>),
     #[error("configuration is protected")]
     Protected,
-    #[error("invalid configuration patch")]
-    Invalid,
+    #[error("invalid configuration patch: {0}")]
+    Invalid(String),
+    #[error("configuration not found: {0}")]
+    NotFound(String),
     #[error("write outcome is unknown; observe before another save")]
     Unknown,
     #[error("configuration could not be applied")]
@@ -281,7 +283,14 @@ impl Session {
                 response.entry.map(|entry| entry.revision),
             )),
             2 => Err(LocalConfigError::Protected),
-            3 | 4 => Err(LocalConfigError::Invalid),
+            3 => Err(LocalConfigError::Invalid(response.message.unwrap_or_else(
+                || "invalid field mask or configuration values".into(),
+            ))),
+            4 => Err(LocalConfigError::NotFound(
+                response
+                    .message
+                    .unwrap_or_else(|| "configuration does not exist".into()),
+            )),
             5 => Err(LocalConfigError::ApplyFailed),
             _ => Err(LocalConfigError::Unsupported),
         }
@@ -408,24 +417,42 @@ fn validate_capability_mask(
         let mut urls = Vec::new();
         for mask in &request.field_mask {
             match mask.as_str() {
-                "peer_urls" => urls.extend(config.peer_urls.iter().map(String::as_str)),
-                "peers" => urls.extend(config.peers.iter().map(|peer| peer.uri.as_str())),
-                "listener_urls" => urls.extend(config.listener_urls.iter().map(String::as_str)),
-                "mapped_listeners" => {
-                    urls.extend(config.mapped_listeners.iter().map(String::as_str))
+                "peer_urls" => urls.extend(
+                    config
+                        .peer_urls
+                        .iter()
+                        .map(|uri| ("peer_urls", uri.as_str())),
+                ),
+                "peers" => {
+                    urls.extend(config.peers.iter().map(|peer| ("peers", peer.uri.as_str())))
                 }
+                "listener_urls" => urls.extend(
+                    config
+                        .listener_urls
+                        .iter()
+                        .map(|uri| ("listener_urls", uri.as_str())),
+                ),
+                "mapped_listeners" => urls.extend(
+                    config
+                        .mapped_listeners
+                        .iter()
+                        .map(|uri| ("mapped_listeners", uri.as_str())),
+                ),
                 "public_server_url" => urls.extend(
                     config
                         .public_server_url
                         .as_deref()
-                        .filter(|uri| !uri.trim().is_empty()),
+                        .filter(|uri| !uri.trim().is_empty())
+                        .map(|uri| ("public_server_url", uri)),
                 ),
                 _ => (),
             }
         }
-        for uri in urls {
+        for (field, uri) in urls {
             let Ok(url) = url::Url::parse(uri) else {
-                return Err(LocalConfigError::Invalid);
+                return Err(LocalConfigError::Invalid(format!(
+                    "invalid URL (fields: {field})"
+                )));
             };
             let capability = match url.scheme() {
                 "ws" => "transport:ws",

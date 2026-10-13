@@ -27,11 +27,12 @@ pub(super) fn failure(error: LocalConfigError) -> HttpHandleError {
             revision.clone(),
         ),
         LocalConfigError::Protected => (StatusCode::FORBIDDEN, "local_config_protected", None),
-        LocalConfigError::Invalid => (
+        LocalConfigError::Invalid(_) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             "local_config_invalid_patch",
             None,
         ),
+        LocalConfigError::NotFound(_) => (StatusCode::NOT_FOUND, "local_config_not_found", None),
         LocalConfigError::Unknown => (
             StatusCode::GATEWAY_TIMEOUT,
             "local_config_outcome_unknown",
@@ -101,4 +102,37 @@ pub(super) fn router() -> Router<AppStateInner> {
             "/api/v1/machines/{machine}/local-configs/patch",
             post(patch),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_patch_retains_the_public_diagnostic_and_existing_error_code() {
+        let (status, Json(error)) = failure(LocalConfigError::Invalid(
+            "field is not editable (fields: enable_vpn_portal)".into(),
+        ));
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(error.code.as_deref(), Some("local_config_invalid_patch"));
+        assert_eq!(
+            error.message,
+            "invalid configuration patch: field is not editable (fields: enable_vpn_portal)"
+        );
+        assert!(error.current_config_revision.is_none());
+    }
+
+    #[test]
+    fn missing_patch_targets_return_not_found_instead_of_invalid_patch() {
+        let (status, Json(error)) = failure(LocalConfigError::NotFound(
+            "configuration does not exist".into(),
+        ));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(error.code.as_deref(), Some("local_config_not_found"));
+        assert_eq!(
+            error.message,
+            "configuration not found: configuration does not exist"
+        );
+        assert!(error.current_config_revision.is_none());
+    }
 }
