@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the complete_vpn_reconfigure command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-complete-vpn-reconfigure",
+          "markdownDescription": "Enables the complete_vpn_reconfigure command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the complete_vpn_reconfigure command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-complete-vpn-reconfigure",
+          "markdownDescription": "Denies the complete_vpn_reconfigure command without any pre-configured scope."
+        },
+        {
           "description": "Enables the consume_vpn_tile_action command without any pre-configured scope.",
           "type": "string",
           "const": "allow-consume-vpn-tile-action",
@@ -305,6 +317,18 @@
           "type": "string",
           "const": "deny-consume-vpn-tile-action",
           "markdownDescription": "Denies the consume_vpn_tile_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_underlying_dns_servers command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-underlying-dns-servers",
+          "markdownDescription": "Enables the get_underlying_dns_servers command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_underlying_dns_servers command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-underlying-dns-servers",
+          "markdownDescription": "Denies the get_underlying_dns_servers command without any pre-configured scope."
         },
         {
           "description": "Enables the get_vpn_status command without any pre-configured scope.",
@@ -341,6 +365,18 @@
           "type": "string",
           "const": "deny-prepare-vpn",
           "markdownDescription": "Denies the prepare_vpn command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reconfigure_vpn command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reconfigure-vpn",
+          "markdownDescription": "Enables the reconfigure_vpn command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reconfigure_vpn command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reconfigure-vpn",
+          "markdownDescription": "Denies the reconfigure_vpn command without any pre-configured scope."
         },
         {
           "description": "Enables the registerListener command without any pre-configured scope.",
@@ -391,10 +427,10 @@
           "markdownDescription": "Denies the stop_vpn command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-ping`\n- `allow-start-vpn`",
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-ping`\n- `allow-start-vpn`\n- `allow-reconfigure-vpn`\n- `allow-complete-vpn-reconfigure`\n- `allow-get-underlying-dns-servers`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-ping`\n- `allow-start-vpn`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-ping`\n- `allow-start-vpn`\n- `allow-reconfigure-vpn`\n- `allow-complete-vpn-reconfigure`\n- `allow-get-underlying-dns-servers`"
         }
       ]
     }

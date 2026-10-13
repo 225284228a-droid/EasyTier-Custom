@@ -14,6 +14,8 @@ mod packet_io;
 mod packet_plane;
 #[cfg(feature = "proxy-packet")]
 mod packet_proxy_extension;
+#[cfg(feature = "proxy-smoltcp-stack")]
+pub mod vpn_dns;
 #[cfg(feature = "vpn-portal")]
 mod vpn_portal_extension;
 
@@ -260,6 +262,18 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
 
     fn attach_tun_fd(&self, _fd: i32) -> anyhow::Result<()> {
         anyhow::bail!("external TUN attachment is not supported by this Host")
+    }
+
+    async fn attach_tun_fd_and_wait(&self, fd: i32) -> anyhow::Result<()> {
+        self.attach_tun_fd(fd)
+    }
+
+    async fn attach_tun_fd_and_wait_with_generation(
+        &self,
+        fd: i32,
+        _generation: Option<u64>,
+    ) -> anyhow::Result<()> {
+        self.attach_tun_fd_and_wait(fd).await
     }
 }
 
@@ -863,6 +877,10 @@ where
             runtime_config.clone(),
             proxy_cidr_monitor_available,
         ));
+        #[cfg(feature = "proxy-smoltcp-stack")]
+        let _ = packet_plane
+            .dns_egress
+            .set(vpn_dns::dns_factory(&data_plane_runtime));
 
         Ok(Arc::new(Self {
             instance_name,

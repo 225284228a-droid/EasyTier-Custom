@@ -223,7 +223,7 @@ pub async fn bind<B: Bindable>(
     /// untouched; `Some(mark)` applies that exact value, including `Some(0)`.
     socket_mark: Option<u32>,
     #[builder(default)] need_protect: bool,
-) -> Result<B, TunnelError> {
+) -> Result<crate::socket_protector::ProtectedSocket<B>, TunnelError> {
     let (socket, dev) = {
         let _g = net_ns.as_ref().map(|n| n.guard());
         let dev = match dev {
@@ -238,11 +238,15 @@ pub async fn bind<B: Bindable>(
         apply_socket_mark(&socket, socket_mark)?;
         (socket, dev)
     };
-    crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
+    let registration =
+        crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
     // Restore the requested namespace for synchronous bind/device lookup only.
     let _g = net_ns.as_ref().map(|n| n.guard());
     setup_socket2_ext(&socket, &addr, dev, only_v6, reuse_addr, reuse_port)?;
-    B::finalize(socket)
+    Ok(crate::socket_protector::ProtectedSocket::new(
+        B::finalize(socket)?,
+        registration,
+    ))
 }
 
 // endregion

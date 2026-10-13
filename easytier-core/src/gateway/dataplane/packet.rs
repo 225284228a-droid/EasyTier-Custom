@@ -2,7 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use smoltcp::wire::{IPV4_HEADER_LEN, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
+use smoltcp::wire::{IPV4_HEADER_LEN, IpProtocol, Ipv4Packet, Ipv6Packet, TcpPacket, UdpPacket};
 
 use crate::packet::{PacketType, ZCPacket};
 
@@ -39,6 +39,9 @@ pub(crate) enum PeerPacketRoute {
     },
 }
 fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
+    if payload.first().is_some_and(|v| v >> 4 == 6) {
+        return classify_peer_ipv6_payload(payload);
+    }
     let Ok(ipv4) = Ipv4Packet::new_checked(payload) else {
         return ClassifiedPeerPacket::Unsupported;
     };
@@ -80,6 +83,50 @@ fn classify_peer_ipv4_payload(payload: &[u8]) -> ClassifiedPeerPacket {
                 entry: FlowKey {
                     dst: SocketAddr::new(ipv4.src_addr().into(), udp.src_port()),
                     src: SocketAddr::new(ipv4.dst_addr().into(), udp.dst_port()),
+                    kind: FlowKind::Udp,
+                },
+            }
+        }
+        _ => ClassifiedPeerPacket::Unsupported,
+    }
+}
+
+fn classify_peer_ipv6_payload(payload: &[u8]) -> ClassifiedPeerPacket {
+    let Ok(ip) = Ipv6Packet::new_checked(payload) else {
+        return ClassifiedPeerPacket::Unsupported;
+    };
+    if ip.version() != 6 {
+        return ClassifiedPeerPacket::Unsupported;
+    }
+    match ip.next_header() {
+        IpProtocol::Tcp => {
+            let Ok(tcp) = TcpPacket::new_checked(ip.payload()) else {
+                return ClassifiedPeerPacket::Unsupported;
+            };
+            let entry = FlowKey {
+                src: SocketAddr::new(ip.dst_addr().into(), tcp.dst_port()),
+                dst: SocketAddr::new(ip.src_addr().into(), tcp.src_port()),
+                kind: FlowKind::Tcp,
+            };
+            let listen_entry = FlowKey {
+                src: entry.src,
+                dst: "[::]:0".parse().unwrap(),
+                kind: FlowKind::TcpListen,
+            };
+            ClassifiedPeerPacket::Tcp {
+                entry,
+                listen_entry,
+                flags: tcp_flags(&tcp),
+            }
+        }
+        IpProtocol::Udp => {
+            let Ok(udp) = UdpPacket::new_checked(ip.payload()) else {
+                return ClassifiedPeerPacket::Unsupported;
+            };
+            ClassifiedPeerPacket::Udp {
+                entry: FlowKey {
+                    src: SocketAddr::new(ip.dst_addr().into(), udp.dst_port()),
+                    dst: SocketAddr::new(ip.src_addr().into(), udp.src_port()),
                     kind: FlowKind::Udp,
                 },
             }

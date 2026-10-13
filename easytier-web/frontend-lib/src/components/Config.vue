@@ -21,6 +21,7 @@ import { configFieldSupported, HTTP3_CAPABILITY } from '../modules/capabilities'
 import { createVpnPortalConfig } from '../modules/vpnPortal'
 import { isValidHostIp } from '../modules/ip'
 import type { VpnPortalClientConfig } from '../types/network'
+import type { VpnConfig as VpnConfigType } from '../generated/proto/api_manage'
 
 const props = defineProps<{
   actionLabel?: string
@@ -220,6 +221,31 @@ function flagChecked(field: keyof NetworkConfig): boolean {
 function setFlag(field: keyof NetworkConfig, value: boolean) {
   Object.assign(curNetwork.value, { [field]: value })
 }
+
+function ensureVpnConfig(): VpnConfigType {
+  if (!curNetwork.value.vpn) {
+    curNetwork.value.vpn = {
+      exit_enabled: false,
+      dns_protect: true,
+      ipv6_protect: true,
+      ignore_private: true,
+      rules: [],
+    }
+  }
+  const config = curNetwork.value.vpn
+  config.dns_protect ??= true
+  config.ipv6_protect ??= true
+  config.ignore_private ??= true
+  config.rules ??= []
+  return config
+}
+
+const vpnExitEnabled = computed({
+  get: () => curNetwork.value.vpn?.exit_enabled ?? false,
+  set: (enabled: boolean) => {
+    ensureVpnConfig().exit_enabled = enabled
+  },
+})
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
@@ -462,6 +488,12 @@ function removeVpnPortalClient(index: number) {
                         @update:model-value="setFlag(flag.field, $event)" />
                       <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
+                    </div>
+
+                    <div v-if="extensionSupported('vpn')" class="basis-[20rem] flex min-w-0 items-center">
+                      <Checkbox v-model="vpnExitEnabled" input-id="vpn_exit_enabled" :binary="true" />
+                      <label for="vpn_exit_enabled" class="ml-2">{{ t('vpn_exit_enabled') }}</label>
+                      <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('vpn_exit_enabled_help')"></span>
                     </div>
 
                   </div>

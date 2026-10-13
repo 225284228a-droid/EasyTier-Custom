@@ -6,15 +6,12 @@ use bytes::BytesMut;
 use network_interface::NetworkInterfaceConfig;
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     pin::Pin,
     sync::Arc,
     task::{Context as TaskContext, Poll},
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf},
-    net::TcpStream,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use easytier_core::{
     socket::tcp::VirtualTcpSocket,
@@ -22,6 +19,7 @@ use easytier_core::{
 };
 
 use crate::{common::netns::NetNS, tunnel::FromUrl};
+use easytier_core::socket::tcp::VirtualTcpListener;
 
 use self::netfilter::create_tun;
 use self::packet::MacAddr;
@@ -100,7 +98,7 @@ async fn create_tun_off_runtime(
 
 pub(crate) struct FakeTcpSocketListener {
     addr: url::Url,
-    os_listener: Option<tokio::net::TcpListener>,
+    os_listener: Option<crate::socket::tcp::RuntimeTcpListener>,
     // interface_name -> fake tcp stack
     stack_map: DashMap<String, Arc<stack::Stack>>,
     // a cache from ip addr to interface name
@@ -208,7 +206,9 @@ impl FakeTcpSocketListener {
     }
 }
 
-fn build_os_socket_reader_task(mut socket: TcpStream) -> AbortOnDropHandle<()> {
+fn build_os_socket_reader_task(
+    mut socket: impl AsyncRead + Unpin + Send + 'static,
+) -> AbortOnDropHandle<()> {
     AbortOnDropHandle::new(tokio::spawn(async move {
         // read the os socket until it's closed
         let mut buf = [0u8; 1024];
@@ -335,13 +335,21 @@ impl VirtualTcpSocket for FakeTcpSocket {
     }
 }
 
-#[derive(Debug)]
 struct AcceptResult {
-    socket: TcpStream,
+    socket: crate::socket::tcp::RuntimeTcpSocket,
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
     interface_name: String,
     mac: Option<MacAddr>,
+}
+impl std::fmt::Debug for AcceptResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcceptResult")
+            .field("local_addr", &self.local_addr)
+            .field("remote_addr", &self.remote_addr)
+            .field("interface_name", &self.interface_name)
+            .finish()
+    }
 }
 
 impl FakeTcpSocketListener {
@@ -383,7 +391,10 @@ impl FakeTcpSocketListener {
     async fn listen_socket(&mut self) -> Result<(), TunnelError> {
         let port = self.addr.port().unwrap_or(0);
         let bind_addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let os_listener = tokio::net::TcpListener::bind(bind_addr).await?;
+        let os_listener = crate::socket::tcp::bind_tcp_listener(
+            easytier_core::socket::tcp::TcpListenOptions::direct_connect(bind_addr),
+        )
+        .await?;
         tracing::info!(port, "FakeTcpSocketListener listening");
         self.os_listener = Some(os_listener);
         Ok(())
@@ -407,7 +418,12 @@ impl easytier_core::socket::SocketListener for FakeTcpSocketListener {
     }
 }
 
-fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
+async fn get_local_ip_for_destination(
+    destination: IpAddr,
+    socket_mark: Option<u32>,
+    net_ns: &NetNS,
+    need_protect: bool,
+) -> Option<IpAddr> {
     // 使用一个不可路由的、私有的、或回环地址创建一个临时的 socket，让内核自动选择源接口。
     // 对于 IPv4，使用 0.0.0.0; 对于 IPv6，使用 ::
     let bind_addr = if destination.is_ipv4() {
@@ -417,10 +433,22 @@ fn get_local_ip_for_destination(destination: IpAddr) -> Option<IpAddr> {
     };
 
     // 绑定到一个临时端口 (0)
-    let socket = UdpSocket::bind((bind_addr, 0)).ok()?;
+    let context = easytier_core::socket::SocketContext {
+        socket_mark,
+        netns: net_ns.name().map(easytier_core::socket::NetNamespace::new),
+        ..Default::default()
+    };
+    let socket = crate::socket::udp::create_udp_socket(
+        &easytier_core::socket::udp::UdpBindOptions::direct_connect()
+            .with_context(context)
+            .with_need_protect(need_protect)
+            .with_local_addr(Some(SocketAddr::new(bind_addr, 0))),
+    )
+    .await
+    .ok()?;
 
     // 尝试连接到目标地址。这不会真正发送数据包，只是让内核确定路由。
-    socket.connect((destination, 80)).ok()?; // 使用一个常见的端口，例如 80
+    socket.connect((destination, 80)).await.ok()?; // 使用一个常见的端口，例如 80
 
     // 获取 socket 的本地地址信息
     socket.local_addr().map(|addr| addr.ip()).ok()
@@ -431,19 +459,28 @@ async fn connect_socket_with_cache(
     socket_mark: Option<u32>,
     ip_to_if_name: &IpToIfNameCache,
     net_ns: NetNS,
+    need_protect: bool,
 ) -> Result<FakeTcpSocket, TunnelError> {
-    let (local_addr, interface_name, mac, os_socket) = net_ns.run(|| {
-        let local_ip = get_local_ip_for_destination(remote_addr.ip())
-            .ok_or(TunnelError::InternalError("Failed to get local ip".into()))?;
-
-        let os_socket = tokio::net::TcpSocket::new_v4()?;
-        // SO_MARK applies only to the kernel-visible "decoy" socket below.
-        // The actual FakeTCP payload travels via crafted segments written
-        // straight to the TUN device, which the kernel doesn't tag with
-        // SO_MARK. Operators relying on fwmark for FakeTCP must mark the
-        // TUN device's traffic with a separate nftables/iptables rule.
-        crate::tunnel::common::apply_socket_mark(&socket2::SockRef::from(&os_socket), socket_mark)?;
-        os_socket.bind("0.0.0.0:0".parse().unwrap())?;
+    let local_ip =
+        get_local_ip_for_destination(remote_addr.ip(), socket_mark, &net_ns, need_protect)
+            .await
+            .ok_or(TunnelError::InternalError(
+                "Failed to get protected local ip".into(),
+            ))?;
+    let context = easytier_core::socket::SocketContext {
+        socket_mark,
+        netns: net_ns.name().map(easytier_core::socket::NetNamespace::new),
+        ..Default::default()
+    };
+    let os_socket = crate::socket::tcp::create_tcp_socket(
+        remote_addr,
+        &easytier_core::socket::tcp::TcpBindOptions::default()
+            .with_context(context)
+            .with_need_protect(need_protect)
+            .with_local_addr(Some(SocketAddr::new(local_ip, 0))),
+    )
+    .await?;
+    let (local_addr, interface_name, mac) = net_ns.run(|| {
         let local_addr = SocketAddr::new(local_ip, os_socket.local_addr()?.port());
 
         let (interface_name, mac) =
@@ -452,7 +489,7 @@ async fn connect_socket_with_cache(
                 .ok_or(TunnelError::InternalError(
                     "Failed to get interface name".into(),
                 ))?;
-        Ok::<_, TunnelError>((local_addr, interface_name, mac, os_socket))
+        Ok::<_, TunnelError>((local_addr, interface_name, mac))
     })?;
 
     let tun = create_tun_off_runtime(interface_name, Some(remote_addr), local_addr, net_ns).await?;
@@ -490,8 +527,16 @@ pub(crate) async fn connect_socket(
     remote_addr: SocketAddr,
     socket_mark: Option<u32>,
     net_ns: NetNS,
+    need_protect: bool,
 ) -> Result<FakeTcpSocket, TunnelError> {
-    connect_socket_with_cache(remote_addr, socket_mark, &IpToIfNameCache::new(), net_ns).await
+    connect_socket_with_cache(
+        remote_addr,
+        socket_mark,
+        &IpToIfNameCache::new(),
+        net_ns,
+        need_protect,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -525,10 +570,14 @@ mod tests {
                 socket.write_all(b"pong").await.unwrap();
             });
 
-            let mut socket =
-                connect_socket("127.0.0.1:31011".parse().unwrap(), None, NetNS::new(None))
-                    .await
-                    .unwrap();
+            let mut socket = connect_socket(
+                "127.0.0.1:31011".parse().unwrap(),
+                None,
+                NetNS::new(None),
+                true,
+            )
+            .await
+            .unwrap();
             server_ready_rx.await.unwrap();
             socket.write_all(b"ping").await.unwrap();
             let mut response = [0; 4];

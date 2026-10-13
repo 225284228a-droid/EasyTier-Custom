@@ -99,6 +99,12 @@ pub trait Route {
 
     async fn list_routes(&self) -> Vec<CoreRoute>;
 
+    /// Validated advertisements, including peers whose path is currently down.
+    /// Policy exclusions must not disappear with reachability.
+    async fn list_known_peer_infos(&self) -> Vec<RoutePeerInfo> {
+        Vec::new()
+    }
+
     // TODO: rewrite route management, remove this
     async fn list_proxy_cidrs(&self) -> BTreeSet<Ipv4Cidr>;
 

@@ -74,10 +74,9 @@ pub enum CoreEvent {
         added: Vec<Ipv4Cidr>,
         removed: Vec<Ipv4Cidr>,
     },
-    /// Per-exit liveness view of the multi-exit VPN (exit name -> reachable).
-    /// Emitted by the peer manager only when the view changes, so the host
-    /// route manager can withdraw takeover routes while every exit of a rule
-    /// is down (fail_mode = direct).
+    /// Per-exit liveness view of the multi-exit VPN (virtual IP -> reachable).
+    /// Emitted only when the view changes. Reachability selects the exit;
+    /// capture routes remain installed while every exit of a rule is down.
     VpnExitLivenessUpdated(Vec<(String, bool)>),
     VpnPortalStarted(String),
     VpnPortalClientConnected {

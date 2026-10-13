@@ -63,8 +63,13 @@ impl VirtualTcpSocketFactory for NativeHostRuntime {
             let remote_addr = options.remote_addr;
             let socket_mark = options.bind.context.socket_mark;
             let net_ns = NetNS::from_socket_context(&options.bind.context);
-            let socket =
-                crate::socket::fake_tcp::connect_socket(remote_addr, socket_mark, net_ns).await?;
+            let socket = crate::socket::fake_tcp::connect_socket(
+                remote_addr,
+                socket_mark,
+                net_ns,
+                options.bind.need_protect,
+            )
+            .await?;
             return Ok(RuntimeTcpSocket::from_fake_tcp(socket));
         }
 

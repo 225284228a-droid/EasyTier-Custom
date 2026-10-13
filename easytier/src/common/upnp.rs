@@ -30,7 +30,7 @@ const UPNP_DESCRIPTION: &str = "EasyTier udp hole punch";
 
 async fn new_protected_natpmp(
     gateway: Option<Ipv4Addr>,
-) -> anyhow::Result<natpmp::NatpmpAsync<UdpSocket>> {
+) -> anyhow::Result<natpmp::NatpmpAsync<crate::socket_protector::ProtectedSocket<UdpSocket>>> {
     let gateway = gateway
         .map(Ok)
         .unwrap_or_else(|| get_default_gateway().map_err(anyhow::Error::from))?;

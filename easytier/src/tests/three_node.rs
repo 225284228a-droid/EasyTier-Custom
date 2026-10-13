@@ -3855,21 +3855,14 @@ pub async fn config_patch_test() {
     // 测试1.1：热更新多出口 VPN 配置
     let patch = InstanceConfigPatch {
         vpn: Some(easytier_proto::api::manage::VpnConfig {
-            enabled: true,
             exit_enabled: false,
-            dns_protect: true,
-            ipv6_protect: true,
-            fail_mode: "direct".to_owned(),
-            exits: vec![easytier_proto::api::manage::VpnExitConfig {
-                name: "e1".to_owned(),
-                node: "10.144.144.3".to_owned(),
-                note: None,
-            }],
+            dns_protect: Some(true),
+            ipv6_protect: Some(true),
+            ignore_private: Some(true),
             rules: vec![easytier_proto::api::manage::VpnRuleConfig {
                 cidr: "0.0.0.0/0".to_owned(),
                 action: "exit".to_owned(),
-                exit: Some("e1".to_owned()),
-                fallback_exits: vec![],
+                exits: vec!["10.144.144.3".to_owned()],
                 priority: Some(0),
             }],
         }),
@@ -3881,10 +3874,13 @@ pub async fn config_patch_test() {
         .await
         .unwrap();
     let vpn = insts[1].get_global_ctx().config.get_vpn();
-    assert!(vpn.enabled);
+    assert!(vpn.client_active());
     assert!(vpn.has_global_v4_exit());
-    assert_eq!(vpn.exits.len(), 1);
-    assert_eq!(vpn.exits[0].name, "e1");
+    assert_eq!(vpn.exit_addresses().len(), 1);
+    assert_eq!(
+        vpn.rules[0].exits[0],
+        "10.144.144.3".parse::<std::net::IpAddr>().unwrap()
+    );
     let status = insts[1].get_core_instance().vpn_status().await;
     assert!(status.enabled);
     assert_eq!(status.rules.len(), 1);

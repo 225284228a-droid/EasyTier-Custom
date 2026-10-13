@@ -305,6 +305,23 @@ fn send_to_with_src_ipv4_to_addr(
     }
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub(crate) fn send_to_with_src_ip_raw(
+    socket: &UdpSocket,
+    src_ip: IpAddr,
+    dst_addr: SocketAddr,
+    buf: &[u8],
+) -> io::Result<usize> {
+    match (src_ip, dst_addr) {
+        (IpAddr::V4(src), dst) => send_to_with_src_ipv4_to_addr(socket, src, dst, buf),
+        (IpAddr::V6(src), SocketAddr::V6(dst)) => send_to_with_src_ipv6(socket, src, 0, dst, buf),
+        (src, dst) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source address {src} does not match destination {dst} family"),
+        )),
+    }
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 fn send_to_with_src_ipv4_mapped_v6(
     socket: &UdpSocket,
@@ -322,7 +339,7 @@ fn send_to_with_src_ipv4_mapped_v6(
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn send_to_with_src_ip_raw(
+pub(crate) fn send_to_with_src_ip_raw(
     socket: &UdpSocket,
     src_ip: IpAddr,
     dst_addr: SocketAddr,

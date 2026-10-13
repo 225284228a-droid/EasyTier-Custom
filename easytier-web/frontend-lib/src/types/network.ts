@@ -347,8 +347,34 @@ function applyNetworkingMethod(
   config.peers = peersFromUrls(config.peer_urls, existingPeers)
 }
 
+function prepareNetworkConfigWithVpnDefaults(config: NetworkConfig): NetworkConfig {
+  const prepared = prepareNetworkConfigForProtoJson(config)
+  if (!config.vpn) return prepared
+
+  const vpnJson = config.vpn as unknown as Record<string, unknown>
+  prepared.vpn = {
+    ...config.vpn,
+    exit_enabled: vpnBooleanField(vpnJson, 'exit_enabled', 'exitEnabled', false),
+    dns_protect: vpnBooleanField(vpnJson, 'dns_protect', 'dnsProtect', true),
+    ipv6_protect: vpnBooleanField(vpnJson, 'ipv6_protect', 'ipv6Protect', true),
+    ignore_private: vpnBooleanField(vpnJson, 'ignore_private', 'ignorePrivate', true),
+    rules: (config.vpn.rules ?? []).map(rule => ({ ...rule, exits: rule.exits ?? [] })),
+  }
+  return prepared
+}
+
+function vpnBooleanField(
+  vpnJson: Record<string, unknown>,
+  snakeCase: string,
+  camelCase: string,
+  fallback: boolean,
+): boolean {
+  const value = vpnJson[snakeCase] ?? vpnJson[camelCase]
+  return typeof value === 'boolean' ? value : fallback
+}
+
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
-  const normalized = NetworkConfigPb.fromJson(prepareNetworkConfigForProtoJson(config) as any, {
+  const normalized = NetworkConfigPb.fromJson(prepareNetworkConfigWithVpnDefaults(config) as any, {
     ignoreUnknownFields: true,
   }) as unknown as NetworkConfig
 
@@ -364,8 +390,9 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
   if (normalized.vpn) {
-    normalized.vpn.exits ??= []
     normalized.vpn.rules ??= []
+    for (const rule of normalized.vpn.rules)
+      rule.exits ??= []
   }
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
@@ -388,9 +415,14 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
 }
 
 export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: readonly string[]): NetworkConfig {
-  const backend = NetworkConfigPb.fromJson(prepareNetworkConfigForProtoJson(config) as any, {
+  const backend = NetworkConfigPb.fromJson(prepareNetworkConfigWithVpnDefaults(config) as any, {
     ignoreUnknownFields: true,
   })
+
+  for (const rule of backend.vpn?.rules ?? []) {
+    if (rule.action !== 'exit')
+      rule.exits = []
+  }
 
   applyNetworkingMethod(backend)
   backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined

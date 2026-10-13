@@ -17,6 +17,46 @@ use crate::{
 
 use super::{CoreInstance, CoreInstanceHost, CorePacketPlane};
 
+#[cfg(feature = "management-rpc")]
+fn projected_vpn_activation_error(
+    client_active: bool,
+    running: bool,
+    no_tun: bool,
+    has_virtual_address: bool,
+    dhcp_ipv4: bool,
+    host_error: Option<&str>,
+) -> String {
+    // These prerequisite reports describe current configuration, rather than
+    // an installation failure. Recompute them after hot patches even when no
+    // NIC exists to run the route manager, while retaining real setup/cleanup
+    // errors reported by that manager.
+    if let Some(error) = host_error
+        && !matches!(
+            error,
+            "VPN capture unavailable: no_tun disables the native interface"
+                | "VPN capture pending: waiting for DHCP to assign a virtual address"
+                | "VPN capture unavailable: no virtual IPv4 or IPv6 address is configured"
+        )
+    {
+        return error.to_owned();
+    }
+    if !client_active || !running {
+        return String::new();
+    }
+    if no_tun {
+        return "VPN capture unavailable: no_tun disables the native interface".to_owned();
+    }
+    if !has_virtual_address {
+        return if dhcp_ipv4 {
+            "VPN capture pending: waiting for DHCP to assign a virtual address"
+        } else {
+            "VPN capture unavailable: no virtual IPv4 or IPv6 address is configured"
+        }
+        .to_owned();
+    }
+    String::new()
+}
+
 impl<H> CoreInstance<H>
 where
     H: CoreInstanceHost,
@@ -75,6 +115,20 @@ where
 
     pub fn attach_tun_fd(&self, fd: i32) -> anyhow::Result<()> {
         self.instance_runtime.attach_tun_fd(fd)
+    }
+
+    pub async fn attach_tun_fd_and_wait(&self, fd: i32) -> anyhow::Result<()> {
+        self.instance_runtime.attach_tun_fd_and_wait(fd).await
+    }
+
+    pub async fn attach_tun_fd_and_wait_with_generation(
+        &self,
+        fd: i32,
+        generation: Option<u64>,
+    ) -> anyhow::Result<()> {
+        self.instance_runtime
+            .attach_tun_fd_and_wait_with_generation(fd, generation)
+            .await
     }
 
     pub fn latest_error(&self) -> Option<String> {
@@ -243,21 +297,48 @@ where
     pub async fn vpn_status(&self) -> easytier_proto::api::instance::GetVpnStatusResponse {
         use easytier_proto::api::instance::{GetVpnStatusResponse, VpnExitStatus, VpnRuleStatus};
 
+        self.vpn_engine
+            .update_exclusions(self.peer_manager.vpn_route_exclusions().await);
         let config = self.vpn_engine.config();
+        let (plan, policy_generation) = self.vpn_engine.route_plan();
         let (rules, exits) = self.vpn_engine.status();
         let host_state = self
             .vpn_route_state
             .as_ref()
             .and_then(|adapter| adapter.vpn_route_state());
+        let runtime = self.runtime_config.snapshot();
+        let activation_error = projected_vpn_activation_error(
+            config.client_active(),
+            self.is_ready(),
+            runtime.peer.flags.no_tun,
+            runtime.peer.runtime.core.routes.ipv4.is_some()
+                || runtime.peer.runtime.core.routes.ipv6.is_some(),
+            runtime.services.dhcp_ipv4,
+            host_state
+                .as_ref()
+                .and_then(|state| state.activation_error.as_deref()),
+        );
 
         GetVpnStatusResponse {
-            enabled: config.enabled,
+            enabled: config.client_active(),
             exit_enabled: config.exit_enabled,
-            fail_mode: config.fail_mode.as_str().to_owned(),
+            ignore_private: config.ignore_private,
+            capture_routes: plan
+                .capture_routes
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            policy_generation,
+            ipv6_addr: self
+                .peer_manager
+                .virtual_ipv6()
+                .map(|a| a.to_string())
+                .unwrap_or_default(),
             dns_protect: config.dns_protect,
             ipv6_protect: config.ipv6_protect,
             routes_active: host_state.as_ref().is_some_and(|state| state.routes_active),
             routes_installed: host_state.as_ref().map_or(0, |s| s.routes_installed as u32),
+            activation_error,
             protected_endpoints: host_state
                 .as_ref()
                 .map_or(0, |s| s.protected_endpoints.len() as u32),
@@ -274,8 +355,7 @@ where
                 .map(|rule| VpnRuleStatus {
                     cidr: rule.cidr,
                     action: rule.action.to_owned(),
-                    exit: rule.exit.unwrap_or_default(),
-                    fallback_exits: rule.fallback_exits,
+                    exits: rule.exits,
                     priority: rule.priority,
                     effective_exit: rule.effective_exit.unwrap_or_default(),
                     packets: rule.packets,
@@ -285,7 +365,6 @@ where
             exits: exits
                 .into_iter()
                 .map(|exit| VpnExitStatus {
-                    name: exit.name,
                     node_addr: exit.node_addr,
                     peer_id: exit.peer_id.unwrap_or_default(),
                     state: if exit.up { "up".into() } else { "down".into() },
@@ -299,5 +378,63 @@ where
 
     pub async fn refresh_acl_groups(&self) {
         self.peer_manager.get_route().refresh_acl_groups().await;
+    }
+}
+
+#[cfg(all(test, feature = "management-rpc"))]
+mod vpn_activation_status_tests {
+    use super::projected_vpn_activation_error;
+
+    #[test]
+    fn no_tun_hot_patch_reports_new_rules_and_clears_removed_rules() {
+        let unavailable = "VPN capture unavailable: no_tun disables the native interface";
+        assert_eq!(
+            projected_vpn_activation_error(false, true, true, true, false, None),
+            ""
+        );
+        assert_eq!(
+            projected_vpn_activation_error(true, true, true, true, false, None),
+            unavailable
+        );
+        assert_eq!(
+            projected_vpn_activation_error(false, true, true, true, false, Some(unavailable)),
+            ""
+        );
+    }
+
+    #[test]
+    fn address_recovery_and_stop_clear_stale_prerequisite_reports() {
+        let waiting = "VPN capture pending: waiting for DHCP to assign a virtual address";
+        assert_eq!(
+            projected_vpn_activation_error(true, true, false, false, true, None),
+            waiting
+        );
+        assert_eq!(
+            projected_vpn_activation_error(true, true, false, true, true, Some(waiting)),
+            ""
+        );
+        assert_eq!(
+            projected_vpn_activation_error(true, false, false, false, true, Some(waiting)),
+            ""
+        );
+    }
+
+    #[test]
+    fn prerequisite_projection_preserves_actual_setup_and_cleanup_errors() {
+        let setup = "could not reserve a VPN bypass mark";
+        assert_eq!(
+            projected_vpn_activation_error(true, true, true, false, true, Some(setup)),
+            setup
+        );
+        let unsupported = "VPN capture unavailable: platform policy routing is unsupported";
+        assert_eq!(
+            projected_vpn_activation_error(true, true, false, true, false, Some(unsupported)),
+            unsupported
+        );
+        let cleanup = "could not remove VPN capture routes";
+        assert_eq!(
+            projected_vpn_activation_error(false, false, true, false, false, Some(cleanup)),
+            cleanup
+        );
     }
 }

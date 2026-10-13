@@ -92,8 +92,12 @@ export async function setLoggingLevel(level: string) {
   return await invoke('set_logging_level', { level })
 }
 
-export async function setTunFd(fd: number) {
-  return await invoke('set_tun_fd', { fd })
+export async function setTunFd(fd: number, instanceId: string, generation: string) {
+  return await invoke('set_tun_fd', { fd, instanceId, generation })
+}
+
+export async function setVpnSystemDnsServers(instanceId: string, dnsServers: string[]) {
+  return await invoke('set_vpn_system_dns_servers', { instanceId, dnsServers })
 }
 
 export async function getEasytierVersion() {

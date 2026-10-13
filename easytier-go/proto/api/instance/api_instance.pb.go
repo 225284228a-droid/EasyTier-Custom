@@ -3633,7 +3633,6 @@ func (x *ListCredentialsResponse) GetCredentials() []*CredentialInfo {
 
 type VpnExitStatus struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
-	Name     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	NodeAddr string                 `protobuf:"bytes,2,opt,name=node_addr,json=nodeAddr,proto3" json:"node_addr,omitempty"`
 	PeerId   uint32                 `protobuf:"varint,3,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
 	// up | down | unknown
@@ -3673,13 +3672,6 @@ func (x *VpnExitStatus) ProtoReflect() protoreflect.Message {
 // Deprecated: Use VpnExitStatus.ProtoReflect.Descriptor instead.
 func (*VpnExitStatus) Descriptor() ([]byte, []int) {
 	return file_api_instance_proto_rawDescGZIP(), []int{57}
-}
-
-func (x *VpnExitStatus) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
 }
 
 func (x *VpnExitStatus) GetNodeAddr() string {
@@ -3728,14 +3720,13 @@ type VpnRuleStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Cidr  string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
 	// direct | block | exit
-	Action        string   `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
-	Exit          string   `protobuf:"bytes,3,opt,name=exit,proto3" json:"exit,omitempty"`
-	FallbackExits []string `protobuf:"bytes,4,rep,name=fallback_exits,json=fallbackExits,proto3" json:"fallback_exits,omitempty"`
-	Priority      uint32   `protobuf:"varint,5,opt,name=priority,proto3" json:"priority,omitempty"`
-	// Currently selected exit name for action=exit rules (empty when not active).
-	EffectiveExit string `protobuf:"bytes,6,opt,name=effective_exit,json=effectiveExit,proto3" json:"effective_exit,omitempty"`
-	Packets       uint64 `protobuf:"varint,7,opt,name=packets,proto3" json:"packets,omitempty"`
-	Bytes         uint64 `protobuf:"varint,8,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	Action   string `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	Priority uint32 `protobuf:"varint,5,opt,name=priority,proto3" json:"priority,omitempty"`
+	// Currently selected virtual exit IP (empty when unavailable).
+	EffectiveExit string   `protobuf:"bytes,6,opt,name=effective_exit,json=effectiveExit,proto3" json:"effective_exit,omitempty"`
+	Packets       uint64   `protobuf:"varint,7,opt,name=packets,proto3" json:"packets,omitempty"`
+	Bytes         uint64   `protobuf:"varint,8,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	Exits         []string `protobuf:"bytes,9,rep,name=exits,proto3" json:"exits,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3784,20 +3775,6 @@ func (x *VpnRuleStatus) GetAction() string {
 	return ""
 }
 
-func (x *VpnRuleStatus) GetExit() string {
-	if x != nil {
-		return x.Exit
-	}
-	return ""
-}
-
-func (x *VpnRuleStatus) GetFallbackExits() []string {
-	if x != nil {
-		return x.FallbackExits
-	}
-	return nil
-}
-
 func (x *VpnRuleStatus) GetPriority() uint32 {
 	if x != nil {
 		return x.Priority
@@ -3824,6 +3801,13 @@ func (x *VpnRuleStatus) GetBytes() uint64 {
 		return x.Bytes
 	}
 	return 0
+}
+
+func (x *VpnRuleStatus) GetExits() []string {
+	if x != nil {
+		return x.Exits
+	}
+	return nil
 }
 
 type GetVpnStatusRequest struct {
@@ -3877,17 +3861,24 @@ type GetVpnStatusResponse struct {
 	ExitEnabled bool             `protobuf:"varint,2,opt,name=exit_enabled,json=exitEnabled,proto3" json:"exit_enabled,omitempty"`
 	Exits       []*VpnExitStatus `protobuf:"bytes,3,rep,name=exits,proto3" json:"exits,omitempty"`
 	Rules       []*VpnRuleStatus `protobuf:"bytes,4,rep,name=rules,proto3" json:"rules,omitempty"`
-	// direct | block
-	FailMode    string `protobuf:"bytes,5,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"`
-	DnsProtect  bool   `protobuf:"varint,6,opt,name=dns_protect,json=dnsProtect,proto3" json:"dns_protect,omitempty"`
-	Ipv6Protect bool   `protobuf:"varint,7,opt,name=ipv6_protect,json=ipv6Protect,proto3" json:"ipv6_protect,omitempty"`
+	DnsProtect  bool             `protobuf:"varint,6,opt,name=dns_protect,json=dnsProtect,proto3" json:"dns_protect,omitempty"`
+	Ipv6Protect bool             `protobuf:"varint,7,opt,name=ipv6_protect,json=ipv6Protect,proto3" json:"ipv6_protect,omitempty"`
 	// host-side route manager state, filled when available
 	RoutesActive       bool     `protobuf:"varint,8,opt,name=routes_active,json=routesActive,proto3" json:"routes_active,omitempty"`
 	RoutesInstalled    uint32   `protobuf:"varint,9,opt,name=routes_installed,json=routesInstalled,proto3" json:"routes_installed,omitempty"`
 	ProtectedEndpoints uint32   `protobuf:"varint,10,opt,name=protected_endpoints,json=protectedEndpoints,proto3" json:"protected_endpoints,omitempty"`
 	SystemDnsServers   []string `protobuf:"bytes,11,rep,name=system_dns_servers,json=systemDnsServers,proto3" json:"system_dns_servers,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	IgnorePrivate      bool     `protobuf:"varint,12,opt,name=ignore_private,json=ignorePrivate,proto3" json:"ignore_private,omitempty"`
+	// Complete positive TUN routes, including overlay and policy capture.
+	CaptureRoutes []string `protobuf:"bytes,13,rep,name=capture_routes,json=captureRoutes,proto3" json:"capture_routes,omitempty"`
+	// Changes with policy/address context, independently of exit liveness.
+	PolicyGeneration uint64 `protobuf:"varint,14,opt,name=policy_generation,json=policyGeneration,proto3" json:"policy_generation,omitempty"`
+	// Actual virtual IPv6 address and prefix, empty if IPv6 is unconfigured.
+	Ipv6Addr string `protobuf:"bytes,15,opt,name=ipv6_addr,json=ipv6Addr,proto3" json:"ipv6_addr,omitempty"`
+	// Host protection or route setup error; empty after successful activation.
+	ActivationError string `protobuf:"bytes,16,opt,name=activation_error,json=activationError,proto3" json:"activation_error,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetVpnStatusResponse) Reset() {
@@ -3948,13 +3939,6 @@ func (x *GetVpnStatusResponse) GetRules() []*VpnRuleStatus {
 	return nil
 }
 
-func (x *GetVpnStatusResponse) GetFailMode() string {
-	if x != nil {
-		return x.FailMode
-	}
-	return ""
-}
-
 func (x *GetVpnStatusResponse) GetDnsProtect() bool {
 	if x != nil {
 		return x.DnsProtect
@@ -3995,6 +3979,41 @@ func (x *GetVpnStatusResponse) GetSystemDnsServers() []string {
 		return x.SystemDnsServers
 	}
 	return nil
+}
+
+func (x *GetVpnStatusResponse) GetIgnorePrivate() bool {
+	if x != nil {
+		return x.IgnorePrivate
+	}
+	return false
+}
+
+func (x *GetVpnStatusResponse) GetCaptureRoutes() []string {
+	if x != nil {
+		return x.CaptureRoutes
+	}
+	return nil
+}
+
+func (x *GetVpnStatusResponse) GetPolicyGeneration() uint64 {
+	if x != nil {
+		return x.PolicyGeneration
+	}
+	return 0
+}
+
+func (x *GetVpnStatusResponse) GetIpv6Addr() string {
+	if x != nil {
+		return x.Ipv6Addr
+	}
+	return ""
+}
+
+func (x *GetVpnStatusResponse) GetActivationError() string {
+	if x != nil {
+		return x.ActivationError
+	}
+	return ""
 }
 
 type InstanceIdentifier_InstanceSelector struct {
@@ -4429,9 +4448,8 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x16public_key_fingerprint\x18\a \x01(\tR\x14publicKeyFingerprintB\v\n" +
 	"\t_reusable\"Y\n" +
 	"\x17ListCredentialsResponse\x12>\n" +
-	"\vcredentials\x18\x01 \x03(\v2\x1c.api.instance.CredentialInfoR\vcredentials\"\xc8\x01\n" +
-	"\rVpnExitStatus\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
+	"\vcredentials\x18\x01 \x03(\v2\x1c.api.instance.CredentialInfoR\vcredentials\"\xc0\x01\n" +
+	"\rVpnExitStatus\x12\x1b\n" +
 	"\tnode_addr\x18\x02 \x01(\tR\bnodeAddr\x12\x17\n" +
 	"\apeer_id\x18\x03 \x01(\rR\x06peerId\x12\x14\n" +
 	"\x05state\x18\x04 \x01(\tR\x05state\x12\x1d\n" +
@@ -4439,24 +4457,22 @@ const file_api_instance_proto_rawDesc = "" +
 	"latency_ms\x18\x05 \x01(\x05R\tlatencyMs\x12\x1d\n" +
 	"\n" +
 	"tx_packets\x18\x06 \x01(\x04R\ttxPackets\x12\x19\n" +
-	"\btx_bytes\x18\a \x01(\x04R\atxBytes\"\xe9\x01\n" +
+	"\btx_bytes\x18\a \x01(\x04R\atxBytesJ\x04\b\x01\x10\x02R\x04name\"\xe6\x01\n" +
 	"\rVpnRuleStatus\x12\x12\n" +
 	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x16\n" +
-	"\x06action\x18\x02 \x01(\tR\x06action\x12\x12\n" +
-	"\x04exit\x18\x03 \x01(\tR\x04exit\x12%\n" +
-	"\x0efallback_exits\x18\x04 \x03(\tR\rfallbackExits\x12\x1a\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12\x1a\n" +
 	"\bpriority\x18\x05 \x01(\rR\bpriority\x12%\n" +
 	"\x0eeffective_exit\x18\x06 \x01(\tR\reffectiveExit\x12\x18\n" +
 	"\apackets\x18\a \x01(\x04R\apackets\x12\x14\n" +
-	"\x05bytes\x18\b \x01(\x04R\x05bytes\"S\n" +
+	"\x05bytes\x18\b \x01(\x04R\x05bytes\x12\x14\n" +
+	"\x05exits\x18\t \x03(\tR\x05exitsJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\x04exitR\x0efallback_exits\"S\n" +
 	"\x13GetVpnStatusRequest\x12<\n" +
-	"\binstance\x18\x01 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"\xc9\x03\n" +
+	"\binstance\x18\x01 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"\x80\x05\n" +
 	"\x14GetVpnStatusResponse\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12!\n" +
 	"\fexit_enabled\x18\x02 \x01(\bR\vexitEnabled\x121\n" +
 	"\x05exits\x18\x03 \x03(\v2\x1b.api.instance.VpnExitStatusR\x05exits\x121\n" +
-	"\x05rules\x18\x04 \x03(\v2\x1b.api.instance.VpnRuleStatusR\x05rules\x12\x1b\n" +
-	"\tfail_mode\x18\x05 \x01(\tR\bfailMode\x12\x1f\n" +
+	"\x05rules\x18\x04 \x03(\v2\x1b.api.instance.VpnRuleStatusR\x05rules\x12\x1f\n" +
 	"\vdns_protect\x18\x06 \x01(\bR\n" +
 	"dnsProtect\x12!\n" +
 	"\fipv6_protect\x18\a \x01(\bR\vipv6Protect\x12#\n" +
@@ -4464,7 +4480,12 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x10routes_installed\x18\t \x01(\rR\x0froutesInstalled\x12/\n" +
 	"\x13protected_endpoints\x18\n" +
 	" \x01(\rR\x12protectedEndpoints\x12,\n" +
-	"\x12system_dns_servers\x18\v \x03(\tR\x10systemDnsServers*\x8b\x01\n" +
+	"\x12system_dns_servers\x18\v \x03(\tR\x10systemDnsServers\x12%\n" +
+	"\x0eignore_private\x18\f \x01(\bR\rignorePrivate\x12%\n" +
+	"\x0ecapture_routes\x18\r \x03(\tR\rcaptureRoutes\x12+\n" +
+	"\x11policy_generation\x18\x0e \x01(\x04R\x10policyGeneration\x12\x1b\n" +
+	"\tipv6_addr\x18\x0f \x01(\tR\bipv6Addr\x12)\n" +
+	"\x10activation_error\x18\x10 \x01(\tR\x0factivationErrorJ\x04\b\x05\x10\x06R\tfail_mode*\x8b\x01\n" +
 	"\x12TrustedKeySourcePb\x12%\n" +
 	"!TRUSTED_KEY_SOURCE_PB_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fTRUSTED_KEY_SOURCE_PB_OSPF_NODE\x10\x01\x12)\n" +

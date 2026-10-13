@@ -15,24 +15,27 @@ use easytier_core::{
     },
     tunnel::TunnelError,
 };
+mod listener;
 mod window;
 use socket2::{SockRef, TcpKeepalive};
+#[cfg(test)]
+use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::{TcpListener, TcpSocket, TcpStream},
+    net::{TcpSocket, TcpStream},
 };
 use window::{TcpWindowIo, TcpWindowSampler, TcpWindowSource};
 
 use crate::{
     common::netns::NetNS,
-    socket_protector::protect_native_socket,
+    socket_protector::{ProtectedSocket, protect_native_socket},
     tunnel::common::{BindDev, apply_socket_mark, bind},
 };
 
 enum RuntimeTcpSocketInner {
-    Tcp(TcpStream),
+    Tcp(ProtectedSocket<TcpStream>),
     #[cfg(unix)]
     Unix(UnixStream),
     #[cfg(feature = "faketcp")]
@@ -45,7 +48,12 @@ pub struct RuntimeTcpSocket {
 }
 
 impl RuntimeTcpSocket {
+    #[cfg(test)]
     pub(crate) fn new(stream: TcpStream) -> Self {
+        Self::from_protected(ProtectedSocket::new(stream, None))
+    }
+
+    pub(crate) fn from_protected(stream: ProtectedSocket<TcpStream>) -> Self {
         if let Err(error) = stream.set_nodelay(true) {
             tracing::warn!(?error, "set_nodelay failed for tcp stream");
         }
@@ -155,7 +163,10 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
         let window_sampler = self.window_sampler.into_inner();
         match self.inner {
             RuntimeTcpSocketInner::Tcp(stream) => {
+                let (stream, registration) = stream.parts();
                 let (reader, writer) = stream.into_split();
+                let reader = ProtectedSocket::new(reader, registration.clone());
+                let writer = ProtectedSocket::new(writer, registration);
                 if let Some(sampler) = window_sampler {
                     (
                         Box::new(TcpWindowIo::new(reader, sampler.clone())),
@@ -232,7 +243,7 @@ impl VirtualTcpSocket for RuntimeTcpSocket {
 
 #[derive(Debug)]
 pub struct RuntimeTcpListener {
-    listener: TcpListener,
+    listener: listener::NativeTcpListener,
     purpose: TcpListenPurpose,
     need_protect: bool,
 }
@@ -247,11 +258,15 @@ impl VirtualTcpListener for RuntimeTcpListener {
 
     async fn accept(&self) -> io::Result<(Self::Socket, SocketAddr)> {
         let (stream, addr) = self.listener.accept().await?;
-        protect_native_socket(&SockRef::from(&stream), self.need_protect).await?;
+        let registration =
+            protect_native_socket(&SockRef::from(&stream), self.need_protect).await?;
         if self.purpose == TcpListenPurpose::ProxyNat {
             prepare_proxy_tcp_socket(&stream)?;
         }
-        Ok((RuntimeTcpSocket::new(stream), addr))
+        Ok((
+            RuntimeTcpSocket::from_protected(ProtectedSocket::new(stream, registration)),
+            addr,
+        ))
     }
 }
 
@@ -279,7 +294,7 @@ fn bind_dev_from_options(options: &TcpBindOptions, local_addr_was_defaulted: boo
 async fn bind_tcp_socket(
     remote_addr: SocketAddr,
     bind_options: &TcpBindOptions,
-) -> Result<TcpSocket, TunnelError> {
+) -> Result<ProtectedSocket<TcpSocket>, TunnelError> {
     let (bind_addr, local_addr_was_defaulted) = match bind_options.local_addr {
         Some(addr) => (addr, false),
         None => (unspecified_bind_addr(remote_addr), true),
@@ -302,7 +317,7 @@ async fn bind_tcp_socket(
 pub(crate) async fn create_tcp_socket(
     remote_addr: SocketAddr,
     bind_options: &TcpBindOptions,
-) -> Result<TcpSocket, TunnelError> {
+) -> Result<ProtectedSocket<TcpSocket>, TunnelError> {
     if must_bind_before_connect(bind_options) {
         return bind_tcp_socket(remote_addr, bind_options).await;
     }
@@ -313,7 +328,11 @@ pub(crate) async fn create_tcp_socket(
             let socket = if remote_addr.is_ipv4() {
                 TcpSocket::new_v4()?
             } else {
-                TcpSocket::new_v6()?
+                let socket = TcpSocket::new_v6()?;
+                // Windows defaults IPv6 sockets to v6-only; the unbound path
+                // must honor the same dual-stack option as the bind path.
+                SockRef::from(&socket).set_only_v6(bind_options.only_v6)?;
+                socket
             };
             apply_socket_mark(
                 &socket2::SockRef::from(&socket),
@@ -321,8 +340,9 @@ pub(crate) async fn create_tcp_socket(
             )?;
             Ok(socket)
         })?;
-    protect_native_socket(&SockRef::from(&socket), bind_options.need_protect).await?;
-    Ok(socket)
+    let registration =
+        protect_native_socket(&SockRef::from(&socket), bind_options.need_protect).await?;
+    Ok(ProtectedSocket::new(socket, registration))
 }
 
 fn must_bind_before_connect(bind_options: &TcpBindOptions) -> bool {
@@ -356,7 +376,7 @@ pub(crate) async fn bind_tcp_listener(
     if bind_options.bind_device.is_none() && purpose == TcpListenPurpose::PortLease {
         bind_options.bind_device = Some(String::new());
     }
-    let listener = create_tcp_socket(addr, &bind_options).await?.listen(1024)?;
+    let listener = listener::NativeTcpListener::bind(addr, &bind_options).await?;
     Ok(RuntimeTcpListener {
         listener,
         purpose,
@@ -375,7 +395,7 @@ pub(crate) async fn connect_tcp(
     limit_hole_punch_syn_retransmits(&socket, purpose)?;
     let stream = socket.connect(remote_addr).await?;
     prepare_connected_tcp_socket(&stream, purpose)?;
-    Ok(RuntimeTcpSocket::new(stream))
+    Ok(RuntimeTcpSocket::from_protected(stream))
 }
 
 /// Failed hole-punch dials must not pin the punch window: a blackholed SYN
@@ -454,6 +474,37 @@ mod tests {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    #[tokio::test]
+    async fn protected_tcp_owned_split_retains_registration_until_both_halves_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = create_tcp_socket(address, &TcpBindOptions::default())
+            .await
+            .unwrap()
+            .connect(address)
+            .await
+            .unwrap();
+        let (_server, _) = listener.accept().await.unwrap();
+        let (stream, registration) = client.parts();
+        let registration = registration.expect("native socket must carry protection lifetime");
+        let weak = Arc::downgrade(&registration);
+        let (reader, mut writer) =
+            RuntimeTcpSocket::from_protected(ProtectedSocket::new(stream, Some(registration)))
+                .into_split();
+        drop(reader);
+        assert!(
+            weak.upgrade().is_some(),
+            "writer must still own registration"
+        );
+        writer.shutdown().await.unwrap();
+        drop(writer);
+        assert!(
+            weak.upgrade().is_none(),
+            "closed halves must release registration"
+        );
+    }
 
     #[tokio::test]
     async fn runtime_tcp_owned_split_preserves_full_duplex_and_shutdown() {

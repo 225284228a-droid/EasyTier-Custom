@@ -8,6 +8,7 @@
     "build": "pnpm --dir ../frontend-lib build && vue-tsc -b && vite build",
     "test": "pnpm test:unit",
     "test:unit": "pnpm --dir ../frontend-lib build && vitest run --config vitest.config.ts",
+    "test:vpn-config-responsive": "node --test tests/vpn-config-responsive.test.mjs",
     "test:dashboard": "pnpm build && node scripts/test-dashboard.mjs",
     "preview": "vite preview",
     "test:browser": "pnpm build && node --test tests/dashboard.test.mjs",

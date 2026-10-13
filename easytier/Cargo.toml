@@ -406,6 +406,7 @@ magic-dns = [
     "dep:hickory-client",
     "dep:hickory-server",
     "easytier-core/proxy-packet",
+    "easytier-core/proxy-smoltcp-stack",
     "easytier-proto/magic-dns",
 ]
 faketcp = [

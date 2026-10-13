@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use smoltcp::wire::Ipv4Packet;
+use smoltcp::wire::{Ipv4Packet, Ipv6Packet};
 use tokio::{
     sync::{Mutex, mpsc},
     task::JoinSet,
@@ -30,6 +30,7 @@ pub(super) struct SmoltcpPlane {
 impl SmoltcpPlane {
     pub(super) fn new(
         ipv4_addr: cidr::Ipv4Inet,
+        ipv6_addr: Option<cidr::Ipv6Inet>,
         peer_manager: Weak<PeerManagerCore>,
         packet_recv: Arc<Mutex<mpsc::Receiver<ZCPacket>>>,
     ) -> Self {
@@ -54,21 +55,23 @@ impl SmoltcpPlane {
 
         forward_tasks.spawn(async move {
             while let Some(data) = stack_stream.recv().await {
-                let Ok(ipv4) = Ipv4Packet::new_checked(&data) else {
-                    tracing::error!(?data, "smoltcp emitted a non-IPv4 packet");
+                let destination = match data.first().map(|v| v >> 4) {
+                    Some(4) => Ipv4Packet::new_checked(&data).map(|p| IpAddr::V4(p.dst_addr())),
+                    Some(6) => Ipv6Packet::new_checked(&data).map(|p| IpAddr::V6(p.dst_addr())),
+                    _ => {
+                        tracing::error!("smoltcp emitted an invalid IP packet");
+                        continue;
+                    }
+                };
+                let Ok(destination) = destination else {
                     continue;
                 };
-                let destination = ipv4.dst_addr();
                 let Some(peer_manager) = peer_manager.upgrade() else {
                     tracing::debug!("smoltcp-to-peer bridge lost PeerManager");
                     return;
                 };
                 if let Err(error) = peer_manager
-                    .send_msg_by_ip(
-                        ZCPacket::new_with_payload(&data),
-                        IpAddr::V4(destination),
-                        false,
-                    )
+                    .send_msg_by_ip(ZCPacket::new_with_payload(&data), destination, false)
                     .await
                 {
                     tracing::error!(?error, "deliver smoltcp packet to peer failed");
@@ -80,30 +83,33 @@ impl SmoltcpPlane {
         // A fixed seed replays IP IDs after the last consumer closes and the
         // stack is recreated, potentially reusing a remote shallow-cache route.
         let interface_config = Self::interface_config(rand::random());
-        let net = Net::new(
-            device,
-            NetConfig::new(
-                interface_config,
-                format!("{}/{}", ipv4_addr.address(), ipv4_addr.network_length())
+        let mut net_config = NetConfig::new(
+            interface_config,
+            format!("{}/{}", ipv4_addr.address(), ipv4_addr.network_length())
+                .parse()
+                .expect("validated IPv4 prefix"),
+            vec![
+                ipv4_addr
+                    .address()
+                    .to_string()
                     .parse()
-                    .expect("validated IPv4 prefix"),
-                vec![
-                    ipv4_addr
-                        .address()
-                        .to_string()
-                        .parse()
-                        .expect("validated IPv4 address"),
-                ],
-                Some(BufferSize {
-                    tcp_rx_size: 1024 * 128,
-                    tcp_tx_size: 1024 * 128,
-                    udp_rx_size: 1024 * 128,
-                    udp_tx_size: 1024 * 128,
-                    udp_rx_meta_size: 128,
-                    udp_tx_meta_size: 128,
-                }),
-            ),
+                    .expect("validated IPv4 address"),
+            ],
+            Some(BufferSize {
+                tcp_rx_size: 1024 * 128,
+                tcp_tx_size: 1024 * 128,
+                udp_rx_size: 1024 * 128,
+                udp_tx_size: 1024 * 128,
+                udp_rx_meta_size: 128,
+                udp_tx_meta_size: 128,
+            }),
         );
+        if let Some(v6) = ipv6_addr {
+            net_config = net_config
+                .with_additional_ip(v6.to_string().parse().expect("validated IPv6 prefix"));
+            net_config.gateway.push(v6.address().into());
+        }
+        let net = Net::new(device, net_config);
 
         let forward_tasks = Arc::new(std::sync::Mutex::new(forward_tasks));
         forward_tasks.lock().unwrap().spawn(reap_joinset_background(

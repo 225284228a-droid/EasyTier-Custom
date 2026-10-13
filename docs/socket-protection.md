@@ -54,7 +54,110 @@ The existing native `bind` builder is async and shared by TCP/UDP creation. Its
 legacy direct-call default remains unprotected; portable factories explicitly
 pass their core bind options (default protected). Callers must await `.call()`.
 TCP listeners reuse TCP socket creation then listen, instead of duplicating the
-setup. Existing legacy WebSocket direct-call policy is unchanged.
+setup. WebSocket and FakeTCP listeners use the same protected TCP factory as
+other transports. FakeTCP source probes and kernel decoy connections wait for
+protection; its packet driver sends through the selected physical interface.
+
+## Desktop capture and socket lifetime
+
+Desktop route installation uses the shared effective CIDR plan. Direct regions,
+local advertised subnets and ordinary private bypass regions are removed from
+VPN capture. Known mesh and remote advertised regions retain ordinary overlay
+routes even after a remote peer becomes unreachable. Exit liveness never removes
+its capture region: all unavailable exits block that region in the packet plane.
+
+Socket factories retain a protection registration for the socket's lifetime,
+including both owned TCP halves. The registry holds weak references to duplicate
+handles; it neither retains closed sockets nor later protects a reused raw FD.
+Before takeover it protects every existing registered socket. Registration and
+activation are serialized, so a new socket observes the active bypass before
+its first I/O. Explicit `need_protect=false` remains unprotected.
+
+Linux uses dedicated capture/reject routing tables per NIC and a shared bypass bit per network
+namespace. Protected sockets receive `original_mark | bypass_bit`; existing
+marks are preserved, including marks applied by an external protection callback.
+The bit must be unused by configured/live socket marks and every external
+fwmark mask. An exact external mask or exhausted bit space rejects activation.
+Each capture rule uses the positive selectors `iif lo fwmark 0/bit` and its
+owned table; the following reject rule prevents an unavailable capture route
+from falling through to physical routing. Forwarded exit packets arriving from
+TUN skip both rules.
+Its priority is after local delivery and before external nonlocal routing;
+activation fails when no safe priority exists. Protected sockets skip it and
+retain their original external routing. Physical defaults and external policy
+rules remain intact. Because `SO_BINDTODEVICE` can skip these routing selectors,
+each owner also creates an `ETVPN_<table>` filter chain in both `iptables` and
+`ip6tables`, with a comment-identified jump at the start of OUTPUT. Unmarked
+capture packets leaving any interface other than TUN are dropped at this hook.
+Only known overlay regions allow local delivery; compiled Exit and Block regions
+retain that drop even for local destinations. Forwarded packets do not traverse
+OUTPUT, and protected sockets skip the guard through the reserved mark bit.
+Kernel IPv6 neighbor/router discovery does not consistently inherit the marked
+socket's bypass bit. The guard therefore returns only ICMPv6 types 133–136 with
+code zero and hop limit 255; router discovery is limited to link-local scopes,
+while neighbor discovery also permits global unicast neighbor addresses. These
+rows do not permit ordinary UDP or ICMP Echo, and RETURN preserves the host's
+remaining OUTPUT firewall rules.
+The IPv4 and IPv6 OUTPUT tools are required for Linux client activation; setup
+failure is reported instead of activating without the guard. Multiple owners
+share the marker; the last release removes it after all owned policy rules and
+OUTPUT jumps/rows/chains have been removed. Cleanup deletes exact owned rows and
+empty chains, preserving external firewall rules rather than flushing them.
+
+Windows and macOS create protected wildcard transport listeners as a collection
+of concrete physical interface listeners from startup. Each listener has its
+source/interface scope before `listen`, protecting kernel SYNACKs as well as
+accepted sockets. The public listener retains its logical wildcard address and
+port. Interface refresh adds new listeners before retiring disappeared addresses
+and keeps accepted streams alive. Explicit local binds and unprotected local/TUN
+listeners retain their original behavior.
+
+Wildcard UDP reception stays wildcard. The native adapter sets and restores
+interface scope only around each synchronous datagram operation; explicit source
+metadata can select a secondary physical interface. Outgoing TCP is scoped before
+connect, and accepted children are acknowledged before exposure. Physical default
+and connected interfaces are refreshed as host networking changes. Unbound
+sockets select the target's loopback or longest matching connected physical
+network before the physical default. IPv4-mapped IPv6 targets use IPv4 interface
+scope, while explicit source and existing interface constraints retain priority.
+Protection uses socket
+scope/marks rather than blanket endpoint-IP routes.
+
+Initial native capture awaits a readiness acknowledgement. Protection or route
+failure fails startup; hot failures appear in `activation_error`, and successful
+reconciliation clears that field. Explicit `no_tun` or missing virtual addresses
+retain their normal interface lifecycle and report why client capture is absent.
+NIC shutdown cancels packet I/O, awaits route owners and forwarding leases, then
+drops the virtual interface. Namespace-local netlink operations run on dedicated
+threads, never with a `setns` guard suspended across Tokio worker threads.
+
+## Bootstrap and user DNS
+
+Bootstrap/TXT/SRV resolution uses protected native TCP and UDP factories. On Linux,
+a systemd-resolved stub is replaced with its published uplinks from
+`/run/systemd/resolve/resolv.conf`; protecting a query to the loopback stub cannot
+protect systemd-resolved's separate upstream socket. Namespace resolver files are
+used when available. This keeps own bootstrap queries on the underlay during an
+exit outage. The virtual Magic DNS resolver address is removed from bootstrap
+configuration on every platform; physical and public resolvers remain, with
+public fallback if the configured list contains only Magic DNS.
+
+System DNS capture uses the instance's namespace resolver file when present.
+If that resolver uses a systemd stub, capture inputs also include the published
+upstream addresses, so narrow Exit rules still protect the stub's user queries.
+Policy compilation continues to apply the configured private-network exemption.
+
+Magic DNS still answers its EasyTier zones locally. Public forwarding uses the
+current instance packet policy: Exit and known overlay destinations use overlay
+data-plane sockets; Direct and exempt private destinations use protected native
+sockets; Block rejects the query. Cached TCP/UDP sockets check current policy
+before each read/write/send so a native connection created under Direct cannot
+leak queries after an Exit or Block update. Bootstrap DNS remains independent.
+Forwarder setup selects namespace/systemd upstreams and removes the virtual
+Magic DNS address. An empty remaining list uses public resolver addresses through
+the same policy provider, preserving local zones without bypassing Exit or Block.
+
+## HarmonyOS acknowledgements
 
 The HarmonyOS broker wakes the already-pending request consumer with `Notify`
 (no polling timer). It keeps a duplicate FD alive until ArkTS completes

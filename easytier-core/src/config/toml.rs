@@ -1851,18 +1851,10 @@ members = ["admin"]
     fn test_vpn_config_roundtrip() {
         let config = TomlConfigLoader::default();
         let mut vpn = crate::config::vpn::VpnConfig::default();
-        vpn.enabled = true;
-        vpn.fail_mode = crate::config::vpn::VpnFailMode::Block;
-        vpn.exits.push(crate::config::vpn::VpnExitConfig {
-            name: "hk".to_owned(),
-            node: "10.144.144.2".parse().unwrap(),
-            note: None,
-        });
         vpn.rules.push(crate::config::vpn::VpnRuleConfig {
             cidr: "0.0.0.0/0".parse().unwrap(),
             action: crate::config::vpn::VpnRuleAction::Exit,
-            exit: Some("hk".to_owned()),
-            fallback_exits: vec![],
+            exits: vec!["10.144.144.2".parse().unwrap()],
             priority: 0,
         });
 

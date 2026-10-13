@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::{MagicDnsRuntime, tun_common::TunNicState};
 use crate::{
     common::{
+        config::ConfigLoader as _,
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     },
@@ -31,6 +32,19 @@ pub(super) struct NativeTunRuntime {
 }
 
 impl NativeTunRuntime {
+    fn report_capture_unavailable(&self, reason: &str) {
+        self.global_ctx.vpn_route_status().update(
+            easytier_core::peers::vpn_policy::VpnHostRouteState {
+                activation_error: self
+                    .global_ctx
+                    .config
+                    .get_vpn()
+                    .client_active()
+                    .then(|| reason.to_owned()),
+                ..Default::default()
+            },
+        );
+    }
     pub(super) fn new(global_ctx: ArcGlobalCtx, cancel: CancellationToken) -> Self {
         Self {
             global_ctx,
@@ -60,6 +74,11 @@ impl NativeTunRuntime {
         let ipv4 = self.global_ctx.get_ipv4();
         let ipv6 = self.global_ctx.get_ipv6();
         if ipv4.is_none() && ipv6.is_none() {
+            self.report_capture_unavailable(if self.global_ctx.config.get_dhcp() {
+                "VPN capture pending: waiting for DHCP to assign a virtual address"
+            } else {
+                "VPN capture unavailable: no virtual IPv4 or IPv6 address is configured"
+            });
             return Ok(());
         }
 
@@ -85,6 +104,7 @@ impl NativeTunRuntime {
                 let result = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
+                        nic.shutdown().await;
                         Self::report_static_ip_cancelled(&mut output);
                         return;
                     }
@@ -103,17 +123,27 @@ impl NativeTunRuntime {
                     continue;
                 }
 
-                let magic_dns = if let Some(ip) = ipv4 {
-                    MagicDnsRuntime::start(
-                        global_ctx.clone(),
-                        packet_plane.clone(),
-                        nic.ifname().await,
-                        ip,
-                    )
-                } else {
-                    MagicDnsRuntime::default()
-                };
-                nic_state.install(nic, magic_dns).await;
+                let ifname = nic.ifname().await;
+                if let Err(error) = nic_state
+                    .install(None, nic, || {
+                        if let Some(ip) = ipv4 {
+                            MagicDnsRuntime::start(
+                                global_ctx.clone(),
+                                packet_plane.clone(),
+                                ifname,
+                                ip,
+                            )
+                        } else {
+                            MagicDnsRuntime::default()
+                        }
+                    })
+                    .await
+                {
+                    if let Some(output) = output.take() {
+                        let _ = output.send(Err(error.into()));
+                    }
+                    return;
+                }
                 if let Some(output) = output.take() {
                     let _ = output.send(Ok(()));
                 }
@@ -134,6 +164,10 @@ impl NativeTunRuntime {
         self.nic.drain().await;
         if !self.global_ctx.get_flags().no_tun {
             self.start_static_ip(packet_plane).await?;
+        } else {
+            self.report_capture_unavailable(
+                "VPN capture unavailable: no_tun disables the native interface",
+            );
         }
         Ok(())
     }
@@ -206,16 +240,23 @@ impl NativeDhcpIpv4Host {
             self.closed.clone(),
         );
         tokio::select! {
-            _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
+            _ = self.cancel.cancelled() => {
+                nic.shutdown().await;
+                anyhow::bail!("instance is closing; DHCP update cancelled");
+            }
             result = nic.run(Some(ip), self.global_ctx.get_ipv6()) => result?,
         }
-        let magic_dns = MagicDnsRuntime::start(
-            self.global_ctx.clone(),
-            self.packet_plane.clone(),
-            nic.ifname().await,
-            ip,
-        );
-        self.nic.install(nic, magic_dns).await;
+        let ifname = nic.ifname().await;
+        self.nic
+            .install(None, nic, || {
+                MagicDnsRuntime::start(
+                    self.global_ctx.clone(),
+                    self.packet_plane.clone(),
+                    ifname,
+                    ip,
+                )
+            })
+            .await?;
         self.global_ctx.set_ipv4(Some(ip));
         Ok(Some(ip))
     }

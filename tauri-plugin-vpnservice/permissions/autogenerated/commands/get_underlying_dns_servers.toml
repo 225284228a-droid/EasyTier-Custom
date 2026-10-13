@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-underlying-dns-servers"
+description = "Enables the get_underlying_dns_servers command without any pre-configured scope."
+commands.allow = ["get_underlying_dns_servers"]
+
+[[permission]]
+identifier = "deny-get-underlying-dns-servers"
+description = "Denies the get_underlying_dns_servers command without any pre-configured scope."
+commands.deny = ["get_underlying_dns_servers"]

@@ -51,6 +51,14 @@ struct DataPlaneEndpoint {
 }
 
 fn data_plane_endpoint(host: Arc<TestHost>, ip: cidr::Ipv4Inet) -> DataPlaneEndpoint {
+    data_plane_endpoint_with_ipv6(host, ip, None)
+}
+
+fn data_plane_endpoint_with_ipv6(
+    host: Arc<TestHost>,
+    ip: cidr::Ipv4Inet,
+    ipv6: Option<cidr::Ipv6Inet>,
+) -> DataPlaneEndpoint {
     const NETWORK_NAME: &str = "gateway-data-plane";
 
     let mut runtime = PeerRuntimeSnapshot::default().runtime;
@@ -60,6 +68,8 @@ fn data_plane_endpoint(host: Arc<TestHost>, ip: cidr::Ipv4Inet) -> DataPlaneEndp
         IpPrefix::new(IpAddr::V4(ip.address()), ip.network_length())
             .expect("test IPv4 prefix should be valid"),
     );
+    runtime.core.routes.ipv6 =
+        ipv6.map(|ip| IpPrefix::new(IpAddr::V6(ip.address()), ip.network_length()).unwrap());
     runtime.network_identity = NetworkIdentity {
         network_name: NETWORK_NAME.to_owned(),
         network_secret: Some("shared-secret".to_owned()),
@@ -92,10 +102,22 @@ fn data_plane_endpoint(host: Arc<TestHost>, ip: cidr::Ipv4Inet) -> DataPlaneEndp
 }
 
 async fn setup_data_plane_pair() -> (DataPlaneEndpoint, DataPlaneEndpoint) {
+    setup_data_plane_pair_with_ipv6(false).await
+}
+
+async fn setup_data_plane_pair_with_ipv6(ipv6: bool) -> (DataPlaneEndpoint, DataPlaneEndpoint) {
     let host = Arc::new(TestHost::default());
-    let a = data_plane_endpoint(host.clone(), "10.126.126.1/24".parse().unwrap());
+    let a = data_plane_endpoint_with_ipv6(
+        host.clone(),
+        "10.126.126.1/24".parse().unwrap(),
+        ipv6.then(|| "fd00:126::1/64".parse().unwrap()),
+    );
     let b = loop {
-        let b = data_plane_endpoint(host.clone(), "10.126.126.2/24".parse().unwrap());
+        let b = data_plane_endpoint_with_ipv6(
+            host.clone(),
+            "10.126.126.2/24".parse().unwrap(),
+            ipv6.then(|| "fd00:126::2/64".parse().unwrap()),
+        );
         if b.peer_manager.my_peer_id() != a.peer_manager.my_peer_id() {
             break b;
         }
@@ -267,6 +289,93 @@ async fn data_plane_tcp_pingpong() {
     accept.await.unwrap();
 
     stop_data_plane_pair(&a, &b).await;
+}
+
+#[tokio::test]
+async fn data_plane_ipv6_tcp_and_udp_use_overlay_without_native_sockets() {
+    let (a, b) = setup_data_plane_pair_with_ipv6(true).await;
+    let timeout = Duration::from_secs(10);
+    let mut listener = b
+        .gateway
+        .data_plane_tcp_bind_for_family(0, true, timeout)
+        .await
+        .unwrap();
+    let listen_addr = listener.local_addr();
+    assert_eq!(listen_addr.ip(), "fd00:126::2".parse::<IpAddr>().unwrap());
+    let accept = tokio::spawn(async move {
+        let (mut stream, peer) = listener.accept().await.unwrap();
+        assert_eq!(peer.ip(), "fd00:126::1".parse::<IpAddr>().unwrap());
+        let mut data = [0; 4];
+        stream.read_exact(&mut data).await.unwrap();
+        assert_eq!(&data, b"ping");
+        stream.write_all(b"pong").await.unwrap();
+        stream.flush().await.unwrap();
+    });
+    let mut stream = a
+        .gateway
+        .data_plane_tcp_connect(listen_addr, timeout)
+        .await
+        .unwrap();
+    stream.write_all(b"ping").await.unwrap();
+    stream.flush().await.unwrap();
+    let mut data = [0; 4];
+    tokio::time::timeout(timeout, stream.read_exact(&mut data))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&data, b"pong");
+    accept.await.unwrap();
+    let sender = a
+        .gateway
+        .data_plane_udp_bind_for_family(48001, true, timeout)
+        .await
+        .unwrap();
+    let receiver = b
+        .gateway
+        .data_plane_udp_bind_for_family(48001, true, timeout)
+        .await
+        .unwrap();
+    assert_eq!(
+        sender.local_addr().ip(),
+        "fd00:126::1".parse::<IpAddr>().unwrap()
+    );
+    send_udp(&sender, &receiver, b"ipv6 DNS request").await;
+    send_udp(&receiver, &sender, b"ipv6 DNS reply").await;
+    assert_eq!(a.gateway.host.udp_binds.load(Ordering::Relaxed), 0);
+    drop((sender, receiver, stream));
+    stop_data_plane_pair(&a, &b).await;
+}
+
+#[tokio::test]
+async fn ipv6_change_closes_dataplane_generation() {
+    let endpoint = data_plane_endpoint_with_ipv6(
+        Arc::new(TestHost::default()),
+        "10.126.132.1/24".parse().unwrap(),
+        Some("fd00:126::1/64".parse().unwrap()),
+    );
+    endpoint.peer_manager.run().await.unwrap();
+    endpoint.gateway.start_runtime().await.unwrap();
+    let socket = endpoint
+        .gateway
+        .data_plane_udp_bind_for_family(0, true, Duration::from_secs(1))
+        .await
+        .unwrap();
+    endpoint.gateway.runtime_config.update_peer_with(|peer| {
+        peer.runtime.core.routes.ipv6 =
+            Some(IpPrefix::new("fd00:127::1".parse().unwrap(), 64).unwrap());
+    });
+    let mut data = [0; 1];
+    let error = tokio::time::timeout(Duration::from_secs(1), socket.recv_from(&mut data))
+        .await
+        .expect("IPv6 change did not wake the old generation")
+        .unwrap_err();
+    let error = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<DataPlaneError>())
+        .unwrap();
+    assert_eq!(error.kind(), DataPlaneErrorKind::NetworkChanged);
+    endpoint.gateway.stop_runtime().await;
+    endpoint.peer_manager.clear_resources().await;
 }
 
 #[tokio::test]

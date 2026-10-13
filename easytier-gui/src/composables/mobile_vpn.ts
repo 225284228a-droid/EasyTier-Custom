@@ -1,29 +1,87 @@
-import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
 import {
+  complete_vpn_reconfigure,
   consume_vpn_tile_action,
+  get_underlying_dns_servers,
   get_vpn_status,
   prepare_vpn,
+  reconfigure_vpn,
   start_vpn,
   stop_vpn,
   type VpnTileAction,
 } from 'tauri-plugin-vpnservice-api'
-import { collectNetworkInfo, getConfig, listNetworkInstanceIds, setTunFd } from './backend'
-
-type Route = NetworkTypes.Route
+import {
+  collectNetworkInfo,
+  getConfig,
+  getVpnStatus,
+  listNetworkInstanceIds,
+  setTunFd,
+  setVpnSystemDnsServers,
+} from './backend'
 
 interface vpnStatus {
   running: boolean
   ipv4Addr: string | null | undefined
   ipv4Cidr: number | null | undefined
+  ipv6Addr: string | null | undefined
   routes: string[]
-  dns: string | null | undefined
+  dnsServers: string[]
+  generation: string | undefined
+  generationHighWater: string | undefined
+  policyGeneration: string | undefined
 }
 
 let vpnReconcileTimer: ReturnType<typeof setTimeout> | null = null
 const VPN_RECONCILE_INTERVAL_MS = 2000
 const VPN_RECONCILE_MAX_ATTEMPTS = 60
+const vpnTunRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const VPN_GENERATION_STORAGE_KEY = 'easytier.vpn.configuration-generation'
+const MAX_VPN_GENERATION = (1n << 63n) - 1n
+let vpnConfigurationGeneration = 0n
+
+function parseVpnGeneration(value: unknown) {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return 0n
+  try {
+    const parsed = BigInt(value)
+    return parsed <= MAX_VPN_GENERATION ? parsed : 0n
+  }
+  catch {
+    return 0n
+  }
+}
+
+async function nextVpnConfigurationGeneration() {
+  let highWater = vpnConfigurationGeneration
+  try {
+    const stored = parseVpnGeneration(localStorage.getItem(VPN_GENERATION_STORAGE_KEY))
+    if (stored > highWater) highWater = stored
+  }
+  catch {
+    // The in-memory counter remains available in restricted WebView contexts.
+  }
+
+  try {
+    const status = await get_vpn_status()
+    const nativeHighWater = parseVpnGeneration(status?.generationHighWater)
+    if (nativeHighWater > highWater) highWater = nativeHighWater
+    curVpnStatus.generationHighWater = status?.generationHighWater ?? curVpnStatus.generationHighWater
+  }
+  catch (error) {
+    console.warn('vpn generation high-water query failed', error)
+  }
+
+  const next = highWater + 1n
+  if (next > MAX_VPN_GENERATION) throw new Error('vpn generation counter exhausted')
+  vpnConfigurationGeneration = next
+  try {
+    localStorage.setItem(VPN_GENERATION_STORAGE_KEY, next.toString())
+  }
+  catch {
+    // The Android high-water mark is also persisted by the native service.
+  }
+  return next.toString()
+}
 
 let desiredVpnInstanceId: string | undefined
 let activeVpnInstanceId: string | undefined
@@ -38,8 +96,12 @@ const curVpnStatus: vpnStatus = {
   running: false,
   ipv4Addr: undefined,
   ipv4Cidr: undefined,
+  ipv6Addr: undefined,
   routes: [],
-  dns: undefined,
+  dnsServers: [],
+  generation: undefined,
+  generationHighWater: undefined,
+  policyGeneration: undefined,
 }
 
 export function setMobileVpnTileActionHandler(
@@ -155,12 +217,17 @@ function scheduleVpnReconcile(instanceId: string, generation: number, reason: st
 function resetVpnConfigStatus() {
   curVpnStatus.ipv4Addr = undefined
   curVpnStatus.ipv4Cidr = undefined
+  curVpnStatus.ipv6Addr = undefined
   curVpnStatus.routes = []
-  curVpnStatus.dns = undefined
+  curVpnStatus.dnsServers = []
+  curVpnStatus.generation = undefined
+  curVpnStatus.generationHighWater = undefined
+  curVpnStatus.policyGeneration = undefined
 }
 
 function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_status>>) {
   curVpnStatus.running = status?.running ?? false
+  curVpnStatus.generationHighWater = status?.generationHighWater ?? undefined
   if (!curVpnStatus.running) {
     activeVpnInstanceId = undefined
     resetVpnConfigStatus()
@@ -180,8 +247,10 @@ function syncVpnStatusFromNative(status: Awaited<ReturnType<typeof get_vpn_statu
     curVpnStatus.ipv4Cidr = undefined
   }
 
+  curVpnStatus.ipv6Addr = status?.ipv6Addr ?? undefined
   curVpnStatus.routes = [...(status?.routes ?? [])]
-  curVpnStatus.dns = status?.dns ?? undefined
+  curVpnStatus.dnsServers = [...(status?.dnsServers ?? [])]
+  curVpnStatus.generation = status?.generation ?? undefined
 }
 
 async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
@@ -211,29 +280,47 @@ async function doStopVpn(force = false) {
   resetVpnConfigStatus()
 }
 
-async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, routes: string[], dns?: string) {
-  if (curVpnStatus.running) {
-    return
-  }
-
-  console.log('start vpn service', ipv4Addr, cidr, routes, dns)
+async function doConfigureVpn(
+  instanceId: string,
+  ipv4Addr: string,
+  ipv4Cidr: number,
+  ipv6Addr: string | undefined,
+  routes: string[],
+  dnsServers: string[],
+  policyGeneration: string,
+) {
+  const generation = await nextVpnConfigurationGeneration()
+  console.log('configure vpn service', instanceId, ipv4Addr, ipv4Cidr, ipv6Addr, routes, dnsServers)
   const request = {
-    ipv4Addr: `${ipv4Addr}/${cidr}`,
+    ipv4Addr: `${ipv4Addr}/${ipv4Cidr}`,
+    ipv6Addr,
     routes,
-    dns,
-    disallowedApplications: ['com.kkrainbow.easytier'],
+    dnsServers,
+    disallowedApplications: [],
     mtu: 1300,
+    instanceId,
+    generation,
   }
 
-  let start_ret = await start_vpn(request)
-  console.log('start vpn response', JSON.stringify(start_ret))
+  curVpnStatus.generation = generation
+  curVpnStatus.generationHighWater = generation
+  curVpnStatus.policyGeneration = policyGeneration
+  curVpnStatus.ipv4Addr = ipv4Addr
+  curVpnStatus.ipv4Cidr = ipv4Cidr
+  curVpnStatus.ipv6Addr = ipv6Addr
+  curVpnStatus.routes = [...routes]
+  curVpnStatus.dnsServers = [...dnsServers]
+  let configure = curVpnStatus.running ? reconfigure_vpn : start_vpn
+  let start_ret = await configure(request)
+  console.log('configure vpn response', JSON.stringify(start_ret))
   if (start_ret?.errorMsg === 'need_prepare') {
     const granted = await requestVpnPermission()
     if (!granted) {
       throw new Error('vpn_permission_denied')
     }
-    start_ret = await start_vpn(request)
-    console.log('start vpn retry response', JSON.stringify(start_ret))
+    configure = curVpnStatus.running ? reconfigure_vpn : start_vpn
+    start_ret = await configure(request)
+    console.log('configure vpn retry response', JSON.stringify(start_ret))
   }
 
   if (start_ret?.errorMsg?.length) {
@@ -241,26 +328,79 @@ async function doStartVpn(instanceId: string, ipv4Addr: string, cidr: number, ro
   }
   await waitVpnStatus(true, 3)
 
-  curVpnStatus.ipv4Addr = ipv4Addr
-  curVpnStatus.ipv4Cidr = cidr
-  curVpnStatus.routes = routes
-  curVpnStatus.dns = dns
   activeVpnInstanceId = instanceId
+}
+
+function clearVpnTunRetry(generation: string) {
+  const timer = vpnTunRetryTimers.get(generation)
+  if (timer) clearTimeout(timer)
+  vpnTunRetryTimers.delete(generation)
+}
+
+function scheduleVpnTunRetry(payload: any, attempt: number) {
+  const generation = String(payload?.generation ?? '')
+  if (!generation || generation !== curVpnStatus.generation || !curVpnStatus.running)
+    return
+
+  if (attempt >= VPN_RECONCILE_MAX_ATTEMPTS) {
+    console.error('vpn TUN attach retry stopped after maximum attempts', generation)
+    return
+  }
+
+  clearVpnTunRetry(generation)
+  const timer = setTimeout(() => {
+    vpnTunRetryTimers.delete(generation)
+    void attachVpnTun(payload, attempt + 1)
+  }, VPN_RECONCILE_INTERVAL_MS)
+  vpnTunRetryTimers.set(generation, timer)
+}
+
+async function attachVpnTun(payload: any, attempt = 0) {
+  const generation = String(payload?.generation ?? '')
+  const instanceId = String(payload?.instanceId ?? '')
+  if (!generation || !instanceId || generation !== curVpnStatus.generation || !payload?.fd)
+    return
+
+  try {
+    await setTunFd(payload.fd, instanceId, generation)
+    const completion = await complete_vpn_reconfigure(generation, true)
+    clearVpnTunRetry(generation)
+    if (!completion?.accepted) {
+      console.info('vpn TUN attach acknowledgement was stale', generation)
+    }
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('set tun fd failed; retaining Android capture interface', generation, message)
+    await complete_vpn_reconfigure(generation, false, message).catch((completionError) => {
+      console.error('vpn install failure report failed', completionError)
+    })
+    scheduleVpnTunRetry(payload, attempt)
+  }
 }
 
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
-  if (payload.fd) {
-    await setTunFd(payload.fd).catch((e) => {
-      console.error('set tun fd failed', e)
-    })
+  const generation = String(payload?.generation ?? '')
+  if (generation && !curVpnStatus.generation) curVpnStatus.generation = generation
+  await attachVpnTun(payload)
+}
+
+async function onVpnServiceError(payload: any) {
+  console.error('vpn interface configuration failed', JSON.stringify(payload))
+  if (payload?.instanceId === desiredVpnInstanceId && payload?.generation === curVpnStatus.generation) {
+    curVpnStatus.generation = undefined
+    curVpnStatus.generationHighWater = payload.generation ?? curVpnStatus.generationHighWater
+    curVpnStatus.policyGeneration = undefined
+    scheduleVpnReconcile(payload.instanceId, vpnReconcileGeneration, 'vpn_interface_establish_failed')
   }
 }
 
 async function onVpnServiceStop(payload: any) {
   console.log('vpn service stop', JSON.stringify(payload))
   curVpnStatus.running = false
+  for (const generation of vpnTunRetryTimers.keys()) clearVpnTunRetry(generation)
   activeVpnInstanceId = undefined
   resetVpnConfigStatus()
 }
@@ -281,6 +421,12 @@ async function registerVpnServiceListener() {
 
   await addPluginListener(
     'vpnservice',
+    'vpn_service_error',
+    onVpnServiceError,
+  )
+
+  await addPluginListener(
+    'vpnservice',
     'vpn_tile_action',
     () => {
       void consumePendingMobileVpnTileAction().catch((error) => {
@@ -290,36 +436,12 @@ async function registerVpnServiceListener() {
   )
 }
 
-function getRoutesForVpn(routes: Route[] | undefined, node_config: NetworkTypes.NetworkConfig): string[] {
-  const ret = []
-  for (const r of routes ?? []) {
-    for (let cidr of r.proxy_cidrs ?? []) {
-      if (!cidr.includes('/')) {
-        cidr += '/32'
-      }
-      ret.push(cidr)
-    }
-  }
-
-  for (const route of node_config.routes ?? []) {
-    ret.push(route)
-  }
-
-  if (node_config.enable_magic_dns) {
-    ret.push('100.100.100.101/32')
-  }
-
-  // sort and dedup
-  return Array.from(new Set(ret)).sort()
-}
-
 async function stopVpnOwnedByOtherInstance(instanceId: string, generation: number) {
   if (!isCurrentVpnReconcile(instanceId, generation))
     return false
 
   if (curVpnStatus.running && activeVpnInstanceId !== instanceId) {
-    console.warn('vpn service owner changed', activeVpnInstanceId, instanceId)
-    await doStopVpn()
+    console.info('vpn service will replace its active instance after the new TUN is installed', activeVpnInstanceId, instanceId)
   }
 
   return isCurrentVpnReconcile(instanceId, generation)
@@ -359,12 +481,28 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
     return
 
   let curNetworkInfo
+  let vpnPolicy
+  let underlyingDnsServers: string[]
+  let systemDnsServers: string[]
   try {
-    curNetworkInfo = (await collectNetworkInfo(instanceId))?.info?.map?.[instanceId]
+    const [networkInfo, dnsResponse] = await Promise.all([
+      collectNetworkInfo(instanceId).then(response => response?.info?.map?.[instanceId]),
+      get_underlying_dns_servers(),
+    ])
+    if (dnsResponse?.errorMsg) throw new Error(dnsResponse.errorMsg)
+    curNetworkInfo = networkInfo
+    underlyingDnsServers = [...new Set(dnsResponse?.dnsServers ?? [])]
+    systemDnsServers = [...new Set(
+      dnsResponse?.systemDnsServers ?? underlyingDnsServers.map(server => server.split('%')[0]),
+    )]
+    if (!isCurrentVpnReconcile(instanceId, generation))
+      return
+    await setVpnSystemDnsServers(instanceId, systemDnsServers)
+    vpnPolicy = await getVpnStatus(instanceId)
   }
   catch (e) {
-    console.warn('vpn service network info query failed', instanceId, e)
-    scheduleVpnReconcile(instanceId, generation, 'network_info_query_failed')
+    console.warn('vpn service core state query failed', instanceId, e)
+    scheduleVpnReconcile(instanceId, generation, 'core_state_query_failed')
     return
   }
 
@@ -376,10 +514,20 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
     return
   }
 
+  if (!vpnPolicy) {
+    scheduleVpnReconcile(instanceId, generation, 'vpn_policy_unavailable')
+    return
+  }
+
+  if (!Array.isArray(vpnPolicy.capture_routes)) {
+    scheduleVpnReconcile(instanceId, generation, 'vpn_capture_routes_unavailable')
+    return
+  }
+
   if (curNetworkInfo.error_msg?.length) {
     console.warn('vpn service skipped because network instance failed', instanceId, curNetworkInfo.error_msg)
     vpnReconcileAttempts = 0
-    await doStopVpn()
+    if (activeVpnInstanceId === instanceId) await doStopVpn()
     return
   }
 
@@ -402,36 +550,30 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
     network_length = 24
   }
 
-  const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
-
-  const dns = config.enable_magic_dns ? '100.100.100.101' : undefined
+  const routes = vpnPolicy.capture_routes
+  const hasIpv6Route = routes.some((route: string) => route.split('/')[0].includes(':'))
+  const ipv6Addr = hasIpv6Route ? vpnPolicy.ipv6_addr || undefined : undefined
+  const dnsServers = config.enable_magic_dns ? ['100.100.100.101'] : underlyingDnsServers
+  const policyGeneration = vpnPolicy.policy_generation.toString()
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const cidrChanged = network_length !== curVpnStatus.ipv4Cidr
+  const ipv6Changed = ipv6Addr !== curVpnStatus.ipv6Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
-  const dnsChanged = dns != curVpnStatus.dns
-  const configChanged = ipChanged || cidrChanged || routesChanged || dnsChanged
+  const dnsChanged = JSON.stringify(dnsServers) !== JSON.stringify(curVpnStatus.dnsServers)
+  const policyChanged = policyGeneration !== curVpnStatus.policyGeneration
+  const ownerChanged = activeVpnInstanceId !== instanceId
+  const configChanged = ipChanged || cidrChanged || ipv6Changed || routesChanged || dnsChanged || policyChanged || ownerChanged
   const shouldStartVpn = !curVpnStatus.running
 
   if (shouldStartVpn || configChanged) {
-    console.info('vpn service virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
-    if (curVpnStatus.running) {
-      try {
-        await doStopVpn()
-      }
-      catch (e) {
-        console.error(e)
-      }
-    }
+    console.info('vpn service core policy changed', JSON.stringify(curVpnStatus), instanceId, policyGeneration)
 
     try {
       if (!isCurrentVpnReconcile(instanceId, generation))
         return
 
-      await doStartVpn(instanceId, virtual_ip, network_length, routes, dns)
-      if (!isCurrentVpnReconcile(instanceId, generation) && activeVpnInstanceId === instanceId) {
-        await doStopVpn()
-      }
+      await doConfigureVpn(instanceId, virtual_ip, network_length, ipv6Addr, routes, dnsServers, policyGeneration)
     }
     catch (e) {
       if (e instanceof Error && e.message === 'need_prepare') {

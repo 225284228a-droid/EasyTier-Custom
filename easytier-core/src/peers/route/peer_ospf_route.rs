@@ -4171,6 +4171,11 @@ pub struct PeerRoute {
     context: ArcPeerContext,
     peer_rpc: Weak<PeerRpcManager>,
 
+    // Route reachability and its expiry must not send a previously advertised
+    // virtual network through a VPN exit. New advertisements replace a peer's
+    // complete protection entry; only this route instance owns the history.
+    known_vpn_peer_infos: RwLock<BTreeMap<PeerId, RoutePeerInfo>>,
+
     service_impl: Arc<PeerRouteServiceImpl>,
     session_mgr: RouteSessionManager,
 
@@ -4257,6 +4262,7 @@ impl PeerRoute {
             my_peer_id,
             context,
             peer_rpc: Arc::downgrade(&peer_rpc),
+            known_vpn_peer_infos: RwLock::new(BTreeMap::new()),
 
             service_impl,
             session_mgr,
@@ -4463,6 +4469,23 @@ impl Route for PeerRoute {
             .list_routes(self.my_peer_id, &self.service_impl.route_table_with_cost)
     }
 
+    async fn list_known_peer_infos(&self) -> Vec<RoutePeerInfo> {
+        // Serialize snapshot collection with cache replacement so concurrent
+        // readers cannot install an older snapshot after a newer one.
+        let mut known = self.known_vpn_peer_infos.write();
+        for peer in self
+            .service_impl
+            .synced_route_info
+            .route_snapshot()
+            .peer_infos
+        {
+            if peer.peer_id != self.my_peer_id {
+                known.insert(peer.peer_id, peer.info);
+            }
+        }
+        known.values().cloned().collect()
+    }
+
     async fn list_proxy_cidrs(&self) -> BTreeSet<Ipv4Cidr> {
         self.service_impl
             .route_table
@@ -4608,6 +4631,95 @@ mod tests {
     use crate::peers::test_support::NoopPeerContext;
     use parking_lot::Mutex;
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn known_vpn_advertisements_survive_outage_and_expiry() {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(1, Arc::new(NoopPeerContext::default()), peer_rpc);
+        let remote = RoutePeerInfo {
+            peer_id: 2,
+            ipv4_addr: Some(Ipv4Addr::new(203, 0, 113, 2).into()),
+            network_length: 24,
+            ipv6_addr: Some("2001:db8:1::2/64".parse::<cidr::Ipv6Inet>().unwrap().into()),
+            proxy_cidrs: vec!["198.51.100.0/24".into(), "2001:db8:2::/64".into()],
+            ..Default::default()
+        };
+        route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .write()
+            .insert(2, remote.clone());
+        route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .write()
+            .insert(
+                1,
+                RoutePeerInfo {
+                    peer_id: 1,
+                    ..Default::default()
+                },
+            );
+
+        // The advertisement has no reachable next hop, but still protects its
+        // virtual addresses and both advertised subnet families.
+        assert!(route.list_routes().await.is_empty());
+        assert_eq!(route.list_known_peer_infos().await, vec![remote.clone()]);
+
+        // clear_expired_peer uses this same removal when the unreachable
+        // advertisement passes its TTL. Protection outlives that removal.
+        route.service_impl.synced_route_info.remove_peers([2]);
+        assert!(
+            route
+                .service_impl
+                .synced_route_info
+                .route_snapshot()
+                .peer_infos
+                .iter()
+                .all(|peer| peer.peer_id != 2)
+        );
+        assert_eq!(route.list_known_peer_infos().await, vec![remote]);
+    }
+
+    #[tokio::test]
+    async fn known_vpn_advertisements_replace_changed_prefixes_and_subnets() {
+        let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
+        let route = PeerRoute::new(1, Arc::new(NoopPeerContext::default()), peer_rpc);
+        let original = RoutePeerInfo {
+            peer_id: 2,
+            ipv4_addr: Some(Ipv4Addr::new(203, 0, 113, 2).into()),
+            network_length: 24,
+            proxy_cidrs: vec!["198.51.100.0/24".into()],
+            version: 1,
+            ..Default::default()
+        };
+        route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .write()
+            .insert(2, original.clone());
+        assert_eq!(route.list_known_peer_infos().await, vec![original.clone()]);
+        route.service_impl.synced_route_info.remove_peers([2]);
+
+        let updated = RoutePeerInfo {
+            ipv4_addr: Some(Ipv4Addr::new(192, 0, 2, 2).into()),
+            network_length: 28,
+            ipv6_addr: Some("2001:db8:3::2/64".parse::<cidr::Ipv6Inet>().unwrap().into()),
+            proxy_cidrs: vec![],
+            version: 2,
+            ..original
+        };
+        route
+            .service_impl
+            .synced_route_info
+            .peer_infos
+            .write()
+            .insert(2, updated.clone());
+        assert_eq!(route.list_known_peer_infos().await, vec![updated]);
+    }
 
     impl PeerRouteServiceImpl {
         pub(crate) async fn list_peers_from_interface<T: FromIterator<PeerId>>(&self) -> T {

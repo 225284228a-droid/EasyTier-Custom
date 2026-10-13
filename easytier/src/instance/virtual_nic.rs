@@ -43,6 +43,61 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
+/// Netlink sockets and their runtime stay on one thread while a namespace is
+/// selected. A setns guard must never migrate between Tokio worker threads.
+async fn configure_interface<F, Fut>(
+    net_ns: crate::common::netns::NetNS,
+    ifname: String,
+    operation: F,
+) -> Result<(), Error>
+where
+    F: FnOnce(IfConfiger, String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
+{
+    #[cfg(target_os = "linux")]
+    {
+        tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            net_ns.run(|| runtime.block_on(operation(IfConfiger {}, ifname)))
+        })
+        .await
+        .map_err(|error| Error::AnyhowError(anyhow::Error::from(error)))?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = net_ns;
+        operation(IfConfiger {}, ifname).await
+    }
+}
+
+async fn shutdown_nic_tasks(
+    cancellation: &tokio_util::sync::CancellationToken,
+    packet_tasks: &mut JoinSet<()>,
+    control_tasks: &mut JoinSet<()>,
+) {
+    cancellation.cancel();
+    packet_tasks.shutdown().await;
+    while let Some(result) = control_tasks.join_next().await {
+        if let Err(error) = result {
+            tracing::error!(?error, "NIC control task failed during shutdown");
+        }
+    }
+}
+
+fn overlay_routes(
+    exclusions: easytier_core::config::vpn::routes::VpnRouteExclusions,
+) -> BTreeSet<easytier_core::config::vpn::VpnCidr> {
+    exclusions
+        .overlay
+        .into_iter()
+        .flat_map(|cidr| {
+            easytier_core::config::vpn::routes::subtract_cidrs(cidr, &exclusions.physical)
+        })
+        .collect()
+}
+
 pin_project! {
     pub struct TunStream {
         #[pin]
@@ -670,8 +725,12 @@ impl VirtualNic {
         }
         {
             // set mtu by ourselves, rust-tun does not handle it correctly on windows
-            let _g = self.global_ctx.net_ns.guard();
-            self.ifcfg.set_mtu(ifname.as_str(), mtu_in_config).await?;
+            configure_interface(
+                self.global_ctx.net_ns.clone(),
+                ifname.clone(),
+                move |ifcfg, ifname| async move { ifcfg.set_mtu(&ifname, mtu_in_config).await },
+            )
+            .await?;
         }
 
         let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
@@ -718,17 +777,18 @@ impl VirtualNic {
     }
 
     pub async fn link_up(&self) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg.set_link_status(self.ifname(), true).await?;
-        Ok(())
+        configure_interface(
+            self.global_ctx.net_ns.clone(),
+            self.ifname().to_owned(),
+            |ifcfg, ifname| async move { ifcfg.set_link_status(&ifname, true).await },
+        )
+        .await
     }
 
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg
-            .add_ipv4_route(self.ifname(), address, cidr, None)
-            .await?;
-        Ok(())
+        configure_interface(self.global_ctx.net_ns.clone(), self.ifname().to_owned(), move |ifcfg, ifname| async move {
+            ifcfg.add_ipv4_route(&ifname, address, cidr, None).await
+        }).await
     }
 
     pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
@@ -741,47 +801,51 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg
-            .add_ipv6_route(self.ifname(), address, cidr, cost)
-            .await?;
-        Ok(())
+        configure_interface(self.global_ctx.net_ns.clone(), self.ifname().to_owned(), move |ifcfg, ifname| async move {
+            ifcfg.add_ipv6_route(&ifname, address, cidr, cost).await
+        }).await
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg
-            .remove_ipv6_route(self.ifname(), address, cidr)
-            .await?;
-        Ok(())
+        configure_interface(self.global_ctx.net_ns.clone(), self.ifname().to_owned(), move |ifcfg, ifname| async move {
+            ifcfg.remove_ipv6_route(&ifname, address, cidr).await
+        }).await
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg.remove_ip(self.ifname(), ip).await?;
-        Ok(())
+        configure_interface(
+            self.global_ctx.net_ns.clone(),
+            self.ifname().to_owned(),
+            move |ifcfg, ifname| async move { ifcfg.remove_ip(&ifname, ip).await },
+        )
+        .await
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
-        Ok(())
+        configure_interface(
+            self.global_ctx.net_ns.clone(),
+            self.ifname().to_owned(),
+            move |ifcfg, ifname| async move { ifcfg.remove_ipv6(&ifname, ip).await },
+        )
+        .await
     }
 
     pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg
-            .add_ipv4_ip(self.ifname(), ip, cidr as u8)
-            .await?;
-        Ok(())
+        configure_interface(
+            self.global_ctx.net_ns.clone(),
+            self.ifname().to_owned(),
+            move |ifcfg, ifname| async move { ifcfg.add_ipv4_ip(&ifname, ip, cidr as u8).await },
+        )
+        .await
     }
 
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
-        let _g = self.global_ctx.net_ns.guard();
-        self.ifcfg
-            .add_ipv6_ip(self.ifname(), ip, cidr as u8)
-            .await?;
-        Ok(())
+        configure_interface(
+            self.global_ctx.net_ns.clone(),
+            self.ifname().to_owned(),
+            move |ifcfg, ifname| async move { ifcfg.add_ipv6_ip(&ifname, ip, cidr as u8).await },
+        )
+        .await
     }
 
     pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use<> {
@@ -798,49 +862,23 @@ pub struct NicCtx {
 
     nic: Arc<Mutex<VirtualNic>>,
     tasks: JoinSet<()>,
+    control_tasks: JoinSet<()>,
+    cancellation: tokio_util::sync::CancellationToken,
 
     /// Exit-forwarding state this NIC activated, so the disable path can
     /// remove exactly what the enable path installed. Shared with the
-    /// config-patch watcher; taken by `Drop` for shutdown cleanup.
-    vpn_exit_active: std::sync::Arc<std::sync::Mutex<Option<VpnExitActive>>>,
+    /// config-patch watcher and released during awaited shutdown.
+    vpn_exit_active: Arc<Mutex<super::vpn_exit_forwarding::VpnExitForwardingLease>>,
 
     #[cfg(target_os = "windows")]
     windows_udp_broadcast_relay: Option<AbortOnDropHandle<()>>,
 }
 
-/// Platform state installed when this node offers VPN exit forwarding.
-#[derive(Clone)]
-struct VpnExitActive {
-    ifname: String,
-    v6_prefix: Option<String>,
-}
-
 impl Drop for NicCtx {
     fn drop(&mut self) {
-        let active = self.vpn_exit_active.lock().unwrap().take();
-        let Some(active) = active else {
-            return;
-        };
-        // Best effort: normal instance shutdown happens inside the tokio
-        // runtime, so the spawned cleanup gets polled to completion; a hard
-        // process kill leaves the platform rules in place.
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                tracing::info!(
-                    ifname = %active.ifname,
-                    "removing vpn exit forwarding on nic shutdown"
-                );
-                super::vpn_exit_forwarding::sync_vpn_exit_forwarding(
-                    false,
-                    &active.ifname,
-                    active.v6_prefix,
-                )
-                .await;
-            });
-        } else {
-            tracing::warn!(
-                ifname = %active.ifname,
-                "no tokio runtime at nic drop; vpn exit forwarding left installed"
+        if !self.cancellation.is_cancelled() {
+            tracing::error!(
+                "NicCtx dropped without awaited shutdown; native route cleanup cannot be guaranteed"
             );
         }
     }
@@ -853,6 +891,8 @@ impl NicCtx {
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
     ) -> Self {
+        let forwarding =
+            super::vpn_exit_forwarding::VpnExitForwardingLease::new(global_ctx.net_ns.clone());
         NicCtx {
             global_ctx: global_ctx.clone(),
             packet_plane,
@@ -862,11 +902,25 @@ impl NicCtx {
 
             nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
             tasks: JoinSet::new(),
-
-            vpn_exit_active: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            control_tasks: JoinSet::new(),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+            vpn_exit_active: Arc::new(Mutex::new(forwarding)),
 
             #[cfg(target_os = "windows")]
             windows_udp_broadcast_relay: None,
+        }
+    }
+
+    /// Stop packet I/O, then await every route owner and forwarding lease
+    /// before the virtual interface is dropped. No cleanup is detached.
+    pub(crate) async fn shutdown(&mut self) {
+        shutdown_nic_tasks(&self.cancellation, &mut self.tasks, &mut self.control_tasks).await;
+        if let Err(error) = self.vpn_exit_active.lock().await.release().await {
+            tracing::error!(?error, "failed to release VPN exit forwarding lease");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.windows_udp_broadcast_relay.take();
         }
     }
 
@@ -993,12 +1047,11 @@ impl NicCtx {
     }
 
     async fn apply_route_changes(
-        ifcfg: &impl IfConfiguerTrait,
         ifname: &str,
         net_ns: &crate::common::netns::NetNS,
-        cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
-        added: Vec<cidr::Ipv4Cidr>,
-        removed: Vec<cidr::Ipv4Cidr>,
+        cur_proxy_cidrs: &mut BTreeSet<easytier_core::config::vpn::VpnCidr>,
+        added: Vec<easytier_core::config::vpn::VpnCidr>,
+        removed: Vec<easytier_core::config::vpn::VpnCidr>,
     ) {
         tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
 
@@ -1007,10 +1060,33 @@ impl NicCtx {
             if !cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .remove_ipv4_route(ifname, cidr.first_address(), cidr.network_length())
-                .await;
+            let ret = configure_interface(
+                net_ns.clone(),
+                ifname.to_owned(),
+                move |ifcfg, ifname| async move {
+                    match cidr {
+                        easytier_core::config::vpn::VpnCidr::V4(cidr) => {
+                            ifcfg
+                                .remove_ipv4_route(
+                                    &ifname,
+                                    cidr.first_address(),
+                                    cidr.network_length(),
+                                )
+                                .await
+                        }
+                        easytier_core::config::vpn::VpnCidr::V6(cidr) => {
+                            ifcfg
+                                .remove_ipv6_route(
+                                    &ifname,
+                                    cidr.first_address(),
+                                    cidr.network_length(),
+                                )
+                                .await
+                        }
+                    }
+                },
+            )
+            .await;
 
             if ret.is_err() {
                 tracing::trace!(
@@ -1019,7 +1095,9 @@ impl NicCtx {
                     "remove route failed.",
                 );
             }
-            cur_proxy_cidrs.remove(&cidr);
+            if ret.is_ok() {
+                cur_proxy_cidrs.remove(&cidr);
+            }
         }
 
         // Add routes
@@ -1027,10 +1105,35 @@ impl NicCtx {
             if cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let _g = net_ns.guard();
-            let ret = ifcfg
-                .add_ipv4_route(ifname, cidr.first_address(), cidr.network_length(), None)
-                .await;
+            let ret = configure_interface(
+                net_ns.clone(),
+                ifname.to_owned(),
+                move |ifcfg, ifname| async move {
+                    match cidr {
+                        easytier_core::config::vpn::VpnCidr::V4(cidr) => {
+                            ifcfg
+                                .add_ipv4_route(
+                                    &ifname,
+                                    cidr.first_address(),
+                                    cidr.network_length(),
+                                    None,
+                                )
+                                .await
+                        }
+                        easytier_core::config::vpn::VpnCidr::V6(cidr) => {
+                            ifcfg
+                                .add_ipv6_route(
+                                    &ifname,
+                                    cidr.first_address(),
+                                    cidr.network_length(),
+                                    None,
+                                )
+                                .await
+                        }
+                    }
+                },
+            )
+            .await;
 
             if ret.is_err() {
                 tracing::trace!(
@@ -1039,7 +1142,11 @@ impl NicCtx {
                     "add route failed.",
                 );
             }
-            cur_proxy_cidrs.insert(cidr);
+            // A connected or separately owned overlay route may already
+            // exist. Only successful creates belong to this route owner.
+            if ret.is_ok() {
+                cur_proxy_cidrs.insert(cidr);
+            }
         }
     }
 
@@ -1048,66 +1155,57 @@ impl NicCtx {
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.nic.lock().await;
-        let ifcfg = nic.get_ifcfg();
         let ifname = nic.ifname().to_owned();
         let mut event_receiver = global_ctx.subscribe();
+        let cancellation = self.cancellation.clone();
 
-        self.tasks.spawn(async move {
-            let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
+        self.control_tasks.spawn(async move {
+            let mut cur_proxy_cidrs = BTreeSet::new();
 
-            // Initial sync: get current proxy_cidrs state and apply routes
-            let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await else {
-                tracing::error!("proxy CIDR monitor host is unavailable");
-                return;
-            };
+            // Keep known overlay regions captured even when a remote peer
+            // becomes unreachable. Public advertised subnets must not fall
+            // through to the host's physical default in that state.
+            let initial = overlay_routes(packet_plane.vpn_route_exclusions().await);
             Self::apply_route_changes(
-                &ifcfg,
                 &ifname,
                 &net_ns,
                 &mut cur_proxy_cidrs,
-                diff.added,
-                diff.removed,
+                initial.iter().copied().collect(),
+                Vec::new(),
             )
             .await;
 
             loop {
-                let event = match event_receiver.recv().await {
-                    Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                let event = match tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    event = event_receiver.recv() => Some(event),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => None,
+                } {
+                    Some(Ok(event)) => Some(event),
+                    Some(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
                         tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
                         break;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
                         tracing::warn!(
                             "event bus lagged in proxy_cidrs route updater, doing full sync"
                         );
                         event_receiver = event_receiver.resubscribe();
-                        // Full sync after lagged to recover consistent state
-                        let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await
-                        else {
-                            tracing::error!("proxy CIDR monitor host is unavailable");
-                            return;
-                        };
-                        GlobalCtxEvent::ProxyCidrsUpdated(diff.added, diff.removed)
+                        None
                     }
+                    None => None,
                 };
+                let _ = event;
+                let desired = overlay_routes(packet_plane.vpn_route_exclusions().await);
+                let added = desired.difference(&cur_proxy_cidrs).copied().collect();
+                let removed = cur_proxy_cidrs.difference(&desired).copied().collect();
 
-                // Only handle ProxyCidrsUpdated events
-                let (added, removed) = match event {
-                    GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => (added, removed),
-                    _ => continue,
-                };
-
-                Self::apply_route_changes(
-                    &ifcfg,
-                    &ifname,
-                    &net_ns,
-                    &mut cur_proxy_cidrs,
-                    added,
-                    removed,
-                )
-                .await;
+                Self::apply_route_changes(&ifname, &net_ns, &mut cur_proxy_cidrs, added, removed)
+                    .await;
             }
+            let removed = cur_proxy_cidrs.iter().copied().collect();
+            Self::apply_route_changes(&ifname, &net_ns, &mut cur_proxy_cidrs, Vec::new(), removed)
+                .await;
         });
 
         Ok(())
@@ -1126,20 +1224,14 @@ impl NicCtx {
             .global_ctx
             .get_ipv6()
             .map(|inet| inet.network().to_string());
-        super::vpn_exit_forwarding::sync_vpn_exit_forwarding(
-            vpn.exit_enabled,
-            &ifname,
-            prefix.clone(),
-        )
-        .await;
-        let mut active = self.vpn_exit_active.lock().unwrap();
-        if vpn.exit_enabled {
-            *active = Some(VpnExitActive {
-                ifname,
-                v6_prefix: prefix,
-            });
-        } else {
-            *active = None;
+        if let Err(error) = self
+            .vpn_exit_active
+            .lock()
+            .await
+            .reconcile(&ifname, prefix, vpn.exit_enabled)
+            .await
+        {
+            tracing::error!(?error, "VPN exit forwarding activation failed");
         }
     }
 
@@ -1153,9 +1245,13 @@ impl NicCtx {
             nic.ifname().to_owned()
         };
         let mut event_receiver = global_ctx.subscribe();
-        self.tasks.spawn(async move {
+        let cancellation = self.cancellation.clone();
+        self.control_tasks.spawn(async move {
             loop {
-                let event = match event_receiver.recv().await {
+                let event = match tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    event = event_receiver.recv() => event,
+                } {
                     Ok(event) => event,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -1165,31 +1261,21 @@ impl NicCtx {
                 };
                 if !matches!(
                     event,
-                    crate::common::global_ctx::GlobalCtxEvent::ConfigPatched(_)
+                    GlobalCtxEvent::ConfigPatched(_)
+                        | GlobalCtxEvent::DhcpIpv4Changed(_, _)
+                        | GlobalCtxEvent::TunDeviceReady(_)
                 ) {
                     continue;
                 }
                 let vpn = global_ctx.config.get_vpn();
-                let enabled = vpn.exit_enabled;
-                let already_active = state.lock().unwrap().is_some();
-                if enabled == already_active {
-                    continue;
-                }
                 let prefix = global_ctx.get_ipv6().map(|inet| inet.network().to_string());
-                super::vpn_exit_forwarding::sync_vpn_exit_forwarding(
-                    enabled,
-                    &ifname,
-                    prefix.clone(),
-                )
-                .await;
-                let mut slot = state.lock().unwrap();
-                if enabled {
-                    *slot = Some(VpnExitActive {
-                        ifname: ifname.clone(),
-                        v6_prefix: prefix,
-                    });
-                } else {
-                    slot.take();
+                if let Err(error) = state
+                    .lock()
+                    .await
+                    .reconcile(&ifname, prefix, vpn.exit_enabled)
+                    .await
+                {
+                    tracing::error!(?error, "VPN exit forwarding update failed");
                 }
             }
         });
@@ -1201,20 +1287,48 @@ impl NicCtx {
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let status = global_ctx.vpn_route_status();
+        let packet_plane = self.packet_plane.clone();
+        let cancellation = self.cancellation.clone();
         let nic = self.nic.lock().await;
         let ifcfg: std::sync::Arc<dyn crate::common::ifcfg::IfConfiguerTrait> =
             std::sync::Arc::new(crate::common::ifcfg::IfConfiger {});
         let ifname = nic.ifname().to_owned();
         drop(nic);
+        let (ready, completion) = tokio::sync::oneshot::channel();
 
-        self.tasks.spawn(async move {
-            super::vpn_routes::run_vpn_route_manager(global_ctx, ifcfg, ifname, net_ns, status)
-                .await;
+        self.control_tasks.spawn(async move {
+            super::vpn_routes::run_vpn_route_manager(
+                global_ctx,
+                packet_plane,
+                ifcfg,
+                ifname,
+                net_ns,
+                status,
+                cancellation,
+                ready,
+            )
+            .await;
         });
-        Ok(())
+        completion
+            .await
+            .map_err(|error| Error::AnyhowError(anyhow::Error::from(error)))?
+            .map_err(|error| Error::AnyhowError(anyhow::Error::msg(error)))
     }
 
     pub async fn run(
+        &mut self,
+        ipv4_addr: Option<cidr::Ipv4Inet>,
+        ipv6_addr: Option<cidr::Ipv6Inet>,
+    ) -> Result<(), Error> {
+        let result = self.run_inner(ipv4_addr, ipv6_addr).await;
+        if let Err(error) = &result {
+            self.global_ctx.set_tun_device_error(error.to_string());
+            self.shutdown().await;
+        }
+        result
+    }
+
+    async fn run_inner(
         &mut self,
         ipv4_addr: Option<cidr::Ipv4Inet>,
         ipv6_addr: Option<cidr::Ipv6Inet>,
@@ -1309,6 +1423,69 @@ mod tests {
     use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
     use super::VirtualNic;
+
+    #[test]
+    fn ordinary_overlay_routes_do_not_recapture_local_advertised_subnets() {
+        let desired =
+            super::overlay_routes(easytier_core::config::vpn::routes::VpnRouteExclusions {
+                overlay: vec![
+                    "192.168.1.0/28".parse().unwrap(),
+                    "203.0.113.0/24".parse().unwrap(),
+                    "10.66.0.0/24".parse().unwrap(),
+                ],
+                physical: vec!["192.168.1.0/24".parse().unwrap()],
+            });
+        assert!(
+            !desired
+                .iter()
+                .any(|cidr| cidr.contains(&"192.168.1.5".parse().unwrap()))
+        );
+        assert!(
+            desired
+                .iter()
+                .any(|cidr| cidr.contains(&"203.0.113.5".parse().unwrap()))
+        );
+        assert!(
+            desired
+                .iter()
+                .any(|cidr| cidr.contains(&"10.66.0.5".parse().unwrap()))
+        );
+    }
+
+    #[tokio::test]
+    async fn nic_shutdown_waits_for_route_cleanup_after_packet_io_releases_resources() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let token = tokio_util::sync::CancellationToken::new();
+        let resource = Arc::new(tokio::sync::Mutex::new(()));
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let mut packets = tokio::task::JoinSet::new();
+        let held = resource.clone();
+        packets.spawn(async move {
+            let _owner = held.lock().await;
+            started.send(()).unwrap();
+            futures::future::pending::<()>().await;
+        });
+        ready.await.unwrap();
+        let mut controls = tokio::task::JoinSet::new();
+        let cancellation = token.clone();
+        let completion = cleaned.clone();
+        controls.spawn(async move {
+            cancellation.cancelled().await;
+            let _route_owner = resource.lock().await;
+            tokio::task::yield_now().await;
+            completion.store(true, Ordering::SeqCst);
+        });
+        super::shutdown_nic_tasks(&token, &mut packets, &mut controls).await;
+        assert!(
+            cleaned.load(Ordering::SeqCst),
+            "interface destruction must follow completed route cleanup"
+        );
+        assert!(packets.is_empty() && controls.is_empty());
+    }
 
     async fn run_test_helper() -> Result<VirtualNic, Error> {
         let mut dev = VirtualNic::new(get_mock_global_ctx());

@@ -577,6 +577,25 @@ where
             .attach_tun_fd(fd)
     }
 
+    pub async fn attach_tun_fd_and_wait(&self, instance_id: Uuid, fd: i32) -> anyhow::Result<()> {
+        self.get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found"))?
+            .attach_tun_fd_and_wait(fd)
+            .await
+    }
+
+    pub async fn attach_tun_fd_and_wait_with_generation(
+        &self,
+        instance_id: Uuid,
+        fd: i32,
+        generation: Option<u64>,
+    ) -> anyhow::Result<()> {
+        self.get(instance_id)
+            .ok_or_else(|| anyhow::anyhow!("instance {instance_id} not found"))?
+            .attach_tun_fd_and_wait_with_generation(fd, generation)
+            .await
+    }
+
     pub fn data_plane_runtime_handle(&self, instance_id: &Uuid) -> Option<tokio::runtime::Handle> {
         self.instance(*instance_id)?
             .runtime_handle()

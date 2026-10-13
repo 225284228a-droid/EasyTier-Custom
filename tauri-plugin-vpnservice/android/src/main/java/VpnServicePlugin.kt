@@ -2,6 +2,8 @@ package com.plugin.vpnservice
 
 import android.app.Activity
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.Command
@@ -21,10 +23,20 @@ class PingArgs {
 @InvokeArg
 class StartVpnArgs {
     var ipv4Addr: String? = null
+    var ipv6Addr: String? = null
     var routes: Array<String> = emptyArray()
-    var dns: String? = null
+    var dnsServers: Array<String> = emptyArray()
     var disallowedApplications: Array<String> = emptyArray()
     var mtu: Int? = null
+    var instanceId: String? = null
+    var generation: String? = null
+}
+
+@InvokeArg
+class CompleteVpnReconfigureArgs {
+    var generation: String? = null
+    var installed: Boolean = false
+    var errorMsg: String? = null
 }
 
 @TauriPlugin
@@ -93,11 +105,17 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun startVpn(invoke: Invoke) {
-        val args = invoke.parseArgs(StartVpnArgs::class.java)
-        activity.runOnUiThread {
-            println("start vpn in plugin, args: $args")
+        startVpnWithArgs(invoke, invoke.parseArgs(StartVpnArgs::class.java))
+    }
 
-            TauriVpnService.self?.onRevoke()
+    @Command
+    fun reconfigureVpn(invoke: Invoke) {
+        startVpnWithArgs(invoke, invoke.parseArgs(StartVpnArgs::class.java))
+    }
+
+    private fun startVpnWithArgs(invoke: Invoke, args: StartVpnArgs) {
+        activity.runOnUiThread {
+            println("configure vpn in plugin, args: $args")
 
             val it = VpnService.prepare(activity)
             val ret = JSObject()
@@ -106,10 +124,13 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
             } else {
                 val intent = Intent(activity, TauriVpnService::class.java)
                 intent.putExtra(TauriVpnService.IPV4_ADDR, args.ipv4Addr)
+                intent.putExtra(TauriVpnService.IPV6_ADDR, args.ipv6Addr)
                 intent.putExtra(TauriVpnService.ROUTES, args.routes)
-                intent.putExtra(TauriVpnService.DNS, args.dns)
+                intent.putExtra(TauriVpnService.DNS_SERVERS, args.dnsServers)
                 intent.putExtra(TauriVpnService.DISALLOWED_APPLICATIONS, args.disallowedApplications)
                 intent.putExtra(TauriVpnService.MTU, args.mtu)
+                intent.putExtra(TauriVpnService.INSTANCE_ID, args.instanceId)
+                intent.putExtra(TauriVpnService.GENERATION, args.generation)
 
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     activity.startForegroundService(intent)
@@ -125,7 +146,6 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     fun stopVpn(invoke: Invoke) {
         activity.runOnUiThread {
             println("stop vpn in plugin")
-            TauriVpnService.self?.onRevoke()
             activity.stopService(Intent(activity, TauriVpnService::class.java))
             println("stop vpn in plugin end")
             invoke.resolve(JSObject())
@@ -133,12 +153,58 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun completeVpnReconfigure(invoke: Invoke) {
+        val args = invoke.parseArgs(CompleteVpnReconfigureArgs::class.java)
+        val accepted = TauriVpnService.self?.completeReconfigure(
+            args.generation ?: "",
+            args.installed,
+        ) ?: false
+        if (!args.installed && !args.errorMsg.isNullOrBlank()) {
+            println("vpn candidate install failed generation=${args.generation}: ${args.errorMsg}")
+        }
+        val ret = JSObject()
+        ret.put("accepted", accepted)
+        invoke.resolve(ret)
+    }
+
+    @Command
     fun getVpnStatus(invoke: Invoke) {
         val ret = JSObject()
         ret.put("running", TauriVpnService.self != null)
         ret.put("ipv4Addr", TauriVpnService.ipv4Addr)
+        ret.put("ipv6Addr", TauriVpnService.ipv6Addr)
         ret.put("routes", TauriVpnService.routes)
-        ret.put("dns", TauriVpnService.dns)
+        ret.put("dnsServers", TauriVpnService.dnsServers)
+        ret.put("generation", TauriVpnService.generation)
+        ret.put("generationHighWater", TauriVpnService.getGenerationHighWater(activity))
+        invoke.resolve(ret)
+    }
+
+    @Command
+    fun getUnderlyingDnsServers(invoke: Invoke) {
+        val ret = JSObject()
+        try {
+            val connectivity = activity.getSystemService(Activity.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val dnsServers = linkedSetOf<String>()
+            val systemDnsServers = linkedSetOf<String>()
+            for (network in connectivity.allNetworks) {
+                val capabilities = connectivity.getNetworkCapabilities(network) ?: continue
+                if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                val properties = connectivity.getLinkProperties(network) ?: continue
+                for (address in properties.dnsServers) {
+                    val server = address.hostAddress ?: continue
+                    dnsServers.add(server)
+                    systemDnsServers.add(server.substringBefore('%'))
+                }
+            }
+            ret.put("dnsServers", dnsServers.toTypedArray())
+            ret.put("systemDnsServers", systemDnsServers.toTypedArray())
+        } catch (error: Exception) {
+            ret.put("errorMsg", error.message ?: error.toString())
+            ret.put("dnsServers", emptyArray<String>())
+            ret.put("systemDnsServers", emptyArray<String>())
+        }
         invoke.resolve(ret)
     }
 

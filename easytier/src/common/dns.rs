@@ -65,6 +65,115 @@ fn resolver_config() -> (ResolverConfig, ResolverOpts) {
     (config, options)
 }
 
+#[cfg(any(
+    all(feature = "dns-resolver", target_os = "linux"),
+    all(feature = "dns-resolver", test)
+))]
+fn bootstrap_without_systemd_stub(
+    config: ResolverConfig,
+    uplink: Option<ResolverConfig>,
+) -> ResolverConfig {
+    let stub = |server: &NameServerConfig| {
+        matches!(server.socket_addr.ip(), IpAddr::V4(ip)
+        if ip == std::net::Ipv4Addr::new(127, 0, 0, 53) || ip == std::net::Ipv4Addr::new(127, 0, 0, 54))
+    };
+    if !config.name_servers().iter().any(stub) {
+        return config;
+    }
+    let Some(uplink) = uplink else {
+        return config;
+    };
+    let mut servers = uplink
+        .name_servers()
+        .iter()
+        .filter(|server| {
+            !server.socket_addr.ip().is_loopback() && !server.socket_addr.ip().is_unspecified()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if servers.is_empty() {
+        return config;
+    }
+    for server in config.name_servers().iter().filter(|server| !stub(server)) {
+        if !servers.iter().any(|present| {
+            present.socket_addr == server.socket_addr && present.protocol == server.protocol
+        }) {
+            servers.push(server.clone());
+        }
+    }
+    ResolverConfig::from_parts(config.domain().cloned(), config.search().to_vec(), servers)
+}
+
+#[cfg(feature = "dns-resolver")]
+fn bootstrap_without_magic_dns(config: ResolverConfig) -> ResolverConfig {
+    let magic_dns = crate::instance::dns_server::MAGIC_DNS_FAKE_IP
+        .parse::<IpAddr>()
+        .expect("valid Magic DNS address");
+    let mut servers = config
+        .name_servers()
+        .iter()
+        .filter(|server| server.socket_addr.ip().to_canonical() != magic_dns)
+        .cloned()
+        .collect::<Vec<_>>();
+    if servers.is_empty() {
+        servers.extend(get_default_resolver_config().name_servers().iter().cloned());
+    }
+    ResolverConfig::from_parts(config.domain().cloned(), config.search().to_vec(), servers)
+}
+
+#[cfg(feature = "dns-resolver")]
+fn resolver_config_for_namespace(
+    mut config: ResolverConfig,
+    mut options: ResolverOpts,
+    namespace: Option<&str>,
+) -> (ResolverConfig, ResolverOpts) {
+    #[cfg(target_os = "linux")]
+    {
+        // A stub's upstream query belongs to systemd-resolved, so marking our
+        // socket to 127.0.0.53 cannot protect that second socket during takeover.
+        // Use the published uplink list with the protected socket factory.
+        if let Some(namespace) = namespace
+            && let Ok(data) = std::fs::read(format!("/etc/netns/{namespace}/resolv.conf"))
+            && let Ok((namespace_config, namespace_options)) =
+                hickory_resolver::system_conf::parse_resolv_conf(data)
+        {
+            config = namespace_config;
+            options = namespace_options;
+        }
+        let uplink = std::fs::read("/run/systemd/resolve/resolv.conf")
+            .ok()
+            .and_then(|data| hickory_resolver::system_conf::parse_resolv_conf(data).ok())
+            .map(|(config, _)| config);
+        config = bootstrap_without_systemd_stub(config, uplink);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = namespace;
+    let config = bootstrap_without_magic_dns(config);
+    options.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+    (config, options)
+}
+
+#[cfg(feature = "dns-resolver")]
+fn protected_bootstrap_resolver_config(
+    context: &RuntimeDnsIoContext,
+) -> (ResolverConfig, ResolverOpts) {
+    let (config, options) = resolver_config();
+    resolver_config_for_namespace(config, options, context.netns.as_deref())
+}
+
+/// Select upstream addresses only; the caller still supplies PolicyDnsIo, so
+/// fallback addresses do not change the user's packet/DNS egress policy.
+#[cfg(feature = "dns-resolver")]
+pub(crate) fn policy_forwarder_resolver_config(
+    context: Option<&SocketContext>,
+) -> (ResolverConfig, ResolverOpts) {
+    let (config, options) = read_system_conf()
+        .unwrap_or_else(|_| (get_default_resolver_config(), ResolverOpts::default()));
+    let namespace =
+        context.and_then(|context| context.netns.as_ref().map(|namespace| namespace.token()));
+    resolver_config_for_namespace(config, options, namespace)
+}
+
 #[cfg(feature = "dns-resolver")]
 static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>> = Lazy::new(|| {
     let (config, options) = resolver_config();
@@ -201,8 +310,8 @@ impl RuntimeDnsIoProvider {
 impl RuntimeProvider for RuntimeDnsIoProvider {
     type Handle = <TokioRuntimeProvider as RuntimeProvider>::Handle;
     type Timer = <TokioRuntimeProvider as RuntimeProvider>::Timer;
-    type Udp = UdpSocket;
-    type Tcp = AsyncIoTokioAsStd<TcpStream>;
+    type Udp = crate::socket_protector::ProtectedSocket<UdpSocket>;
+    type Tcp = AsyncIoTokioAsStd<crate::socket_protector::ProtectedSocket<TcpStream>>;
 
     fn create_handle(&self) -> Self::Handle {
         self.inner.create_handle()
@@ -269,7 +378,7 @@ impl RuntimeDnsResolver {
     // request-scoped so pooled DNS sockets cannot outlive that namespace.
     #[cfg(feature = "dns-resolver")]
     fn contextual_resolver(context: RuntimeDnsIoContext) -> ContextualResolver {
-        let (config, options) = resolver_config();
+        let (config, options) = protected_bootstrap_resolver_config(&context);
         let provider = GenericConnector::new(RuntimeDnsIoProvider::new(context));
         Resolver::builder_with_config(config, provider)
             .with_options(options)
@@ -532,6 +641,96 @@ async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "dns-resolver")]
+    #[test]
+    fn protected_bootstrap_never_depends_on_magic_dns_forwarding() {
+        let mut system = ResolverConfig::new();
+        for address in [
+            "100.100.100.101:53",
+            "[::ffff:100.100.100.101]:53",
+            "192.168.1.1:53",
+            "1.1.1.1:53",
+        ] {
+            system.add_name_server(NameServerConfig::new(
+                address.parse().unwrap(),
+                Protocol::Udp,
+            ));
+        }
+        let bootstrap = bootstrap_without_magic_dns(system);
+        assert_eq!(
+            bootstrap
+                .name_servers()
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>(),
+            [
+                "192.168.1.1:53".parse::<SocketAddr>().unwrap(),
+                "1.1.1.1:53".parse().unwrap()
+            ]
+        );
+        let mut only_magic_dns = ResolverConfig::new();
+        only_magic_dns.add_name_server(NameServerConfig::new(
+            "100.100.100.101:53".parse().unwrap(),
+            Protocol::Udp,
+        ));
+        assert_eq!(
+            bootstrap_without_magic_dns(only_magic_dns)
+                .name_servers()
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>(),
+            get_default_resolver_config()
+                .name_servers()
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(feature = "dns-resolver")]
+    #[test]
+    fn protected_bootstrap_uses_published_uplinks_instead_of_systemd_stub() {
+        let mut system = ResolverConfig::new();
+        system.add_name_server(NameServerConfig::new(
+            "127.0.0.53:53".parse().unwrap(),
+            Protocol::Udp,
+        ));
+        system.add_name_server(NameServerConfig::new(
+            "1.1.1.1:53".parse().unwrap(),
+            Protocol::Udp,
+        ));
+        let mut uplink = ResolverConfig::new();
+        uplink.add_name_server(NameServerConfig::new(
+            "192.168.1.1:53".parse().unwrap(),
+            Protocol::Udp,
+        ));
+        let bootstrap = bootstrap_without_systemd_stub(system.clone(), Some(uplink));
+        let servers = bootstrap
+            .name_servers()
+            .iter()
+            .map(|server| server.socket_addr.ip())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            servers,
+            [
+                "192.168.1.1".parse::<IpAddr>().unwrap(),
+                "1.1.1.1".parse::<IpAddr>().unwrap()
+            ]
+        );
+        assert_eq!(
+            bootstrap_without_systemd_stub(system.clone(), None)
+                .name_servers()
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>(),
+            system
+                .name_servers()
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[cfg(feature = "dns-resolver")]
     #[tokio::test]

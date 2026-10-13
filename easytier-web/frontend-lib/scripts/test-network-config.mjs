@@ -153,17 +153,14 @@ function allFieldFixture() {
     enable_manual_routes: true,
     routes: ['10.20.0.0/16', 'fd00:20::/64'],
     vpn: {
-      enabled: true,
       exitEnabled: true,
       dnsProtect: true,
       ipv6Protect: true,
-      failMode: 'direct',
-      exits: [{ name: 'hk', node: '10.144.144.2', note: 'primary' }],
+      ignorePrivate: false,
       rules: [{
         cidr: '0.0.0.0/0',
         action: 'exit',
-        exit: 'hk',
-        fallbackExits: ['us'],
+        exits: ['10.144.144.2', '10.144.144.3'],
         priority: 5,
       }],
     },
@@ -315,14 +312,12 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
   assert.equal(backend.prefer_peer_relay, true)
-  assert.equal(backend.vpn.enabled, true)
   assert.equal(backend.vpn.exit_enabled, true)
-  assert.equal(backend.vpn.fail_mode, 'direct')
-  assert.equal(backend.vpn.exits[0].name, 'hk')
-  assert.equal(backend.vpn.exits[0].node, '10.144.144.2')
+  assert.equal(backend.vpn.dns_protect, true)
+  assert.equal(backend.vpn.ipv6_protect, true)
+  assert.equal(backend.vpn.ignore_private, false)
   assert.equal(backend.vpn.rules[0].cidr, '0.0.0.0/0')
-  assert.equal(backend.vpn.rules[0].exit, 'hk')
-  assert.deepEqual(backend.vpn.rules[0].fallback_exits, ['us'])
+  assert.deepEqual(backend.vpn.rules[0].exits, ['10.144.144.2', '10.144.144.3'])
   assert.equal(backend.vpn.rules[0].priority, 5)
   assert.equal(backend.managed_credentials[0].credential_id, input.managed_credentials[0].credential_id)
   assert.equal(backend.managed_credentials[0].expiry_unix, input.managed_credentials[0].expiry_unix)

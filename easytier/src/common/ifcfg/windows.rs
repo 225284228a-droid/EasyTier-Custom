@@ -186,9 +186,9 @@ impl WindowsIfConfiger {
         ipv6: bool,
         exclude_interface: Option<&str>,
     ) -> Result<Option<super::DefaultRouteInfo>, Error> {
-        use windows::Win32::Foundation::LocalFree;
         use windows::Win32::NetworkManagement::IpHelper::{
-            GetIpForwardTable2, MIB_IPFORWARD_TABLE2,
+            FreeMibTable, GetIpForwardTable2, GetIpInterfaceEntry, MIB_IPFORWARD_TABLE2,
+            MIB_IPINTERFACE_ROW,
         };
         use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
@@ -205,7 +205,11 @@ impl WindowsIfConfiger {
 
         let exclude_index = exclude_interface.and_then(Self::get_interface_index);
         let mut best: Option<(u32, super::DefaultRouteInfo)> = None;
-        for row in &table.Table[0..table.NumEntries as usize] {
+        // MIB tables contain a flexible trailing array; the Rust declaration
+        // has one element and must not be sliced as if it owned the full table.
+        let rows =
+            unsafe { std::slice::from_raw_parts(table.Table.as_ptr(), table.NumEntries as usize) };
+        for row in rows {
             if row.DestinationPrefix.PrefixLength != 0 {
                 continue;
             }
@@ -228,10 +232,17 @@ impl WindowsIfConfiger {
                     ))
                 }
             };
-            if gateway.is_unspecified() {
-                continue;
-            }
-            let metric = row.Metric;
+            let mut interface = MIB_IPINTERFACE_ROW {
+                Family: family,
+                InterfaceIndex: if_index,
+                ..Default::default()
+            };
+            let interface_metric = if unsafe { GetIpInterfaceEntry(&mut interface) }.0 == 0 {
+                interface.Metric
+            } else {
+                0
+            };
+            let metric = row.Metric.saturating_add(interface_metric);
             let info = super::DefaultRouteInfo {
                 gateway,
                 interface_name: format!("if{if_index}"),
@@ -241,7 +252,7 @@ impl WindowsIfConfiger {
             }
         }
         unsafe {
-            LocalFree(Some(windows::Win32::Foundation::HLOCAL(table_ptr.cast())));
+            FreeMibTable(table_ptr.cast());
         }
         Ok(best.map(|(_, info)| info))
     }

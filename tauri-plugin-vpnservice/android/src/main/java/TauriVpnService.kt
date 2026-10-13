@@ -4,14 +4,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.Context
 import android.net.VpnService
+import android.system.OsConstants
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Bundle
 import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
-import java.net.InetAddress
-import java.util.Arrays
 
 import app.tauri.plugin.JSObject
 
@@ -20,35 +20,98 @@ class TauriVpnService : VpnService() {
         @JvmField var triggerCallback: (String, JSObject) -> Unit = { _, _ -> }
         @JvmField var self: TauriVpnService? = null
         @JvmField var ipv4Addr: String? = null
+        @JvmField var ipv6Addr: String? = null
         @JvmField var routes: Array<String> = emptyArray()
-        @JvmField var dns: String? = null
+        @JvmField var dnsServers: Array<String> = emptyArray()
+        @JvmField var generation: String? = null
+        @JvmField var generationHighWater: String? = null
 
         const val IPV4_ADDR = "IPV4_ADDR"
+        const val IPV6_ADDR = "IPV6_ADDR"
         const val ROUTES = "ROUTES"
-        const val DNS = "DNS"
+        const val DNS_SERVERS = "DNS_SERVERS"
         const val DISALLOWED_APPLICATIONS = "DISALLOWED_APPLICATIONS"
         const val MTU = "MTU"
+        const val INSTANCE_ID = "INSTANCE_ID"
+        const val GENERATION = "GENERATION"
 
         private const val NOTIFICATION_CHANNEL_ID = "easytier_vpn_channel"
         private const val NOTIFICATION_ID = 1356
+        private const val GENERATION_PREFERENCES = "vpn_service_state"
+        private const val GENERATION_HIGH_WATER_KEY = "generation_high_water"
+
+        @JvmStatic
+        fun getGenerationHighWater(context: Context): String {
+            val persisted = context.getSharedPreferences(GENERATION_PREFERENCES, Context.MODE_PRIVATE)
+                .getLong(GENERATION_HIGH_WATER_KEY, 0L)
+            val current = generationHighWater?.toLongOrNull() ?: 0L
+            return maxOf(persisted, current).toString()
+        }
     }
 
-    private lateinit var vpnInterface: ParcelFileDescriptor
+    private val interfaceLifecycle by lazy {
+        val preferences = getSharedPreferences(GENERATION_PREFERENCES, MODE_PRIVATE)
+        VpnInterfaceLifecycle<ParcelFileDescriptor>(
+            closeInterface = { it.close() },
+            initialGeneration = preferences.getLong(GENERATION_HIGH_WATER_KEY, 0L),
+            onGenerationReserved = { next ->
+                generationHighWater = next.toString()
+                preferences.edit().putLong(GENERATION_HIGH_WATER_KEY, next).apply()
+            },
+        )
+    }
+    private var disconnected = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         println("vpn on start command ${intent?.getExtras()} $intent")
         startVpnForegroundService()
-        var args = intent?.getExtras()
-        ipv4Addr = args?.getString(IPV4_ADDR)
-        routes = args?.getStringArray(ROUTES) ?: emptyArray()
-        dns = args?.getString(DNS)
+        val args = intent?.getExtras()
+        if (args == null) return START_STICKY
 
-        vpnInterface = createVpnInterface(args)
-        println("vpn created ${vpnInterface.fd}")
+        val generationText = args.getString(GENERATION)
+        val generation = generationText
+            ?.takeIf { value -> value.isNotEmpty() && value.all { it in '0'..'9' } }
+            ?.toLongOrNull()
+        val instanceId = args.getString(INSTANCE_ID) ?: ""
+        if (generation == null || generation <= 0) {
+            val eventData = JSObject()
+            eventData.put("generation", generationText ?: "")
+            eventData.put("instanceId", instanceId)
+            eventData.put("error", "Invalid VPN generation")
+            triggerCallback("vpn_service_error", eventData)
+            return START_STICKY
+        }
+        if (!interfaceLifecycle.reserveGeneration(generation)) {
+            println("ignoring stale vpn generation=$generation")
+            return START_STICKY
+        }
+        try {
+            val candidate = createVpnInterface(args)
+            if (!interfaceLifecycle.addCandidate(generation, candidate)) {
+                candidate.close()
+                return START_STICKY
+            }
 
-        var event_data = JSObject()
-        event_data.put("fd", vpnInterface.fd)
-        triggerCallback("vpn_service_start", event_data)
+            ipv4Addr = args.getString(IPV4_ADDR)
+            ipv6Addr = args.getString(IPV6_ADDR)
+            routes = args.getStringArray(ROUTES) ?: emptyArray()
+            dnsServers = args.getStringArray(DNS_SERVERS) ?: emptyArray()
+            TauriVpnService.generation = generation.toString()
+
+            println("vpn candidate created ${candidate.fd} generation=$generation")
+            val eventData = JSObject()
+            eventData.put("fd", candidate.fd)
+            eventData.put("generation", generation.toString())
+            eventData.put("instanceId", instanceId)
+            triggerCallback("vpn_service_start", eventData)
+        } catch (error: Exception) {
+            val eventData = JSObject()
+            eventData.put("generation", generation.toString())
+            eventData.put("instanceId", instanceId)
+            eventData.put("error", error.message ?: error.toString())
+            triggerCallback("vpn_service_error", eventData)
+            println("vpn interface configuration failed generation=$generation: $error")
+        }
         EasyTierVpnTileService.requestStateUpdate(this)
 
         return START_STICKY
@@ -57,6 +120,7 @@ class TauriVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         self = this
+        generationHighWater = getGenerationHighWater(this)
         println("vpn on create")
     }
 
@@ -81,17 +145,21 @@ class TauriVpnService : VpnService() {
     }
 
     private fun disconnect() {
-        if (self == this && this::vpnInterface.isInitialized) {
+        if (disconnected) return
+        disconnected = true
+        if (self == this) {
             triggerCallback("vpn_service_stop", JSObject())
-            vpnInterface.close()
         }
+        interfaceLifecycle.closeAll()
         clearStatus()
     }
 
     private fun clearStatus() {
         ipv4Addr = null
+        ipv6Addr = null
         routes = emptyArray()
-        dns = null
+        dnsServers = emptyArray()
+        generation = null
     }
 
     private fun startVpnForegroundService() {
@@ -166,29 +234,45 @@ class TauriVpnService : VpnService() {
         
         var mtu = args?.getInt(MTU) ?: 1500
         var ipv4Addr = args?.getString(IPV4_ADDR) ?: "10.126.126.1/24"
-        var dns: String? = args?.getString(DNS)
+        var ipv6Addr: String? = args?.getString(IPV6_ADDR)
+        var dnsServers = args?.getStringArray(DNS_SERVERS) ?: emptyArray()
         var routes = args?.getStringArray(ROUTES) ?: emptyArray()
         var disallowedApplications = args?.getStringArray(DISALLOWED_APPLICATIONS) ?: emptyArray()
 
-        println("vpn create vpn interface. mtu: $mtu, ipv4Addr: $ipv4Addr, dns:" +
-            "$dns, routes: ${java.util.Arrays.toString(routes)}," +
+        println("vpn create vpn interface. mtu: $mtu, ipv4Addr: $ipv4Addr, ipv6Addr: $ipv6Addr, dnsServers:" +
+            "${java.util.Arrays.toString(dnsServers)}, routes: ${java.util.Arrays.toString(routes)}," +
             "disallowedApplications:  ${java.util.Arrays.toString(disallowedApplications)}")
 
         val ipParts = ipv4Addr.split("/")
         if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
         builder.addAddress(ipParts[0], ipParts[1].toInt())
-        builder.addAddress("fd00::1", 128)
+        ipv6Addr?.let {
+            val ipv6Parts = it.split("/")
+            if (ipv6Parts.size != 2) throw IllegalArgumentException("Invalid IPv6 addr string")
+            builder.addAddress(ipv6Parts[0], ipv6Parts[1].toInt())
+        }
 
         builder.setMtu(mtu)
-        dns?.let { builder.addDnsServer(it) }
+        for (dns in dnsServers) {
+            builder.addDnsServer(dns)
+        }
 
         for (route in routes) {
             val ipParts = route.split("/")
             if (ipParts.size != 2) throw IllegalArgumentException("Invalid route cidr string")
             builder.addRoute(ipParts[0], ipParts[1].toInt())
         }
+
+        val hasIpv6Traffic = ipv6Addr != null ||
+            routes.any { it.substringBefore('/').contains(':') } ||
+            dnsServers.any { it.contains(':') }
+        if (!hasIpv6Traffic) {
+            builder.allowFamily(OsConstants.AF_INET6)
+        }
         
-        for (app in disallowedApplications) {
+        builder.addDisallowedApplication(packageName)
+        for (app in disallowedApplications.distinct()) {
+            if (app == packageName) continue
             builder.addDisallowedApplication(app)
         }
 
@@ -199,5 +283,12 @@ class TauriVpnService : VpnService() {
         }
         .establish()
         ?: throw IllegalStateException("Failed to init VpnService")
+    }
+
+    fun completeReconfigure(generation: String, installed: Boolean): Boolean {
+        val parsedGeneration = generation.toLongOrNull() ?: return false
+        val accepted = interfaceLifecycle.complete(parsedGeneration, installed)
+        if (accepted && installed) disconnected = false
+        return accepted
     }
 }

@@ -2003,7 +2003,6 @@ impl<'a> CommandHandler<'a> {
     async fn handle_peer_vpn(&self) -> Result<(), Error> {
         #[derive(tabled::Tabled, serde::Serialize)]
         struct VpnExitRow {
-            name: String,
             node: String,
             peer_id: u32,
             state: String,
@@ -2016,8 +2015,7 @@ impl<'a> CommandHandler<'a> {
         struct VpnRuleRow {
             cidr: String,
             action: String,
-            exit: String,
-            fallbacks: String,
+            exits: String,
             priority: u32,
             effective: String,
             packets: u64,
@@ -2028,10 +2026,11 @@ impl<'a> CommandHandler<'a> {
         struct VpnView {
             enabled: bool,
             exit_enabled: bool,
-            fail_mode: String,
+            ignore_private: bool,
             dns_protect: bool,
             ipv6_protect: bool,
             routes_active: bool,
+            activation_error: String,
             routes_installed: u32,
             protected_endpoints: u32,
             system_dns_servers: Vec<String>,
@@ -2044,7 +2043,6 @@ impl<'a> CommandHandler<'a> {
                 .exits
                 .iter()
                 .map(|exit| VpnExitRow {
-                    name: exit.name.clone(),
                     node: exit.node_addr.clone(),
                     peer_id: exit.peer_id,
                     state: exit.state.clone(),
@@ -2059,8 +2057,7 @@ impl<'a> CommandHandler<'a> {
                 .map(|rule| VpnRuleRow {
                     cidr: rule.cidr.clone(),
                     action: rule.action.clone(),
-                    exit: rule.exit.clone(),
-                    fallbacks: rule.fallback_exits.join(","),
+                    exits: rule.exits.join(","),
                     priority: rule.priority,
                     effective: rule.effective_exit.clone(),
                     packets: rule.packets,
@@ -2070,10 +2067,11 @@ impl<'a> CommandHandler<'a> {
             VpnView {
                 enabled: status.enabled,
                 exit_enabled: status.exit_enabled,
-                fail_mode: status.fail_mode.clone(),
+                ignore_private: status.ignore_private,
                 dns_protect: status.dns_protect,
                 ipv6_protect: status.ipv6_protect,
                 routes_active: status.routes_active,
+                activation_error: status.activation_error.clone(),
                 routes_installed: status.routes_installed,
                 protected_endpoints: status.protected_endpoints,
                 system_dns_servers: status.system_dns_servers.clone(),
@@ -2098,8 +2096,8 @@ impl<'a> CommandHandler<'a> {
         self.print_results(&results, |status| {
             let view = build_view(status);
             println!(
-                "vpn enabled: {}  exit_enabled: {}  fail_mode: {}  dns_protect: {}  ipv6_protect: {}",
-                view.enabled, view.exit_enabled, view.fail_mode, view.dns_protect, view.ipv6_protect
+                "vpn enabled: {}  exit_enabled: {}  ignore_private: {}  dns_protect: {}  ipv6_protect: {}",
+                view.enabled, view.exit_enabled, view.ignore_private, view.dns_protect, view.ipv6_protect
             );
             println!(
                 "routes: active={} installed={}  protected_endpoints={}  dns_servers={}",
@@ -2110,6 +2108,9 @@ impl<'a> CommandHandler<'a> {
             );
             println!();
             print_output(&view.exits, self.output_format, &[], &[], self.no_trunc)?;
+            if !view.activation_error.is_empty() {
+                println!("VPN activation failed: {}", view.activation_error);
+            }
             if !view.rules.is_empty() {
                 println!();
                 print_output(&view.rules, self.output_format, &[], &[], self.no_trunc)?;

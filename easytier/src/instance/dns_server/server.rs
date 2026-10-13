@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use hickory_proto::rr;
 use hickory_proto::rr::LowerName;
-use hickory_resolver::config::ResolverOpts;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::name_server::GenericConnector;
 use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_resolver::system_conf::read_system_conf;
 use hickory_server::ServerFuture;
 use hickory_server::authority::{AuthorityObject, Catalog, ZoneType};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{RwLock, RwLockReadGuard};
 
-use crate::common::dns::get_default_resolver_config;
+use crate::common::dns::{get_default_resolver_config, policy_forwarder_resolver_config};
 
 use super::config::{GeneralConfig, Record, RunConfig};
 
@@ -70,12 +70,56 @@ pub fn build_authority(domain: &str, records: &[Record]) -> Result<InMemoryAutho
     Ok(authority)
 }
 
+fn forward_config(
+    config: ResolverConfig,
+    options: ResolverOpts,
+    excluded: &[std::net::IpAddr],
+) -> ForwardConfig {
+    let filter = |server: &&hickory_resolver::config::NameServerConfig| {
+        !excluded.contains(&server.socket_addr.ip().to_canonical())
+    };
+    let mut servers = config
+        .name_servers()
+        .iter()
+        .filter(filter)
+        .cloned()
+        .collect::<Vec<_>>();
+    if servers.is_empty() {
+        servers.extend(
+            get_default_resolver_config()
+                .name_servers()
+                .iter()
+                .filter(filter)
+                .cloned(),
+        );
+    }
+    ForwardConfig {
+        name_servers: servers.into(),
+        options: Some(options),
+    }
+}
+
 impl Server {
+    #[cfg(test)]
     pub fn new(config: RunConfig) -> Self {
-        Self::try_new(config).unwrap()
+        Self::try_new(config, None).unwrap()
     }
 
-    fn try_new(config: RunConfig) -> Result<Self> {
+    pub(super) fn with_policy(
+        config: RunConfig,
+        plane: Arc<easytier_core::instance::CorePacketPlane>,
+        context: easytier_core::socket::SocketContext,
+    ) -> Result<Self> {
+        Self::try_new(config, Some((plane, context)))
+    }
+
+    fn try_new(
+        config: RunConfig,
+        policy: Option<(
+            Arc<easytier_core::instance::CorePacketPlane>,
+            easytier_core::socket::SocketContext,
+        )>,
+    ) -> Result<Self> {
         let mut catalog = Catalog::new();
         for (domain, records) in config.zones().iter() {
             let zone = rr::Name::from_str(domain.as_str())?;
@@ -85,30 +129,39 @@ impl Server {
 
         // use forwarder authority for the root zone
         let system_conf =
-            read_system_conf().unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
-        let forward_config = ForwardConfig {
-            name_servers: system_conf
-                .0
-                .name_servers()
-                .iter()
-                .filter(|&x| {
-                    !config
-                        .excluded_forward_nameservers()
-                        .contains(&x.socket_addr.ip())
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-                .into(),
-            options: Some(system_conf.1),
+            policy_forwarder_resolver_config(policy.as_ref().map(|(_, context)| context));
+        let forward_config = forward_config(
+            system_conf.0,
+            system_conf.1,
+            config.excluded_forward_nameservers(),
+        );
+        let auth: Arc<dyn AuthorityObject> = if let Some((plane, context)) = policy {
+            plane.update_vpn_dns_servers(
+                forward_config
+                    .name_servers
+                    .iter()
+                    .map(|server| server.socket_addr.ip())
+                    .collect(),
+            );
+            let provider =
+                GenericConnector::new(super::policy_io::PolicyDnsIo::new(plane, context));
+            Arc::new(
+                ForwardAuthority::builder_with_config(forward_config, provider)
+                    .build()
+                    .map_err(anyhow::Error::msg)?,
+            )
+        } else {
+            Arc::new(
+                ForwardAuthority::builder_with_config(
+                    forward_config,
+                    TokioConnectionProvider::default(),
+                )
+                .build()
+                .map_err(anyhow::Error::msg)?,
+            )
         };
-        let auth = ForwardAuthority::builder_with_config(
-            forward_config,
-            TokioConnectionProvider::default(),
-        )
-        .build()
-        .unwrap();
 
-        catalog.upsert(rr::Name::from_str(".")?.into(), vec![Arc::new(auth)]);
+        catalog.upsert(rr::Name::from_str(".")?.into(), vec![auth]);
 
         let catalog = Arc::new(RwLock::new(catalog));
         let handler = CatalogRequestHandler::new(catalog.clone());
@@ -215,6 +268,51 @@ mod tests {
     use hickory_proto::udp::UdpClientStream;
     use maplit::hashmap;
     use std::time::Duration;
+
+    #[test]
+    fn policy_forwarder_configuration_retains_upstreams_and_survives_only_magic_dns() {
+        use hickory_proto::xfer::Protocol;
+        use hickory_resolver::config::NameServerConfig;
+        let fake = "100.100.100.101".parse::<std::net::IpAddr>().unwrap();
+        let mut resolver = ResolverConfig::new();
+        resolver.add_name_server(NameServerConfig::new(
+            "100.100.100.101:53".parse().unwrap(),
+            Protocol::Udp,
+        ));
+        resolver.add_name_server(NameServerConfig::new(
+            "[::ffff:100.100.100.101]:53".parse().unwrap(),
+            Protocol::Udp,
+        ));
+        let fallback = forward_config(resolver.clone(), ResolverOpts::default(), &[fake]);
+        assert_eq!(
+            fallback
+                .name_servers
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>(),
+            get_default_resolver_config()
+                .name_servers()
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>()
+        );
+        ForwardAuthority::builder_with_config(fallback, TokioConnectionProvider::default())
+            .build()
+            .unwrap();
+        resolver.add_name_server(NameServerConfig::new(
+            "192.168.1.1:53".parse().unwrap(),
+            Protocol::Udp,
+        ));
+        let preserved = forward_config(resolver, ResolverOpts::default(), &[fake]);
+        assert_eq!(
+            preserved
+                .name_servers
+                .iter()
+                .map(|server| server.socket_addr)
+                .collect::<Vec<_>>(),
+            ["192.168.1.1:53".parse::<SocketAddr>().unwrap()]
+        );
+    }
 
     #[tokio::test]
     async fn it_works() -> Result<()> {

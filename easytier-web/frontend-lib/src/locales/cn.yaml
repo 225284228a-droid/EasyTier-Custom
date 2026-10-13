@@ -873,57 +873,46 @@ prefer_peer_relay: 优先凭证节点转发
 prefer_peer_relay_help: 优先通过已经转发到目标节点的凭证节点转发，而不是为同一目标再通告一条直连路径。
 
 vpn_section: 多出口策略 VPN
-vpn_section_help: 按目标网段把流量分流到不同出口节点，支持全局 IPv4/IPv6 代理、直连、阻断、备用出口、优先级与最长前缀匹配。
-vpn_enabled: 启用 VPN 客户端
-vpn_enabled_help: 启用后按下面的规则接管系统路由，把匹配的流量送入隧道。
+vpn_section_help: 按目标网段设置走出口、始终直连或始终阻断策略；规则按最长前缀匹配，出口地址按顺序尝试。
 vpn_exit_enabled: 提供出口转发
 vpn_exit_enabled_help: 允许其他节点把本节点作为出口，转发并 NAT 它们的流量。
 vpn_dns_protect: DNS 防泄漏
-vpn_dns_protect_help: 全局出口生效时把系统 DNS 服务器固定进隧道，防止 DNS 绕过出口。
+vpn_dns_protect_help: 存在有效走出口规则时，公共 DNS 遵守分流规则；没有可用出口时阻断，保留明确直连和地址豁免。
 vpn_ipv6_protect: IPv6 防泄漏
-vpn_ipv6_protect_help: 没有 IPv6 全局出口时黑洞掉非组网 IPv6 流量，防止绕过出口。
-vpn_fail_mode: 出口失联策略
-vpn_fail_mode_help: 规则的所有出口都不可达时的行为：直连（保持联网）或阻断（熔断）。
-vpn_fail_mode_direct: 失联时直连
-vpn_fail_mode_block: 失联时阻断
-vpn_action_exit: 走出口
-vpn_action_direct: 直连
-vpn_action_block: 阻断
-vpn_exits: 出口节点
-vpn_exits_help: 可同时配置多个出口；规则按名称引用。节点地址填出口节点在本网络中的虚拟 IP。
-vpn_add_exit: 添加出口
-vpn_no_exits: 暂无出口节点
-vpn_exit_name: 名称
-vpn_exit_node: 节点地址
-vpn_exit_node_placeholder: 例如 10.144.144.2
-vpn_exit_note: 备注
+vpn_ipv6_protect_help: 存在有效 IPv4 出口规则时，阻断未被 IPv6 规则覆盖的流量，保留明确直连及组网、子网和内网豁免。
+vpn_ignore_private: 忽略内网地址
+vpn_ignore_private_help: 即使规则设置为“始终阻断”，以下地址也会直连绕过 VPN：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、100.64.0.0/10、127.0.0.0/8、169.254.0.0/16、fc00::/7、::1/128、fe80::/10。组网虚拟 IP 和子网代理 CIDR 始终绕过规则。
+vpn_action_exit: 走出口（全部不可用时阻断）
+vpn_action_direct: 始终直连
+vpn_action_block: 始终阻断
 vpn_rules: 分流规则
-vpn_rules_help: 最长前缀优先，前缀相同按优先级（小者优先）再按顺序。0.0.0.0/0 与 ::/0 分别是全局 IPv4/IPv6 代理。
+vpn_rules_help: 最长前缀优先；前缀相同时按优先级（小者优先），再按列表顺序。0.0.0.0/0 与 ::/0 分别匹配全部 IPv4 与 IPv6 流量。
 vpn_add_rule: 添加规则
 vpn_no_rules: 暂无规则
 vpn_rule_cidr: 目标网段
-vpn_rule_exit: 出口
-vpn_rule_exit_placeholder: 选择出口
-vpn_rule_fallbacks: 备用出口
-vpn_rule_fallbacks_placeholder: 按顺序尝试
+vpn_rule_action: 动作
+vpn_rule_exits: 出口虚拟 IP（按顺序）
+vpn_rule_exits_help: 填写本网络中的虚拟 IP，并按首选顺序排列。全部出口不可用时会阻断流量。
+vpn_rule_exit_placeholder: 例如 10.144.144.2
+vpn_rule_exit_ip: 出口 IP {0}
+vpn_rule_add_exit: 添加出口 IP
+vpn_rule_remove_exit: 删除出口 IP
+vpn_rule_move_exit_up: 上移出口 IP
+vpn_rule_move_exit_down: 下移出口 IP
 vpn_rule_priority: 优先级
 vpn_rule_packets: 包数
 vpn_rule_bytes: 字节数
 vpn_rule_effective: 当前生效
-vpn_error_exit_name_empty: 出口名称不能为空
-vpn_error_exit_duplicated: 出口名称重复：{0}
-vpn_error_exit_node_invalid: 出口 {0} 的节点地址无效
-vpn_error_rule_cidr_invalid: 规则网段无效：{0}
-vpn_error_rule_exit_missing: 规则 {0} 引用了不存在的出口
+vpn_rule_move_up: 上移规则
+vpn_rule_move_down: 下移规则
+vpn_rule_remove: 删除规则
 vpn_status_title: VPN 运行状态
 vpn_status_enabled: 已启用
 vpn_status_disabled: 未启用
 vpn_status_exit_offering: 提供出口转发
-vpn_status_fail_mode: 失联策略
 vpn_status_routes: 系统路由
 vpn_status_routes_active: 已接管
 vpn_status_routes_inactive: 未接管
-vpn_exit_state: 状态
-vpn_exit_latency: 延迟
-vpn_exit_tx: 发包数
-vpn_exit_tx_bytes: 发送流量
+vpn_exit_state_up: 可用
+vpn_exit_state_down: 不可用
+vpn_exit_state_unknown: 未知

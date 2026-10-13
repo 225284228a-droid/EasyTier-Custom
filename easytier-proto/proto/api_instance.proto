@@ -409,7 +409,8 @@ service CredentialManageRpc {
 // Custom multi-exit policy VPN status (fork feature, fields >= 50000).
 
 message VpnExitStatus {
-  string name = 1;
+  reserved 1;
+  reserved "name";
   string node_addr = 2;
   uint32 peer_id = 3;
   // up | down | unknown
@@ -423,13 +424,14 @@ message VpnRuleStatus {
   string cidr = 1;
   // direct | block | exit
   string action = 2;
-  string exit = 3;
-  repeated string fallback_exits = 4;
+  reserved 3, 4;
+  reserved "exit", "fallback_exits";
   uint32 priority = 5;
-  // Currently selected exit name for action=exit rules (empty when not active).
+  // Currently selected virtual exit IP (empty when unavailable).
   string effective_exit = 6;
   uint64 packets = 7;
   uint64 bytes = 8;
+  repeated string exits = 9;
 }
 
 message GetVpnStatusRequest { InstanceIdentifier instance = 1; }
@@ -440,8 +442,8 @@ message GetVpnStatusResponse {
   bool exit_enabled = 2;
   repeated VpnExitStatus exits = 3;
   repeated VpnRuleStatus rules = 4;
-  // direct | block
-  string fail_mode = 5;
+  reserved 5;
+  reserved "fail_mode";
   bool dns_protect = 6;
   bool ipv6_protect = 7;
   // host-side route manager state, filled when available
@@ -449,4 +451,13 @@ message GetVpnStatusResponse {
   uint32 routes_installed = 9;
   uint32 protected_endpoints = 10;
   repeated string system_dns_servers = 11;
+  bool ignore_private = 12;
+  // Complete positive TUN routes, including overlay and policy capture.
+  repeated string capture_routes = 13;
+  // Changes with policy/address context, independently of exit liveness.
+  uint64 policy_generation = 14;
+  // Actual virtual IPv6 address and prefix, empty if IPv6 is unconfigured.
+  string ipv6_addr = 15;
+  // Host protection or route setup error; empty after successful activation.
+  string activation_error = 16;
 }

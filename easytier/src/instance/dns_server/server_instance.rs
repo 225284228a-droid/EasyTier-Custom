@@ -371,7 +371,15 @@ impl MagicDnsServerInstance {
             .general(GeneralConfigBuilder::default().build()?)
             .excluded_forward_nameservers(vec![fake_ip.into()])
             .build()?;
-        let mut dns_server = Server::new(dns_config);
+        let context = easytier_core::socket::SocketContext::default()
+            .with_socket_mark(global_ctx.get_flags().socket_mark)
+            .with_netns(
+                global_ctx
+                    .net_ns
+                    .name()
+                    .map(easytier_core::socket::NetNamespace::new),
+            );
+        let mut dns_server = Server::with_policy(dns_config, packet_plane.clone(), context)?;
         dns_server.run().await?;
 
         if !tun_inet.contains(&fake_ip)

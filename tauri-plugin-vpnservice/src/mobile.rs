@@ -46,6 +46,21 @@ impl<R: Runtime> Vpnservice<R> {
             .map_err(Into::into)
     }
 
+    pub fn reconfigure_vpn(&self, payload: StartVpnRequest) -> crate::Result<Status> {
+        self.0
+            .run_mobile_plugin("reconfigure_vpn", payload)
+            .map_err(Into::into)
+    }
+
+    pub fn complete_vpn_reconfigure(
+        &self,
+        payload: CompleteVpnReconfigureRequest,
+    ) -> crate::Result<CompleteVpnReconfigureResponse> {
+        self.0
+            .run_mobile_plugin("complete_vpn_reconfigure", payload)
+            .map_err(Into::into)
+    }
+
     pub fn stop_vpn(&self, payload: VoidRequest) -> crate::Result<Status> {
         self.0
             .run_mobile_plugin("stop_vpn", payload)

@@ -18,7 +18,7 @@ impl NetNSGuard {
     pub fn new(ns: Option<String>) -> Box<Self> {
         let old_ns = if ns.is_some() {
             let old_ns = if cfg!(target_os = "linux") {
-                Some(std::fs::File::open("/proc/self/ns/net").unwrap())
+                Some(std::fs::File::open("/proc/thread-self/ns/net").unwrap())
             } else {
                 None
             };
@@ -119,5 +119,64 @@ impl NetNS {
 
     pub fn name(&self) -> Option<String> {
         self.name.clone()
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::NetNSGuard;
+    use std::os::unix::fs::MetadataExt;
+
+    struct NamespaceCleanup(String);
+
+    impl Drop for NamespaceCleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("ip")
+                .args(["netns", "del", &self.0])
+                .output();
+        }
+    }
+
+    fn namespace_inode() -> u64 {
+        std::fs::metadata("/proc/thread-self/ns/net").unwrap().ino()
+    }
+
+    #[test]
+    fn nested_guards_restore_the_calling_thread_namespace() {
+        if std::env::var("EASYTIER_RUN_NETNS_GUARD_TESTS").as_deref() != Ok("1") {
+            return;
+        }
+
+        let name = format!(
+            "et-guard-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        );
+        let output = std::process::Command::new("ip")
+            .args(["netns", "add", &name])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "create isolated netns: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _cleanup = NamespaceCleanup(name.clone());
+
+        let root_namespace = namespace_inode();
+        {
+            let _outer = NetNSGuard::new(Some(name.clone()));
+            let target_namespace = namespace_inode();
+            assert_ne!(target_namespace, root_namespace);
+            {
+                let _inner = NetNSGuard::new(Some(name));
+                assert_eq!(namespace_inode(), target_namespace);
+            }
+            assert_eq!(namespace_inode(), target_namespace);
+        }
+        assert_eq!(namespace_inode(), root_namespace);
     }
 }

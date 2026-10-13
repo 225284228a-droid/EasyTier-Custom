@@ -8,10 +8,13 @@ use easytier_core::{
     instance::CorePacketPlane,
 };
 use futures::FutureExt as _;
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::{MagicDnsRuntime, tun_common::TunNicState};
+use super::{
+    MagicDnsRuntime,
+    tun_common::{TunGenerationStatus, TunNicState},
+};
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     instance::virtual_nic::NicCtx,
@@ -21,9 +24,15 @@ pub(super) struct NativeTunRuntime {
     global_ctx: ArcGlobalCtx,
     cancel: CancellationToken,
     nic: TunNicState,
-    tun_fd: mpsc::Sender<i32>,
-    tun_fd_receiver: Mutex<Option<mpsc::Receiver<i32>>>,
+    tun_fd: mpsc::Sender<TunFdRequest>,
+    tun_fd_receiver: Mutex<Option<mpsc::Receiver<TunFdRequest>>>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+struct TunFdRequest {
+    fd: i32,
+    generation: Option<u64>,
+    completion: Option<oneshot::Sender<Result<(), String>>>,
 }
 
 impl NativeTunRuntime {
@@ -51,10 +60,10 @@ impl NativeTunRuntime {
         global_ctx: ArcGlobalCtx,
         packet_plane: Arc<CorePacketPlane>,
         fd: i32,
+        generation: Option<u64>,
     ) -> anyhow::Result<()> {
-        nic_state.drain().await;
         if fd <= 0 {
-            return Ok(());
+            anyhow::bail!("invalid mobile TUN fd: {fd}");
         }
         let closed = Arc::new(Notify::new());
         let mut nic = NicCtx::new(
@@ -64,12 +73,14 @@ impl NativeTunRuntime {
             closed,
         );
         nic.run_for_mobile(fd).await.context("add ip failed")?;
-        let magic_dns = global_ctx
-            .get_ipv4()
-            .map(|ip| MagicDnsRuntime::start(global_ctx, packet_plane, None, ip))
-            .unwrap_or_default();
-        nic_state.install(nic, magic_dns).await;
-        Ok(())
+        nic_state
+            .install(generation, nic, move || {
+                global_ctx
+                    .get_ipv4()
+                    .map(|ip| MagicDnsRuntime::start(global_ctx, packet_plane, None, ip))
+                    .unwrap_or_default()
+            })
+            .await
     }
 
     pub(super) async fn prepare(&self, packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {
@@ -82,19 +93,31 @@ impl NativeTunRuntime {
         let cancel = self.cancel.clone();
         self.task.lock().await.replace(tokio::spawn(async move {
             loop {
-                let fd = tokio::select! {
+                let request = tokio::select! {
                     _ = cancel.cancelled() => return,
-                    fd = tun_fds.recv() => match fd { Some(fd) => fd, None => return },
+                    request = tun_fds.recv() => match request { Some(request) => request, None => return },
                 };
-                if let Err(error) = Self::install_mobile_tun(
-                    nic_state.clone(),
-                    global_ctx.clone(),
-                    packet_plane.clone(),
-                    fd,
-                )
-                .await
-                {
-                    tracing::error!(?error, "failed to attach mobile TUN fd");
+                let result = match nic_state.generation_status(request.generation).await {
+                    TunGenerationStatus::AlreadyCommitted => Ok(()),
+                    TunGenerationStatus::Stale => Err(anyhow::anyhow!(
+                        "stale mobile TUN generation {:?}",
+                        request.generation
+                    )),
+                    TunGenerationStatus::Install => Self::install_mobile_tun(
+                        nic_state.clone(),
+                        global_ctx.clone(),
+                        packet_plane.clone(),
+                        request.fd,
+                        request.generation,
+                    )
+                    .await,
+                };
+                if let Err(error) = &result {
+                    tracing::error!(?error, fd = request.fd, "failed to attach mobile TUN fd");
+                }
+                if let Some(completion) = request.completion {
+                    let result = result.map_err(|error| format!("{error:#}"));
+                    let _ = completion.send(result);
                 }
             }
         }));
@@ -110,8 +133,35 @@ impl NativeTunRuntime {
 
     pub(super) fn attach_fd(&self, fd: i32) -> anyhow::Result<()> {
         self.tun_fd
-            .try_send(fd)
+            .try_send(TunFdRequest {
+                fd,
+                generation: None,
+                completion: None,
+            })
             .map_err(|error| anyhow::anyhow!("failed to send TUN fd: {error}"))
+    }
+
+    pub(super) async fn attach_fd_and_wait(
+        &self,
+        fd: i32,
+        generation: Option<u64>,
+    ) -> anyhow::Result<()> {
+        if !self.nic.announce_generation(generation).await? {
+            return Ok(());
+        }
+        let (completion, completed) = oneshot::channel();
+        self.tun_fd
+            .send(TunFdRequest {
+                fd,
+                generation,
+                completion: Some(completion),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to send TUN fd: {error}"))?;
+        completed
+            .await
+            .context("mobile TUN installation acknowledgement was dropped")?
+            .map_err(anyhow::Error::msg)
     }
 
     pub(super) fn dhcp_host(

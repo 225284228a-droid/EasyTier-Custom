@@ -285,19 +285,58 @@ async fn set_logging_level(level: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn set_tun_fd(fd: i32) -> Result<(), String> {
+async fn set_tun_fd(
+    fd: i32,
+    instance_id: String,
+    generation: Option<String>,
+) -> Result<(), String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    if let Some(uuid) = instance_manager.instance_ids().into_iter().find(|id| {
-        instance_manager
-            .config(*id)
-            .is_some_and(|config| !config.get_flags().no_tun)
-    }) {
-        instance_manager
-            .attach_tun_fd(uuid, fd)
-            .map_err(|e| e.to_string())?;
-    }
+    let uuid = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let generation = generation
+        .map(|value| {
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("TUN generation must be an unsigned decimal integer".to_string());
+            }
+            value.parse::<u64>().map_err(|e| e.to_string())
+        })
+        .transpose()?;
+    let result = instance_manager
+        .attach_tun_fd_and_wait_with_generation(uuid, fd, generation)
+        .await
+        .map_err(|e| e.to_string());
+    tracing::debug!(?generation, %instance_id, "mobile TUN attach acknowledgement completed");
+    result
+}
+
+#[tauri::command]
+async fn set_vpn_system_dns_servers(
+    instance_id: String,
+    dns_servers: Vec<String>,
+) -> Result<(), String> {
+    let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
+        return Err("VPN system DNS update is not supported in remote mode".to_string());
+    };
+    let uuid = instance_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| e.to_string())?;
+    let dns_servers = dns_servers
+        .into_iter()
+        .map(|server| {
+            server
+                .parse::<std::net::IpAddr>()
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let instance = instance_manager
+        .instance(uuid)
+        .ok_or_else(|| format!("instance {uuid} not found"))?;
+    instance
+        .packet_plane()
+        .update_vpn_system_dns_servers(dns_servers);
     Ok(())
 }
 
@@ -2965,6 +3004,7 @@ pub fn run_gui() -> std::process::ExitCode {
             patch_vpn_portal_clients,
             set_logging_level,
             set_tun_fd,
+            set_vpn_system_dns_servers,
             easytier_version,
             set_dock_visibility,
             list_network_instance_ids,

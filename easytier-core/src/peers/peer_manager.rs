@@ -775,6 +775,88 @@ pub struct PeerManagerCore {
     counters: PeerManagerTrafficCounters,
 }
 
+async fn collect_vpn_route_exclusions(
+    context: &CorePeerContext,
+    runtime_config: &CoreRuntimeConfigStore,
+    route: &ArcRoute,
+) -> crate::config::vpn::routes::VpnRouteExclusions {
+    use crate::config::vpn::{
+        VpnCidr,
+        routes::{VpnRouteExclusions, normalize_cidrs, subtract_cidrs},
+    };
+    let runtime = runtime_config.snapshot();
+    let mut mesh = Vec::new();
+    if let Some(v4) = context.ipv4() {
+        mesh.push(VpnCidr::V4(v4.network()));
+    }
+    if let Some(v6) = context.ipv6() {
+        mesh.push(VpnCidr::V6(v6.network()));
+    }
+    let mut remote_subnets = Vec::new();
+    for info in route.list_known_peer_infos().await {
+        if let Some(addr) = info.ipv4_addr
+            && let Ok(prefix) = u8::try_from(info.network_length)
+            && let Ok(inet) = cidr::Ipv4Inet::new(addr.into(), prefix)
+        {
+            mesh.push(VpnCidr::V4(inet.network()));
+        }
+        if let Some(inet) = info.ipv6_addr
+            && let Some(addr) = inet.address
+            && let Ok(prefix) = u8::try_from(inet.network_length)
+            && let Ok(inet) = cidr::Ipv6Inet::new(addr.into(), prefix)
+        {
+            mesh.push(VpnCidr::V6(inet.network()));
+        }
+        for subnet in info.proxy_cidrs {
+            if let Ok(cidr) = subnet.parse::<VpnCidr>() {
+                remote_subnets.push(cidr);
+            } else if let Ok(addr) = subnet.parse::<IpAddr>() {
+                remote_subnets.push(VpnCidr::host(addr));
+            }
+        }
+    }
+    // Hosts that do not expose full advertisements still protect their active routes.
+    remote_subnets.extend(route.list_proxy_cidrs().await.into_iter().map(VpnCidr::V4));
+    remote_subnets.extend(
+        route
+            .list_proxy_cidrs_v6()
+            .await
+            .into_iter()
+            .map(VpnCidr::V6),
+    );
+    if let Some(manual) = &runtime.services.manual_routes {
+        remote_subnets.extend(manual.iter().copied().map(VpnCidr::V4));
+    }
+    if runtime.peer.flags.accept_dns {
+        mesh.push("100.100.100.101/32".parse().unwrap());
+    }
+    let mut local_subnets = Vec::new();
+    for proxy in &runtime.peer.runtime.core.routes.proxy_networks {
+        for prefix in std::iter::once(&proxy.real).chain(proxy.mapped.iter()) {
+            match prefix.address {
+                IpAddr::V4(a) => {
+                    if let Ok(c) = cidr::Ipv4Inet::new(a, prefix.prefix_len) {
+                        local_subnets.push(VpnCidr::V4(c.network()));
+                    }
+                }
+                IpAddr::V6(a) => {
+                    if let Ok(c) = cidr::Ipv6Inet::new(a, prefix.prefix_len) {
+                        local_subnets.push(VpnCidr::V6(c.network()));
+                    }
+                }
+            }
+        }
+    }
+    // A broad physical subnet must not erase an actual virtual network.
+    let physical = normalize_cidrs(
+        local_subnets
+            .into_iter()
+            .flat_map(|c| subtract_cidrs(c, &mesh)),
+    );
+    let overlay = normalize_cidrs(mesh.into_iter().chain(remote_subnets));
+    VpnRouteExclusions { overlay, physical }
+}
+
 fn check_resolved_remote_addr_not_from_virtual_network(
     context: &ArcPeerContext,
     resolved_remote_addr: Option<ProtoUrl>,
@@ -1742,6 +1824,14 @@ impl PeerManagerCore {
         self.vpn_engine.clone()
     }
 
+    pub async fn vpn_route_exclusions(&self) -> crate::config::vpn::routes::VpnRouteExclusions {
+        collect_vpn_route_exclusions(&self.context, &self.runtime_config, &self.route).await
+    }
+
+    pub fn virtual_ipv6(&self) -> Option<cidr::Ipv6Inet> {
+        self.context.ipv6()
+    }
+
     fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
         self.acl_filter.reload_rules(acl);
     }
@@ -1827,41 +1917,56 @@ impl PeerManagerCore {
 
         self.tasks.lock().await.spawn(router.run());
 
-        // Keep exit liveness fresh for the per-packet VPN policy decisions,
-        // and tell the host when the liveness view changes so the route
-        // manager can honor fail_mode = direct by withdrawing takeover
-        // routes while the exits of a rule are all unreachable.
+        // Exit reachability changes packet selection, never route ownership.
+        // Keep known overlay advertisements excluded even while paths are down.
         let vpn_engine = self.vpn_engine.clone();
-        let peers = self.peers.clone();
         let route = self.route.clone();
         let events = self.events.clone();
+        let vpn_context = self.context.clone();
+        let vpn_runtime = self.runtime_config.clone();
         self.tasks.lock().await.spawn(async move {
             let mut last_liveness: Option<Vec<(String, bool)>> = None;
             loop {
-                let config = vpn_engine.config();
-                if config.client_active() && !config.exits.is_empty() {
+                vpn_engine.update_exclusions(
+                    collect_vpn_route_exclusions(&vpn_context, &vpn_runtime, &route).await,
+                );
+                let addresses = vpn_engine.config().exit_addresses();
+                if !addresses.is_empty() {
                     let routes = route.list_routes().await;
-                    let mut updates = Vec::with_capacity(config.exits.len());
-                    let mut liveness = Vec::with_capacity(config.exits.len());
-                    for exit in &config.exits {
-                        let peer_id = match exit.node {
-                            IpAddr::V4(v4) => peers.get_peer_id_by_ipv4(&v4).await,
-                            IpAddr::V6(v6) => peers.get_peer_id_by_ipv6(&v6).await,
-                        };
-                        let reachable = peer_id.and_then(|id| {
-                            routes
-                                .iter()
-                                .find(|route| route.peer_id == id)
-                                .map(|route| (id, route.path_latency))
-                        });
+                    let mut updates = Vec::with_capacity(addresses.len());
+                    let mut liveness = Vec::with_capacity(addresses.len());
+                    for address in addresses {
+                        // Exit addresses identify nodes, never an address merely
+                        // covered by a node's advertised subnet.
+                        let reachable = routes
+                            .iter()
+                            .find(|route| match address {
+                                IpAddr::V4(v4) => {
+                                    route
+                                        .ipv4_addr
+                                        .as_ref()
+                                        .and_then(|inet| inet.address)
+                                        .map(Ipv4Addr::from)
+                                        == Some(v4)
+                                }
+                                IpAddr::V6(v6) => {
+                                    route
+                                        .ipv6_addr
+                                        .as_ref()
+                                        .and_then(|inet| inet.address)
+                                        .map(Ipv6Addr::from)
+                                        == Some(v6)
+                                }
+                            })
+                            .map(|route| (route.peer_id, route.path_latency));
                         let (peer_id, up, latency_ms) = match reachable {
                             Some((peer_id, latency)) => {
                                 (Some(peer_id), true, u32::try_from(latency.max(0)).ok())
                             }
-                            None => (peer_id, false, None),
+                            None => (None, false, None),
                         };
-                        updates.push((exit.name.clone(), peer_id, up, latency_ms));
-                        liveness.push((exit.name.clone(), up));
+                        updates.push((address, peer_id, up, latency_ms));
+                        liveness.push((address.to_string(), up));
                     }
                     vpn_engine.update_exit_states(updates);
                     if last_liveness.as_ref() != Some(&liveness) {
@@ -4185,26 +4290,13 @@ mod tests {
             (Vec::new(), false)
         );
 
-        // With a global exit rule but no reachable exit peer, the engine
-        // decides "direct" and no peer is selected. At the packet level that
-        // still drops (nothing outside the mesh to send to); failing open is
-        // achieved by the host route manager withdrawing the takeover route
-        // while the exits are down.
+        // An unavailable exit drops packets and keeps its capture routes.
         let core = build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
-        let mut vpn = crate::config::vpn::VpnConfig {
-            enabled: true,
-            ..Default::default()
-        };
-        vpn.exits.push(crate::config::vpn::VpnExitConfig {
-            name: "e1".to_owned(),
-            node: "10.20.0.50".parse().unwrap(),
-            note: None,
-        });
+        let mut vpn = crate::config::vpn::VpnConfig::default();
         vpn.rules.push(crate::config::vpn::VpnRuleConfig {
             cidr: "0.0.0.0/0".parse().unwrap(),
             action: crate::config::vpn::VpnRuleAction::Exit,
-            exit: Some("e1".to_owned()),
-            fallback_exits: vec![],
+            exits: vec!["10.20.0.50".parse().unwrap()],
             priority: 0,
         });
         core.update_vpn_config(vpn).unwrap();

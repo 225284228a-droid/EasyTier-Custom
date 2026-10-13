@@ -371,9 +371,25 @@ where
         cidr::Ipv4Inet::new(address, prefix.prefix_len).ok()
     }
 
+    fn runtime_ipv6(runtime_config: &CoreRuntimeConfigStore) -> Option<cidr::Ipv6Inet> {
+        let prefix = runtime_config
+            .snapshot()
+            .peer
+            .runtime
+            .core
+            .routes
+            .ipv6
+            .clone()?;
+        let IpAddr::V6(address) = prefix.address else {
+            return None;
+        };
+        cidr::Ipv6Inet::new(address, prefix.prefix_len).ok()
+    }
     pub(crate) fn is_local_virtual_ip(&self, ip: IpAddr) -> bool {
         Self::runtime_ipv4(&self.runtime_config)
             .is_some_and(|inet| IpAddr::V4(inet.address()) == ip)
+            || Self::runtime_ipv6(&self.runtime_config)
+                .is_some_and(|inet| IpAddr::V6(inet.address()) == ip)
     }
 
     async fn run_net_update_task(self: &Arc<Self>) {
@@ -387,11 +403,13 @@ where
         let data_plane_net_ready = self.data_plane_net_ready.clone();
         self.runtime_tasks.lock().unwrap().spawn(async move {
             let mut prev_ipv4 = None;
+            let mut prev_ipv6 = None;
             let mut fragment_gc = tokio::time::interval(Duration::from_secs(1));
             let mut peer_changes = runtime_config.subscribe_peer_runtime_changes();
             loop {
                 // Run housekeeping regardless of which select branch woke us.
                 let cur_ipv4 = Self::runtime_ipv4(&runtime_config);
+                let cur_ipv6 = Self::runtime_ipv6(&runtime_config);
                 {
                     let mut fragments = udp_fragments.lock().unwrap();
                     fragments.set_local_ip(cur_ipv4.map(|ip| ip.address()));
@@ -416,6 +434,7 @@ where
                     }
                     let had_net = old_net.is_some();
                     prev_ipv4 = None;
+                    prev_ipv6 = None;
                     let cleared = entries.clear();
                     tracing::trace!(
                         had_net,
@@ -434,9 +453,10 @@ where
                     continue;
                 }
 
-                if prev_ipv4 != cur_ipv4 {
+                if prev_ipv4 != cur_ipv4 || prev_ipv6 != cur_ipv6 {
                     let old_ipv4 = prev_ipv4;
                     prev_ipv4 = cur_ipv4;
+                    prev_ipv6 = cur_ipv6;
 
                     tracing::trace!(
                         ?old_ipv4,
@@ -463,6 +483,7 @@ where
                     if let Some(cur_ipv4) = cur_ipv4 {
                         net.lock().await.replace(SmoltcpPlane::new(
                             cur_ipv4,
+                            cur_ipv6,
                             peer_manager.clone(),
                             packet_recv.clone(),
                         ));
@@ -567,19 +588,17 @@ where
         dst_addr: SocketAddr,
         options: DataPlaneTcpConnectOptions,
     ) -> DataPlaneResult<DataPlaneTcpRouteInput> {
-        let IpAddr::V4(dst_ip) = dst_addr.ip() else {
-            return Err(DataPlaneError::new(
-                DataPlaneErrorKind::AddressFamilyUnsupported,
-                "the EasyTier data plane currently supports IPv4 destinations only",
-            ));
-        };
         self.runtime_guard.ensure_open()?;
-        let local_virtual_ip = Self::runtime_ipv4(&self.runtime_config).map(|inet| inet.address());
-        let local_virtual_destination = local_virtual_ip == Some(dst_ip);
+        let local_virtual_destination = self.is_local_virtual_ip(dst_addr.ip());
+        let unspecified = if dst_addr.is_ipv6() {
+            IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        };
         let local_endpoint = local_virtual_destination
             && self.entries.contains_key(&FlowKey {
                 src: dst_addr,
-                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                dst: SocketAddr::new(unspecified, 0),
                 kind: TCP_LISTEN_ENTRY,
             });
 
@@ -670,7 +689,21 @@ where
             .local_addr()
             .map_err(DataPlaneError::from)?
             .port();
-        let local_addr = SocketAddr::new(IpAddr::V4(ipv4_addr.address()), local_port);
+        let source = if dst_addr.is_ipv6() {
+            IpAddr::V6(
+                Self::runtime_ipv6(&self.runtime_config)
+                    .ok_or_else(|| {
+                        DataPlaneError::new(
+                            DataPlaneErrorKind::PathNotReady,
+                            "IPv6 packet-plane source is unavailable",
+                        )
+                    })?
+                    .address(),
+            )
+        } else {
+            IpAddr::V4(ipv4_addr.address())
+        };
+        let local_addr = SocketAddr::new(source, local_port);
         let (flow, _) = FlowLease::register(
             self.entries.clone(),
             FlowKey {
@@ -683,7 +716,7 @@ where
             },
         );
         let stream = generation
-            .while_open(deadline.run(smoltcp_net.tcp_connect(dst_addr, local_port)))
+            .while_open(deadline.run(smoltcp_net.tcp_connect_from(dst_addr, local_addr)))
             .await?;
         generation.ensure_open()?;
 
@@ -797,11 +830,13 @@ where
                     .await
             }
             DataPlaneTcpRoute::LocalHost => {
-                self.connect_host_tcp(
-                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), dst_addr.port()),
-                    options,
-                )
-                .await
+                let loopback = if dst_addr.is_ipv6() {
+                    IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+                } else {
+                    IpAddr::V4(Ipv4Addr::LOCALHOST)
+                };
+                self.connect_host_tcp(SocketAddr::new(loopback, dst_addr.port()), options)
+                    .await
             }
             DataPlaneTcpRoute::Kcp => self.connect_kcp_tcp(dst_addr, options).await,
             DataPlaneTcpRoute::Direct => self.connect_host_tcp(dst_addr, options).await,
@@ -894,9 +929,52 @@ where
         local_port: u16,
         deadline: DataPlaneDeadline,
     ) -> DataPlaneResult<DataPlaneTcpListener> {
+        self.data_plane_tcp_bind_for_family_with_deadline(local_port, false, deadline)
+            .await
+    }
+
+    pub async fn data_plane_tcp_bind_for_family(
+        &self,
+        local_port: u16,
+        ipv6: bool,
+        timeout: Duration,
+    ) -> DataPlaneResult<DataPlaneTcpListener> {
+        self.data_plane_tcp_bind_for_family_with_deadline(
+            local_port,
+            ipv6,
+            DataPlaneDeadline::from_timeout(timeout),
+        )
+        .await
+    }
+
+    async fn data_plane_tcp_bind_for_family_with_deadline(
+        &self,
+        local_port: u16,
+        ipv6: bool,
+        deadline: DataPlaneDeadline,
+    ) -> DataPlaneResult<DataPlaneTcpListener> {
         let data_plane_ref = self.acquire_data_plane_ref()?;
         let (ipv4_addr, smoltcp_net, generation) = self.wait_data_plane_net(deadline).await?;
-        let bind_addr = SocketAddr::new(IpAddr::V4(ipv4_addr.address()), local_port);
+        let source = if ipv6 {
+            IpAddr::V6(
+                Self::runtime_ipv6(&self.runtime_config)
+                    .ok_or_else(|| {
+                        DataPlaneError::new(
+                            DataPlaneErrorKind::PathNotReady,
+                            "IPv6 packet-plane source is unavailable",
+                        )
+                    })?
+                    .address(),
+            )
+        } else {
+            IpAddr::V4(ipv4_addr.address())
+        };
+        let unspecified = if ipv6 {
+            IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        };
+        let bind_addr = SocketAddr::new(source, local_port);
         let listener = generation
             .while_open(deadline.run(smoltcp_net.tcp_bind(bind_addr)))
             .await?;
@@ -906,7 +984,7 @@ where
             self.entries.clone(),
             FlowKey {
                 src: local_addr,
-                dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                dst: SocketAddr::new(unspecified, 0),
                 kind: TCP_LISTEN_ENTRY,
             },
             FlowData::DataPlaneRoute,
@@ -936,19 +1014,56 @@ where
         self.data_plane_udp_bind_with_deadline(local_port, DataPlaneDeadline::from_timeout(timeout))
             .await
     }
-
+    pub async fn data_plane_udp_bind_for_family(
+        &self,
+        local_port: u16,
+        ipv6: bool,
+        timeout: Duration,
+    ) -> DataPlaneResult<DataPlaneUdpSocket> {
+        self.data_plane_udp_bind_for_family_with_deadline(
+            local_port,
+            ipv6,
+            DataPlaneDeadline::from_timeout(timeout),
+        )
+        .await
+    }
     async fn data_plane_udp_bind_with_deadline(
         &self,
         local_port: u16,
         deadline: DataPlaneDeadline,
     ) -> DataPlaneResult<DataPlaneUdpSocket> {
+        self.data_plane_udp_bind_for_family_with_deadline(local_port, false, deadline)
+            .await
+    }
+
+    async fn data_plane_udp_bind_for_family_with_deadline(
+        &self,
+        local_port: u16,
+        ipv6: bool,
+        deadline: DataPlaneDeadline,
+    ) -> DataPlaneResult<DataPlaneUdpSocket> {
         let data_plane_ref = self.acquire_data_plane_ref()?;
         let (ipv4_addr, smoltcp_net, generation) = self.wait_data_plane_net(deadline).await?;
+
+        let source = if ipv6 {
+            IpAddr::V6(
+                Self::runtime_ipv6(&self.runtime_config)
+                    .ok_or_else(|| {
+                        DataPlaneError::new(
+                            DataPlaneErrorKind::PathNotReady,
+                            "IPv6 packet-plane source is unavailable",
+                        )
+                    })?
+                    .address(),
+            )
+        } else {
+            IpAddr::V4(ipv4_addr.address())
+        };
 
         // The bound endpoint is also the port lease. Reserve it before creating
         // the smoltcp socket, which does not check other sockets for duplicates.
         let try_register = |port| {
-            let local_addr = SocketAddr::new(ipv4_addr.address().into(), port);
+            let local_addr = SocketAddr::new(source, port);
             FlowLease::try_register(
                 self.entries.clone(),
                 FlowKey::udp_bind(local_addr),

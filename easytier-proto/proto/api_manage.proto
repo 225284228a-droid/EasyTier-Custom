@@ -128,38 +128,31 @@ message NetworkConfig {
   optional VpnConfig vpn = 80;
 }
 
-// One exit definition. `node` is the exit node's virtual IP inside the
-// EasyTier network. Multiple exits may be configured; rules select one.
-message VpnExitConfig {
-  string name = 1;
-  string node = 2;
-  optional string note = 3;
-}
-
 // One traffic-splitting rule. Matching uses longest-prefix first, ties are
 // broken by lower `priority` value, then rule order.
 message VpnRuleConfig {
   string cidr = 1;
   // exit | direct | block
   string action = 2;
-  // exit name, required when action is "exit"
-  optional string exit = 3;
-  repeated string fallback_exits = 4;
+  reserved 3, 4;
+  reserved "exit", "fallback_exits";
   optional uint32 priority = 5;
+  // Ordered virtual IPs. No reachable exit means this rule drops traffic.
+  repeated string exits = 6;
 }
 
 message VpnConfig {
-  bool enabled = 1;
+  reserved 1, 5, 6;
+  reserved "enabled", "fail_mode", "exits";
   // this node forwards and NATs exit traffic for peers
   bool exit_enabled = 2;
-  // pin system DNS servers into the tunnel when a global exit is active
-  bool dns_protect = 3;
-  // blackhole non-mesh IPv6 when no IPv6 exit is active
-  bool ipv6_protect = 4;
-  // what to do when all exits of a rule are unreachable: direct | block
-  string fail_mode = 5;
-  repeated VpnExitConfig exits = 6;
+  // Omission means true. Public DNS follows effective VPN rules or blocks.
+  optional bool dns_protect = 3;
+  // Omission means true. Uncovered IPv6 blocks when IPv4 exits are configured.
+  optional bool ipv6_protect = 4;
   repeated VpnRuleConfig rules = 7;
+  // Omission means true. Private addresses bypass all VPN actions.
+  optional bool ignore_private = 8;
 }
 
 message ManagedCredentialConfig {
