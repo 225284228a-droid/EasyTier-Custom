@@ -127,6 +127,7 @@ test('embedded console creates a default network and Core restores it as disable
         const listed = page.waitForResponse(response => response.url().endsWith(`/machines/${machine}/networks`) && response.request().method() === 'GET');
         await page.goto(`/#/h/deviceList/device/${machine}`);
         assert.ok((await (await listed).json()).runtime_capabilities?.includes('management:persisted-config-revision-v1'));
+        await page.getByText('creation-smoke-node', { exact: true }).first().waitFor();
         const createdResponse = page.waitForResponse(response => response.url().endsWith(`/machines/${machine}/local-configs/patch`));
         await page.getByRole('button', { name: 'Create New Network', exact: true }).click();
         const created = await createdResponse;
@@ -185,6 +186,7 @@ test('embedded console creates a default network and Core restores it as disable
             const legacyList = page.waitForResponse(response => response.url().endsWith(`/machines/${officialMachine}/networks`) && response.request().method() === 'GET');
             await page.goto(`/#/h/deviceList/device/${officialMachine}`);
             assert.ok(!(await (await legacyList).json()).runtime_capabilities?.includes('management:persisted-config-revision-v1'));
+            await page.getByText('official-smoke-node', { exact: true }).first().waitFor();
             const savedResponse = page.waitForResponse(response => response.url().includes(`/machines/${officialMachine}/networks/config/`) && response.request().method() === 'PUT');
             await page.getByRole('button', { name: 'Create New Network', exact: true }).click();
             const response = await savedResponse;
