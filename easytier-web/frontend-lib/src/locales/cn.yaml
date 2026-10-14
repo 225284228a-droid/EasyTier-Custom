@@ -882,9 +882,9 @@ vpn_rule_remove: 删除规则
 vpn_status_title: VPN 运行状态
 vpn_status_enabled: 已启用
 vpn_status_disabled: 未启用
-vpn_status_exit_offering: 提供出口转发
 vpn_status_routes: 系统路由
 vpn_status_routes_active: 已接管
 vpn_status_routes_inactive: 未接管
+vpn_status_routes_count: 已安装 {count} 条路由
 vpn_exit_state_up: 可用
 vpn_exit_state_down: 不可用

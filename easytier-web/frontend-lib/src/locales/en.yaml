@@ -882,9 +882,9 @@ vpn_rule_remove: Remove rule
 vpn_status_title: VPN status
 vpn_status_enabled: Enabled
 vpn_status_disabled: Disabled
-vpn_status_exit_offering: Offering exit
 vpn_status_routes: System routes
 vpn_status_routes_active: taken over
 vpn_status_routes_inactive: not taken over
+vpn_status_routes_count: "{count} routes installed"
 vpn_exit_state_up: Available
 vpn_exit_state_down: Unavailable
