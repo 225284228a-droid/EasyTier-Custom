@@ -651,10 +651,7 @@ pub(crate) fn interface_index(name: &str) -> Option<u32> {
     let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
     (index != 0).then_some(index)
 }
-#[cfg(all(
-    not(any(target_os = "windows", target_os = "macos")),
-    any(not(target_os = "linux"), test)
-))]
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 pub(crate) fn interface_index(_name: &str) -> Option<u32> {
     None
 }
