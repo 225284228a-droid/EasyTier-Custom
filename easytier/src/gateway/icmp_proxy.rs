@@ -15,40 +15,56 @@ use easytier_core::{
 use socket2::Socket;
 
 use crate::common::netns::NetNS;
+use crate::socket_protector::SocketRegistration;
 
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeIcmpProxyHost;
 
 impl RuntimeIcmpProxyHost {
-    fn create_raw_socket(context: &SocketContext) -> Result<Socket, std::io::Error> {
-        let _guard = NetNS::from_socket_context(context).guard();
-        let socket = Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::RAW,
-            Some(socket2::Protocol::ICMPV4),
-        )?;
-        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
-            Ipv4Addr::UNSPECIFIED,
-            0,
-        )))?;
-        Ok(socket)
+    // Mirrors tunnel::common::bind: create and mark the socket inside the
+    // namespace guard, then register with the native protection system outside
+    // it so the guard never crosses an await.
+    async fn create_raw_socket(
+        context: &SocketContext,
+    ) -> std::io::Result<(Socket, Option<Arc<SocketRegistration>>)> {
+        let socket = {
+            let _guard = NetNS::from_socket_context(context).guard();
+            let socket = Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::RAW,
+                Some(socket2::Protocol::ICMPV4),
+            )?;
+            // Apply the configured mark first; a platform protector or an
+            // active lease ORs its bypass bit on top of it afterwards.
+            crate::tunnel::common::apply_socket_mark(&socket, context.socket_mark)
+                .map_err(std::io::Error::other)?;
+            socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
+                Ipv4Addr::UNSPECIFIED,
+                0,
+            )))?;
+            socket
+        };
+        let registration = crate::socket_protector::protect_native_socket(&socket, true).await?;
+        Ok((socket, registration))
     }
 }
 
 #[derive(Debug)]
 struct RuntimeIcmpSocket {
     socket: Arc<Socket>,
+    registration: Option<Arc<SocketRegistration>>,
     closed: Arc<AtomicBool>,
 }
 
 impl RuntimeIcmpSocket {
-    fn new(socket: Socket) -> std::io::Result<Self> {
+    fn new(socket: Socket, registration: Option<Arc<SocketRegistration>>) -> std::io::Result<Self> {
         // shutdown() does not reliably interrupt recv_from() on an unconnected
         // raw socket (notably on Windows). Bound each blocking read so close
         // also releases Tokio's blocking worker when no ICMP traffic arrives.
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
         Ok(Self {
             socket: Arc::new(socket),
+            registration,
             closed: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -63,8 +79,20 @@ impl Drop for RuntimeIcmpSocket {
 #[async_trait::async_trait]
 impl IcmpProxySocket for RuntimeIcmpSocket {
     async fn send(&self, destination: Ipv4Addr, packet: &[u8]) -> Result<(), ProxyRuntimeError> {
-        self.socket
-            .send_to(packet, &SocketAddrV4::new(destination, 0).into())?;
+        let remote = SocketAddrV4::new(destination, 0);
+        // Scope the datagram through the protection system so an active VPN
+        // lease steers it out a physical interface instead of the captured
+        // route. Linux is a passthrough here: its bypass mark is persistent.
+        crate::socket_protector::with_udp_scope(
+            self.registration.as_ref(),
+            &self.socket,
+            None,
+            remote.into(),
+            || {
+                self.socket
+                    .send_to(packet, &socket2::SockAddr::from(remote))
+            },
+        )??;
         Ok(())
     }
 
@@ -114,10 +142,13 @@ impl IcmpProxyHost for RuntimeIcmpProxyHost {
         &self,
         context: SocketContext,
     ) -> Result<Arc<dyn IcmpProxySocket>, ProxyRuntimeError> {
-        let socket = Self::create_raw_socket(&context).inspect_err(|error| {
-            tracing::warn!(?error, "create ICMP socket failed");
-        })?;
-        Ok(Arc::new(RuntimeIcmpSocket::new(socket)?))
+        let (socket, registration) =
+            Self::create_raw_socket(&context)
+                .await
+                .inspect_err(|error| {
+                    tracing::warn!(?error, "create ICMP socket failed");
+                })?;
+        Ok(Arc::new(RuntimeIcmpSocket::new(socket, registration)?))
     }
 }
 
@@ -141,8 +172,11 @@ mod tests {
     // without requiring raw-socket privileges or modifying host routes.
     fn socket() -> Arc<RuntimeIcmpSocket> {
         Arc::new(
-            RuntimeIcmpSocket::new(std::net::UdpSocket::bind("127.0.0.1:0").unwrap().into())
-                .unwrap(),
+            RuntimeIcmpSocket::new(
+                std::net::UdpSocket::bind("127.0.0.1:0").unwrap().into(),
+                None,
+            )
+            .unwrap(),
         )
     }
 
@@ -168,5 +202,22 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn create_raw_socket_registers_with_native_protection() {
+        let (socket, registration) =
+            match RuntimeIcmpProxyHost::create_raw_socket(&SocketContext::default()).await {
+                Ok(created) => created,
+                // Raw ICMP sockets require privileges on most platforms.
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    return;
+                }
+                Err(error) => panic!("unexpected ICMP socket creation failure: {error}"),
+            };
+        if crate::socket_protector::native_socket_protection_available() {
+            assert!(registration.is_some(), "ICMP socket must be registered");
+        }
+        drop(socket);
     }
 }
