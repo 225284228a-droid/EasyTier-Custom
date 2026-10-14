@@ -62,6 +62,7 @@ const scope = computed(() => props.scopeKey ?? props.api.scope ?? '');
 let generation = 0;
 let configRequest = 0;
 let configFileRequest = 0;
+let instanceListRequest = 0;
 const dirtyFields = computed(() => currentNetworkConfig.value && configBaseline.value
     ? changedConfigFields(configBaseline.value, currentNetworkConfig.value) : []);
 const dirty = computed(() => dirtyFields.value.length > 0);
@@ -136,21 +137,18 @@ const currentNetworkControl = {
 
 const instanceList = ref<Array<{ uuid: string; meta?: Api.NetworkMeta }>>([]);
 const updateInstanceList = () => {
-    let insts = new Set<string>();
-    let t = listInstanceIdResponse.value;
-    if (t) {
-        (t.running_inst_ids ?? []).forEach((u) => insts.add(Utils.UuidToStr(u)));
-        (t.disabled_inst_ids ?? []).forEach((u) => insts.add(Utils.UuidToStr(u)));
-    }
-
-    const newList = Array.from(insts).map((instance: string) => {
-        return {
-            uuid: instance,
-            meta: networkMetaCache.value[instance]
-        };
+    const response = listInstanceIdResponse.value;
+    const ids = [...new Set([...(response?.running_inst_ids ?? []), ...(response?.disabled_inst_ids ?? [])]
+        .map(Utils.UuidToStr).filter(Boolean))].sort();
+    const previous = new Map(instanceList.value.map(instance => [instance.uuid, instance]));
+    const newList = ids.map(uuid => {
+        const instance = previous.get(uuid) ?? { uuid, meta: undefined as Api.NetworkMeta | undefined };
+        instance.meta = networkMetaCache.value[uuid];
+        return instance;
     });
 
-    if (JSON.stringify(newList) !== JSON.stringify(instanceList.value)) {
+    // RPC catalog order and metadata refreshes must not replace Select options.
+    if (newList.length !== instanceList.value.length || newList.some((instance, index) => instance !== instanceList.value[index])) {
         instanceList.value = newList;
     }
 }
@@ -179,22 +177,6 @@ const selectedInstanceId = computed({
         instanceId.value = typeof value === 'string' ? value : value?.uuid;
     }
 });
-watch(selectedInstanceId, async (newVal, oldVal) => {
-    if (newVal?.uuid !== oldVal?.uuid) {
-        clearConfig();
-        isEditingNetwork.value = false;
-        showConfigEditDialog.value = false;
-        if (networkIsDisabled.value) {
-            try { await loadCurrentNetworkConfig(); }
-            catch (error) { toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 }); }
-        }
-    }
-    await loadCurrentNetworkInfo();
-
-    if (newVal?.uuid && !networkMetaCache.value[newVal.uuid]) {
-        await loadNetworkMetas([newVal.uuid]);
-    }
-});
 
 const needShowNetworkStatus = computed(() => {
     if (!selectedInstanceId.value) {
@@ -218,11 +200,17 @@ const networkIsDisabled = computed(() => {
     }
     return (listInstanceIdResponse.value?.disabled_inst_ids ?? []).map(Utils.UuidToStr).includes(selectedInstanceId.value?.uuid);
 });
-watch(networkIsDisabled, async (newVal, oldVal) => {
-    if (newVal !== oldVal && newVal === true) {
+watch([() => selectedInstanceId.value?.uuid, networkIsDisabled], async ([selected, disabled], [previous, wasDisabled]) => {
+    if (selected !== previous) {
+        clearConfig();
+        isEditingNetwork.value = false;
+    }
+    if (selected && disabled && (selected !== previous || !wasDisabled)) {
         try { await loadCurrentNetworkConfig(); }
         catch (error) { toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 }); }
     }
+    await loadCurrentNetworkInfo();
+    if (selected && !networkMetaCache.value[selected]) await loadNetworkMetas([selected]);
 });
 
 const loadCurrentNetworkConfig = async (force = false) => {
@@ -510,8 +498,9 @@ const editNetwork = async () => {
 
 const loadNetworkInstanceIds = async () => {
     const context = requestContext();
+    const request = ++instanceListRequest;
     const response = await context.api.list_network_instance_ids();
-    if (context.current()) listInstanceIdResponse.value = response;
+    if (context.current() && request === instanceListRequest) listInstanceIdResponse.value = response;
 }
 
 const loadCurrentNetworkInfo = async () => {
@@ -720,7 +709,7 @@ onUnmounted(() => {
                 <!-- 网络选择 -->
                 <div class="flex-1 min-w-0">
                     <IftaLabel class="w-full">
-                        <Select v-model="selectedInstanceId" :options="instanceList" optionLabel="uuid" class="w-full"
+                        <Select v-model="selectedInstanceId" :options="instanceList" optionLabel="uuid" dataKey="uuid" class="w-full"
                             inputId="dd-inst-id" :placeholder="t('web.device_management.select_network')"
                             :pt="{ root: { class: 'network-select-container' } }" :virtualScrollerOptions="{
                                 lazy: true,

@@ -15,10 +15,10 @@ use easytier_core::management::{
 };
 use easytier_proto::{
     api::manage::{
-        DeleteNetworkInstanceRequest, NetworkConfig, NetworkingMethod, ObserveConfigsRequest,
-        PatchPersistedConfigRequest, PersistedConfigApplyMode, PersistedConfigMutationStatus,
-        PersistedConfigService, RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
-        SetNetworkInstanceEnabledRequest, WebClientService,
+        DeleteNetworkInstanceRequest, ListNetworkInstanceRequest, NetworkConfig, NetworkingMethod,
+        ObserveConfigsRequest, PatchPersistedConfigRequest, PersistedConfigApplyMode,
+        PersistedConfigMutationStatus, PersistedConfigService, RemoveNetworkInstanceConfigRequest,
+        RunNetworkInstanceRequest, SetNetworkInstanceEnabledRequest, WebClientService,
     },
     rpc_types::controller::BaseController,
 };
@@ -381,6 +381,116 @@ async fn wait_for_live_config(
     })
     .await
     .expect("native directory notifications must apply edits without an ObserveConfigs request");
+}
+
+#[tokio::test]
+async fn repeated_native_list_refreshes_keep_order_revisions_and_lifecycle_actions_usable() {
+    use super::config_storage::NativeConfigFileStorage;
+
+    let directory = tempfile::tempdir().unwrap();
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+    let ids = (1..=8).map(uuid::Uuid::from_u128).collect::<Vec<_>>();
+    for id in &ids {
+        state.set_enabled(*id, false).unwrap();
+        std::fs::write(
+            directory.path().join(format!("{id}.toml")),
+            live_config(*id, "paused"),
+        )
+        .unwrap();
+    }
+    std::fs::write(directory.path().join("broken.toml"), "[flags\n").unwrap();
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        Arc::new(NativeConfigFileStorage::new(true)),
+        state,
+    );
+    let baseline = observe(&rpc).await;
+    for _ in 0..16 {
+        let listed = WebClientService::list_network_instance(
+            &rpc,
+            BaseController::default(),
+            ListNetworkInstanceRequest {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            listed
+                .disabled_inst_ids
+                .into_iter()
+                .map(uuid::Uuid::from)
+                .collect::<Vec<_>>(),
+            ids,
+            "unchanged native files must return a stable, sorted network list"
+        );
+        assert_eq!(observe(&rpc).await, baseline);
+    }
+    assert!(baseline.entries.iter().any(|entry| {
+        entry.entry_key == "broken.toml" && entry.inst_id.is_none() && entry.status == "invalid"
+    }));
+    let revision = |id: uuid::Uuid| {
+        baseline
+            .entries
+            .iter()
+            .find(|entry| entry.inst_id == Some(id.into()))
+            .unwrap()
+            .revision
+            .clone()
+    };
+    WebClientService::set_network_instance_enabled(
+        &rpc,
+        BaseController::default(),
+        SetNetworkInstanceEnabledRequest {
+            inst_id: Some(ids[0].into()),
+            enabled: true,
+            expected_revision: Some(revision(ids[0])),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for_live_config(&manager, ids[0], Some("paused")).await;
+    let active = manager.instance(ids[0]).unwrap();
+    let running = observe(&rpc).await;
+    for _ in 0..4 {
+        WebClientService::list_network_instance(
+            &rpc,
+            BaseController::default(),
+            ListNetworkInstanceRequest {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(observe(&rpc).await, running);
+        assert!(Arc::ptr_eq(&active, &manager.instance(ids[0]).unwrap()));
+    }
+    let edited = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        patch(
+            ids[1],
+            revision(ids[1]),
+            "edited",
+            PersistedConfigApplyMode::PersistOnly,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(edited.status, PersistedConfigMutationStatus::Success as i32);
+    let deleted = WebClientService::delete_network_instance(
+        &rpc,
+        BaseController::default(),
+        DeleteNetworkInstanceRequest {
+            inst_ids: vec![ids[1].into()],
+            expected_revision: Some(edited.entry.unwrap().revision),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!deleted.remain_inst_ids.contains(&ids[1].into()));
+    assert!(!directory.path().join(format!("{}.toml", ids[1])).exists());
+    assert!(Arc::ptr_eq(&active, &manager.instance(ids[0]).unwrap()));
 }
 
 #[tokio::test]

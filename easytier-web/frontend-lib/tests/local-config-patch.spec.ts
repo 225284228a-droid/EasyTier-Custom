@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_NETWORK_CONFIG, normalizeNetworkConfig } from '../src/types/network'
-import { buildLocalConfigApplyRequest, buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, localConfigEditable, LocalConfigApplyMode, type LocalConfigEntry } from '../src/modules/localConfigPatch'
+import { buildLocalConfigApplyRequest, buildLocalConfigPatch, buildLocalConfigCreatePatch, changedConfigFields, localConfigEditable, localConfigInstanceId, LocalConfigApplyMode, type LocalConfigEntry } from '../src/modules/localConfigPatch'
 import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../src/modules/capabilities'
 import { DEPRECATED_NETWORK_CONFIG_FIELDS } from '../src/generated/proto/networkConfigFields'
 import creationFixtures from './fixtures/network-create-patches.json'
@@ -13,6 +13,20 @@ const entry = (): LocalConfigEntry => ({
 })
 
 describe('online local configuration patches', () => {
+  it.each([undefined, null])('isolates an entry without a UUID (%s) from valid catalog entries', instId => {
+    const invalid = { ...entry(), inst_id: instId, status: 'invalid', config: undefined }
+    const valid = entry()
+    const snapshot = { online: true, stale: false, capabilities: [LOCAL_CONFIG_REVISION_CAPABILITY],
+      entries: [invalid, valid], catalog_epoch: 'boot-a', catalog_generation: 1 }
+    expect(localConfigInstanceId(invalid)).toBe('')
+    expect(snapshot.entries.find(candidate => localConfigInstanceId(candidate) === valid.inst_id)).toBe(valid)
+    expect(localConfigEditable(snapshot, invalid)).toBe(false)
+    expect(localConfigEditable(snapshot, { ...valid, inst_id: instId })).toBe(false)
+    expect(localConfigEditable(snapshot, valid)).toBe(true)
+    expect(() => buildLocalConfigApplyRequest(invalid, [LOCAL_CONFIG_APPLY_CAPABILITY])).toThrow('identity is unavailable')
+    expect(() => buildLocalConfigPatch(invalid, valid.config!, ['hostname'], [])).toThrow('identity is unavailable')
+  })
+
   it.each(creationFixtures)('matches the Core creation contract: $name', (fixture) => {
     const config = { ...DEFAULT_NETWORK_CONFIG(), ...fixture.overrides }
     const patch = buildLocalConfigCreatePatch(config, fixture.capabilities)

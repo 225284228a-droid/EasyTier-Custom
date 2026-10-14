@@ -11,7 +11,7 @@ export enum LocalConfigApplyMode {
 
 export interface LocalConfigEntry {
   entry_key: string
-  inst_id: string | UUID
+  inst_id?: string | UUID | null
   revision: string
   persisted_toml?: string
   config?: NetworkConfig
@@ -58,13 +58,16 @@ const NON_EDIT_FIELDS = new Set(['instance_id', 'advanced_settings', 'networking
 const EDIT_FIELDS = new Set<string>(NETWORK_CONFIG_FIELDS.filter(field => !NON_EDIT_FIELDS.has(field)))
 
 export function localConfigInstanceId(entry: Pick<LocalConfigEntry, 'inst_id'>): string {
+  // Invalid catalog entries can have no UUID. They still carry diagnostics,
+  // but must not interfere with finding another entry by its instance ID.
+  if (!entry.inst_id) return ''
   return typeof entry.inst_id === 'string' ? entry.inst_id : UuidToStr(entry.inst_id)
 }
 
 export function localConfigEditable(snapshot: LocalConfigSnapshot, entry: LocalConfigEntry): boolean {
   return snapshot.online && !snapshot.stale
     && (snapshot.support_local_config_revision === true || snapshot.capabilities.includes(LOCAL_CONFIG_REVISION_CAPABILITY))
-    && entry.status === 'ready' && !!entry.revision && !!entry.config
+    && !!localConfigInstanceId(entry) && entry.status === 'ready' && !!entry.revision && !!entry.config
     && ConfigFilePermission.isEditable(entry.config_permission ?? 0)
 }
 
@@ -73,10 +76,12 @@ export function buildLocalConfigApplyRequest(
   entry: Pick<LocalConfigEntry, 'inst_id' | 'revision'>,
   capabilities: readonly string[],
 ): LocalConfigPatchRequest {
+  const instId = localConfigInstanceId(entry)
+  if (!instId) throw new Error('Configuration identity is unavailable')
   if (!entry.revision) throw new Error('Configuration revision is unavailable')
   assertLocalConfigApplyCapability(capabilities)
   return {
-    inst_id: localConfigInstanceId(entry),
+    inst_id: instId,
     expected_revision: entry.revision,
     config: {},
     field_mask: [],
@@ -123,6 +128,8 @@ export function buildLocalConfigPatch(
   applyMode = LocalConfigApplyMode.SaveAndApply,
   allowCreation = false,
 ): LocalConfigPatchRequest {
+  const instId = localConfigInstanceId(entry)
+  if (!instId) throw new Error('Configuration identity is unavailable')
   if (!entry.revision && !allowCreation) throw new Error('Configuration revision is unavailable')
   const mask = [...new Set(fieldMask)]
   if (!mask.length) throw new Error('No configuration fields selected')
@@ -136,7 +143,7 @@ export function buildLocalConfigPatch(
   const config: Record<string, unknown> = {}
   for (const field of mask) putPath(config, field.split('.'), valueAt(backend, field.split('.')))
   return {
-    inst_id: localConfigInstanceId(entry),
+    inst_id: instId,
     expected_revision: entry.revision,
     config: config as Partial<NetworkConfig>,
     field_mask: mask,

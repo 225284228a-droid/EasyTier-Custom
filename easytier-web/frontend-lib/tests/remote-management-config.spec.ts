@@ -48,6 +48,7 @@ vi.mock('vue-i18n', () => ({
 }))
 
 const toastSpy = vi.hoisted(() => ({ add: vi.fn() }))
+const confirmSpy = vi.hoisted(() => ({ require: vi.fn() }))
 
 vi.mock('primevue', async () => {
   const { defineComponent, h } = await import('vue')
@@ -119,7 +120,7 @@ vi.mock('primevue', async () => {
     Message: PassThrough,
     Select: SelectStub,
     Tag: PassThrough,
-    useConfirm: () => ({ require: vi.fn() }),
+    useConfirm: () => ({ require: confirmSpy.require }),
     useToast: () => ({ add: toastSpy.add }),
   }
 })
@@ -400,6 +401,94 @@ function legacyApi(running: boolean) {
   state.api.update_network_instance_state.mockImplementation(async () => { running = true })
   return state
 }
+
+describe('RemoteManagement catalog isolation', () => {
+  it.each([undefined, null])('edits, starts, and deletes a valid entry after an invalid entry with UUID %s', async instId => {
+    const { api, snapshot } = revisionApi()
+    snapshot.entries.unshift({ entry_key: 'broken.toml', inst_id: instId, status: 'invalid',
+      revision: '', network_name: '', config_permission: 0 } as any)
+    const wrapper = await openRevision(api)
+    try {
+      toastSpy.add.mockClear()
+      confirmSpy.require.mockClear()
+      const form = wrapper.findComponent(RevisionConfigForm)
+      expect(form.props('curNetwork').hostname).toBe('original-host')
+      expect(api.observe_local_configs).toHaveBeenCalledOnce()
+      form.props('curNetwork').hostname = 'edited-valid-host'
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config).toHaveBeenCalledWith(expect.objectContaining({
+        inst_id: INSTANCE_ID, expected_revision: 'revision-a', field_mask: ['hostname'],
+        config: { hostname: 'edited-valid-host' },
+      }))
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-b')
+
+      const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
+      actions[2].command()
+      await confirmSpy.require.mock.calls[0][0].accept()
+      expect(api.delete_network).toHaveBeenCalledWith(INSTANCE_ID, 'revision-a')
+      expect(toastSpy.add).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('keeps option order, identity, selection and config stable across shuffled catalog polls', async () => {
+    const { api, snapshot, entry } = revisionApi()
+    const nextId = '00000000-0000-0000-0000-000000000002'
+    const nextUuid = { ...INSTANCE_UUID, part4: 2 }
+    snapshot.entries.unshift({ entry_key: 'broken.toml', status: 'invalid', revision: '' } as any)
+    snapshot.entries.push({ ...entry, inst_id: nextId, entry_key: 'other.toml',
+      config: { ...entry.config, instance_id: nextId } })
+    let backwards = true
+    api.list_network_instance_ids.mockImplementation(async () => {
+      backwards = !backwards
+      return { running_inst_ids: [], disabled_inst_ids: backwards ? [nextUuid, INSTANCE_UUID] : [INSTANCE_UUID, nextUuid],
+        runtime_capabilities: snapshot.capabilities }
+    })
+    const wrapper = await openRevision(api)
+    try {
+      const select = wrapper.findComponent({ name: 'Select' })
+      const options = select.props('options')
+      const selected = select.props('modelValue')
+      const config = wrapper.findComponent(RevisionConfigForm).props('curNetwork')
+      expect(options.map((option: any) => option.uuid)).toEqual([INSTANCE_ID, nextId])
+      expect(select.attributes('datakey')).toBe('uuid')
+      await vi.advanceTimersByTimeAsync(3_000)
+      await flushPromises()
+      expect(select.props('options')).toBe(options)
+      expect(select.props('modelValue')).toBe(selected)
+      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork')).toBe(config)
+      expect(api.observe_local_configs).toHaveBeenCalledOnce()
+      expect(wrapper.emitted('update:instanceId')).toBeUndefined()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('ignores an older disabled catalog response after a successful start refresh', async () => {
+    const { api } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      let finish!: (response: any) => void
+      api.list_network_instance_ids.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      const poll = vi.advanceTimersByTimeAsync(1_000)
+      await flushPromises()
+      const form = wrapper.findComponent(RevisionConfigForm)
+      api.update_network_instance_state.mockImplementation(async () => {
+        api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [],
+          runtime_capabilities: ['management:persisted-config-revision-v1'] })
+      })
+      api.get_network_info.mockResolvedValue({ running: true })
+      form.vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-a')
+      expect(wrapper.find('.network-status-container').exists()).toBe(true)
+      finish({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID],
+        runtime_capabilities: ['management:persisted-config-revision-v1'] })
+      await poll
+      await flushPromises()
+      expect(wrapper.find('.network-status-container').exists()).toBe(true)
+      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+})
 
 describe('legacy RemoteManagement save and run', () => {
   it('creates, selects, and runs a network when no instance was initially selected', async () => {

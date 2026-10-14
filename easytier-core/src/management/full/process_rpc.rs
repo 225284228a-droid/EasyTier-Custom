@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -1780,8 +1780,10 @@ where
                     .into_iter()
                     .filter(|entry| !entry.running)
                     .filter_map(|entry| entry.inst_id)
-                    .collect::<HashSet<_>>()
+                    .map(uuid::Uuid::from)
+                    .collect::<BTreeSet<_>>()
                     .into_iter()
+                    .map(Into::into)
                     .collect::<Vec<_>>(),
             )
         } else {
@@ -1792,6 +1794,8 @@ where
             .state_store
             .disabled_instance_ids()
             .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .map(Into::into)
             .collect();
         #[cfg(feature = "management")]
@@ -1801,6 +1805,8 @@ where
                 .management
                 .instances
                 .instance_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>()
                 .into_iter()
                 .map(Into::into)
                 .collect(),
@@ -1922,7 +1928,7 @@ where
                 .into_iter()
                 .chain(self.management.instances.managed_config_ids())
                 .filter(|id| self.management.instances.instance(*id).is_none())
-                .collect::<HashSet<_>>()
+                .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>()
         } else {
