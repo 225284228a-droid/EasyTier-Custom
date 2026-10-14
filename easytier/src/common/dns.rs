@@ -5,6 +5,7 @@ use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
 use anyhow::Context;
 use async_trait::async_trait;
 use easytier_core::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
+use easytier_core::socket::SocketContext;
 #[cfg(feature = "dns-resolver")]
 use hickory_proto::runtime::{RuntimeProvider, TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd};
 #[cfg(feature = "dns-resolver")]
