@@ -121,12 +121,13 @@ impl VpnExitForwardingLease {
             ifname: ifname.to_owned(),
         });
 
-        if let (Some(active), Some(desired)) = (&self.active, &desired) {
-            if active.rule == *desired && active.is_fully_held() {
-                let namespace = current_namespace_identity(self.net_ns.clone()).await?;
-                if namespace == active.namespace {
-                    return Ok(());
-                }
+        if let (Some(active), Some(desired)) = (&self.active, &desired)
+            && active.rule == *desired
+            && active.is_fully_held()
+        {
+            let namespace = current_namespace_identity(self.net_ns.clone()).await?;
+            if namespace == active.namespace {
+                return Ok(());
             }
         }
 
@@ -585,10 +586,10 @@ impl PlatformOps for LinuxOps {
             let Some(value) = snapshot.values.get(relative) else {
                 continue;
             };
-            if let Err(error) = std::fs::write(root.join(relative), value) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    failures.push(format!("{relative}: {error}"));
-                }
+            if let Err(error) = std::fs::write(root.join(relative), value)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                failures.push(format!("{relative}: {error}"));
             }
         }
         if failures.is_empty() {

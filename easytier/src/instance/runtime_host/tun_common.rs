@@ -61,6 +61,7 @@ struct TunGenerationGate {
 }
 
 impl TunGenerationGate {
+    #[cfg(any(mobile, test))]
     fn announce(&mut self, generation: Option<u64>) -> TunGenerationStatus {
         match generation {
             None => TunGenerationStatus::Install,
@@ -94,10 +95,10 @@ impl TunGenerationGate {
 
     fn commit(&mut self, generation: Option<u64>) -> TunGenerationStatus {
         let status = self.status(generation);
-        if status == TunGenerationStatus::Install {
-            if let Some(generation) = generation {
-                self.committed = generation;
-            }
+        if status == TunGenerationStatus::Install
+            && let Some(generation) = generation
+        {
+            self.committed = generation;
         }
         status
     }
@@ -146,6 +147,7 @@ impl TunNicState {
         self.nic_ctx.lock().await.active = Some(NicCtxContainer::packet_drain(tasks));
     }
 
+    #[cfg(mobile)]
     pub(super) async fn announce_generation(
         &self,
         generation: Option<u64>,
@@ -160,6 +162,7 @@ impl TunNicState {
         }
     }
 
+    #[cfg(mobile)]
     pub(super) async fn generation_status(&self, generation: Option<u64>) -> TunGenerationStatus {
         self.generations.lock().await.status(generation)
     }

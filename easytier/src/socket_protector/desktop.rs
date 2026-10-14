@@ -14,12 +14,14 @@ use std::{
 pub(crate) struct SocketRegistration {
     socket: socket2::Socket,
     namespace: u64,
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     io_lock: Mutex<()>,
 }
 
 #[derive(Clone)]
 struct Protection {
     bit: u32,
+    #[cfg(any(not(target_os = "linux"), test))]
     defaults: [Option<u32>; 2],
     #[cfg(any(target_os = "windows", target_os = "macos", test))]
     interface_routes: Arc<[(easytier_core::config::vpn::VpnCidr, u32)]>,
@@ -99,6 +101,7 @@ pub(crate) fn register(socket: &socket2::Socket) -> io::Result<Option<Arc<Socket
     let entry = Arc::new(SocketRegistration {
         socket: socket.try_clone()?,
         namespace: namespace(socket)?,
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         io_lock: Mutex::new(()),
     });
     let mut state = registry()
@@ -287,6 +290,8 @@ impl DesktopProtectionLease {
         bit: u32,
         defaults: [Option<u32>; 2],
     ) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let _ = defaults;
         let mut state = registry()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -306,6 +311,7 @@ impl DesktopProtectionLease {
         }
         let protection = Protection {
             bit,
+            #[cfg(any(not(target_os = "linux"), test))]
             defaults,
             #[cfg(any(target_os = "windows", target_os = "macos", test))]
             interface_routes: Arc::new([]),
@@ -337,6 +343,7 @@ impl DesktopProtectionLease {
         })
     }
 
+    #[cfg(not(target_os = "linux"))]
     pub(crate) fn refresh_defaults(&mut self, defaults: [Option<u32>; 2]) -> io::Result<()> {
         let mut state = registry()
             .lock()
@@ -644,7 +651,10 @@ pub(crate) fn interface_index(name: &str) -> Option<u32> {
     let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
     (index != 0).then_some(index)
 }
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(all(
+    not(any(target_os = "windows", target_os = "macos")),
+    any(not(target_os = "linux"), test)
+))]
 pub(crate) fn interface_index(_name: &str) -> Option<u32> {
     None
 }

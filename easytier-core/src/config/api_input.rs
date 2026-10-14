@@ -1271,7 +1271,7 @@ sni = "old.example.com"
 default_protocol = "tcp"
 only_use_wss_http3_for_hole_punching = true
 prefer_wss_http3_for_p2p = true
-disable_wss_http3_for_p2p = true
+disable_wss_http3_for_p2p = false
 close_redundant_conns_when_disguised = true
 multi_thread_count = 7
 "#;

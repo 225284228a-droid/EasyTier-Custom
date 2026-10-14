@@ -1298,13 +1298,15 @@ impl NicCtx {
 
         self.control_tasks.spawn(async move {
             super::vpn_routes::run_vpn_route_manager(
-                global_ctx,
-                packet_plane,
-                ifcfg,
-                ifname,
-                net_ns,
-                status,
-                cancellation,
+                super::vpn_routes::VpnRouteManagerContext {
+                    global_ctx,
+                    packet_plane,
+                    ifcfg,
+                    ifname,
+                    net_ns,
+                    status,
+                    cancellation,
+                },
                 ready,
             )
             .await;

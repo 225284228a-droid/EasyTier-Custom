@@ -20,6 +20,16 @@ use tokio_util::sync::CancellationToken;
 
 type BoxedIfCfg = Arc<dyn IfConfiguerTrait>;
 
+pub struct VpnRouteManagerContext {
+    pub global_ctx: ArcGlobalCtx,
+    pub packet_plane: Arc<CorePacketPlane>,
+    pub ifcfg: Arc<dyn IfConfiguerTrait>,
+    pub ifname: String,
+    pub net_ns: NetNS,
+    pub status: VpnRouteStatusCell,
+    pub cancellation: CancellationToken,
+}
+
 #[derive(Clone, Default)]
 pub struct VpnRouteStatusCell {
     inner: Arc<Mutex<VpnHostRouteState>>,
@@ -54,15 +64,18 @@ struct RouteOwner {
 /// Holds the capture set until policy changes or explicit cancellation. Exit
 /// liveness never withdraws a route: a rule whose exits are all down blocks.
 pub async fn run_vpn_route_manager(
-    global_ctx: ArcGlobalCtx,
-    packet_plane: Arc<CorePacketPlane>,
-    ifcfg: BoxedIfCfg,
-    ifname: String,
-    net_ns: NetNS,
-    status: VpnRouteStatusCell,
-    cancellation: CancellationToken,
+    context: VpnRouteManagerContext,
     ready: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) {
+    let VpnRouteManagerContext {
+        global_ctx,
+        packet_plane,
+        ifcfg,
+        ifname,
+        net_ns,
+        status,
+        cancellation,
+    } = context;
     let mut events = global_ctx.subscribe();
     let mut owner = RouteOwner::default();
     let mut ready = Some(ready);
@@ -139,7 +152,6 @@ pub async fn run_vpn_route_manager(
             } else {
                 Vec::new()
             },
-            ..Default::default()
         });
         if let Some(ready) = ready.take() {
             let failed = result.is_err();
@@ -300,10 +312,10 @@ impl RouteOwner {
             self.pending.remove(&cidr);
         }
         #[cfg(target_os = "linux")]
-        if let Some(table) = self.linux.as_mut() {
-            if !desired.is_empty() {
-                table.activate(net_ns).await?;
-            }
+        if let Some(table) = self.linux.as_mut()
+            && !desired.is_empty()
+        {
+            table.activate(net_ns).await?;
         }
         let mut to_remove = self
             .installed
@@ -354,6 +366,8 @@ impl RouteOwner {
         ifname: &str,
         cidr: VpnCidr,
     ) -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
+        let _ = ifcfg;
         #[cfg(target_os = "linux")]
         {
             let table = self
@@ -433,6 +447,8 @@ impl RouteOwner {
         cidr: VpnCidr,
     ) -> anyhow::Result<()> {
         #[cfg(target_os = "linux")]
+        let _ = ifcfg;
+        #[cfg(target_os = "linux")]
         {
             let table = self.linux.as_ref().expect("route table owner exists");
             let family = family(cidr);
@@ -488,7 +504,7 @@ impl RouteOwner {
                 )
                 .await?;
             }
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1360,7 +1376,7 @@ impl LinuxPolicyTable {
         let mut priority = [1, 1];
         let mut blackhole_priority = [2, 2];
         let managed = managed_tables().lock().unwrap().clone();
-        for ((ns, table), _) in &managed {
+        for (ns, table) in managed.keys() {
             if *ns == namespace {
                 tables.insert(*table);
             }
@@ -1658,13 +1674,11 @@ fn linux_route_exists(
                 "unicast" => ifname.is_some_and(|ifname| {
                     route.get("dev").and_then(serde_json::Value::as_str) == Some(ifname)
                 }),
-                _ => ifname.map_or(true, |ifname| {
+                _ => ifname.is_none_or(|ifname| {
                     route.get("dev").and_then(serde_json::Value::as_str) == Some(ifname)
                 }),
             }
-            && metric.map_or(true, |metric| {
-                route.get("metric").and_then(parse_u32) == Some(metric)
-            })
+            && metric.is_none_or(|metric| route.get("metric").and_then(parse_u32) == Some(metric))
     })
 }
 
@@ -2861,7 +2875,7 @@ mod tests {
         assert!(!rules.iter().any(|rule| {
             rule.get("table")
                 .and_then(parse_u32)
-                .is_some_and(|id| id >= 20000 && id < 32766)
+                .is_some_and(|id| (20000..32766).contains(&id))
         }));
         for table_id in [table, blackhole_table, second_table, second_blackhole_table] {
             for family in ["-4", "-6"] {

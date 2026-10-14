@@ -1,11 +1,13 @@
 //! Host VPN capture routes are compiled centrally and installed with native socket bypass.
+#[cfg(target_os = "windows")]
+use std::net::Ipv6Addr;
 use std::{
     collections::BTreeSet,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr},
 };
 #[path = "vpn_route_manager.rs"]
 mod manager;
-pub use manager::{VpnRouteStatusCell, run_vpn_route_manager};
+pub use manager::{VpnRouteManagerContext, VpnRouteStatusCell, run_vpn_route_manager};
 
 fn is_pinnable_dns(ip: &IpAddr) -> bool {
     match ip {
