@@ -207,8 +207,8 @@ impl VpnPolicyEngine {
     pub fn update_exclusions(&self, exclusions: VpnRouteExclusions) {
         self.replace_context(Some(exclusions), None, None);
     }
-    /// Forwarder DNS and host DNS have separate owners. A host route refresh
-    /// must not withdraw a Magic DNS upstream's guard.
+    /// VPN DNS forwarders and host DNS have separate owners. A host route
+    /// refresh must not withdraw a VPN DNS server's route guard.
     pub fn update_dns_servers(&self, servers: Vec<IpAddr>) {
         self.replace_context(None, None, Some(servers));
     }

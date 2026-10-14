@@ -467,7 +467,6 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
   console.log('vpn service loaded config', instanceId, JSON.stringify({
     no_tun: config.no_tun,
     dhcp: config.dhcp,
-    enable_magic_dns: config.enable_magic_dns,
   }))
   if (config.no_tun) {
     console.log('vpn service skipped because no_tun is enabled', instanceId)
@@ -553,14 +552,13 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
   const routes = vpnPolicy.capture_routes
   const hasIpv6Route = routes.some((route: string) => route.split('/')[0].includes(':'))
   const ipv6Addr = hasIpv6Route ? vpnPolicy.ipv6_addr || undefined : undefined
-  const dnsServers = config.enable_magic_dns ? ['100.100.100.101'] : underlyingDnsServers
   const policyGeneration = vpnPolicy.policy_generation.toString()
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const cidrChanged = network_length !== curVpnStatus.ipv4Cidr
   const ipv6Changed = ipv6Addr !== curVpnStatus.ipv6Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
-  const dnsChanged = JSON.stringify(dnsServers) !== JSON.stringify(curVpnStatus.dnsServers)
+  const dnsChanged = JSON.stringify(underlyingDnsServers) !== JSON.stringify(curVpnStatus.dnsServers)
   const policyChanged = policyGeneration !== curVpnStatus.policyGeneration
   const ownerChanged = activeVpnInstanceId !== instanceId
   const configChanged = ipChanged || cidrChanged || ipv6Changed || routesChanged || dnsChanged || policyChanged || ownerChanged
@@ -573,7 +571,7 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
       if (!isCurrentVpnReconcile(instanceId, generation))
         return
 
-      await doConfigureVpn(instanceId, virtual_ip, network_length, ipv6Addr, routes, dnsServers, policyGeneration)
+      await doConfigureVpn(instanceId, virtual_ip, network_length, ipv6Addr, routes, underlyingDnsServers, policyGeneration)
     }
     catch (e) {
       if (e instanceof Error && e.message === 'need_prepare') {

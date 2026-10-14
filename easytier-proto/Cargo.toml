@@ -68,7 +68,6 @@ full = [
     "api",
     "core",
     "faketcp",
-    "magic-dns",
     "quic",
     "utils",
     "websocket",
@@ -101,7 +100,6 @@ core = [
     "dep:x25519-dalek",
 ]
 faketcp = []
-magic-dns = []
 quic = []
 utils = []
 websocket = []

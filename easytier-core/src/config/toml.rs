@@ -16,8 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::proto::{acl::Acl, common::SecureModeConfig};
 
-pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
-
 pub use crate::proto::common::{Flags, FlagsPatch};
 
 pub(crate) fn default_instance_name() -> String {
@@ -1481,6 +1479,8 @@ socketMark = "0"
             "mtu = -1",
             "mtu = 4294967296",
             "unknown_flag = true",
+            "accept_dns = true",
+            "tld_dns_zone = \"et.net.\"",
             "data_compress_algo = 99",
         ] {
             assert!(

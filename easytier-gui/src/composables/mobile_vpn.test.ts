@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { UnderlyingDnsServersResponse } from 'tauri-plugin-vpnservice-api'
 
 const mocks = vi.hoisted(() => {
   const listeners = new Map<string, (payload: unknown) => Promise<void>>()
@@ -20,7 +21,10 @@ const mocks = vi.hoisted(() => {
     consumeVpnTileAction: vi.fn(async () => ({})),
     getConfig: vi.fn(async (instanceId: string) => configs.get(instanceId)),
     getNativeVpnStatus: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({ running: false })),
-    getUnderlyingDnsServers: vi.fn(async () => ({ dnsServers: ['1.1.1.1'] })),
+    getUnderlyingDnsServers: vi.fn<() => Promise<UnderlyingDnsServersResponse>>(async () => ({
+      dnsServers: ['1.1.1.1'],
+      systemDnsServers: ['1.1.1.1'],
+    })),
     getCoreVpnStatus: vi.fn(async (instanceId: string) => vpnPolicies.get(instanceId)),
     listNetworkInstanceIds: vi.fn<() => Promise<{ running_inst_ids: unknown[] }>>(async () => ({ running_inst_ids: [] })),
     prepareVpn: vi.fn(async () => ({ granted: true })),
@@ -77,7 +81,6 @@ function setConfig(instanceId: string, noTun = false) {
   mocks.configs.set(instanceId, {
     no_tun: noTun,
     dhcp: false,
-    enable_magic_dns: false,
     routes: [],
   })
 }
@@ -125,7 +128,10 @@ beforeEach(() => {
   mocks.getNativeVpnStatus.mockReset()
   mocks.getNativeVpnStatus.mockResolvedValue({ running: false })
   mocks.getUnderlyingDnsServers.mockReset()
-  mocks.getUnderlyingDnsServers.mockResolvedValue({ dnsServers: ['1.1.1.1'] })
+  mocks.getUnderlyingDnsServers.mockResolvedValue({
+    dnsServers: ['1.1.1.1'],
+    systemDnsServers: ['1.1.1.1'],
+  })
   mocks.getCoreVpnStatus.mockClear()
   mocks.listNetworkInstanceIds.mockReset()
   mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: [] })
@@ -292,13 +298,12 @@ describe('mobile VPN reconciliation ownership', () => {
     expect(mocks.reconfigureVpn).toHaveBeenCalledTimes(1)
   })
 
-  it('uses the core capture set and waits for TUN installation before completing replacement', async () => {
+  it('uses underlying DNS and the core capture set before completing replacement', async () => {
     setConfig('A')
     setReady('A', '10.0.0.1')
     mocks.configs.set('A', {
       no_tun: false,
       dhcp: false,
-      enable_magic_dns: true,
       routes: ['192.0.2.0/24'],
     })
     setVpnPolicy('A', ['100.64.0.0/10', '2001:db8:1::/64'], 7n, 'fd42::1/64')
@@ -323,7 +328,7 @@ describe('mobile VPN reconciliation ownership', () => {
     expect(request).toMatchObject({
       ipv6Addr: 'fd42::1/64',
       routes: ['100.64.0.0/10', '2001:db8:1::/64'],
-      dnsServers: ['100.100.100.101'],
+      dnsServers: ['1.1.1.1'],
       instanceId: 'A',
     })
     expect(mocks.completeVpnReconfigure).not.toHaveBeenCalled()

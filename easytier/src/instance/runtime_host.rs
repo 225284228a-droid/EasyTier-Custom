@@ -13,8 +13,6 @@ use crate::common::global_ctx::ArcGlobalCtx;
 mod event_journal;
 mod implementation;
 #[cfg(feature = "tun")]
-mod magic_dns;
-#[cfg(feature = "tun")]
 mod tun_common;
 #[cfg(not(feature = "tun"))]
 #[path = "runtime_host/tun_disabled.rs"]
@@ -28,8 +26,6 @@ mod tun_runtime;
 
 use super::runtime_executor::NativeInstanceExecutor;
 use event_journal::EventJournal;
-#[cfg(feature = "tun")]
-use magic_dns::MagicDnsRuntime;
 use tun_runtime::NativeTunRuntime;
 
 pub(crate) struct NativeInstanceRuntimeHost {

@@ -827,9 +827,6 @@ async fn collect_vpn_route_exclusions(
     if let Some(manual) = &runtime.services.manual_routes {
         remote_subnets.extend(manual.iter().copied().map(VpnCidr::V4));
     }
-    if runtime.peer.flags.accept_dns {
-        mesh.push("100.100.100.101/32".parse().unwrap());
-    }
     let mut local_subnets = Vec::new();
     for proxy in &runtime.peer.runtime.core.routes.proxy_networks {
         for prefix in std::iter::once(&proxy.real).chain(proxy.mapped.iter()) {
@@ -1504,16 +1501,6 @@ impl PeerManagerCore {
 
     pub fn network_name(&self) -> &str {
         &self.network_name
-    }
-
-    pub(crate) fn dns_route_identity(
-        &self,
-    ) -> (String, Option<crate::proto::common::Ipv4Inet>, String) {
-        (
-            self.context.hostname(),
-            self.context.ipv4().map(Into::into),
-            self.context.flags().tld_dns_zone,
-        )
     }
 
     pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
@@ -4196,15 +4183,6 @@ mod tests {
         assert_eq!(snapshot.listeners, vec![listener]);
         assert_eq!(snapshot.stun_info.public_ip, vec!["192.0.2.91"]);
         assert_eq!(snapshot.version, env!("CARGO_PKG_VERSION"));
-        let dns_identity = core.dns_route_identity();
-        assert_eq!(
-            dns_identity,
-            (
-                "portable-node".to_owned(),
-                Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
-                String::new(),
-            )
-        );
     }
 
     #[tokio::test]

@@ -2642,7 +2642,6 @@ mod manager {
             let config = TomlConfigLoader::default();
             let mut flags = config.get_flags();
             flags.no_tun = false;
-            flags.accept_dns = true;
             config.set_flags(flags);
             config.set_routes(Some(vec!["10.23.0.0/16".parse().unwrap()]));
             config.set_network_config_source(Some(ConfigSource::Web));
@@ -2651,7 +2650,6 @@ mod manager {
                 .unwrap()
                 .unwrap();
             assert_eq!(loaded, expected);
-            assert_eq!(loaded.enable_magic_dns, Some(true));
             assert_eq!(loaded.no_tun, Some(false));
             assert_eq!(loaded.routes, vec!["10.23.0.0/16"]);
             assert_eq!(source, ConfigSource::Web);

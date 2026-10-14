@@ -5,7 +5,6 @@ use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
 use anyhow::Context;
 use async_trait::async_trait;
 use easytier_core::host::dns::{DnsQuery, DnsRecordResolver, DnsResolver, DnsSrvRecord};
-use easytier_core::socket::SocketContext;
 #[cfg(feature = "dns-resolver")]
 use hickory_proto::runtime::{RuntimeProvider, TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd};
 #[cfg(feature = "dns-resolver")]
@@ -105,23 +104,6 @@ fn bootstrap_without_systemd_stub(
 }
 
 #[cfg(feature = "dns-resolver")]
-fn bootstrap_without_magic_dns(config: ResolverConfig) -> ResolverConfig {
-    let magic_dns = crate::instance::dns_server::MAGIC_DNS_FAKE_IP
-        .parse::<IpAddr>()
-        .expect("valid Magic DNS address");
-    let mut servers = config
-        .name_servers()
-        .iter()
-        .filter(|server| server.socket_addr.ip().to_canonical() != magic_dns)
-        .cloned()
-        .collect::<Vec<_>>();
-    if servers.is_empty() {
-        servers.extend(get_default_resolver_config().name_servers().iter().cloned());
-    }
-    ResolverConfig::from_parts(config.domain().cloned(), config.search().to_vec(), servers)
-}
-
-#[cfg(feature = "dns-resolver")]
 fn resolver_config_for_namespace(
     mut config: ResolverConfig,
     mut options: ResolverOpts,
@@ -148,7 +130,6 @@ fn resolver_config_for_namespace(
     }
     #[cfg(not(target_os = "linux"))]
     let _ = namespace;
-    let config = bootstrap_without_magic_dns(config);
     options.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
     (config, options)
 }
@@ -159,19 +140,6 @@ fn protected_bootstrap_resolver_config(
 ) -> (ResolverConfig, ResolverOpts) {
     let (config, options) = resolver_config();
     resolver_config_for_namespace(config, options, context.netns.as_deref())
-}
-
-/// Select upstream addresses only; the caller still supplies PolicyDnsIo, so
-/// fallback addresses do not change the user's packet/DNS egress policy.
-#[cfg(feature = "dns-resolver")]
-pub(crate) fn policy_forwarder_resolver_config(
-    context: Option<&SocketContext>,
-) -> (ResolverConfig, ResolverOpts) {
-    let (config, options) = read_system_conf()
-        .unwrap_or_else(|_| (get_default_resolver_config(), ResolverOpts::default()));
-    let namespace =
-        context.and_then(|context| context.netns.as_ref().map(|namespace| namespace.token()));
-    resolver_config_for_namespace(config, options, namespace)
 }
 
 #[cfg(feature = "dns-resolver")]
@@ -641,52 +609,6 @@ async fn resolve_ips(host: &str) -> Result<Vec<IpAddr>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "dns-resolver")]
-    #[test]
-    fn protected_bootstrap_never_depends_on_magic_dns_forwarding() {
-        let mut system = ResolverConfig::new();
-        for address in [
-            "100.100.100.101:53",
-            "[::ffff:100.100.100.101]:53",
-            "192.168.1.1:53",
-            "1.1.1.1:53",
-        ] {
-            system.add_name_server(NameServerConfig::new(
-                address.parse().unwrap(),
-                Protocol::Udp,
-            ));
-        }
-        let bootstrap = bootstrap_without_magic_dns(system);
-        assert_eq!(
-            bootstrap
-                .name_servers()
-                .iter()
-                .map(|server| server.socket_addr)
-                .collect::<Vec<_>>(),
-            [
-                "192.168.1.1:53".parse::<SocketAddr>().unwrap(),
-                "1.1.1.1:53".parse().unwrap()
-            ]
-        );
-        let mut only_magic_dns = ResolverConfig::new();
-        only_magic_dns.add_name_server(NameServerConfig::new(
-            "100.100.100.101:53".parse().unwrap(),
-            Protocol::Udp,
-        ));
-        assert_eq!(
-            bootstrap_without_magic_dns(only_magic_dns)
-                .name_servers()
-                .iter()
-                .map(|server| server.socket_addr)
-                .collect::<Vec<_>>(),
-            get_default_resolver_config()
-                .name_servers()
-                .iter()
-                .map(|server| server.socket_addr)
-                .collect::<Vec<_>>()
-        );
-    }
 
     #[cfg(feature = "dns-resolver")]
     #[test]

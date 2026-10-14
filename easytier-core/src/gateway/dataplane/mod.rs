@@ -933,7 +933,8 @@ where
             .await
     }
 
-    pub async fn data_plane_tcp_bind_for_family(
+    #[cfg(test)]
+    async fn data_plane_tcp_bind_for_family(
         &self,
         local_port: u16,
         ipv6: bool,

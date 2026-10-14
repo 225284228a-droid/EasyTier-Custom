@@ -14,7 +14,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{MagicDnsRuntime, tun_common::TunNicState};
+use super::tun_common::TunNicState;
 use crate::{
     common::{
         config::ConfigLoader as _,
@@ -123,22 +123,7 @@ impl NativeTunRuntime {
                     continue;
                 }
 
-                let ifname = nic.ifname().await;
-                if let Err(error) = nic_state
-                    .install(None, nic, || {
-                        if let Some(ip) = ipv4 {
-                            MagicDnsRuntime::start(
-                                global_ctx.clone(),
-                                packet_plane.clone(),
-                                ifname,
-                                ip,
-                            )
-                        } else {
-                            MagicDnsRuntime::default()
-                        }
-                    })
-                    .await
-                {
+                if let Err(error) = nic_state.install(None, nic).await {
                     if let Some(output) = output.take() {
                         let _ = output.send(Err(error.into()));
                     }
@@ -246,17 +231,7 @@ impl NativeDhcpIpv4Host {
             }
             result = nic.run(Some(ip), self.global_ctx.get_ipv6()) => result?,
         }
-        let ifname = nic.ifname().await;
-        self.nic
-            .install(None, nic, || {
-                MagicDnsRuntime::start(
-                    self.global_ctx.clone(),
-                    self.packet_plane.clone(),
-                    ifname,
-                    ip,
-                )
-            })
-            .await?;
+        self.nic.install(None, nic).await?;
         self.global_ctx.set_ipv4(Some(ip));
         Ok(Some(ip))
     }

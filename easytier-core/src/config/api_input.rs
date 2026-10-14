@@ -90,7 +90,6 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.disable_wss_http3_for_p2p = flags.disable_wss_http3_for_p2p;
     result.p2p_prefer_protocol = flags.default_protocol;
     result.close_redundant_conns_when_disguised = flags.close_redundant_conns_when_disguised;
-    result.enable_magic_dns = flags.accept_dns;
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
     result.data_compress_algo = flags.data_compress_algo;
     result.encryption_algorithm = flags.encryption_algorithm;
@@ -511,7 +510,6 @@ impl NetworkConfigExt for NetworkConfig {
                     "*".to_owned()
                 }
             }),
-            accept_dns: self.enable_magic_dns,
             mtu: self
                 .mtu
                 .map(u32::try_from)
@@ -822,6 +820,32 @@ mod tests {
         assert_eq!(forwards.len(), 1);
         assert_eq!(forwards[0].bind_addr.to_string(), "[fe80::1]:8080");
         assert_eq!(forwards[0].dst_addr.to_string(), "[2001:db8::1]:443");
+    }
+
+    #[test]
+    fn removed_dns_fields_are_reserved_in_wire_schema() {
+        let pool =
+            prost_reflect::DescriptorPool::decode(easytier_proto::ALL_DESCRIPTOR_BYTES).unwrap();
+        for (message, number, name) in [
+            ("common.Flags", 22, "accept_dns"),
+            ("common.Flags", 31, "tld_dns_zone"),
+            ("api.manage.NetworkConfig", 42, "enable_magic_dns"),
+        ] {
+            let descriptor = pool.get_message_by_name(message).unwrap();
+            assert!(descriptor.get_field(number).is_none());
+            assert!(descriptor.get_field_by_name(name).is_none());
+            let schema = descriptor.descriptor_proto();
+            assert!(schema.reserved_name.iter().any(|reserved| reserved == name));
+            assert!(
+                schema.reserved_range.iter().any(|range| {
+                    range.start() <= number as i32 && (number as i32) < range.end()
+                })
+            );
+        }
+        assert!(
+            pool.get_service_by_name("magic_dns.MagicDnsServerRpc")
+                .is_none()
+        );
     }
 
     /// The management API's name for a flag is the schema's to state, and the
@@ -1167,7 +1191,6 @@ mod tests {
 default_protocol = "udp"
 enable_encryption = false
 enable_ipv6 = false
-accept_dns = false
 private_mode = false
 "#;
 
@@ -1175,7 +1198,6 @@ private_mode = false
             let network_config = NetworkConfig {
                 disable_encryption: value,
                 disable_ipv6: value,
-                enable_magic_dns: value,
                 enable_private_mode: value,
                 p2p_prefer_protocol: Some("udp".to_owned()),
                 ..standalone_config()
@@ -1188,7 +1210,6 @@ private_mode = false
             for (field, expected) in [
                 ("enable_encryption", value.map(|disabled| !disabled)),
                 ("enable_ipv6", value.map(|disabled| !disabled)),
-                ("accept_dns", value),
                 ("private_mode", value),
             ] {
                 assert_eq!(

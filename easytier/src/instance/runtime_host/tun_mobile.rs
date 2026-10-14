@@ -11,10 +11,7 @@ use futures::FutureExt as _;
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    MagicDnsRuntime,
-    tun_common::{TunGenerationStatus, TunNicState},
-};
+use super::tun_common::{TunGenerationStatus, TunNicState};
 use crate::{
     common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     instance::virtual_nic::NicCtx,
@@ -73,14 +70,7 @@ impl NativeTunRuntime {
             closed,
         );
         nic.run_for_mobile(fd).await.context("add ip failed")?;
-        nic_state
-            .install(generation, nic, move || {
-                global_ctx
-                    .get_ipv4()
-                    .map(|ip| MagicDnsRuntime::start(global_ctx, packet_plane, None, ip))
-                    .unwrap_or_default()
-            })
-            .await
+        nic_state.install(generation, nic).await
     }
 
     pub(super) async fn prepare(&self, packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {

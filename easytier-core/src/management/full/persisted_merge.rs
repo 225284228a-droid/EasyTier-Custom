@@ -112,7 +112,6 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "advanced_settings" => vec![],
         "disable_ipv6" => vec!["flags.enable_ipv6"],
         "disable_encryption" => vec!["flags.enable_encryption"],
-        "enable_magic_dns" => vec!["flags.accept_dns"],
         "enable_private_mode" => vec!["flags.private_mode"],
         "enable_relay_network_whitelist" | "relay_network_whitelist" => {
             vec!["flags.relay_network_whitelist"]

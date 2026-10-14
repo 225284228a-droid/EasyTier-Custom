@@ -138,24 +138,12 @@ a systemd-resolved stub is replaced with its published uplinks from
 `/run/systemd/resolve/resolv.conf`; protecting a query to the loopback stub cannot
 protect systemd-resolved's separate upstream socket. Namespace resolver files are
 used when available. This keeps own bootstrap queries on the underlay during an
-exit outage. The virtual Magic DNS resolver address is removed from bootstrap
-configuration on every platform; physical and public resolvers remain, with
-public fallback if the configured list contains only Magic DNS.
+exit outage.
 
 System DNS capture uses the instance's namespace resolver file when present.
 If that resolver uses a systemd stub, capture inputs also include the published
 upstream addresses, so narrow Exit rules still protect the stub's user queries.
 Policy compilation continues to apply the configured private-network exemption.
-
-Magic DNS still answers its EasyTier zones locally. Public forwarding uses the
-current instance packet policy: Exit and known overlay destinations use overlay
-data-plane sockets; Direct and exempt private destinations use protected native
-sockets; Block rejects the query. Cached TCP/UDP sockets check current policy
-before each read/write/send so a native connection created under Direct cannot
-leak queries after an Exit or Block update. Bootstrap DNS remains independent.
-Forwarder setup selects namespace/systemd upstreams and removes the virtual
-Magic DNS address. An empty remaining list uses public resolver addresses through
-the same policy provider, preserving local zones without bypassing Exit or Block.
 
 ## HarmonyOS acknowledgements
 

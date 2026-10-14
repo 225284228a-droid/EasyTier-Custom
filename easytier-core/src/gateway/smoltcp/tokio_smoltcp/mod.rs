@@ -175,16 +175,6 @@ impl Net {
         let addr = self.set_address(addr);
         TcpListener::new(self.reactor.clone(), socket_addr_to_endpoint(addr)).await
     }
-    /// Opens a TCP connection to a remote host.
-    pub async fn tcp_connect(&self, addr: SocketAddr, local_port: u16) -> io::Result<TcpStream> {
-        TcpStream::connect(
-            self.reactor.clone(),
-            (self.ip_addr.address(), local_port).into(),
-            socket_addr_to_endpoint(addr),
-        )
-        .await
-    }
-
     pub async fn tcp_connect_from(
         &self,
         remote: SocketAddr,

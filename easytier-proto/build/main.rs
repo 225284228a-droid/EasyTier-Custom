@@ -98,7 +98,6 @@ fn main() -> anyhow::Result<()> {
         "proto/api_config.proto",
         "proto/api_manage.proto",
         "proto/web.proto",
-        "proto/magic_dns.proto",
         "proto/acl.proto",
     ];
 

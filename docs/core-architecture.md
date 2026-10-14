@@ -114,7 +114,6 @@ The native crate owns:
 - UPnP and NAT-PMP operations;
 - Unix and FakeTCP resources;
 - WebSocket/WSS, QUIC, WireGuard, and KCP concrete engines;
-- native Magic DNS serving and system DNS integration;
 - CLI, web, GUI, FFI, and native management presentation.
 
 Native code may translate values and assemble Adapters. It must not maintain a
@@ -291,7 +290,6 @@ Generated service descriptors and message types remain in `easytier-proto`.
 - SOCKS5 framing, authentication, association, routing, and session state;
 - wrapped-transport planning and session state used by KCP and QUIC Adapters;
 - DHCP allocation policy;
-- Magic DNS route and response policy;
 - VPN portal client/session policy;
 - UDP broadcast classification and rewrite policy.
 
@@ -464,11 +462,8 @@ Important core feature relationships are:
 - `proxy-packet` enables portable packet parsing/proxy machinery and the
   required smoltcp packet features.
 - `proxy-smoltcp-stack` adds the async TCP/UDP smoltcp stack.
-- `dns-resolver` is the shared Hickory resolver leaf used by endpoint
-  discovery and Magic DNS without coupling either capability to the other.
+- `dns-resolver` is the shared Hickory resolver leaf used by endpoint discovery.
 - `endpoint-discovery` adds HTTPS endpoint discovery dependencies.
-- `magic-dns` enables its DNS server, management wire messages, and portable
-  packet-query integration.
 - `tcp-hole-punch` enables the TCP hole-punch runtime.
 - `dhcp-ipv4`, `public-ipv6-provider`, `vpn-portal`,
   `wrapped-transport`, and `proxy-cidr-monitor` are independent gateway or

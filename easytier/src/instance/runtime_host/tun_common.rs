@@ -3,12 +3,10 @@ use std::sync::{Arc, OnceLock};
 use easytier_core::host::packet::HostPacketReceiver;
 use tokio::{sync::Mutex, task::JoinSet};
 
-use super::MagicDnsRuntime;
 use crate::instance::virtual_nic::NicCtx;
 
 struct NicCtxContainer {
     nic_ctx: NicOwner,
-    magic_dns: MagicDnsRuntime,
 }
 
 enum NicOwner {
@@ -17,22 +15,19 @@ enum NicOwner {
 }
 
 impl NicCtxContainer {
-    fn new(nic_ctx: NicCtx, magic_dns: MagicDnsRuntime) -> Self {
+    fn new(nic_ctx: NicCtx) -> Self {
         Self {
             nic_ctx: NicOwner::Interface(nic_ctx),
-            magic_dns,
         }
     }
 
     fn packet_drain(tasks: JoinSet<()>) -> Self {
         Self {
             nic_ctx: NicOwner::Drain(tasks),
-            magic_dns: MagicDnsRuntime::default(),
         }
     }
 
     async fn shutdown(&mut self) {
-        self.magic_dns.stop().await;
         match &mut self.nic_ctx {
             NicOwner::Interface(nic) => nic.shutdown().await,
             NicOwner::Drain(tasks) => tasks.shutdown().await,
@@ -169,22 +164,14 @@ impl TunNicState {
         self.generations.lock().await.status(generation)
     }
 
-    pub(super) async fn install<F>(
-        &self,
-        generation: Option<u64>,
-        nic: NicCtx,
-        make_magic_dns: F,
-    ) -> anyhow::Result<()>
-    where
-        F: FnOnce() -> MagicDnsRuntime,
-    {
+    pub(super) async fn install(&self, generation: Option<u64>, nic: NicCtx) -> anyhow::Result<()> {
         let mut state = self.nic_ctx.lock().await;
         let mut generations = self.generations.lock().await;
         let status = generations.status(generation);
         if status != TunGenerationStatus::Install {
             drop(generations);
             drop(state);
-            let mut stale = NicCtxContainer::new(nic, MagicDnsRuntime::default());
+            let mut stale = NicCtxContainer::new(nic);
             stale.shutdown().await;
             return match status {
                 TunGenerationStatus::AlreadyCommitted => Ok(()),
@@ -194,13 +181,9 @@ impl TunNicState {
                 TunGenerationStatus::Install => unreachable!(),
             };
         }
-        if let Some(current) = state.active.as_mut() {
-            let mut old_dns = std::mem::take(&mut current.magic_dns);
-            old_dns.stop().await;
-        }
         let status = generations.commit(generation);
         debug_assert_eq!(status, TunGenerationStatus::Install);
-        let replacement = NicCtxContainer::new(nic, make_magic_dns());
+        let replacement = NicCtxContainer::new(nic);
         let mut old = state.active.replace(replacement);
         drop(generations);
         drop(state);

@@ -2,6 +2,8 @@
 
 验证对应本次统一规则结构、路由保护和平台生命周期修改。所有主机网络修改测试都在新建的 Linux 网络命名空间中执行；没有启用 Windows 主机的全局 VPN 接管。
 
+本文保留当时验证记录。Magic DNS 功能现已移除；下文提到的相关测试结果和 `magic-dns` feature 集合仅描述当时的源码状态，不代表当前仍提供该功能，也不是当前构建建议。
+
 ## Core 和配置
 
 - `cargo test --locked -p easytier-core --lib --features proxy-smoltcp-stack vpn -- --nocapture`：56 项通过。覆盖最长前缀、优先级和顺序、重复规则计数、有序出口失效与恢复、不回退覆盖规则、默认路由与 `/1`、内网及组网/子网豁免、窄出口的 DNS/IPv6 保护、远端公告失联保留，以及 no-TUN/地址状态热修改。
@@ -35,6 +37,6 @@ WSL `Ubuntu-Build` 内使用真实 `ip`、`ip6tables` 和命名空间执行，�
 
 ## 平台实测边界
 
-macOS 的 `cargo check -p easytier --lib --target x86_64-apple-darwin --no-default-features --features tun,magic-dns,smoltcp,management` 已尝试，停在必需的 `sys-info` C 构建：当前 Windows 主机没有 Apple 目标的 `cc`、Xcode SDK 或 `xcrun`，现有 Zig 也未完成该 Darwin 源文件编译，因此 macOS 构建未通过。
+macOS 构建当时尝试的 feature 集合为 `tun,magic-dns,smoltcp,management`，停在必需的 `sys-info` C 构建：当前 Windows 主机没有 Apple 目标的 `cc`、Xcode SDK 或 `xcrun`，现有 Zig 也未完成该 Darwin 源文件编译，因此 macOS 构建未通过。该集合仅作为历史记录；当前构建应使用仍然存在的 feature。
 
 尚未进行 macOS 主机实测、Android 设备/模拟器流量测试，以及 Windows 主机全局接管、路由恢复和多网卡硬件切换测试。Linux 验证包含隔离命名空间中的内核路由和真实 socket 收发，不涵盖完整多节点 EasyTier 的长时间断网、打洞及重连设备回归。Core 数据面、Kotlin 生命周期与接口作用域测试不能替代这些设备验证。

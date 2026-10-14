@@ -501,7 +501,6 @@ pub fn start_local_socket_server() -> bool {
                     &virtual_ipv4,
                     &virtual_ipv4_cidr,
                     &aggregated_routes,
-                    instance.magic_dns_enabled,
                     instance.need_exit_node,
                 ))
                 .unwrap_or_else(|_| "[]".to_string());
@@ -520,7 +519,6 @@ pub fn start_local_socket_server() -> bool {
                     virtual_ipv4,
                     virtual_ipv4_cidr,
                     aggregated_routes,
-                    magic_dns_enabled: instance.magic_dns_enabled,
                     need_exit_node: instance.need_exit_node,
                 };
                 let payload_json = match serde_json::to_string(&payload) {

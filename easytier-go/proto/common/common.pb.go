@@ -216,8 +216,6 @@ type Flags struct {
 	// disable relay local network kcp packets
 	DisableRelayKcp      bool `protobuf:"varint,20,opt,name=disable_relay_kcp,json=disableRelayKcp,proto3" json:"disable_relay_kcp,omitempty"`
 	ProxyForwardBySystem bool `protobuf:"varint,21,opt,name=proxy_forward_by_system,json=proxyForwardBySystem,proto3" json:"proxy_forward_by_system,omitempty"`
-	// enable magic dns or not
-	AcceptDns bool `protobuf:"varint,22,opt,name=accept_dns,json=acceptDns,proto3" json:"accept_dns,omitempty"`
 	// enable private mode
 	PrivateMode bool `protobuf:"varint,23,opt,name=private_mode,json=privateMode,proto3" json:"private_mode,omitempty"`
 	// should we convert all tcp streams into quic streams
@@ -240,9 +238,7 @@ type Flags struct {
 	// encryption algorithm to use, empty string means default (aes-gcm)
 	EncryptionAlgorithm string `protobuf:"bytes,29,opt,name=encryption_algorithm,json=encryptionAlgorithm,proto3" json:"encryption_algorithm,omitempty"`
 	// disable symmetric nat hole punching, treat symmetric as cone when enabled
-	DisableSymHolePunching bool `protobuf:"varint,30,opt,name=disable_sym_hole_punching,json=disableSymHolePunching,proto3" json:"disable_sym_hole_punching,omitempty"`
-	// tld dns zone for magic dns
-	TldDnsZone              string `protobuf:"bytes,31,opt,name=tld_dns_zone,json=tldDnsZone,proto3" json:"tld_dns_zone,omitempty"`
+	DisableSymHolePunching  bool   `protobuf:"varint,30,opt,name=disable_sym_hole_punching,json=disableSymHolePunching,proto3" json:"disable_sym_hole_punching,omitempty"`
 	P2POnly                 bool   `protobuf:"varint,32,opt,name=p2p_only,json=p2pOnly,proto3" json:"p2p_only,omitempty"`
 	DisableTcpHolePunching  bool   `protobuf:"varint,34,opt,name=disable_tcp_hole_punching,json=disableTcpHolePunching,proto3" json:"disable_tcp_hole_punching,omitempty"`
 	LazyP2P                 bool   `protobuf:"varint,37,opt,name=lazy_p2p,json=lazyP2p,proto3" json:"lazy_p2p,omitempty"`
@@ -447,13 +443,6 @@ func (x *Flags) GetProxyForwardBySystem() bool {
 	return false
 }
 
-func (x *Flags) GetAcceptDns() bool {
-	if x != nil {
-		return x.AcceptDns
-	}
-	return false
-}
-
 func (x *Flags) GetPrivateMode() bool {
 	if x != nil {
 		return x.PrivateMode
@@ -530,13 +519,6 @@ func (x *Flags) GetDisableSymHolePunching() bool {
 		return x.DisableSymHolePunching
 	}
 	return false
-}
-
-func (x *Flags) GetTldDnsZone() string {
-	if x != nil {
-		return x.TldDnsZone
-	}
-	return ""
 }
 
 func (x *Flags) GetP2POnly() bool {
@@ -2205,7 +2187,7 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xae\x16\n" +
+	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xe3\x15\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2254,11 +2236,7 @@ const file_common_proto_rawDesc = "" +
 	"\x11disable_relay_kcp\x18\x14 \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\x0fdisableRelayKcp\x12B\n" +
 	"\x17proxy_forward_by_system\x18\x15 \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x14proxyForwardBySystem\x12>\n" +
-	"\n" +
-	"accept_dns\x18\x16 \x01(\bB\x1f\x8a\xb5\x18\x1b\n" +
-	"\x05false\x12\x12\n" +
-	"\x10enable_magic_dnsR\tacceptDns\x12E\n" +
+	"\x05falseR\x14proxyForwardBySystem\x12E\n" +
 	"\fprivate_mode\x18\x17 \x01(\bB\"\x8a\xb5\x18\x1e\n" +
 	"\x05false\x12\x15\n" +
 	"\x13enable_private_modeR\vprivateMode\x127\n" +
@@ -2282,10 +2260,7 @@ const file_common_proto_rawDesc = "" +
 	"\x14encryption_algorithm\x18\x1d \x01(\tB\x0f\x8a\xb5\x18\v\n" +
 	"\aaes-gcm\x18\x01R\x13encryptionAlgorithm\x12F\n" +
 	"\x19disable_sym_hole_punching\x18\x1e \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x16disableSymHolePunching\x12/\n" +
-	"\ftld_dns_zone\x18\x1f \x01(\tB\r\x8a\xb5\x18\t\n" +
-	"\aet.net.R\n" +
-	"tldDnsZone\x12&\n" +
+	"\x05falseR\x16disableSymHolePunching\x12&\n" +
 	"\bp2p_only\x18  \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\ap2pOnly\x12F\n" +
 	"\x19disable_tcp_hole_punching\x18\" \x01(\bB\v\x8a\xb5\x18\a\n" +
@@ -2316,7 +2291,8 @@ const file_common_proto_rawDesc = "" +
 	"$close_redundant_conns_when_disguised\x181 \x01(\bB\n" +
 	"\x8a\xb5\x18\x06\n" +
 	"\x04trueR closeRedundantConnsWhenDisguisedB\x0e\n" +
-	"\f_socket_mark\"\x95\x01\n" +
+	"\f_socket_markJ\x04\b\x16\x10\x17J\x04\b\x1f\x10 R\n" +
+	"accept_dnsR\ftld_dns_zone\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
 	"domainName\x12\x1d\n" +

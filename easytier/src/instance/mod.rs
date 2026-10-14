@@ -6,7 +6,6 @@ pub(crate) mod config;
 pub mod config_dir_startup;
 #[cfg(feature = "management")]
 pub(crate) mod config_storage;
-pub mod dns_server;
 pub mod factory;
 pub mod host;
 #[cfg(feature = "management")]

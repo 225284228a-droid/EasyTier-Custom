@@ -107,7 +107,6 @@ pub struct RuntimeInstanceState {
     pub running: bool,
     pub tun_required: bool,
     pub tun_attached: bool,
-    pub magic_dns_enabled: bool,
     pub need_exit_node: bool,
     pub error_message: Option<String>,
     pub my_node_info: Option<MyNodeInfo>,
@@ -398,10 +397,6 @@ pub fn runtime_instance_from_running_info(
 ) -> RuntimeInstanceState {
     let tun_attached = info.running && is_tun_attached(&config_id);
     let tun_required = info.running && (info.dev_name != "no_tun" || tun_attached);
-    let magic_dns_enabled = config
-        .as_ref()
-        .and_then(|config| config.enable_magic_dns)
-        .unwrap_or(false);
     let need_exit_node = config
         .as_ref()
         .and_then(|config| config.vpn.as_ref())
@@ -418,7 +413,6 @@ pub fn runtime_instance_from_running_info(
         running: info.running,
         tun_required,
         tun_attached,
-        magic_dns_enabled,
         need_exit_node,
         error_message: info.error_msg,
         my_node_info: info.my_node_info.map(my_node_info_to_view),
@@ -460,7 +454,6 @@ pub fn runtime_instance_from_config_snapshot(
         running,
         tun_required,
         tun_attached,
-        magic_dns_enabled: config.enable_magic_dns.unwrap_or(false),
         need_exit_node: config.vpn.as_ref().is_some_and(|vpn| !vpn.rules.is_empty()),
         error_message: None,
         my_node_info: Some(my_node_info),
