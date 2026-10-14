@@ -60,7 +60,9 @@ class TauriVpnService : VpnService() {
             },
         )
     }
-    private var disconnected = false
+    // Read on the main thread (onStartCommand/onRevoke/onDestroy) and from
+    // Tauri command dispatch threads (completeReconfigure).
+    @Volatile private var disconnected = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         println("vpn on start command ${intent?.getExtras()} $intent")
@@ -91,6 +93,12 @@ class TauriVpnService : VpnService() {
                 candidate.close()
                 return START_STICKY
             }
+            // A live candidate re-arms disconnect(): a later revoke or destroy
+            // must still close this fd and notify the frontend. self must point
+            // here again because onRevoke cleared it and onCreate does not
+            // re-run while this instance stays alive.
+            disconnected = false
+            self = this
 
             ipv4Addr = args.getString(IPV4_ADDR)
             ipv6Addr = args.getString(IPV6_ADDR)
