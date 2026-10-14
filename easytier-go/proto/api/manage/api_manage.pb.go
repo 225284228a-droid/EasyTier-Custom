@@ -321,7 +321,7 @@ type NetworkConfig struct {
 	// connections. Equally ranked automatic connections remain. This does not
 	// change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
 	CloseRedundantConnsWhenDisguised *bool `protobuf:"varint,79,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3,oneof" json:"close_redundant_conns_when_disguised,omitempty"`
-	// Custom multi-exit policy VPN (fork feature).
+	// Custom subnet exit VPN (fork feature).
 	Vpn           *VpnConfig `protobuf:"bytes,80,opt,name=vpn,proto3,oneof" json:"vpn,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -852,16 +852,12 @@ func (x *NetworkConfig) GetVpn() *VpnConfig {
 	return nil
 }
 
-// One traffic-splitting rule. Matching uses longest-prefix first, ties are
-// broken by lower `priority` value, then rule order.
+// One destination subnet mapped to exactly one virtual node address.
+// Matching uses longest-prefix first; duplicate CIDRs are invalid.
 type VpnRuleConfig struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Cidr  string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
-	// exit | direct | block
-	Action   string  `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
-	Priority *uint32 `protobuf:"varint,5,opt,name=priority,proto3,oneof" json:"priority,omitempty"`
-	// Ordered virtual IPs. No reachable exit means this rule drops traffic.
-	Exits         []string `protobuf:"bytes,6,rep,name=exits,proto3" json:"exits,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cidr          string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	ExitAddr      string                 `protobuf:"bytes,7,opt,name=exit_addr,json=exitAddr,proto3" json:"exit_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -903,38 +899,18 @@ func (x *VpnRuleConfig) GetCidr() string {
 	return ""
 }
 
-func (x *VpnRuleConfig) GetAction() string {
+func (x *VpnRuleConfig) GetExitAddr() string {
 	if x != nil {
-		return x.Action
+		return x.ExitAddr
 	}
 	return ""
 }
 
-func (x *VpnRuleConfig) GetPriority() uint32 {
-	if x != nil && x.Priority != nil {
-		return *x.Priority
-	}
-	return 0
-}
-
-func (x *VpnRuleConfig) GetExits() []string {
-	if x != nil {
-		return x.Exits
-	}
-	return nil
-}
-
 type VpnConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// this node forwards and NATs exit traffic for peers
-	ExitEnabled bool `protobuf:"varint,2,opt,name=exit_enabled,json=exitEnabled,proto3" json:"exit_enabled,omitempty"`
-	// Omission means true. Public DNS follows effective VPN rules or blocks.
-	DnsProtect *bool `protobuf:"varint,3,opt,name=dns_protect,json=dnsProtect,proto3,oneof" json:"dns_protect,omitempty"`
-	// Omission means true. Uncovered IPv6 blocks when IPv4 exits are configured.
-	Ipv6Protect *bool            `protobuf:"varint,4,opt,name=ipv6_protect,json=ipv6Protect,proto3,oneof" json:"ipv6_protect,omitempty"`
-	Rules       []*VpnRuleConfig `protobuf:"bytes,7,rep,name=rules,proto3" json:"rules,omitempty"`
-	// Omission means true. Private addresses bypass all VPN actions.
-	IgnorePrivate *bool `protobuf:"varint,8,opt,name=ignore_private,json=ignorePrivate,proto3,oneof" json:"ignore_private,omitempty"`
+	// This node forwards and NATs exit traffic for peers.
+	ExitEnabled   bool             `protobuf:"varint,2,opt,name=exit_enabled,json=exitEnabled,proto3" json:"exit_enabled,omitempty"`
+	Rules         []*VpnRuleConfig `protobuf:"bytes,7,rep,name=rules,proto3" json:"rules,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -976,32 +952,11 @@ func (x *VpnConfig) GetExitEnabled() bool {
 	return false
 }
 
-func (x *VpnConfig) GetDnsProtect() bool {
-	if x != nil && x.DnsProtect != nil {
-		return *x.DnsProtect
-	}
-	return false
-}
-
-func (x *VpnConfig) GetIpv6Protect() bool {
-	if x != nil && x.Ipv6Protect != nil {
-		return *x.Ipv6Protect
-	}
-	return false
-}
-
 func (x *VpnConfig) GetRules() []*VpnRuleConfig {
 	if x != nil {
 		return x.Rules
 	}
 	return nil
-}
-
-func (x *VpnConfig) GetIgnorePrivate() bool {
-	if x != nil && x.IgnorePrivate != nil {
-		return *x.IgnorePrivate
-	}
-	return false
 }
 
 type ManagedCredentialConfig struct {
@@ -3421,23 +3376,13 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x1a_disable_wss_http3_for_p2pB\x16\n" +
 	"\x14_p2p_prefer_protocolB'\n" +
 	"%_close_redundant_conns_when_disguisedB\x06\n" +
-	"\x04_vpnJ\x04\b*\x10+R\x10enable_magic_dns\"\xa1\x01\n" +
+	"\x04_vpnJ\x04\b*\x10+R\x10enable_magic_dns\"\x8d\x01\n" +
 	"\rVpnRuleConfig\x12\x12\n" +
-	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x16\n" +
-	"\x06action\x18\x02 \x01(\tR\x06action\x12\x1f\n" +
-	"\bpriority\x18\x05 \x01(\rH\x00R\bpriority\x88\x01\x01\x12\x14\n" +
-	"\x05exits\x18\x06 \x03(\tR\x05exitsB\v\n" +
-	"\t_priorityJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\x04exitR\x0efallback_exits\"\xba\x02\n" +
+	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x1b\n" +
+	"\texit_addr\x18\a \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xc9\x01\n" +
 	"\tVpnConfig\x12!\n" +
-	"\fexit_enabled\x18\x02 \x01(\bR\vexitEnabled\x12$\n" +
-	"\vdns_protect\x18\x03 \x01(\bH\x00R\n" +
-	"dnsProtect\x88\x01\x01\x12&\n" +
-	"\fipv6_protect\x18\x04 \x01(\bH\x01R\vipv6Protect\x88\x01\x01\x12/\n" +
-	"\x05rules\x18\a \x03(\v2\x19.api.manage.VpnRuleConfigR\x05rules\x12*\n" +
-	"\x0eignore_private\x18\b \x01(\bH\x02R\rignorePrivate\x88\x01\x01B\x0e\n" +
-	"\f_dns_protectB\x0f\n" +
-	"\r_ipv6_protectB\x11\n" +
-	"\x0f_ignore_privateJ\x04\b\x01\x10\x02J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\aenabledR\tfail_modeR\x05exits\"\xa3\x02\n" +
+	"\fexit_enabled\x18\x02 \x01(\bR\vexitEnabled\x12/\n" +
+	"\x05rules\x18\a \x03(\v2\x19.api.manage.VpnRuleConfigR\x05rulesJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\b\x10\tR\aenabledR\vdns_protectR\fipv6_protectR\tfail_modeR\x05exitsR\x0eignore_private\"\xa3\x02\n" +
 	"\x17ManagedCredentialConfig\x12#\n" +
 	"\rcredential_id\x18\x01 \x01(\tR\fcredentialId\x12+\n" +
 	"\x11credential_secret\x18\x02 \x01(\tR\x10credentialSecret\x12\x16\n" +
@@ -3830,8 +3775,6 @@ func file_api_manage_proto_init() {
 		return
 	}
 	file_api_manage_proto_msgTypes[0].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[1].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[2].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[3].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[6].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[7].OneofWrappers = []any{}

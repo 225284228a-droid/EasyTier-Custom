@@ -89,7 +89,7 @@ type InstanceConfigPatch struct {
 	VpnPortalClients   []*VpnPortalClientPatch      `protobuf:"bytes,15,rep,name=vpn_portal_clients,json=vpnPortalClients,proto3" json:"vpn_portal_clients,omitempty"`
 	ManagedCredentials *manage.ManagedCredentialSet `protobuf:"bytes,16,opt,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
 	PreferPeerRelay    *bool                        `protobuf:"varint,17,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
-	// Custom multi-exit policy VPN (fork feature). Replaces the whole [vpn]
+	// Custom subnet exit VPN (fork feature). Replaces the whole [vpn]
 	// section when present.
 	Vpn           *manage.VpnConfig `protobuf:"bytes,20,opt,name=vpn,proto3,oneof" json:"vpn,omitempty"`
 	unknownFields protoimpl.UnknownFields
