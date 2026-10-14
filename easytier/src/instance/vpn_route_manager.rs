@@ -10,6 +10,8 @@ use easytier_core::{
     instance::CorePacketPlane,
     peers::vpn_policy::{VpnHostRouteState, VpnRouteStateHost},
 };
+#[cfg(target_os = "linux")]
+use std::path::{Path, PathBuf};
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
@@ -65,6 +67,23 @@ pub async fn run_vpn_route_manager(
     let mut owner = RouteOwner::default();
     let mut ready = Some(ready);
     let mut startup_error = None;
+    // Crash recovery: a previous process that died between activation and
+    // cleanup leaves ip rules, OUTPUT guard chains and dedicated-table routes
+    // in the kernel. The residue keeps draining traffic toward a retired TUN
+    // and permanently blocks the next activation ("no two adjacent safe VPN
+    // priorities"), so reclaim it before the first reconcile.
+    #[cfg(target_os = "linux")]
+    match socket_protector::namespace_for(&net_ns) {
+        Ok(namespace) => {
+            if let Some(dir) = policy_lease_dir() {
+                sweep_stale_policy_state(&net_ns, namespace, &dir).await;
+            }
+        }
+        Err(error) => tracing::warn!(
+            ?error,
+            "VPN namespace discovery failed; skipping stale policy state sweep"
+        ),
+    }
     loop {
         let config = global_ctx.config.get_vpn();
         let dns = super::list_system_dns_servers(&net_ns);
@@ -945,6 +964,10 @@ fn managed_tables() -> &'static Mutex<std::collections::BTreeMap<(u64, u32), Man
 #[cfg(target_os = "linux")]
 impl Drop for LinuxPolicyTable {
     fn drop(&mut self) {
+        // Drop the on-disk claim but never the kernel state: a drop without
+        // release() models a crashed owner whose residue the startup sweep
+        // reclaims by signature.
+        self.remove_lease();
         managed_tables()
             .lock()
             .unwrap()
@@ -953,6 +976,379 @@ impl Drop for LinuxPolicyTable {
             .lock()
             .unwrap()
             .remove(&(self.namespace, self.blackhole_table));
+    }
+}
+
+/// EasyTier's dedicated policy table id segment: above the well-known tables
+/// and below `main`'s reserved id, so a rule referencing one of these ids
+/// with the owner signature below is attributable to this code.
+#[cfg(target_os = "linux")]
+const LINUX_POLICY_TABLE_RANGE: std::ops::Range<u32> = 20000..32766;
+
+#[cfg(target_os = "linux")]
+fn is_policy_table(table: u32) -> bool {
+    LINUX_POLICY_TABLE_RANGE.contains(&table)
+}
+
+/// On-disk claim over one activation's kernel state, used to distinguish a
+/// dead owner's residue from a concurrently running instance's live rules.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct LinuxPolicyLease {
+    boot_id: String,
+    pid: u32,
+    namespace: u64,
+    capture_table: u32,
+    blackhole_table: u32,
+    /// [capture, blackhole] x [IPv4, IPv6] policy rule priorities.
+    priorities: [[u32; 2]; 2],
+    bit: u32,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_boot_id() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pid_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+#[cfg(target_os = "linux")]
+fn lease_owner_alive(lease: &LinuxPolicyLease, current_boot_id: &str) -> bool {
+    lease.boot_id == current_boot_id && linux_pid_alive(lease.pid)
+}
+
+#[cfg(target_os = "linux")]
+fn policy_lease_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("EASYTIER_VPN_POLICY_LEASE_DIR") {
+        let dir = PathBuf::from(dir);
+        return std::fs::create_dir_all(&dir).ok().map(|()| dir);
+    }
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let uid = std::fs::metadata("/proc/self")
+            .map(|metadata| {
+                use std::os::unix::fs::MetadataExt;
+                metadata.uid()
+            })
+            .unwrap_or(0);
+        let fallback = std::env::var_os("TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(format!("easytier-vpn-leases-{uid}"));
+        [PathBuf::from("/run/easytier"), fallback]
+            .into_iter()
+            .find(|dir| {
+                if std::fs::create_dir_all(dir).is_err() {
+                    return false;
+                }
+                let probe = dir.join(".lease-probe");
+                let writable = std::fs::File::create(&probe).is_ok();
+                let _ = std::fs::remove_file(&probe);
+                writable
+            })
+    })
+    .clone()
+}
+
+#[cfg(target_os = "linux")]
+fn policy_lease_path(dir: &Path, pid: u32, namespace: u64, table: u32) -> PathBuf {
+    dir.join(format!("lease-{pid}-{namespace}-{table}.json"))
+}
+
+/// The exact shape `LinuxPolicyTable::activate` installs: loopback-sourced,
+/// unmarked value with a single reserved bypass mask bit.
+#[cfg(target_os = "linux")]
+fn is_easytier_policy_rule(rule: &serde_json::Value) -> bool {
+    rule.get("iif").and_then(serde_json::Value::as_str) == Some("lo")
+        && rule.get("fwmark").and_then(parse_u32) == Some(0)
+        && rule
+            .get("fwmask")
+            .and_then(parse_u32)
+            .is_some_and(|mask| mask.is_power_of_two())
+}
+
+/// Extract guard-owner table ids from an `iptables -S` listing: chain
+/// declarations plus the OUTPUT jumps that reference them.
+#[cfg(target_os = "linux")]
+fn parse_easytier_guard_tables(listing: &str) -> BTreeSet<u32> {
+    let mut tables = BTreeSet::new();
+    for line in listing.lines() {
+        let target = if let Some(rest) = line.strip_prefix("-N ") {
+            rest.split_whitespace().next().unwrap_or_default()
+        } else if let Some(rest) = line.strip_prefix("-A OUTPUT ") {
+            match rest.split_once(" -j ") {
+                Some((_, target)) => target.trim(),
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+        let Some(number) = target.strip_prefix("ETVPN_") else {
+            continue;
+        };
+        let Ok(table) = number.parse() else {
+            continue;
+        };
+        if is_policy_table(table) {
+            tables.insert(table);
+        }
+    }
+    tables
+}
+
+/// Remove one activation's OUTPUT guard without an owner instance: the jump,
+/// then the whole chain. Unlike [`LinuxOutputGuard::release`] this may flush:
+/// the owner is provably gone and the `ETVPN_<table>` name belongs to this
+/// code's reserved table segment, so no live owner's rules can live there.
+#[cfg(target_os = "linux")]
+async fn teardown_stale_output_guard(net_ns: &NetNS, table: u32) {
+    let chain = format!("ETVPN_{table}");
+    let comment = format!("easytier-vpn-{table}");
+    let jump = |operation: &str| {
+        [
+            operation.to_owned(),
+            "OUTPUT".to_owned(),
+            "-m".to_owned(),
+            "comment".to_owned(),
+            "--comment".to_owned(),
+            comment.clone(),
+            "-j".to_owned(),
+            chain.clone(),
+        ]
+    };
+    for ipv6 in [false, true] {
+        if firewall_rule_exists(net_ns, ipv6, &jump("-C"))
+            .await
+            .unwrap_or(false)
+        {
+            match firewall(net_ns, ipv6, &jump("-D")).await {
+                Ok(()) => {}
+                Err(error) => {
+                    tracing::warn!(?error, %chain, "failed to delete stale OUTPUT jump");
+                }
+            }
+        }
+        let probe = ["-S".to_owned(), chain.clone()];
+        if !matches!(firewall_rule_exists(net_ns, ipv6, &probe).await, Ok(true)) {
+            continue;
+        }
+        for operation in ["-F", "-X"] {
+            if let Err(error) = firewall(net_ns, ipv6, &[operation.to_owned(), chain.clone()]).await
+            {
+                tracing::warn!(?error, %chain, "failed to delete stale guard chain");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn flush_stale_policy_table(net_ns: &NetNS, table: u32) {
+    if !is_policy_table(table) {
+        return;
+    }
+    for family in ["-4", "-6"] {
+        if let Err(error) = ip(
+            net_ns,
+            &[family, "route", "flush", "table", &table.to_string()],
+        )
+        .await
+        {
+            tracing::warn!(?error, table, "failed to flush stale policy table");
+        }
+    }
+}
+
+/// Best-effort startup recovery for policy-routing state orphaned by a
+/// process that died between activation and cleanup. Live owners claim their
+/// tables through lease files (or by being registered in this process);
+/// everything else matching the EasyTier signature is removed: policy rules,
+/// OUTPUT guard chains, and dedicated-table routes. Individual failures warn
+/// and never block startup.
+#[cfg(target_os = "linux")]
+async fn sweep_stale_policy_state(net_ns: &NetNS, namespace: u64, lease_dir: &Path) {
+    let _allocation = linux_allocation_gate().lock().await;
+    let boot_id = linux_boot_id();
+    let mut claimed: BTreeSet<u32> = managed_tables()
+        .lock()
+        .unwrap()
+        .keys()
+        .filter(|(owner, _)| *owner == namespace)
+        .map(|(_, table)| *table)
+        .collect();
+    let mut stale_tables: BTreeSet<u32> = BTreeSet::new();
+    let mut stale_leases = 0usize;
+    let entries: Vec<_> = match std::fs::read_dir(lease_dir) {
+        Ok(entries) => entries.flatten().collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            tracing::warn!(?error, ?lease_dir, "failed to list VPN policy leases");
+            Vec::new()
+        }
+    };
+    for entry in entries {
+        let path = entry.path();
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                tracing::warn!(?error, ?path, "failed to read VPN policy lease");
+                continue;
+            }
+        };
+        let lease = match serde_json::from_str::<LinuxPolicyLease>(&contents) {
+            Ok(lease) => lease,
+            Err(error) => {
+                tracing::warn!(?error, ?path, "discarding malformed VPN policy lease");
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+        };
+        if lease.namespace != namespace {
+            continue; // The claimed state lives in another network namespace.
+        }
+        if lease_owner_alive(&lease, &boot_id) {
+            claimed.insert(lease.capture_table);
+            claimed.insert(lease.blackhole_table);
+            continue;
+        }
+        let mark = format!("0/{:#x}", lease.bit);
+        for (index, family) in ["-4", "-6"].into_iter().enumerate() {
+            for (table, priority) in [
+                (lease.capture_table, lease.priorities[0][index]),
+                (lease.blackhole_table, lease.priorities[1][index]),
+            ] {
+                if let Err(error) = ip(
+                    net_ns,
+                    &[
+                        family,
+                        "rule",
+                        "del",
+                        "priority",
+                        &priority.to_string(),
+                        "iif",
+                        "lo",
+                        "fwmark",
+                        &mark,
+                        "lookup",
+                        &table.to_string(),
+                    ],
+                )
+                .await
+                {
+                    tracing::warn!(?error, table, "failed to delete stale policy rule");
+                }
+            }
+        }
+        stale_tables.insert(lease.capture_table);
+        stale_tables.insert(lease.blackhole_table);
+        stale_leases += 1;
+        let _ = std::fs::remove_file(&path);
+    }
+    // Signature residue: state installed by builds without lease files, or by
+    // an owner in this process dropped mid-flight (its lease file is removed
+    // on drop while the kernel state may outlive the object).
+    let mut stale_rules = 0usize;
+    for family in ["-4", "-6"] {
+        let rules: Vec<serde_json::Value> =
+            match ip(net_ns, &[family, "-j", "-N", "rule", "show"]).await {
+                Ok(output) => match serde_json::from_slice(&output) {
+                    Ok(rules) => rules,
+                    Err(error) => {
+                        tracing::warn!(?error, "failed to parse policy rules during sweep");
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(?error, "failed to list policy rules during sweep");
+                    continue;
+                }
+            };
+        for rule in rules {
+            let (Some(table), Some(priority)) = (
+                rule.get("table").and_then(parse_u32),
+                rule.get("priority").and_then(parse_u32),
+            ) else {
+                continue;
+            };
+            if !is_policy_table(table)
+                || claimed.contains(&table)
+                || !is_easytier_policy_rule(&rule)
+            {
+                continue;
+            }
+            let mark = format!(
+                "0/{:#x}",
+                rule.get("fwmask").and_then(parse_u32).unwrap_or(0)
+            );
+            match ip(
+                net_ns,
+                &[
+                    family,
+                    "rule",
+                    "del",
+                    "priority",
+                    &priority.to_string(),
+                    "iif",
+                    "lo",
+                    "fwmark",
+                    &mark,
+                    "lookup",
+                    &table.to_string(),
+                ],
+            )
+            .await
+            {
+                Ok(_) => {
+                    stale_rules += 1;
+                    stale_tables.insert(table);
+                }
+                Err(error) => {
+                    tracing::warn!(?error, table, "failed to sweep stale policy rule");
+                }
+            }
+        }
+    }
+    let mut stale_chains = 0usize;
+    for ipv6 in [false, true] {
+        let listing = match firewall_output(net_ns, ipv6, &["-S".to_owned()]).await {
+            Ok(output) if output.status.success() => output,
+            Ok(output) => {
+                tracing::warn!(
+                    "listing {} chains failed: {}",
+                    if ipv6 { "ip6tables" } else { "iptables" },
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(?error, "listing firewall chains failed during sweep");
+                continue;
+            }
+        };
+        for table in parse_easytier_guard_tables(&String::from_utf8_lossy(&listing.stdout)) {
+            if !claimed.contains(&table) {
+                teardown_stale_output_guard(net_ns, table).await;
+                stale_chains += 1;
+                stale_tables.insert(table);
+            }
+        }
+    }
+    for table in stale_tables {
+        flush_stale_policy_table(net_ns, table).await;
+    }
+    if stale_leases + stale_rules + stale_chains > 0 {
+        tracing::info!(
+            stale_leases,
+            stale_rules,
+            stale_chains,
+            namespace,
+            "swept stale VPN policy routing state"
+        );
     }
 }
 
@@ -1036,7 +1432,9 @@ impl LinuxPolicyTable {
                 }
             }
         }
-        let mut free_tables = (20000..32766).filter(|table| !tables.contains(table));
+        let mut free_tables = LINUX_POLICY_TABLE_RANGE
+            .clone()
+            .filter(|table| !tables.contains(table));
         let table = free_tables
             .next()
             .ok_or_else(|| anyhow::anyhow!("no unused dedicated VPN capture routing table"))?;
@@ -1080,6 +1478,7 @@ impl LinuxPolicyTable {
     }
 
     async fn activate(&mut self, net_ns: &NetNS) -> anyhow::Result<()> {
+        let mut installed = false;
         for (index, family) in ["-4", "-6"].into_iter().enumerate() {
             let mark = format!("0/{:#x}", self.bit);
             if !self.blackhole_active[index] {
@@ -1101,6 +1500,7 @@ impl LinuxPolicyTable {
                 )
                 .await?;
                 self.blackhole_active[index] = true;
+                installed = true;
             }
             if !self.active[index] {
                 ip(
@@ -1121,7 +1521,11 @@ impl LinuxPolicyTable {
                 )
                 .await?;
                 self.active[index] = true;
+                installed = true;
             }
+        }
+        if installed {
+            self.record_lease();
         }
         Ok(())
     }
@@ -1171,6 +1575,48 @@ impl LinuxPolicyTable {
             }
         }
         Ok(())
+    }
+
+    fn lease(&self) -> LinuxPolicyLease {
+        LinuxPolicyLease {
+            boot_id: linux_boot_id(),
+            pid: std::process::id(),
+            namespace: self.namespace,
+            capture_table: self.table,
+            blackhole_table: self.blackhole_table,
+            priorities: [self.priority, self.blackhole_priority],
+            bit: self.bit,
+        }
+    }
+
+    /// Claim the kernel state cross-process so a later startup can tell this
+    /// activation's live rules from a dead owner's residue. Failure is not
+    /// fatal: the in-process registry still claims the tables.
+    fn record_lease(&self) {
+        let Some(dir) = policy_lease_dir() else {
+            return;
+        };
+        let path = policy_lease_path(&dir, std::process::id(), self.namespace, self.table);
+        match serde_json::to_string(&self.lease()) {
+            Ok(contents) => {
+                if let Err(error) = std::fs::write(&path, contents) {
+                    tracing::warn!(?error, ?path, "failed to record VPN policy lease");
+                }
+            }
+            Err(error) => tracing::warn!(?error, "failed to encode VPN policy lease"),
+        }
+    }
+
+    fn remove_lease(&self) {
+        let Some(dir) = policy_lease_dir() else {
+            return;
+        };
+        let _ = std::fs::remove_file(policy_lease_path(
+            &dir,
+            std::process::id(),
+            self.namespace,
+            self.table,
+        ));
     }
 }
 
@@ -2500,5 +2946,228 @@ mod tests {
             0x42,
             "conflicting activation must preserve original socket mark"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn test_lease(boot_id: &str, pid: u32) -> LinuxPolicyLease {
+        LinuxPolicyLease {
+            boot_id: boot_id.to_owned(),
+            pid,
+            namespace: 7,
+            capture_table: 20000,
+            blackhole_table: 20001,
+            priorities: [[1, 1], [2, 2]],
+            bit: 0x80,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn policy_lease_roundtrip() {
+        let lease = test_lease("11111111-2222-3333-4444-555555555555", 42);
+        let encoded = serde_json::to_string(&lease).unwrap();
+        assert_eq!(
+            serde_json::from_str::<LinuxPolicyLease>(&encoded).unwrap(),
+            lease
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lease_liveness_requires_current_boot_and_live_pid() {
+        let boot_id = linux_boot_id();
+        assert!(lease_owner_alive(
+            &test_lease(&boot_id, std::process::id()),
+            &boot_id
+        ));
+        assert!(!lease_owner_alive(
+            &test_lease("00000000-0000-0000-0000-000000000000", std::process::id()),
+            &boot_id
+        ));
+        // One past the kernel's default pid_max: /proc never lists it.
+        assert!(!lease_owner_alive(&test_lease(&boot_id, 4194304), &boot_id));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn policy_rule_signature_rejects_foreign_shapes() {
+        assert!(is_easytier_policy_rule(&serde_json::json!({
+            "iif": "lo",
+            "fwmark": 0,
+            "fwmask": "0x80",
+            "priority": 3,
+            "table": 20001,
+        })));
+        assert!(is_easytier_policy_rule(&serde_json::json!({
+            "iif": "lo",
+            "fwmark": "0x0",
+            "fwmask": 128,
+            "priority": 3,
+            "table": 20001,
+        })));
+        for foreign in [
+            serde_json::json!({"iif": "lo", "fwmark": 0, "fwmask": "0xff"}),
+            serde_json::json!({"iif": "eth0", "fwmark": 0, "fwmask": "0x80"}),
+            serde_json::json!({"iif": "lo", "fwmark": 1, "fwmask": "0x80"}),
+            serde_json::json!({"iif": "lo", "fwmark": 0, "fwmask": 0}),
+        ] {
+            assert!(!is_easytier_policy_rule(&foreign), "{foreign}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guard_table_parsing_finds_chains_and_output_jumps() {
+        let listing = "\
+-N INPUT
+-A INPUT -j ACCEPT
+-N ETVPN_20000
+-A OUTPUT -m comment --comment easytier-vpn-20000 -j ETVPN_20000
+-N ETVPN_300
+-A FORWARD -j ETVPN_21000
+-A OUTPUT -j ETVPN_32766
+";
+        assert_eq!(
+            parse_easytier_guard_tables(listing),
+            BTreeSet::from([20000])
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn policy_rules_reference_any_table(net_ns: &NetNS, tables: &[u32]) -> bool {
+        for family in ["-4", "-6"] {
+            let rules: Vec<serde_json::Value> = serde_json::from_slice(
+                &ip(net_ns, &[family, "-j", "-N", "rule", "show"])
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            if rules.iter().any(|rule| {
+                rule.get("table")
+                    .and_then(parse_u32)
+                    .is_some_and(|table| tables.contains(&table))
+            }) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Gated like the kernel test above: creates a throwaway netns and needs
+    /// CAP_SYS_ADMIN/CAP_NET_ADMIN for real ip/iptables state. Proves crash
+    /// residue no longer blocks the next activation and that live owners are
+    /// never swept.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stale_policy_state_is_swept_and_no_longer_blocks_activation() {
+        if std::env::var_os("EASYTIER_RUN_VPN_ROUTE_KERNEL_TESTS").is_none() {
+            return;
+        }
+        struct Cleanup(Vec<String>, PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for namespace in &self.0 {
+                    let _ = std::process::Command::new("ip")
+                        .args(["netns", "del", namespace])
+                        .output();
+                }
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let name = format!(
+            "et-vpn-sweep-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        );
+        let lease_dir = std::env::temp_dir().join(format!("{name}-leases"));
+        std::fs::create_dir_all(&lease_dir).unwrap();
+        unsafe {
+            std::env::set_var("EASYTIER_VPN_POLICY_LEASE_DIR", &lease_dir);
+        }
+        let output = tokio::process::Command::new("ip")
+            .args(["netns", "add", &name])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "create isolated netns: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _cleanup = Cleanup(vec![name.clone()], lease_dir.clone());
+        let net_ns = NetNS::new(Some(name));
+        for args in [
+            vec!["link", "set", "lo", "up"],
+            vec!["link", "add", "et-tun", "type", "dummy"],
+            vec!["link", "set", "et-tun", "up"],
+        ] {
+            ip(&net_ns, &args).await.unwrap();
+        }
+        let namespace = socket_protector::namespace_for(&net_ns).unwrap();
+        let ifcfg: BoxedIfCfg = Arc::new(crate::common::ifcfg::IfConfiger {});
+        let desired = BTreeSet::from([
+            "203.0.113.0/24".parse().unwrap(),
+            "2001:db8:1::/64".parse().unwrap(),
+        ]);
+        // Abandon an activated owner without cleanup: the kernel state
+        // survives while the on-disk claim does not (drop removes it).
+        let mut crashed = RouteOwner::default();
+        crashed
+            .reconcile(&ifcfg, &net_ns, "et-tun", &desired, 0x42)
+            .await
+            .unwrap();
+        let residue_tables = [
+            crashed.linux.as_ref().unwrap().table,
+            crashed.linux.as_ref().unwrap().blackhole_table,
+        ];
+        drop(crashed);
+        // Restart used to fail permanently: residue rules count as external
+        // and leave no adjacent priority pair for the new activation.
+        let blocked = RouteOwner::default()
+            .reconcile(&ifcfg, &net_ns, "et-tun", &desired, 0x42)
+            .await
+            .unwrap_err();
+        assert!(
+            blocked.to_string().contains("safe VPN priorities"),
+            "unexpected restart failure: {blocked:#}"
+        );
+        // The startup sweep reclaims the residue by signature.
+        sweep_stale_policy_state(&net_ns, namespace, &lease_dir).await;
+        assert!(!policy_rules_reference_any_table(&net_ns, &residue_tables).await);
+        assert_output_guard_state(&net_ns, residue_tables[0], false)
+            .await
+            .unwrap();
+        let mut revived = RouteOwner::default();
+        revived
+            .reconcile(&ifcfg, &net_ns, "et-tun", &desired, 0x42)
+            .await
+            .unwrap();
+        let revived_table = revived.linux.as_ref().unwrap().table;
+        // A live lease protects a running instance's state from the sweep.
+        sweep_stale_policy_state(&net_ns, namespace, &lease_dir).await;
+        assert!(policy_rules_reference_any_table(&net_ns, &[revived_table]).await);
+        assert_output_guard_state(&net_ns, revived_table, true)
+            .await
+            .unwrap();
+        // A dead owner's lease turns its state into sweep targets. Drop the
+        // owner first, as a killed process would be (its map claim and lease
+        // file disappear while the kernel state remains), then reinstall the
+        // lease file marked with a foreign boot id to model the crash.
+        let lease_path =
+            policy_lease_path(&lease_dir, std::process::id(), namespace, revived_table);
+        let lease_contents = std::fs::read_to_string(&lease_path).unwrap();
+        drop(revived);
+        let mut dead: LinuxPolicyLease = serde_json::from_str(&lease_contents).unwrap();
+        dead.boot_id = "00000000-0000-0000-0000-000000000000".to_owned();
+        std::fs::write(&lease_path, serde_json::to_string(&dead).unwrap()).unwrap();
+        sweep_stale_policy_state(&net_ns, namespace, &lease_dir).await;
+        assert!(!policy_rules_reference_any_table(&net_ns, &[revived_table]).await);
+        assert_output_guard_state(&net_ns, revived_table, false)
+            .await
+            .unwrap();
+        assert!(!lease_path.exists());
     }
 }
