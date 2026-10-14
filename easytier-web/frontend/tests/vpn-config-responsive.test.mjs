@@ -99,104 +99,31 @@ test('VPN configuration remains editable without horizontal overflow at mobile, 
     const cards = page.getByTestId('vpn-rule-card');
     assert.equal(await cards.count(), 4, 'four new blank rules should be editable');
     await page.locator('#vpn_rule_cidr_0').fill('0.0.0.0/0');
+    await page.locator('#vpn_rule_exit_0').fill('10.144.144.2');
     await page.locator('#vpn_rule_cidr_1').fill('2001:db8::/32');
-    await page.locator('#vpn_rule_priority_2').fill('20');
-    await page.locator('#vpn_rule_priority_3').fill('30');
-
-    const exitIps = Array.from({ length: 12 }, (_, index) => index % 2 === 0
-      ? `2001:db8:1234:5678:9abc:def0:1234:${(index + 1).toString(16)}`
-      : `10.${index}.20.${index + 1}`);
-    const secondRule = cards.nth(1);
-    for (const [index, ip] of exitIps.entries()) {
-      await secondRule.getByRole('button', { name: '添加出口 IP', exact: true }).click();
-      await secondRule.getByRole('textbox', { name: `出口 IP ${index + 1}`, exact: true }).fill(ip);
-    }
-    await secondRule.getByTestId('vpn-exit-row').nth(11)
-      .getByRole('button', { name: '上移出口 IP', exact: true }).click();
-    await secondRule.getByTestId('vpn-exit-row').last()
-      .getByRole('button', { name: '删除出口 IP', exact: true }).click();
-    const expectedExitOrder = [...exitIps.slice(0, 10), exitIps[11]];
-    assert.deepEqual(
-      await secondRule.locator('input[aria-label^="出口 IP "]').evaluateAll(inputs => inputs.map(input => input.value)),
-      expectedExitOrder,
-      'exit IP entries must remain editable and ordered after a move and delete',
-    );
-
-    await cards.nth(3).getByRole('button', { name: '上移规则', exact: true }).click();
-    await cards.nth(1).getByRole('button', { name: '上移规则', exact: true }).click();
-    const afterReorder = page.getByTestId('vpn-rule-card');
-    assert.deepEqual(
-      await afterReorder.locator('input[id^="vpn_rule_cidr_"]').evaluateAll(inputs => inputs.map(input => input.value)),
-      ['2001:db8::/32', '0.0.0.0/0', '', ''],
-      'rule controls and exit lists must follow their rules when reordered',
-    );
-    assert.deepEqual(
-      await afterReorder.locator('input[id^="vpn_rule_priority_"]').evaluateAll(inputs => inputs.map(input => input.value)),
-      ['', '', '30', '20'],
-    );
-    assert.equal(
-      await afterReorder.nth(0).locator('input[aria-label^="出口 IP "]').first().isDisabled(),
-      false,
-      'the reordered via-exit rule should keep its long IP list editable',
-    );
-    await afterReorder.nth(2).getByRole('button', { name: '删除规则', exact: true }).click();
-    assert.equal(await page.getByTestId('vpn-rule-card').count(), 3, 'a blank rule should be removable');
-    assert.equal(await page.locator('#vpn_rule_cidr_0').inputValue(), '2001:db8::/32');
-    assert.equal(await page.locator('#vpn_rule_cidr_2').inputValue(), '');
+    const ipv6Exit = '2001:db8:1234:5678:9abc:def0:1234:5678';
+    await page.locator('#vpn_rule_exit_1').fill(ipv6Exit);
+    await cards.nth(2).getByRole('button', { name: '删除规则', exact: true }).click();
+    assert.equal(await cards.count(), 3, 'a blank rule should be removable');
+    assert.equal(await page.locator('#vpn_rule_exit_1').inputValue(), ipv6Exit);
+    assert.equal(await page.locator('#vpn_rule_cidr_0').inputValue(), '0.0.0.0/0');
 
     const widths = [360, 768, 1280];
-    for (const [index, width] of widths.entries()) {
+    for (const width of widths) {
       await page.setViewportSize({ width, height: 960 });
       await page.waitForTimeout(100);
-      await assertNoHorizontalOverflow(page, width, 'rule editor');
-
-      const existingCount = await page.getByTestId('vpn-rule-card').count();
+      await assertNoHorizontalOverflow(page, width, 'single-exit rule editor');
+      const existingCount = await cards.count();
       await page.getByRole('button', { name: '添加规则', exact: true }).click();
-      const newRule = page.getByTestId('vpn-rule-card').nth(existingCount);
+      const newRule = cards.nth(existingCount);
       const newCidr = `2001:db8:${width}::/48`;
       await newRule.locator('input[id^="vpn_rule_cidr_"]').fill(newCidr);
-      await newRule.locator('input[id^="vpn_rule_priority_"]').fill('7');
-      for (const [exitIndex, exit] of ['10.144.0.2', '2001:db8::3'].entries()) {
-        await newRule.getByRole('button', { name: '添加出口 IP', exact: true }).click();
-        await newRule.getByRole('textbox', { name: `出口 IP ${exitIndex + 1}`, exact: true }).fill(exit);
-      }
-      await newRule.getByTestId('vpn-exit-row').nth(1)
-        .getByRole('button', { name: '上移出口 IP', exact: true }).click();
-      assert.deepEqual(
-        await newRule.locator('input[aria-label^="出口 IP "]').evaluateAll(inputs => inputs.map(input => input.value)),
-        ['2001:db8::3', '10.144.0.2'],
-        `exit reordering must work at ${width}px`,
-      );
-      await newRule.getByTestId('vpn-exit-row').last()
-        .getByRole('button', { name: '删除出口 IP', exact: true }).click();
-      await assertNoHorizontalOverflow(page, width, 'new rule and edited exits');
-
-      await newRule.getByRole('button', { name: '上移规则', exact: true }).click();
-      const movedRule = page.getByTestId('vpn-rule-card').nth(existingCount - 1);
-      assert.equal(await movedRule.locator('input[id^="vpn_rule_cidr_"]').inputValue(), newCidr);
-      assert.equal(await movedRule.getByRole('textbox', { name: '出口 IP 1', exact: true }).inputValue(), '2001:db8::3');
-      await movedRule.getByRole('button', { name: '下移规则', exact: true }).click();
-      await page.getByTestId('vpn-rule-card').last()
-        .getByRole('button', { name: '删除规则', exact: true }).click();
-      assert.equal(await page.getByTestId('vpn-rule-card').count(), existingCount);
-      await assertNoHorizontalOverflow(page, width, 'rule reordered and deleted');
-
-      const action = page.locator('#vpn_rule_action_1');
-      await action.click();
-      await page.getByRole('option', { name: '始终直连', exact: true }).waitFor({ state: 'visible' });
-      await assertNoHorizontalOverflow(page, width, 'open action selector');
-      if (index === 0) {
-        await page.screenshot({
-          path: join(screenshotDir, 'vpn-config-360-action-open.png'),
-          fullPage: false,
-          animations: 'disabled',
-        });
-        await page.getByRole('option', { name: '始终直连', exact: true }).click();
-        await assertNoHorizontalOverflow(page, width, 'selected action');
-      } else {
-        await page.keyboard.press('Escape');
-      }
-
+      await newRule.locator('input[id^="vpn_rule_exit_"]').fill(ipv6Exit);
+      assert.equal(await newRule.locator('input[id^="vpn_rule_exit_"]').inputValue(), ipv6Exit);
+      await assertNoHorizontalOverflow(page, width, 'edited IPv6 exit');
+      await newRule.getByRole('button', { name: '删除规则', exact: true }).click();
+      assert.equal(await cards.count(), existingCount);
+      await assertNoHorizontalOverflow(page, width, 'rule deleted');
       await page.screenshot({
         path: join(screenshotDir, `vpn-config-${width}.png`),
         fullPage: true,

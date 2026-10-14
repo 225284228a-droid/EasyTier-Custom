@@ -327,12 +327,20 @@ async fn data_plane_ipv6_tcp_and_udp_use_overlay_without_native_sockets() {
     accept.await.unwrap();
     let sender = a
         .gateway
-        .data_plane_udp_bind_for_family(48001, true, timeout)
+        .data_plane_udp_bind_for_family_with_deadline(
+            48001,
+            true,
+            DataPlaneDeadline::from_timeout(timeout),
+        )
         .await
         .unwrap();
     let receiver = b
         .gateway
-        .data_plane_udp_bind_for_family(48001, true, timeout)
+        .data_plane_udp_bind_for_family_with_deadline(
+            48001,
+            true,
+            DataPlaneDeadline::from_timeout(timeout),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -357,7 +365,11 @@ async fn ipv6_change_closes_dataplane_generation() {
     endpoint.gateway.start_runtime().await.unwrap();
     let socket = endpoint
         .gateway
-        .data_plane_udp_bind_for_family(0, true, Duration::from_secs(1))
+        .data_plane_udp_bind_for_family_with_deadline(
+            0,
+            true,
+            DataPlaneDeadline::from_timeout(Duration::from_secs(1)),
+        )
         .await
         .unwrap();
     endpoint.gateway.runtime_config.update_peer_with(|peer| {

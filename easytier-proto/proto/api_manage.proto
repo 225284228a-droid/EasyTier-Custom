@@ -126,35 +126,25 @@ message NetworkConfig {
   // change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
   optional bool close_redundant_conns_when_disguised = 79;
 
-  // Custom multi-exit policy VPN (fork feature).
+  // Custom subnet exit VPN (fork feature).
   optional VpnConfig vpn = 80;
 }
 
-// One traffic-splitting rule. Matching uses longest-prefix first, ties are
-// broken by lower `priority` value, then rule order.
+// One destination subnet mapped to exactly one virtual node address.
+// Matching uses longest-prefix first; duplicate CIDRs are invalid.
 message VpnRuleConfig {
   string cidr = 1;
-  // exit | direct | block
-  string action = 2;
-  reserved 3, 4;
-  reserved "exit", "fallback_exits";
-  optional uint32 priority = 5;
-  // Ordered virtual IPs. No reachable exit means this rule drops traffic.
-  repeated string exits = 6;
+  reserved 2, 3, 4, 5, 6;
+  reserved "action", "exit", "fallback_exits", "priority", "exits";
+  string exit_addr = 7;
 }
 
 message VpnConfig {
-  reserved 1, 5, 6;
-  reserved "enabled", "fail_mode", "exits";
-  // this node forwards and NATs exit traffic for peers
+  reserved 1, 3, 4, 5, 6, 8;
+  reserved "enabled", "dns_protect", "ipv6_protect", "fail_mode", "exits", "ignore_private";
+  // This node forwards and NATs exit traffic for peers.
   bool exit_enabled = 2;
-  // Omission means true. Public DNS follows effective VPN rules or blocks.
-  optional bool dns_protect = 3;
-  // Omission means true. Uncovered IPv6 blocks when IPv4 exits are configured.
-  optional bool ipv6_protect = 4;
   repeated VpnRuleConfig rules = 7;
-  // Omission means true. Private addresses bypass all VPN actions.
-  optional bool ignore_private = 8;
 }
 
 message ManagedCredentialConfig {

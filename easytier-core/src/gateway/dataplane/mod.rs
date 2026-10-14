@@ -1015,19 +1015,6 @@ where
         self.data_plane_udp_bind_with_deadline(local_port, DataPlaneDeadline::from_timeout(timeout))
             .await
     }
-    pub async fn data_plane_udp_bind_for_family(
-        &self,
-        local_port: u16,
-        ipv6: bool,
-        timeout: Duration,
-    ) -> DataPlaneResult<DataPlaneUdpSocket> {
-        self.data_plane_udp_bind_for_family_with_deadline(
-            local_port,
-            ipv6,
-            DataPlaneDeadline::from_timeout(timeout),
-        )
-        .await
-    }
     async fn data_plane_udp_bind_with_deadline(
         &self,
         local_port: u16,

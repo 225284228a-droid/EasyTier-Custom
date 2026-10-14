@@ -153,14 +153,9 @@ function allFieldFixture() {
     routes: ['10.20.0.0/16', 'fd00:20::/64'],
     vpn: {
       exitEnabled: true,
-      dnsProtect: true,
-      ipv6Protect: true,
-      ignorePrivate: false,
       rules: [{
         cidr: '0.0.0.0/0',
-        action: 'exit',
-        exits: ['10.144.144.2', '10.144.144.3'],
-        priority: 5,
+        exitAddr: '10.144.144.2',
       }],
     },
     proxy_forward_by_system: true,
@@ -311,12 +306,8 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.socket_mark, 1234)
   assert.equal(backend.prefer_peer_relay, true)
   assert.equal(backend.vpn.exit_enabled, true)
-  assert.equal(backend.vpn.dns_protect, true)
-  assert.equal(backend.vpn.ipv6_protect, true)
-  assert.equal(backend.vpn.ignore_private, false)
   assert.equal(backend.vpn.rules[0].cidr, '0.0.0.0/0')
-  assert.deepEqual(backend.vpn.rules[0].exits, ['10.144.144.2', '10.144.144.3'])
-  assert.equal(backend.vpn.rules[0].priority, 5)
+  assert.equal(backend.vpn.rules[0].exit_addr, '10.144.144.2')
   assert.equal(backend.managed_credentials[0].credential_id, input.managed_credentials[0].credential_id)
   assert.equal(backend.managed_credentials[0].expiry_unix, input.managed_credentials[0].expiry_unix)
   assert.deepEqual(backend.managed_credentials[0].allowed_proxy_cidrs, input.managed_credentials[0].allowed_proxy_cidrs)

@@ -16,9 +16,6 @@ const BrowserHarness = defineComponent({
     network.network_secret = 'browser-test-secret'
     network.vpn = {
       exit_enabled: false,
-      dns_protect: true,
-      ipv6_protect: true,
-      ignore_private: true,
       rules: [],
     }
 

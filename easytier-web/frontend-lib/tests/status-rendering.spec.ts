@@ -88,58 +88,33 @@ describe('status protobuf JSON rendering', () => {
     expect(rows[1].text()).toContain('50%')
   })
 
-  it('shows per-rule exit IP status and the selected IP without a separate exit table', async () => {
+  it('shows each subnet, single exit and availability', async () => {
     const wrapper = await render(undefined, undefined, undefined, {
-      enabled: true,
-      exit_enabled: false,
-      exits: [
-        { node_addr: '10.9.0.2', peer_id: 2, state: 'down', latency_ms: -1, tx_packets: 0n, tx_bytes: 0n },
-        { node_addr: '10.9.0.3', peer_id: 3, state: 'up', latency_ms: 4, tx_packets: 3n, tx_bytes: 128n },
+      enabled: true, exit_enabled: false,
+      rules: [
+        { cidr: '203.0.113.0/24', exit_addr: '10.9.0.2', state: 'down' },
+        { cidr: '198.51.100.0/24', exit_addr: '10.9.0.3', state: 'up' },
       ],
-      rules: [{
-        cidr: '0.0.0.0/0',
-        action: 'exit',
-        exits: ['10.9.0.2', '10.9.0.3'],
-        effective_exit: '10.9.0.3',
-        priority: 0,
-        packets: 4n,
-        bytes: 256n,
-      }],
-      dns_protect: true,
-      ipv6_protect: true,
-      ignore_private: true,
-      routes_active: true,
-      routes_installed: 1,
-      protected_endpoints: 0,
-      system_dns_servers: [],
-      capture_routes: [],
-      policy_generation: 1n,
-      ipv6_addr: '',
+      routes_active: true, routes_installed: 2,
+      capture_routes: [], policy_generation: 1n, ipv6_addr: '',
     })
-
     const text = wrapper.text()
-    expect(text).toContain('10.9.0.2 (vpn_exit_state_down)')
-    expect(text).toContain('10.9.0.3 (vpn_exit_state_up)')
-    expect(text).toContain('vpn_rule_effective')
-    expect(text).toContain('vpn_ignore_private')
-    expect(text).not.toContain('vpn_status_fail_mode')
-    expect(text).not.toContain('vpn_exit_name')
+    for (const value of ['203.0.113.0/24', '198.51.100.0/24', '10.9.0.2', '10.9.0.3', 'vpn_exit_state_down', 'vpn_exit_state_up']) {
+      expect(text).toContain(value)
+    }
+    for (const value of ['vpn_rule_effective', 'vpn_ignore_private', 'vpn_rule_packets', 'vpn_rule_priority']) {
+      expect(text).not.toContain(value)
+    }
   })
 
-  it('shows a nonempty VPN activation error even when no rules or protection flags are active', async () => {
+  it('shows a nonempty VPN activation error even when no rules are active', async () => {
     const error = 'TUN route installation failed'
     const wrapper = await render(undefined, undefined, undefined, {
       enabled: false,
       exit_enabled: false,
-      exits: [],
       rules: [],
-      dns_protect: false,
-      ipv6_protect: false,
-      ignore_private: false,
       routes_active: false,
       routes_installed: 0,
-      protected_endpoints: 0,
-      system_dns_servers: [],
       capture_routes: [],
       policy_generation: 0n,
       ipv6_addr: '',

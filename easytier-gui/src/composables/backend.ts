@@ -96,9 +96,6 @@ export async function setTunFd(fd: number, instanceId: string, generation: strin
   return await invoke('set_tun_fd', { fd, instanceId, generation })
 }
 
-export async function setVpnSystemDnsServers(instanceId: string, dnsServers: string[]) {
-  return await invoke('set_vpn_system_dns_servers', { instanceId, dnsServers })
-}
 
 export async function getEasytierVersion() {
   return await invoke<string>('easytier_version')

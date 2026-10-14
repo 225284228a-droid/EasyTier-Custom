@@ -3852,18 +3852,13 @@ pub async fn config_patch_test() {
             .is_empty()
     );
 
-    // 测试1.1：热更新多出口 VPN 配置
+    // 测试1.1：热更新网段出口 VPN 配置
     let patch = InstanceConfigPatch {
         vpn: Some(easytier_proto::api::manage::VpnConfig {
             exit_enabled: false,
-            dns_protect: Some(true),
-            ipv6_protect: Some(true),
-            ignore_private: Some(true),
             rules: vec![easytier_proto::api::manage::VpnRuleConfig {
                 cidr: "0.0.0.0/0".to_owned(),
-                action: "exit".to_owned(),
-                exits: vec!["10.144.144.3".to_owned()],
-                priority: Some(0),
+                exit_addr: "10.144.144.3".to_owned(),
             }],
         }),
         ..Default::default()
@@ -3875,10 +3870,10 @@ pub async fn config_patch_test() {
         .unwrap();
     let vpn = insts[1].get_global_ctx().config.get_vpn();
     assert!(vpn.client_active());
-    assert!(vpn.has_global_v4_exit());
+    assert!(vpn.rules[0].cidr.is_default_route());
     assert_eq!(vpn.exit_addresses().len(), 1);
     assert_eq!(
-        vpn.rules[0].exits[0],
+        vpn.rules[0].exit,
         "10.144.144.3".parse::<std::net::IpAddr>().unwrap()
     );
     let status = insts[1].get_core_instance().vpn_status().await;

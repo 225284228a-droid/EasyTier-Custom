@@ -291,17 +291,17 @@ where
         self.peer_manager.update_vpn_config(vpn)
     }
 
-    /// Complete VPN status: policy snapshot, per-rule counters, exit liveness,
+    /// VPN status: subnet exits, reachability,
     /// and (when provided by the host) route-manager state.
     #[cfg(feature = "management-rpc")]
     pub async fn vpn_status(&self) -> easytier_proto::api::instance::GetVpnStatusResponse {
-        use easytier_proto::api::instance::{GetVpnStatusResponse, VpnExitStatus, VpnRuleStatus};
+        use easytier_proto::api::instance::{GetVpnStatusResponse, VpnRuleStatus};
 
         self.vpn_engine
             .update_exclusions(self.peer_manager.vpn_route_exclusions().await);
         let config = self.vpn_engine.config();
         let (plan, policy_generation) = self.vpn_engine.route_plan();
-        let (rules, exits) = self.vpn_engine.status();
+        let rules = self.vpn_engine.status();
         let host_state = self
             .vpn_route_state
             .as_ref()
@@ -322,7 +322,6 @@ where
         GetVpnStatusResponse {
             enabled: config.client_active(),
             exit_enabled: config.exit_enabled,
-            ignore_private: config.ignore_private,
             capture_routes: plan
                 .capture_routes
                 .iter()
@@ -334,43 +333,15 @@ where
                 .virtual_ipv6()
                 .map(|a| a.to_string())
                 .unwrap_or_default(),
-            dns_protect: config.dns_protect,
-            ipv6_protect: config.ipv6_protect,
             routes_active: host_state.as_ref().is_some_and(|state| state.routes_active),
             routes_installed: host_state.as_ref().map_or(0, |s| s.routes_installed as u32),
             activation_error,
-            protected_endpoints: host_state
-                .as_ref()
-                .map_or(0, |s| s.protected_endpoints.len() as u32),
-            system_dns_servers: host_state
-                .map(|s| {
-                    s.system_dns_servers
-                        .iter()
-                        .map(|ip| ip.to_string())
-                        .collect()
-                })
-                .unwrap_or_default(),
             rules: rules
                 .into_iter()
                 .map(|rule| VpnRuleStatus {
                     cidr: rule.cidr,
-                    action: rule.action.to_owned(),
-                    exits: rule.exits,
-                    priority: rule.priority,
-                    effective_exit: rule.effective_exit.unwrap_or_default(),
-                    packets: rule.packets,
-                    bytes: rule.bytes,
-                })
-                .collect(),
-            exits: exits
-                .into_iter()
-                .map(|exit| VpnExitStatus {
-                    node_addr: exit.node_addr,
-                    peer_id: exit.peer_id.unwrap_or_default(),
-                    state: if exit.up { "up".into() } else { "down".into() },
-                    latency_ms: exit.latency_ms.map(|ms| ms as i32).unwrap_or(-1),
-                    tx_packets: exit.tx_packets,
-                    tx_bytes: exit.tx_bytes,
+                    exit_addr: rule.exit_addr,
+                    state: if rule.up { "up".into() } else { "down".into() },
                 })
                 .collect(),
         }

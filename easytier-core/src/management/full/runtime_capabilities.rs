@@ -26,7 +26,7 @@ pub fn management_capabilities_for_host(host: &CoreInstanceHostConfig) -> Vec<St
     }
     // Multi-exit policy VPN (fork feature): the policy engine and the
     // management/status RPCs are always available in this fork's runtime.
-    capabilities.push("config:vpn-exits-v1".into());
+    capabilities.push("config:vpn-subnet-exit-v1".into());
     if host.wss_http3_supported && (supports("wss") || supports("http3")) {
         for field in [
             "only_use_wss_http3_for_hole_punching",
@@ -55,7 +55,7 @@ mod tests {
         };
         assert_eq!(
             management_capabilities_for_host(&host),
-            vec!["config:p2p_prefer_protocol", "config:vpn-exits-v1"]
+            vec!["config:p2p_prefer_protocol", "config:vpn-subnet-exit-v1"]
         );
     }
 

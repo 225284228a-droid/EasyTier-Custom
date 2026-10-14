@@ -9,7 +9,7 @@
       "config:prefer_wss_http3_for_p2p",
       "config:disable_wss_http3_for_p2p",
       "config:close_redundant_conns_when_disguised",
-      "config:vpn-exits-v1"
+      "config:vpn-subnet-exit-v1"
     ],
     "overrides": {
       "instance_id": "00000000-0000-0000-0000-000000000064"

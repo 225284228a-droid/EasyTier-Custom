@@ -406,32 +406,15 @@ service CredentialManageRpc {
   rpc UpsertCredential(UpsertCredentialRequest) returns (UpsertCredentialResponse);
 }
 
-// Custom multi-exit policy VPN status (fork feature, fields >= 50000).
-
-message VpnExitStatus {
-  reserved 1;
-  reserved "name";
-  string node_addr = 2;
-  uint32 peer_id = 3;
-  // up | down | unknown
-  string state = 4;
-  int32 latency_ms = 5;
-  uint64 tx_packets = 6;
-  uint64 tx_bytes = 7;
-}
+// Custom subnet exit VPN status (fork feature).
 
 message VpnRuleStatus {
   string cidr = 1;
-  // direct | block | exit
-  string action = 2;
-  reserved 3, 4;
-  reserved "exit", "fallback_exits";
-  uint32 priority = 5;
-  // Currently selected virtual exit IP (empty when unavailable).
-  string effective_exit = 6;
-  uint64 packets = 7;
-  uint64 bytes = 8;
-  repeated string exits = 9;
+  reserved 2, 3, 4, 5, 6, 7, 8, 9;
+  reserved "action", "exit", "fallback_exits", "priority", "effective_exit", "packets", "bytes", "exits";
+  string exit_addr = 10;
+  // up | down
+  string state = 11;
 }
 
 message GetVpnStatusRequest { InstanceIdentifier instance = 1; }
@@ -440,18 +423,14 @@ message GetVpnStatusResponse {
   bool enabled = 1;
   // this node offers exit forwarding for peers
   bool exit_enabled = 2;
-  repeated VpnExitStatus exits = 3;
+  reserved 3, 6, 7, 10, 11, 12;
+  reserved "exits", "dns_protect", "ipv6_protect", "protected_endpoints", "system_dns_servers", "ignore_private";
   repeated VpnRuleStatus rules = 4;
   reserved 5;
   reserved "fail_mode";
-  bool dns_protect = 6;
-  bool ipv6_protect = 7;
   // host-side route manager state, filled when available
   bool routes_active = 8;
   uint32 routes_installed = 9;
-  uint32 protected_endpoints = 10;
-  repeated string system_dns_servers = 11;
-  bool ignore_private = 12;
   // Complete positive TUN routes, including overlay and policy capture.
   repeated string capture_routes = 13;
   // Changes with policy/address context, independently of exit liveness.

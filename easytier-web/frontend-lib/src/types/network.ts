@@ -1,3 +1,4 @@
+import { VpnConfig as VpnConfigPb } from '../generated/proto/api_manage'
 import { v4 as uuidv4 } from 'uuid'
 import {
   NetworkConfig as NetworkConfigPb,
@@ -41,7 +42,7 @@ import { filterConfigPayload } from '../modules/capabilities'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
 export { VpnPortalClientState }
-export type { GetVpnStatusResponse, VpnExitStatus, VpnRuleStatus } from '../generated/proto/api_instance'
+export type { GetVpnStatusResponse, VpnRuleStatus } from '../generated/proto/api_instance'
 export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig, VpnPortalClientConfig, VpnPortalClientInfo, VpnPortalConfig, VpnPortalInfo }
 
 export type NetworkConfig = Omit<
@@ -347,34 +348,17 @@ function applyNetworkingMethod(
   config.peers = peersFromUrls(config.peer_urls, existingPeers)
 }
 
-function prepareNetworkConfigWithVpnDefaults(config: NetworkConfig): NetworkConfig {
+function prepareNetworkConfigWithVpn(config: NetworkConfig): NetworkConfig {
   const prepared = prepareNetworkConfigForProtoJson(config)
-  if (!config.vpn) return prepared
-
-  const vpnJson = config.vpn as unknown as Record<string, unknown>
-  prepared.vpn = {
-    ...config.vpn,
-    exit_enabled: vpnBooleanField(vpnJson, 'exit_enabled', 'exitEnabled', false),
-    dns_protect: vpnBooleanField(vpnJson, 'dns_protect', 'dnsProtect', true),
-    ipv6_protect: vpnBooleanField(vpnJson, 'ipv6_protect', 'ipv6Protect', true),
-    ignore_private: vpnBooleanField(vpnJson, 'ignore_private', 'ignorePrivate', true),
-    rules: (config.vpn.rules ?? []).map(rule => ({ ...rule, exits: rule.exits ?? [] })),
+  if (config.vpn) {
+    // Validate before the outer converter discards unknown form-only fields.
+    prepared.vpn = VpnConfigPb.fromJson(config.vpn as any)
   }
   return prepared
 }
 
-function vpnBooleanField(
-  vpnJson: Record<string, unknown>,
-  snakeCase: string,
-  camelCase: string,
-  fallback: boolean,
-): boolean {
-  const value = vpnJson[snakeCase] ?? vpnJson[camelCase]
-  return typeof value === 'boolean' ? value : fallback
-}
-
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
-  const normalized = NetworkConfigPb.fromJson(prepareNetworkConfigWithVpnDefaults(config) as any, {
+  const normalized = NetworkConfigPb.fromJson(prepareNetworkConfigWithVpn(config) as any, {
     ignoreUnknownFields: true,
   }) as unknown as NetworkConfig
 
@@ -391,8 +375,6 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.port_forwards ??= []
   if (normalized.vpn) {
     normalized.vpn.rules ??= []
-    for (const rule of normalized.vpn.rules)
-      rule.exits ??= []
   }
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
@@ -415,14 +397,9 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
 }
 
 export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: readonly string[]): NetworkConfig {
-  const backend = NetworkConfigPb.fromJson(prepareNetworkConfigWithVpnDefaults(config) as any, {
+  const backend = NetworkConfigPb.fromJson(prepareNetworkConfigWithVpn(config) as any, {
     ignoreUnknownFields: true,
   })
-
-  for (const rule of backend.vpn?.rules ?? []) {
-    if (rule.action !== 'exit')
-      rule.exits = []
-  }
 
   applyNetworkingMethod(backend)
   backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined

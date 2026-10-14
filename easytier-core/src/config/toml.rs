@@ -560,6 +560,10 @@ impl TomlConfig {
     }
 
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
+        if let Some(vpn) = &config.vpn {
+            vpn.validate()
+                .map_err(|error| anyhow::anyhow!("invalid [vpn] config: {error}"))?;
+        }
         super::validate_p2p_disguise_flags(
             config.flags.disable_wss_http3_for_p2p.unwrap_or(false),
             config
@@ -1853,9 +1857,7 @@ members = ["admin"]
         let mut vpn = crate::config::vpn::VpnConfig::default();
         vpn.rules.push(crate::config::vpn::VpnRuleConfig {
             cidr: "0.0.0.0/0".parse().unwrap(),
-            action: crate::config::vpn::VpnRuleAction::Exit,
-            exits: vec!["10.144.144.2".parse().unwrap()],
-            priority: 0,
+            exit: "10.144.144.2".parse().unwrap(),
         });
 
         config.set_vpn(vpn.clone());

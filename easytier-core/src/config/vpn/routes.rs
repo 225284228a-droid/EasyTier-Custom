@@ -1,57 +1,18 @@
-//! Shared CIDR partitioning for packet policy and native/Android capture.
+//! Shared destination routes for desktop and Android capture.
+use super::{VpnCidr, VpnConfig};
 
-use super::{VpnCidr, VpnConfig, VpnRuleAction};
-use std::net::IpAddr;
-
-/// Overlay regions retain their normal EasyTier path. Physical regions are
-/// local advertised subnets and must never be recaptured into this instance.
+/// Preserve mesh/proxy routes and local advertised subnet ownership.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VpnRouteExclusions {
     pub overlay: Vec<VpnCidr>,
     pub physical: Vec<VpnCidr>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VpnRouteRegion {
-    pub cidr: VpnCidr,
-    pub action: VpnRuleAction,
-    /// Original user rule used for exit selection and traffic counters.
-    pub rule_index: Option<usize>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VpnRoutePlan {
-    pub regions: Vec<VpnRouteRegion>,
-    /// Full positive TUN set: existing overlay plus policy capture.
+    pub exit_routes: Vec<VpnCidr>,
+    /// Full positive TUN set: existing overlay plus VPN capture.
     pub capture_routes: Vec<VpnCidr>,
-}
-
-pub const PRIVATE_CIDRS: &[&str] = &[
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "100.64.0.0/10",
-    "127.0.0.0/8",
-    "169.254.0.0/16",
-    "fc00::/7",
-    "::1/128",
-    "fe80::/10",
-];
-
-pub fn private_cidrs() -> Vec<VpnCidr> {
-    PRIVATE_CIDRS.iter().map(|c| c.parse().unwrap()).collect()
-}
-
-pub fn is_private_address(address: &IpAddr) -> bool {
-    match address {
-        IpAddr::V4(a) => {
-            a.is_private()
-                || a.is_loopback()
-                || a.is_link_local()
-                || (u32::from(*a) & 0xffc0_0000) == 0x6440_0000
-        }
-        IpAddr::V6(a) => a.is_unique_local() || a.is_loopback() || a.is_unicast_link_local(),
-    }
 }
 
 /// CIDR subtraction produces disjoint positive routes without relying on
@@ -145,102 +106,23 @@ pub fn normalize_cidrs(cidrs: impl IntoIterator<Item = VpnCidr>) -> Vec<VpnCidr>
     result
 }
 
-pub fn compile_vpn_routes(
-    config: &VpnConfig,
-    exclusions: &VpnRouteExclusions,
-    dns_servers: &[IpAddr],
-) -> VpnRoutePlan {
-    // Overlay always wins over ordinary private-address bypass. Local
-    // advertised subnets remain physical even if a remote advertisement overlaps.
-    let overlay: Vec<_> = exclusions
-        .overlay
-        .iter()
-        .flat_map(|c| subtract_cidrs(*c, &exclusions.physical))
-        .collect();
-    let mut forbidden = exclusions.physical.clone();
-    forbidden.extend(overlay.iter().copied());
-    if config.ignore_private {
-        forbidden.extend(private_cidrs());
-    }
-    let mut claimed = normalize_cidrs(forbidden.clone());
-    let mut regions = vec![];
-    let mut indices: Vec<_> = (0..config.rules.len()).collect();
-    indices.sort_by_key(|&i| {
-        (
-            std::cmp::Reverse(config.rules[i].cidr.prefix_len()),
-            config.rules[i].priority,
-            i,
-        )
-    });
-    for i in indices {
-        let rule = &config.rules[i];
-        regions.extend(subtract_cidrs(rule.cidr, &claimed).into_iter().map(|cidr| {
-            VpnRouteRegion {
-                cidr,
-                action: rule.action,
-                rule_index: Some(i),
-            }
-        }));
-        claimed.push(rule.cidr);
-    }
-    let has_exit = regions.iter().any(|r| r.action == VpnRuleAction::Exit);
-    let has_v4_exit = regions
-        .iter()
-        .any(|r| r.action == VpnRuleAction::Exit && r.cidr.is_ipv4());
-    if config.ipv6_protect && has_v4_exit {
-        regions.extend(
-            subtract_cidrs("::/0".parse().unwrap(), &claimed)
-                .into_iter()
-                .map(|cidr| VpnRouteRegion {
-                    cidr,
-                    action: VpnRuleAction::Block,
-                    rule_index: None,
-                }),
-        );
-    }
-    if config.dns_protect && has_exit {
-        for address in dns_servers
+pub fn compile_vpn_routes(config: &VpnConfig, exclusions: &VpnRouteExclusions) -> VpnRoutePlan {
+    let overlay = normalize_cidrs(
+        exclusions
+            .overlay
             .iter()
-            .filter(|a| !a.is_unspecified() && !a.is_multicast())
-        {
-            if forbidden.iter().any(|c| c.contains(address)) {
-                continue;
-            }
-            let selected = config.match_rule_index(address);
-            let action = selected
-                .map(|i| config.rules[i].action)
-                .unwrap_or(VpnRuleAction::Block);
-            if action == VpnRuleAction::Direct {
-                continue;
-            }
-            // A public resolver pin agrees with the matched rule. It may not
-            // override an explicit direct rule or any hard exclusion.
-            let host = VpnCidr::host(*address);
-            regions = regions
-                .into_iter()
-                .flat_map(|r| {
-                    subtract_cidrs(r.cidr, &[host])
-                        .into_iter()
-                        .map(move |cidr| VpnRouteRegion { cidr, ..r.clone() })
-                })
-                .collect();
-            regions.push(VpnRouteRegion {
-                cidr: host,
-                action,
-                rule_index: selected,
-            });
-        }
-    }
-    let capture_routes = normalize_cidrs(
-        overlay.into_iter().chain(
-            regions
-                .iter()
-                .filter(|r| r.action != VpnRuleAction::Direct)
-                .map(|r| r.cidr),
-        ),
+            .flat_map(|c| subtract_cidrs(*c, &exclusions.physical)),
     );
+    let excluded = normalize_cidrs(exclusions.physical.iter().chain(&overlay).copied());
+    let exit_routes = normalize_cidrs(
+        config
+            .rules
+            .iter()
+            .flat_map(|r| subtract_cidrs(r.cidr, &excluded)),
+    );
+    let capture_routes = normalize_cidrs(overlay.into_iter().chain(exit_routes.iter().copied()));
     VpnRoutePlan {
-        regions,
+        exit_routes,
         capture_routes,
     }
 }
@@ -249,172 +131,71 @@ pub fn compile_vpn_routes(
 mod tests {
     use super::*;
     use crate::config::vpn::VpnRuleConfig;
-    fn rule(cidr: &str, action: VpnRuleAction) -> VpnRuleConfig {
-        VpnRuleConfig {
-            cidr: cidr.parse().unwrap(),
-            action,
-            exits: vec!["10.0.0.2".parse().unwrap()],
-            priority: 0,
-        }
-    }
-    fn captured(plan: &VpnRoutePlan, address: &str) -> bool {
-        plan.capture_routes
-            .iter()
-            .any(|c| c.contains(&address.parse().unwrap()))
-    }
-    #[test]
-    fn default_and_explicit_half_have_no_metric_conflict() {
-        let config = VpnConfig {
-            ignore_private: false,
-            rules: vec![
-                rule("0.0.0.0/0", VpnRuleAction::Exit),
-                rule("0.0.0.0/1", VpnRuleAction::Direct),
-            ],
-            ..Default::default()
-        };
-        let p = compile_vpn_routes(&config, &Default::default(), &[]);
-        assert!(!captured(&p, "8.8.8.8"));
-        assert!(captured(&p, "203.0.113.1"));
-    }
-    #[test]
-    fn private_bypass_overrides_even_host_block_but_overlay_still_routes() {
-        let config = VpnConfig {
-            rules: vec![
-                rule("0.0.0.0/0", VpnRuleAction::Exit),
-                rule("192.168.1.8/32", VpnRuleAction::Block),
-            ],
-            ..Default::default()
-        };
-        let x = VpnRouteExclusions {
-            overlay: vec![
-                "10.144.0.0/16".parse().unwrap(),
-                "203.0.113.0/24".parse().unwrap(),
-            ],
-            physical: vec!["192.168.2.0/24".parse().unwrap()],
-        };
-        let p = compile_vpn_routes(&config, &x, &[]);
-        assert!(!captured(&p, "192.168.1.8"));
-        assert!(captured(&p, "10.144.0.2"));
-        assert!(
-            !p.regions
+    fn config(cidrs: &[&str]) -> VpnConfig {
+        VpnConfig {
+            rules: cidrs
                 .iter()
-                .any(|r| r.cidr.contains(&"203.0.113.8".parse().unwrap()))
-        );
-        assert!(captured(&p, "203.0.113.8"));
-        assert!(!captured(&p, "192.168.2.8"));
+                .map(|c| VpnRuleConfig {
+                    cidr: c.parse().unwrap(),
+                    exit: "10.0.0.2".parse().unwrap(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+    fn contains(routes: &[VpnCidr], address: &str) -> bool {
+        routes.iter().any(|c| c.contains(&address.parse().unwrap()))
     }
     #[test]
-    fn overlap_partition_matches_packet_rule_at_boundaries() {
-        let c = VpnConfig {
-            ignore_private: false,
-            rules: vec![
-                rule("0.0.0.0/0", VpnRuleAction::Exit),
-                rule("8.8.0.0/16", VpnRuleAction::Block),
-                rule("8.8.8.0/24", VpnRuleAction::Direct),
+    fn default_routes_preserve_overlay_and_physical_ownership() {
+        let exclusions = VpnRouteExclusions {
+            overlay: vec![
+                "10.66.0.0/24".parse().unwrap(),
+                "fd42::/64".parse().unwrap(),
             ],
-            ..Default::default()
+            physical: vec!["192.168.1.0/24".parse().unwrap()],
         };
-        let p = compile_vpn_routes(&c, &Default::default(), &[]);
-        for address in [
-            "8.7.255.255",
-            "8.8.0.0",
-            "8.8.7.255",
-            "8.8.8.0",
-            "8.8.8.255",
-            "8.8.9.0",
-            "8.9.0.0",
-        ] {
-            let a = address.parse().unwrap();
-            let matching: Vec<_> = p.regions.iter().filter(|r| r.cidr.contains(&a)).collect();
-            assert_eq!(matching.len(), 1);
-            assert_eq!(matching[0].rule_index, c.match_rule_index(&a));
+        let plan = compile_vpn_routes(&config(&["0.0.0.0/0", "::/0"]), &exclusions);
+        for ip in ["10.66.0.2", "fd42::2"] {
+            assert!(!contains(&plan.exit_routes, ip));
+            assert!(contains(&plan.capture_routes, ip));
+        }
+        assert!(!contains(&plan.capture_routes, "192.168.1.2"));
+        for ip in ["8.8.8.8", "172.20.0.1", "2001:db8::1", "fd99::1"] {
+            assert!(contains(&plan.exit_routes, ip));
         }
     }
     #[test]
-    fn ipv6_guard_and_dns_respect_direct_and_private_exemptions() {
-        let c = VpnConfig {
-            rules: vec![
-                rule("0.0.0.0/0", VpnRuleAction::Exit),
-                rule("2001:db8::/32", VpnRuleAction::Direct),
-            ],
-            ..Default::default()
-        };
-        let p = compile_vpn_routes(
-            &c,
+    fn only_explicit_subnets_are_captured_and_union_is_compact() {
+        let plan = compile_vpn_routes(
+            &config(&["203.0.113.0/24", "203.0.113.0/25", "203.0.113.128/25"]),
             &Default::default(),
-            &[
-                "192.168.1.1".parse().unwrap(),
-                "2001:db8::53".parse().unwrap(),
-                "2606:4700:4700::1111".parse().unwrap(),
-            ],
         );
-        assert!(!captured(&p, "192.168.1.1"));
-        assert!(!captured(&p, "2001:db8::53"));
-        assert!(captured(&p, "2606:4700:4700::1111"));
-        assert!(p.regions.iter().any(
-            |r| r.cidr.contains(&"2606:4700:4700::1111".parse().unwrap())
-                && r.action == VpnRuleAction::Block
-        ));
+        assert_eq!(plan.exit_routes, vec!["203.0.113.0/24".parse().unwrap()]);
+        assert!(!contains(&plan.capture_routes, "8.8.8.8"));
+        assert!(!contains(&plan.capture_routes, "2606:4700:4700::1111"));
     }
     #[test]
-    fn inactive_policy_keeps_only_overlay_capture() {
-        let p = compile_vpn_routes(
-            &VpnConfig::default(),
-            &VpnRouteExclusions {
-                overlay: vec!["10.0.0.0/24".parse().unwrap()],
-                physical: vec![],
-            },
-            &[],
-        );
-        assert!(p.regions.is_empty());
-        assert!(captured(&p, "10.0.0.2"));
-        assert!(!captured(&p, "8.8.8.8"));
-    }
-    #[test]
-    fn narrower_exit_still_guards_public_dns_and_uncovered_ipv6() {
-        let c = VpnConfig {
-            rules: vec![
-                rule("203.0.113.0/24", VpnRuleAction::Exit),
-                rule("9.9.9.9/32", VpnRuleAction::Direct),
-                rule("2001:db8::/32", VpnRuleAction::Direct),
-            ],
+    fn empty_rules_keep_android_mesh_routes_only() {
+        let exclusions = VpnRouteExclusions {
+            overlay: vec!["10.66.0.0/24".parse().unwrap()],
             ..Default::default()
         };
-        let p = compile_vpn_routes(
-            &c,
-            &Default::default(),
-            &[
-                "8.8.8.8".parse().unwrap(),
-                "9.9.9.9".parse().unwrap(),
-                "192.168.1.1".parse().unwrap(),
-            ],
-        );
-        for addr in ["8.8.8.8", "2606:4700:4700::1111", "64:ff9b::808:808"] {
-            assert!(captured(&p, addr));
-            assert!(p.regions.iter().any(
-                |r| r.cidr.contains(&addr.parse().unwrap()) && r.action == VpnRuleAction::Block
-            ));
-        }
-        for addr in ["9.9.9.9", "192.168.1.1", "2001:db8::53", "fd00::1"] {
-            assert!(!captured(&p, addr));
-        }
+        let plan = compile_vpn_routes(&VpnConfig::default(), &exclusions);
+        assert!(plan.exit_routes.is_empty());
+        assert_eq!(plan.capture_routes, exclusions.overlay);
     }
     #[test]
-    fn entirely_shadowed_or_exempt_exit_does_not_activate_guards() {
-        for rules in [
-            vec![
-                rule("203.0.113.0/24", VpnRuleAction::Direct),
-                rule("203.0.113.0/24", VpnRuleAction::Exit),
-            ],
-            vec![rule("192.168.1.0/24", VpnRuleAction::Exit)],
+    fn subtract_and_merge_preserve_both_address_families() {
+        for (parent, a, b) in [
+            ("0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1"),
+            ("::/0", "::/1", "8000::/1"),
         ] {
-            let c = VpnConfig {
-                rules,
-                ..Default::default()
-            };
-            let p = compile_vpn_routes(&c, &Default::default(), &["8.8.8.8".parse().unwrap()]);
-            assert!(!captured(&p, "8.8.8.8"));
-            assert!(!captured(&p, "2606:4700:4700::1111"));
+            let parent = parent.parse::<VpnCidr>().unwrap();
+            let a = a.parse::<VpnCidr>().unwrap();
+            let b = b.parse::<VpnCidr>().unwrap();
+            assert_eq!(subtract_cidrs(parent, &[a]), vec![b]);
+            assert_eq!(normalize_cidrs([a, b]), vec![parent]);
         }
     }
 }

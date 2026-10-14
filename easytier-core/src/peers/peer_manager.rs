@@ -1745,30 +1745,21 @@ impl PeerManagerCore {
             .await
     }
 
-    pub async fn get_msg_dst_peer_ipv4(
-        &self,
-        ipv4_addr: &Ipv4Addr,
-        bytes: u32,
-    ) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         self.outbound_packet_router
-            .get_msg_dst_peer_ipv4(ipv4_addr, bytes)
+            .get_msg_dst_peer_ipv4(ipv4_addr)
             .await
     }
 
-    pub async fn get_msg_dst_peer_ipv6(
-        &self,
-        ipv6_addr: &Ipv6Addr,
-        bytes: u32,
-    ) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
         self.outbound_packet_router
-            .get_msg_dst_peer_ipv6(ipv6_addr, bytes)
+            .get_msg_dst_peer_ipv6(ipv6_addr)
             .await
     }
 
-    /// Address-family dispatch without a packet at hand (flow setup
-    /// decisions); traffic counters are unaffected.
+    /// Address-family dispatch for flow setup without a packet at hand.
     pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
-        self.outbound_packet_router.get_msg_dst_peer(addr, 0).await
+        self.outbound_packet_router.get_msg_dst_peer(addr).await
     }
 
     pub async fn send_msg_by_ip(
@@ -1937,15 +1928,9 @@ impl PeerManagerCore {
                                         == Some(v6)
                                 }
                             })
-                            .map(|route| (route.peer_id, route.path_latency));
-                        let (peer_id, up, latency_ms) = match reachable {
-                            Some((peer_id, latency)) => {
-                                (Some(peer_id), true, u32::try_from(latency.max(0)).ok())
-                            }
-                            None => (None, false, None),
-                        };
-                        updates.push((address, peer_id, up, latency_ms));
-                        liveness.push((address.to_string(), up));
+                            .map(|route| route.peer_id);
+                        updates.push((address, reachable));
+                        liveness.push((address.to_string(), reachable.is_some()));
                     }
                     vpn_engine.update_exit_states(updates);
                     if last_liveness.as_ref() != Some(&liveness) {
@@ -2765,10 +2750,10 @@ impl PeerOutboundPacketRouter {
         result
     }
 
-    pub async fn get_msg_dst_peer(&self, addr: &IpAddr, bytes: u32) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
         match addr {
-            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(ipv4_addr, bytes).await,
-            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(ipv6_addr, bytes).await,
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(ipv4_addr).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(ipv6_addr).await,
         }
     }
 
@@ -2806,11 +2791,7 @@ impl PeerOutboundPacketRouter {
             .collect()
     }
 
-    pub async fn get_msg_dst_peer_ipv4(
-        &self,
-        ipv4_addr: &Ipv4Addr,
-        bytes: u32,
-    ) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         let mut is_vpn_exit = false;
         let mut dst_peers = vec![];
         if self.is_all_peers_broadcast_ipv4(ipv4_addr) {
@@ -2824,7 +2805,7 @@ impl PeerOutboundPacketRouter {
             .context
             .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
             && let super::vpn_policy::VpnDecision::Exit(peer_id) =
-                self.vpn_engine.resolve(&IpAddr::V4(*ipv4_addr), bytes)
+                self.vpn_engine.resolve(&IpAddr::V4(*ipv4_addr))
         {
             dst_peers.push(peer_id);
             is_vpn_exit = true;
@@ -2832,11 +2813,7 @@ impl PeerOutboundPacketRouter {
         (dst_peers, is_vpn_exit)
     }
 
-    pub async fn get_msg_dst_peer_ipv6(
-        &self,
-        ipv6_addr: &Ipv6Addr,
-        bytes: u32,
-    ) -> (Vec<PeerId>, bool) {
+    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
         let mut is_vpn_exit = false;
         let mut dst_peers = vec![];
         if self.is_all_peers_broadcast_ipv6(ipv6_addr) {
@@ -2846,7 +2823,7 @@ impl PeerOutboundPacketRouter {
         } else if !ipv6_addr.is_unicast_link_local() {
             // NOTE: never route link local address to a VPN exit.
             if let super::vpn_policy::VpnDecision::Exit(peer_id) =
-                self.vpn_engine.resolve(&IpAddr::V6(*ipv6_addr), bytes)
+                self.vpn_engine.resolve(&IpAddr::V6(*ipv6_addr))
             {
                 dst_peers.push(peer_id);
                 is_vpn_exit = true;
@@ -2887,10 +2864,9 @@ impl PeerOutboundPacketRouter {
             .await;
         }
 
-        let packet_bytes = msg.buf_len() as u32;
         let (dst_peers, is_vpn_exit) = match ip_addr {
-            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(&ipv4_addr, packet_bytes).await,
-            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(&ipv6_addr, packet_bytes).await,
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer_ipv4(&ipv4_addr).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(&ipv6_addr).await,
         };
 
         if dst_peers.is_empty() {
@@ -3976,7 +3952,7 @@ mod tests {
         let core = build_portable_for_test(portable_runtime_config("ipv6-net")).unwrap();
         let unknown = "fd00::2".parse().unwrap();
 
-        let (peers, is_self) = core.get_msg_dst_peer_ipv6(&unknown, 0).await;
+        let (peers, is_self) = core.get_msg_dst_peer_ipv6(&unknown).await;
 
         assert!(peers.is_empty());
         assert!(!is_self);
@@ -4256,7 +4232,7 @@ mod tests {
         let default_core =
             build_portable_for_test(portable_runtime_config("portable-net")).unwrap();
         assert_eq!(
-            default_core.get_msg_dst_peer_ipv4(&external_ipv4, 0).await,
+            default_core.get_msg_dst_peer_ipv4(&external_ipv4).await,
             (Vec::new(), false)
         );
 
@@ -4265,13 +4241,11 @@ mod tests {
         let mut vpn = crate::config::vpn::VpnConfig::default();
         vpn.rules.push(crate::config::vpn::VpnRuleConfig {
             cidr: "0.0.0.0/0".parse().unwrap(),
-            action: crate::config::vpn::VpnRuleAction::Exit,
-            exits: vec!["10.20.0.50".parse().unwrap()],
-            priority: 0,
+            exit: "10.20.0.50".parse().unwrap(),
         });
         core.update_vpn_config(vpn).unwrap();
         assert_eq!(
-            core.get_msg_dst_peer_ipv4(&external_ipv4, 0).await,
+            core.get_msg_dst_peer_ipv4(&external_ipv4).await,
             (Vec::new(), false)
         );
     }

@@ -313,34 +313,6 @@ async fn set_tun_fd(
 }
 
 #[tauri::command]
-async fn set_vpn_system_dns_servers(
-    instance_id: String,
-    dns_servers: Vec<String>,
-) -> Result<(), String> {
-    let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
-        return Err("VPN system DNS update is not supported in remote mode".to_string());
-    };
-    let uuid = instance_id
-        .parse::<uuid::Uuid>()
-        .map_err(|e| e.to_string())?;
-    let dns_servers = dns_servers
-        .into_iter()
-        .map(|server| {
-            server
-                .parse::<std::net::IpAddr>()
-                .map_err(|e| e.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let instance = instance_manager
-        .instance(uuid)
-        .ok_or_else(|| format!("instance {uuid} not found"))?;
-    instance
-        .packet_plane()
-        .update_vpn_system_dns_servers(dns_servers);
-    Ok(())
-}
-
-#[tauri::command]
 async fn list_network_instance_ids(
     app: AppHandle,
 ) -> Result<ListNetworkInstanceIdsJsonResp, String> {
@@ -3002,7 +2974,6 @@ pub fn run_gui() -> std::process::ExitCode {
             patch_vpn_portal_clients,
             set_logging_level,
             set_tun_fd,
-            set_vpn_system_dns_servers,
             easytier_version,
             set_dock_visibility,
             list_network_instance_ids,

@@ -29,7 +29,6 @@ const mocks = vi.hoisted(() => {
     listNetworkInstanceIds: vi.fn<() => Promise<{ running_inst_ids: unknown[] }>>(async () => ({ running_inst_ids: [] })),
     prepareVpn: vi.fn(async () => ({ granted: true })),
     setTunFd: vi.fn(async () => undefined),
-    setVpnSystemDnsServers: vi.fn(async () => undefined),
     completeVpnReconfigure: vi.fn(async () => ({ accepted: true })),
     startVpn: vi.fn(async (request: Record<string, unknown>) => {
       await listeners.get('vpn_service_start')?.({ fd: 1, generation: request.generation, instanceId: request.instanceId })
@@ -74,7 +73,6 @@ vi.mock('./backend', () => ({
   getVpnStatus: mocks.getCoreVpnStatus,
   listNetworkInstanceIds: mocks.listNetworkInstanceIds,
   setTunFd: mocks.setTunFd,
-  setVpnSystemDnsServers: mocks.setVpnSystemDnsServers,
 }))
 
 function setConfig(instanceId: string, noTun = false) {
@@ -137,7 +135,6 @@ beforeEach(() => {
   mocks.listNetworkInstanceIds.mockResolvedValue({ running_inst_ids: [] })
   mocks.prepareVpn.mockClear()
   mocks.setTunFd.mockClear()
-  mocks.setVpnSystemDnsServers.mockClear()
   mocks.completeVpnReconfigure.mockClear()
   mocks.startVpn.mockClear()
   mocks.reconfigureVpn.mockClear()
@@ -173,11 +170,7 @@ describe('mobile VPN reconciliation ownership', () => {
       mocks.reconfigureVpn.mock.calls[0][0].generation,
     ]
     expect(generations[0]).toMatch(/^\d+$/)
-    expect(mocks.setVpnSystemDnsServers).toHaveBeenCalledWith('B', ['1.1.1.1'])
     expect(mocks.reconfigureVpn.mock.calls[0][0].dnsServers).toEqual(['1.1.1.1'])
-    expect(mocks.setVpnSystemDnsServers.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.getCoreVpnStatus.mock.invocationCallOrder[0],
-    )
   })
 
   it('starts generations above the Android persisted high-water mark', async () => {
@@ -332,7 +325,6 @@ describe('mobile VPN reconciliation ownership', () => {
       instanceId: 'A',
     })
     expect(mocks.completeVpnReconfigure).not.toHaveBeenCalled()
-    expect(mocks.setVpnSystemDnsServers).toHaveBeenCalledWith('A', ['1.1.1.1'])
 
     finishInstall()
     await reconcile
@@ -343,7 +335,7 @@ describe('mobile VPN reconciliation ownership', () => {
     )
   })
 
-  it('strips IPv6 DNS zones for Core while preserving them for the VPN Builder', async () => {
+  it('preserves scoped IPv6 DNS for the VPN Builder', async () => {
     setConfig('A')
     setReady('A', '10.0.0.1')
     mocks.getUnderlyingDnsServers.mockResolvedValueOnce({
@@ -354,7 +346,6 @@ describe('mobile VPN reconciliation ownership', () => {
 
     await vpn.onNetworkInstanceChange('A')
 
-    expect(mocks.setVpnSystemDnsServers).toHaveBeenCalledWith('A', ['fe80::1'])
     expect(mocks.startVpn.mock.calls[0][0].dnsServers).toEqual(['fe80::1%wlan0'])
   })
 

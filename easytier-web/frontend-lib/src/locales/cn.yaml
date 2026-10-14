@@ -868,39 +868,16 @@ disable_relay_data_help: 不转发其他节点的数据包，本节点不承载�
 prefer_peer_relay: 优先凭证节点转发
 prefer_peer_relay_help: 优先通过已经转发到目标节点的凭证节点转发，而不是为同一目标再通告一条直连路径。
 
-vpn_section: 多出口策略 VPN
-vpn_section_help: 按目标网段设置走出口、始终直连或始终阻断策略；规则按最长前缀匹配，出口地址按顺序尝试。
+vpn_section: 网段出口 VPN
+vpn_section_help: 将指定目标网段交给单个出口节点。最长前缀优先；组网、子网代理和手动路由保留原路径。出口不可用时丢弃匹配流量。
 vpn_exit_enabled: 提供出口转发
 vpn_exit_enabled_help: 允许其他节点把本节点作为出口，转发并 NAT 它们的流量。
-vpn_dns_protect: DNS 防泄漏
-vpn_dns_protect_help: 存在有效走出口规则时，公共 DNS 遵守分流规则；没有可用出口时阻断，保留明确直连和地址豁免。
-vpn_ipv6_protect: IPv6 防泄漏
-vpn_ipv6_protect_help: 存在有效 IPv4 出口规则时，阻断未被 IPv6 规则覆盖的流量，保留明确直连及组网、子网和内网豁免。
-vpn_ignore_private: 忽略内网地址
-vpn_ignore_private_help: 即使规则设置为“始终阻断”，以下地址也会直连绕过 VPN：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、100.64.0.0/10、127.0.0.0/8、169.254.0.0/16、fc00::/7、::1/128、fe80::/10。组网虚拟 IP 和子网代理 CIDR 始终绕过规则。
-vpn_action_exit: 走出口（全部不可用时阻断）
-vpn_action_direct: 始终直连
-vpn_action_block: 始终阻断
 vpn_rules: 分流规则
-vpn_rules_help: 最长前缀优先；前缀相同时按优先级（小者优先），再按列表顺序。0.0.0.0/0 与 ::/0 分别匹配全部 IPv4 与 IPv6 流量。
 vpn_add_rule: 添加规则
 vpn_no_rules: 暂无规则
 vpn_rule_cidr: 目标网段
-vpn_rule_action: 动作
-vpn_rule_exits: 出口虚拟 IP（按顺序）
-vpn_rule_exits_help: 填写本网络中的虚拟 IP，并按首选顺序排列。全部出口不可用时会阻断流量。
-vpn_rule_exit_placeholder: 例如 10.144.144.2
-vpn_rule_exit_ip: 出口 IP {0}
-vpn_rule_add_exit: 添加出口 IP
-vpn_rule_remove_exit: 删除出口 IP
-vpn_rule_move_exit_up: 上移出口 IP
-vpn_rule_move_exit_down: 下移出口 IP
-vpn_rule_priority: 优先级
-vpn_rule_packets: 包数
-vpn_rule_bytes: 字节数
-vpn_rule_effective: 当前生效
-vpn_rule_move_up: 上移规则
-vpn_rule_move_down: 下移规则
+vpn_rule_exit: 出口虚拟 IP
+vpn_rule_state: 出口状态
 vpn_rule_remove: 删除规则
 vpn_status_title: VPN 运行状态
 vpn_status_enabled: 已启用
@@ -911,4 +888,3 @@ vpn_status_routes_active: 已接管
 vpn_status_routes_inactive: 未接管
 vpn_exit_state_up: 可用
 vpn_exit_state_down: 不可用
-vpn_exit_state_unknown: 未知

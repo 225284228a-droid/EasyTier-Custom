@@ -14,8 +14,6 @@ mod packet_io;
 mod packet_plane;
 #[cfg(feature = "proxy-packet")]
 mod packet_proxy_extension;
-#[cfg(feature = "proxy-smoltcp-stack")]
-pub mod vpn_dns;
 #[cfg(feature = "vpn-portal")]
 mod vpn_portal_extension;
 
@@ -877,10 +875,6 @@ where
             runtime_config.clone(),
             proxy_cidr_monitor_available,
         ));
-        #[cfg(feature = "proxy-smoltcp-stack")]
-        let _ = packet_plane
-            .dns_egress
-            .set(vpn_dns::dns_factory(&data_plane_runtime));
 
         Ok(Arc::new(Self {
             instance_name,

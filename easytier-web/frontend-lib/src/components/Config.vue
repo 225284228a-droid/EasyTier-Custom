@@ -226,16 +226,10 @@ function ensureVpnConfig(): VpnConfigType {
   if (!curNetwork.value.vpn) {
     curNetwork.value.vpn = {
       exit_enabled: false,
-      dns_protect: true,
-      ipv6_protect: true,
-      ignore_private: true,
       rules: [],
     }
   }
   const config = curNetwork.value.vpn
-  config.dns_protect ??= true
-  config.ipv6_protect ??= true
-  config.ignore_private ??= true
   config.rules ??= []
   return config
 }

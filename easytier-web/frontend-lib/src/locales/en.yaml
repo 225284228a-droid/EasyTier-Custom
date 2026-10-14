@@ -868,39 +868,16 @@ disable_relay_data_help: Do not relay data packets for other peers, so this node
 prefer_peer_relay: Prefer Peer Relay
 prefer_peer_relay_help: Prefer a credential peer that already relays to a destination over advertising another direct edge to the same destination.
 
-vpn_section: Multi-Exit Policy VPN
-vpn_section_help: Set a via-exit, always-direct, or always-block policy per destination CIDR. Rules use longest-prefix matching and try exit IPs in order.
+vpn_section: Subnet Exit VPN
+vpn_section_help: Route each destination subnet through one exit node. The longest prefix wins; mesh, subnet proxy and manual routes retain their paths. Matching traffic is dropped while its exit is unavailable.
 vpn_exit_enabled: Offer exit forwarding
 vpn_exit_enabled_help: Allow other nodes to use this node as an exit that forwards and NATs their traffic.
-vpn_dns_protect: DNS leak protection
-vpn_dns_protect_help: With an effective exit rule, public DNS follows the routing policy and blocks when no exit is available. Explicit direct rules and address exemptions remain effective.
-vpn_ipv6_protect: IPv6 leak protection
-vpn_ipv6_protect_help: With an effective IPv4 exit rule, block IPv6 traffic not covered by IPv6 rules, while retaining explicit direct rules and mesh, subnet, and private address exemptions.
-vpn_ignore_private: Bypass private and local addresses
-vpn_ignore_private_help: "These addresses bypass VPN rules, even an always-block rule: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, fc00::/7, ::1/128, and fe80::/10. Mesh virtual IPs and subnet proxy CIDRs always bypass rules."
-vpn_action_exit: Via exit (block if all are unavailable)
-vpn_action_direct: Always direct
-vpn_action_block: Always block
-vpn_rules: Split rules
-vpn_rules_help: Longest prefix wins; equal prefixes use priority (lower first), then list order. 0.0.0.0/0 and ::/0 match all IPv4 and IPv6 traffic respectively.
+vpn_rules: Subnet rules
 vpn_add_rule: Add rule
 vpn_no_rules: No rules
 vpn_rule_cidr: Destination CIDR
-vpn_rule_action: Action
-vpn_rule_exits: Exit virtual IPs (in order)
-vpn_rule_exits_help: Enter virtual IPs in this network, ordered by preference. Traffic is blocked if every exit is unavailable.
-vpn_rule_exit_placeholder: e.g. 10.144.144.2
-vpn_rule_exit_ip: Exit IP {0}
-vpn_rule_add_exit: Add exit IP
-vpn_rule_remove_exit: Remove exit IP
-vpn_rule_move_exit_up: Move exit IP up
-vpn_rule_move_exit_down: Move exit IP down
-vpn_rule_priority: Priority
-vpn_rule_packets: Packets
-vpn_rule_bytes: Bytes
-vpn_rule_effective: Effective
-vpn_rule_move_up: Move rule up
-vpn_rule_move_down: Move rule down
+vpn_rule_exit: Exit virtual IP
+vpn_rule_state: Exit state
 vpn_rule_remove: Remove rule
 vpn_status_title: VPN status
 vpn_status_enabled: Enabled
@@ -911,4 +888,3 @@ vpn_status_routes_active: taken over
 vpn_status_routes_inactive: not taken over
 vpn_exit_state_up: Available
 vpn_exit_state_down: Unavailable
-vpn_exit_state_unknown: Unknown

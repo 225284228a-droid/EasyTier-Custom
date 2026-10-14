@@ -19,8 +19,6 @@ pub struct CorePacketPlane {
     peer_manager: Arc<PeerManagerCore>,
     runtime_config: CoreRuntimeConfigStore,
     proxy_cidr_monitor_available: bool,
-    #[cfg(feature = "proxy-smoltcp-stack")]
-    pub(super) dns_egress: std::sync::OnceLock<Arc<dyn super::vpn_dns::VpnDnsSocketFactory>>,
 }
 
 impl CorePacketPlane {
@@ -28,43 +26,12 @@ impl CorePacketPlane {
         self.peer_manager.vpn_route_exclusions().await
     }
 
-    pub async fn vpn_route_plan(
-        &self,
-        dns_servers: Vec<IpAddr>,
-    ) -> (crate::config::vpn::routes::VpnRoutePlan, u64) {
-        let exclusions = self.vpn_route_exclusions().await;
+    pub async fn vpn_route_plan(&self) -> (crate::config::vpn::routes::VpnRoutePlan, u64) {
         let engine = self.peer_manager.vpn_engine();
-        engine.update_route_context(exclusions, dns_servers);
+        engine.update_exclusions(self.vpn_route_exclusions().await);
         engine.route_plan()
     }
 
-    pub fn resolve_vpn(
-        &self,
-        destination: &IpAddr,
-        bytes: u32,
-    ) -> crate::peers::vpn_policy::VpnDecision {
-        self.peer_manager.vpn_engine().resolve(destination, bytes)
-    }
-
-    /// Route/source preflight checks do not count as transmitted packets.
-    pub fn classify_vpn(&self, destination: &IpAddr) -> crate::peers::vpn_policy::VpnDecision {
-        self.peer_manager.vpn_engine().resolve(destination, 0)
-    }
-
-    pub fn vpn_overlay_destination(&self, destination: &IpAddr) -> bool {
-        self.peer_manager
-            .vpn_engine()
-            .is_overlay_destination(destination)
-    }
-
-    pub fn update_vpn_dns_servers(&self, servers: Vec<IpAddr>) {
-        self.peer_manager.vpn_engine().update_dns_servers(servers);
-    }
-    pub fn update_vpn_system_dns_servers(&self, servers: Vec<IpAddr>) {
-        self.peer_manager
-            .vpn_engine()
-            .update_system_dns_servers(servers);
-    }
     pub(super) fn new(
         peer_manager: Arc<PeerManagerCore>,
         runtime_config: CoreRuntimeConfigStore,
@@ -74,35 +41,7 @@ impl CorePacketPlane {
             peer_manager,
             runtime_config,
             proxy_cidr_monitor_available,
-            #[cfg(feature = "proxy-smoltcp-stack")]
-            dns_egress: std::sync::OnceLock::new(),
         }
-    }
-
-    #[cfg(feature = "proxy-smoltcp-stack")]
-    pub async fn vpn_dns_tcp_connect(
-        &self,
-        address: std::net::SocketAddr,
-        timeout: std::time::Duration,
-    ) -> std::io::Result<crate::gateway::DataPlaneTcpStream> {
-        self.dns_egress
-            .get()
-            .ok_or_else(|| std::io::Error::other("DNS packet plane unavailable"))?
-            .tcp_connect(address, timeout)
-            .await
-    }
-
-    #[cfg(feature = "proxy-smoltcp-stack")]
-    pub async fn vpn_dns_udp_bind(
-        &self,
-        address: std::net::SocketAddr,
-        timeout: std::time::Duration,
-    ) -> std::io::Result<crate::gateway::DataPlaneUdpSocket> {
-        self.dns_egress
-            .get()
-            .ok_or_else(|| std::io::Error::other("DNS packet plane unavailable"))?
-            .udp_bind(address, timeout)
-            .await
     }
 
     pub async fn send_ip_packet(&self, packet: HostPacket) -> anyhow::Result<()> {

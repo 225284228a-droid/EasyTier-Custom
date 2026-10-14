@@ -17,7 +17,6 @@ import {
   getVpnStatus,
   listNetworkInstanceIds,
   setTunFd,
-  setVpnSystemDnsServers,
 } from './backend'
 
 interface vpnStatus {
@@ -482,7 +481,6 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
   let curNetworkInfo
   let vpnPolicy
   let underlyingDnsServers: string[]
-  let systemDnsServers: string[]
   try {
     const [networkInfo, dnsResponse] = await Promise.all([
       collectNetworkInfo(instanceId).then(response => response?.info?.map?.[instanceId]),
@@ -491,12 +489,8 @@ async function reconcileNetworkInstance(instanceId: string, generation: number) 
     if (dnsResponse?.errorMsg) throw new Error(dnsResponse.errorMsg)
     curNetworkInfo = networkInfo
     underlyingDnsServers = [...new Set(dnsResponse?.dnsServers ?? [])]
-    systemDnsServers = [...new Set(
-      dnsResponse?.systemDnsServers ?? underlyingDnsServers.map(server => server.split('%')[0]),
-    )]
     if (!isCurrentVpnReconcile(instanceId, generation))
       return
-    await setVpnSystemDnsServers(instanceId, systemDnsServers)
     vpnPolicy = await getVpnStatus(instanceId)
   }
   catch (e) {
