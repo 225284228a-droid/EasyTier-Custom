@@ -80,6 +80,34 @@ fn heartbeat_request(machine: uuid::Uuid, snapshot: &ObserveConfigsResponse) -> 
     }
 }
 
+#[test]
+fn patch_acknowledgement_never_adopts_a_later_console_revision() {
+    let id = uuid::Uuid::new_v4();
+    let applied = easytier::proto::api::manage::PersistedConfigEntry {
+        inst_id: Some(id.into()),
+        revision: "our-write".into(),
+        ..Default::default()
+    };
+    let mut mirror = LocalConfigMirror {
+        machine_id: uuid::Uuid::new_v4(),
+        snapshot: ObserveConfigsResponse {
+            entries: vec![applied.clone()],
+            ..Default::default()
+        },
+        capabilities: Vec::new(),
+        observed_at: String::new(),
+        online: true,
+        stale: false,
+    };
+    assert!(patch_result_is_current(&mirror, &applied));
+    mirror.snapshot.entries[0].revision = "later-console-write".into();
+    assert!(!patch_result_is_current(&mirror, &applied));
+    mirror.snapshot.entries.clear();
+    assert!(!patch_result_is_current(&mirror, &applied));
+    mirror.snapshot.entries = vec![applied.clone(), applied.clone()];
+    assert!(!patch_result_is_current(&mirror, &applied));
+}
+
 async fn connect_console(
     storage: &Storage,
     process: &ProcessManagementRpc<easytier::instance::factory::NativeInstanceFactory>,

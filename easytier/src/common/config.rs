@@ -106,6 +106,18 @@ pub async fn load_config_from_file(
     let config_str = tokio::fs::read_to_string(config_file)
         .await
         .with_context(|| format!("failed to read config file: {}", config_file.display()))?;
+    load_config_from_contents(config_file, config_str, config_dir, disable_env_parsing).await
+}
+
+/// Parse the exact document captured for startup/reconciliation, so the
+/// acknowledgement and the runtime refer to the same file read.
+#[cfg(feature = "management")]
+pub(crate) async fn load_config_from_contents(
+    config_file: &PathBuf,
+    config_str: String,
+    config_dir: Option<&PathBuf>,
+    disable_env_parsing: bool,
+) -> Result<(TomlConfigLoader, ConfigFileControl), anyhow::Error> {
     let (expanded_config_str, uses_env_vars) = if disable_env_parsing {
         (config_str, false)
     } else {
@@ -146,6 +158,30 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[tokio::test]
+    async fn captured_config_contents_do_not_acknowledge_a_later_disk_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("captured.toml");
+        let captured = "hostname = 'captured'\n".to_owned();
+        std::fs::write(&path, "hostname = 'newer'\n").unwrap();
+        let (config, _) = load_config_from_contents(&path, captured, None, true)
+            .await
+            .unwrap();
+        assert_eq!(config.get_hostname(), "captured");
+        assert_eq!(
+            load_config_from_file(&path, None, true)
+                .await
+                .unwrap()
+                .0
+                .get_hostname(),
+            "newer"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "hostname = 'newer'\n"
+        );
+    }
 
     #[test]
     fn detects_only_top_level_logging_sections() {

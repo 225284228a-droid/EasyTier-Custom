@@ -283,6 +283,7 @@ impl CentralNetworkService {
             UNION SELECT user_id FROM devices
             UNION SELECT user_id FROM managed_config_revisions
                 WHERE config_revision LIKE 'central:%'
+            UNION SELECT user_id FROM central_local_config_deliveries
             "#,
         )
         .fetch_all(&self.db.inner())
@@ -583,6 +584,15 @@ impl CentralNetworkService {
             }
         };
         if deleted {
+            if self
+                .client_manager
+                .supports_local_configs(&(user_id, machine_id))
+                .await
+            {
+                // Publish the retained deletion journal while the authorized
+                // connection can still remove central-owned node files.
+                self.publish_user(user_id).await;
+            }
             self.client_manager
                 .disconnect_session_by_machine_id(user_id, &machine_id)
                 .await;
@@ -621,15 +631,6 @@ impl CentralNetworkService {
             let device_id = Uuid::parse_str(&raw_device_id).map_err(|_| {
                 CentralNetworkServiceError::Invalid(format!("invalid device id: {raw_device_id}"))
             })?;
-            if self
-                .client_manager
-                .supports_local_configs(&(user_id, device_id))
-                .await
-            {
-                return Err(CentralNetworkServiceError::Conflict(
-                    "node owns local TOML; edit its local networks online".into(),
-                ));
-            }
             if self.db.get_device((user_id, device_id)).await?.is_none() {
                 return Err(CentralNetworkServiceError::NotFound(raw_device_id));
             }
@@ -992,6 +993,13 @@ impl CentralNetworkService {
                 .find(|credential| credential.id == credential_id)
                 .map(|credential| credential.expiry_unix)
         });
+        if let Some(delivery_error) = self
+            .db
+            .central_local_delivery_error(user_id, device_id, network_id)
+            .await?
+        {
+            error_msg = Some(delivery_error);
+        }
         Ok(MemberInfo {
             member_id: member.id.to_string(),
             device_id: member.device_id.clone(),
@@ -1100,8 +1108,10 @@ impl CentralNetworkService {
             UNION SELECT device_id FROM network_members WHERE user_id = ?
             UNION SELECT device_id FROM managed_config_revisions
                 WHERE user_id = ? AND config_revision LIKE 'central:%'
+            UNION SELECT device_id FROM central_local_config_deliveries WHERE user_id = ?
             "#,
         )
+        .bind(user_id)
         .bind(user_id)
         .bind(user_id)
         .bind(user_id)
@@ -1161,6 +1171,17 @@ impl CentralNetworkService {
                 .supports_local_configs(&(user_id, device_id))
                 .await
             {
+                if let Err(error) = super::local_delivery::publish(
+                    &self.db,
+                    &self.client_manager,
+                    user_id,
+                    device_id,
+                    configs,
+                )
+                .await
+                {
+                    tracing::error!(user_id, %device_id, %error, "central local projection will be retried");
+                }
                 continue;
             }
             match self
@@ -1611,6 +1632,59 @@ mod tests {
             peer_urls,
             ..standalone_settings()
         }
+    }
+
+    #[tokio::test]
+    async fn local_config_members_are_accepted_offline_with_visible_pending_delivery() {
+        use easytier_core::management::remote_client::Storage as _;
+        let (service, user_id, _) = service().await;
+        let device_id = Uuid::new_v4();
+        register_device(&service, user_id, device_id).await;
+        service
+            .db
+            .store_local_config_mode(user_id, device_id, Uuid::new_v4(), 1, true)
+            .await
+            .unwrap();
+        let network = service
+            .create_network(user_id, standalone_settings(), None)
+            .await
+            .unwrap();
+        let network_id = Uuid::parse_str(&network.network_id).unwrap();
+        service
+            .add_members(
+                user_id,
+                network_id,
+                AddMembersReq {
+                    device_ids: vec![device_id.to_string()],
+                    temporary: false,
+                    ttl_seconds: None,
+                },
+            )
+            .await
+            .unwrap();
+        let members = service
+            .list_members(user_id, network_id)
+            .await
+            .unwrap()
+            .members;
+        assert_eq!(members.len(), 1);
+        assert!(members[0].error_msg.as_ref().unwrap().contains("offline"));
+        assert!(
+            service
+                .db
+                .get_network_config((user_id, device_id), &network_id.to_string())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        service.delete_network(user_id, network_id).await.unwrap();
+        let rows = service
+            .db
+            .project_central_local_configs(user_id, device_id, &BTreeMap::new())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].desired_config.is_none());
     }
 
     #[tokio::test]

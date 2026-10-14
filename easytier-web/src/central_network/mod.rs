@@ -3,6 +3,7 @@
 pub mod compiler;
 pub mod device_auth;
 pub mod gateway;
+pub(crate) mod local_delivery;
 pub mod model;
 pub mod service;
 mod temporary_peers;

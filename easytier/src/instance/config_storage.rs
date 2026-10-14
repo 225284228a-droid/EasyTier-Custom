@@ -23,6 +23,45 @@ impl ConfigFileStorage for NativeConfigFileStorage {
         true
     }
 
+    fn supports_live_reconcile(&self) -> bool {
+        true
+    }
+
+    fn watch_configs(
+        &self,
+        directory: &Path,
+        changed: std::sync::Arc<dyn Fn() + Send + Sync>,
+    ) -> anyhow::Result<Option<Box<dyn Send>>> {
+        use notify::{EventKind, RecursiveMode, Watcher as _};
+
+        // Use an absolute path for native notifications while the manager's
+        // existing path spelling remains the config identity used by RPCs.
+        let directory = std::fs::canonicalize(directory)?;
+        let watched_directory = directory.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+                Ok(event)
+                    if matches!(
+                        event.kind,
+                        EventKind::Create(_)
+                            | EventKind::Modify(_)
+                            | EventKind::Remove(_)
+                            | EventKind::Any
+                    ) && (event.paths.is_empty()
+                        || event.paths.iter().any(|path| {
+                            path == &watched_directory
+                                || path.extension() == Some(std::ffi::OsStr::new("toml"))
+                        })) =>
+                {
+                    changed()
+                }
+                Err(_) => changed(),
+                _ => {}
+            })?;
+        watcher.watch(&directory, RecursiveMode::NonRecursive)?;
+        Ok(Some(Box::new(watcher)))
+    }
+
     async fn list_configs(&self, directory: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
         super::persisted_config_policy::list_configs(directory).await
     }
@@ -90,8 +129,9 @@ impl ConfigFileStorage for NativeConfigFileStorage {
             self.disable_env_parsing,
         )
         .await?;
-        match crate::common::config::load_config_from_file(
+        match crate::common::config::load_config_from_contents(
             &path.to_path_buf(),
+            String::from_utf8(raw)?,
             config_dir.map(Path::to_path_buf).as_ref(),
             self.disable_env_parsing,
         )

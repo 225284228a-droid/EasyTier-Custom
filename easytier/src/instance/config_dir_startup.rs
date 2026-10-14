@@ -15,7 +15,7 @@ use easytier_core::config::toml::ConfigLoader as _;
 use easytier_core::config::toml::TomlConfigLoader;
 use easytier_core::management::{ConfigFileControl, ConfigFileStorage, InstanceStateStore};
 
-use crate::common::config::load_config_from_file;
+use crate::common::config::{load_config_from_contents, load_config_from_file};
 
 use super::config_storage::NativeConfigFileStorage;
 
@@ -23,6 +23,7 @@ pub struct StartupConfigFile {
     pub path: PathBuf,
     pub config: TomlConfigLoader,
     pub control: ConfigFileControl,
+    pub original_contents: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -92,14 +93,16 @@ pub async fn load_config_dir_entries(
         }
         // Inspect identity without expanding environment values or asking
         // get_id() to generate an identity for a legacy document.
-        let raw_id = match storage.read(&path).await {
-            Ok(Some(raw)) => config_document_identity(&raw),
-            Ok(None) => None,
+        let original_contents = match storage.read(&path).await {
+            Ok(raw) => raw,
             Err(error) => {
                 tracing::warn!(%error, config_file = ?path, "Could not inspect config directory identity");
                 None
             }
         };
+        let raw_id = original_contents
+            .as_deref()
+            .and_then(config_document_identity);
         if let Some(id) = raw_id.or(filename_id) {
             startup.config_dir_ids.insert(id);
             owners.entry(id).or_default().insert(path.clone());
@@ -108,13 +111,23 @@ pub async fn load_config_dir_entries(
         }
         // Use the original native loader: valid read-only and environment
         // configurations can still start locally despite remote protection.
-        let (config, control) = match load_config_from_file(
-            &path,
-            Some(&config_dir),
-            disable_env_parsing,
-        )
-        .await
-        {
+        let loaded = if let Some(raw) = &original_contents {
+            match String::from_utf8(raw.clone()) {
+                Ok(contents) => {
+                    load_config_from_contents(
+                        &path,
+                        contents,
+                        Some(&config_dir),
+                        disable_env_parsing,
+                    )
+                    .await
+                }
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            load_config_from_file(&path, Some(&config_dir), disable_env_parsing).await
+        };
+        let (config, control) = match loaded {
             Ok(loaded) => loaded,
             Err(error) => {
                 tracing::warn!(%error, config_file = ?path, "Skipping invalid config directory entry");
@@ -137,6 +150,7 @@ pub async fn load_config_dir_entries(
             path,
             config,
             control,
+            original_contents,
         });
     }
     let mut conflicting_paths = HashSet::new();

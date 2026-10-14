@@ -229,7 +229,7 @@ where
                     ));
                 }
                 format!(
-                    "instance_id = '{id}'\n[network_identity]\nnetwork_name = ''\nnetwork_secret = ''\n"
+                    "instance_id = '{id}'\ninstance_name = '{id}'\n[network_identity]\nnetwork_name = ''\nnetwork_secret = ''\n"
                 )
             }
         };

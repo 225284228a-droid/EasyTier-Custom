@@ -399,6 +399,26 @@ impl<F: InstanceFactory> InstanceManager<F> {
         self.managed_config_controls.remove(&instance_id);
     }
 
+    /// A directory rename preserves the network and its enabled state. The
+    /// process coordinator has already verified a unique, unchanged document.
+    #[cfg(feature = "management")]
+    pub(crate) fn relocate_managed_config(
+        &self,
+        instance_id: Uuid,
+        previous: &std::path::Path,
+        control: ConfigFileControl,
+    ) -> anyhow::Result<()> {
+        if let Some(active) = self.config_control(instance_id) {
+            anyhow::ensure!(
+                active.path.as_deref() == Some(previous),
+                "running config path changed during relocation"
+            );
+            self.config_controls.insert(instance_id, control.clone());
+        }
+        self.unregister_managed_config(instance_id);
+        self.register_managed_config(instance_id, control)
+    }
+
     pub fn mutation_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
         self.mutation_lock.clone()
     }

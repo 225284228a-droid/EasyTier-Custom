@@ -1165,6 +1165,7 @@ struct StartupConfigFile {
     source: ConfigFileSource,
     config: TomlConfigLoader,
     control: ConfigFileControl,
+    original_contents: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -1191,13 +1192,33 @@ async fn prepare_startup_configs(
     };
     // Explicit --config-file errors retain their fatal startup behavior.
     for path in explicit_files {
-        let (config, control) =
-            load_config_from_file(path, config_dir, disable_env_parsing).await?;
+        let original_contents = if path.as_os_str() == "-" {
+            None
+        } else {
+            Some(
+                tokio::fs::read(path)
+                    .await
+                    .with_context(|| format!("failed to read config file {}", path.display()))?,
+            )
+        };
+        let (config, control) = match original_contents.as_ref() {
+            Some(raw) => {
+                crate::common::config::load_config_from_contents(
+                    path,
+                    String::from_utf8(raw.clone())?,
+                    config_dir,
+                    disable_env_parsing,
+                )
+                .await?
+            }
+            None => load_config_from_file(path, config_dir, disable_env_parsing).await?,
+        };
         startup.files.push(StartupConfigFile {
             path: path.clone(),
             source: ConfigFileSource::CliConfigFile,
             config,
             control,
+            original_contents,
         });
     }
     let Some(directory) = config_dir else {
@@ -1218,6 +1239,7 @@ async fn prepare_startup_configs(
             source: ConfigFileSource::ConfigDir,
             config: file.config,
             control: file.control,
+            original_contents: file.original_contents,
         }));
     startup.directory = entries;
     Ok(startup)
@@ -1235,12 +1257,18 @@ fn start_prepared_configs(
         source,
         config,
         mut control,
+        original_contents,
     } in startup.files.drain(..)
     {
         let result = (|| -> anyhow::Result<()> {
             if source == ConfigFileSource::ConfigDir {
                 manager.register_managed_config(config.get_id(), control.clone())?;
                 if !state.is_enabled(&config.get_id()) {
+                    if let Some(contents) = original_contents.as_deref() {
+                        manager
+                            .local_config_catalog()
+                            .acknowledge_file(&path, contents);
+                    }
                     log::info!(config_file = ?path, id = %config.get_id(), "Skipping config stopped before shutdown; enable it from the web console to run again");
                     return Ok(());
                 }
@@ -1268,6 +1296,11 @@ fn start_prepared_configs(
                 manager.register_managed_config(config.get_id(), control.clone())?;
             }
             manager.run_network_instance(config, control)?;
+            if let Some(contents) = original_contents.as_deref() {
+                manager
+                    .local_config_catalog()
+                    .acknowledge_file(&path, contents);
+            }
             Ok(())
         })();
         if let Err(error) = result {
@@ -1288,7 +1321,13 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         std::fs::create_dir_all(config_dir).with_context(|| {
             format!("failed to create config directory {}", config_dir.display())
         })?;
-        log::info!(config_dir = %config_dir.display(), "Using managed config directory");
+        let resolved_config_dir = std::fs::canonicalize(config_dir).with_context(|| {
+            format!(
+                "failed to resolve config directory {}",
+                config_dir.display()
+            )
+        })?;
+        log::info!(config_dir = %resolved_config_dir.display(), "Using managed config directory");
     }
 
     let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
@@ -1349,7 +1388,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         None
     };
 
-    let _daemon_guard = if cli.daemon {
+    // A managed directory remains live even after its last file is removed;
+    // later additions must not require restarting the process.
+    let _daemon_guard = if cli.daemon || cli.config_dir.is_some() {
         Some(manager.register_daemon())
     } else {
         None

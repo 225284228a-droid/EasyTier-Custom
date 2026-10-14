@@ -88,6 +88,7 @@ pin-project-lite.workspace = true
 
 atomic_refcell = "0.1.14"
 atomic-write-file = { version = "0.3.1", optional = true }
+notify = { version = "8.2", optional = true }
 
 quinn = { version = "0.11.12", optional = true, features = ["ring", "rustls-ring"] }
 quinn-proto = { version = "0.11.18", optional = true }
@@ -419,6 +420,7 @@ extended-services = [
 ]
 management = [
     "dep:atomic-write-file",
+    "dep:notify",
     "web-client",
     "logging",
     "easytier-core/management",

@@ -16,7 +16,10 @@ use std::{
 use easytier_proto::api::manage::{ObserveConfigsResponse, PersistedConfigEntry};
 use sha2::{Digest as _, Sha256};
 
-use super::{ConfigFilePermission, ConfigFileStorage, InstanceStateStore, config_source_to_rpc};
+use super::{
+    ConfigFilePermission, ConfigFileStorage, InstanceMutationHooks, InstanceStateStore,
+    ProcessManagement, config_source_to_rpc,
+};
 use crate::{
     config::{
         api::network_config_from_toml,
@@ -37,6 +40,8 @@ pub struct LocalConfigCatalog {
     refresh_requested: tokio::sync::Notify,
     runtime_identities: Mutex<(u64, BTreeMap<uuid::Uuid, RuntimeIdentity>)>,
     state_store: OnceLock<Arc<InstanceStateStore>>,
+    pub(super) reconciled_files: Mutex<BTreeMap<PathBuf, super::local_reconcile::ReconciledFile>>,
+    acknowledged_files: Mutex<BTreeMap<PathBuf, String>>,
 }
 
 struct RuntimeIdentity {
@@ -64,6 +69,8 @@ impl Default for LocalConfigCatalog {
             refresh_requested: tokio::sync::Notify::new(),
             runtime_identities: Mutex::new((0, BTreeMap::new())),
             state_store: OnceLock::new(),
+            reconciled_files: Mutex::new(BTreeMap::new()),
+            acknowledged_files: Mutex::new(BTreeMap::new()),
         }
     }
 }
@@ -86,6 +93,34 @@ impl LocalConfigCatalog {
 
     pub fn request_refresh(&self) {
         self.refresh_requested.notify_one();
+    }
+
+    /// A coordinated write already applied its chosen lifecycle semantics.
+    /// Do not let a filesystem notification turn PersistOnly into SaveAndApply.
+    pub fn acknowledge_file(&self, path: &Path, contents: &[u8]) {
+        self.acknowledged_files
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), raw_hash(contents));
+    }
+
+    pub(super) fn acknowledged_file(&self, path: &Path, hash: &str) -> bool {
+        self.acknowledged_files
+            .lock()
+            .unwrap()
+            .remove(path)
+            .is_some_and(|known| known == hash)
+    }
+
+    pub(super) fn forget_file(&self, path: &Path) {
+        self.acknowledged_files.lock().unwrap().remove(path);
+    }
+
+    pub(super) fn forget_missing_files(&self, paths: &HashSet<PathBuf>) {
+        self.acknowledged_files
+            .lock()
+            .unwrap()
+            .retain(|path, _| paths.contains(path));
     }
 
     pub(crate) fn refresh_after_mutation(self: &Arc<Self>) -> MutationRefreshGuard {
@@ -155,9 +190,58 @@ pub(crate) fn raw_hash(contents: &[u8]) -> String {
         .collect()
 }
 
+#[cfg(test)]
 fn semantic_hash(contents: &str) -> Option<String> {
     let parsed = TomlConfig::new_from_str(contents).ok()?;
+    if implicit_secure_identity(contents.as_bytes()) {
+        omit_generated_identity(&parsed);
+    }
     config_semantic_hash(&parsed)
+}
+
+fn implicit_secure_identity(raw: &[u8]) -> bool {
+    std::str::from_utf8(raw)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Table>(text).ok())
+        .and_then(|table| {
+            table
+                .get("secure_mode")
+                .and_then(toml::Value::as_table)
+                .cloned()
+        })
+        .is_some_and(|secure| {
+            !secure.contains_key("local_private_key") && !secure.contains_key("localPrivateKey")
+        })
+}
+
+fn omit_generated_identity(config: &TomlConfig) {
+    if let Some(mut secure) = config.get_secure_mode() {
+        secure.local_private_key = None;
+        secure.local_public_key = None;
+        config.set_secure_mode(Some(secure));
+    }
+}
+
+/// Parsing an enabled secure config supplies a random local key when the file
+/// omits it. An external edit must retain the active node's implicit identity.
+/// Explicit keys (including environment references) always remain authoritative.
+pub(super) fn reuse_implicit_identity(
+    raw: &[u8],
+    config: &TomlConfig,
+    active: Option<&TomlConfig>,
+) {
+    if !implicit_secure_identity(raw) {
+        return;
+    }
+    if let Some(mut secure) = config.get_secure_mode().filter(|secure| secure.enabled)
+        && let Some(identity) = active
+            .and_then(|active| active.get_secure_mode())
+            .filter(|secure| secure.enabled)
+    {
+        secure.local_private_key = identity.local_private_key;
+        secure.local_public_key = identity.local_public_key;
+        config.set_secure_mode(Some(secure));
+    }
 }
 
 fn config_semantic_hash(config: &TomlConfig) -> Option<String> {
@@ -172,8 +256,18 @@ fn config_semantic_hash(config: &TomlConfig) -> Option<String> {
     Some(raw_hash(toml::to_string(&normalized).ok()?.as_bytes()))
 }
 
+pub(super) fn configs_equivalent(left: &TomlConfig, right: &TomlConfig) -> bool {
+    config_semantic_hash(left)
+        .zip(config_semantic_hash(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
 fn has_pending_config_change(contents: &str, active: Option<&TomlConfig>) -> bool {
-    semantic_hash(contents) != active.and_then(config_semantic_hash)
+    let persisted = TomlConfig::new_from_str(contents).ok();
+    if let Some(persisted) = persisted.as_ref() {
+        reuse_implicit_identity(contents.as_bytes(), persisted, active);
+    }
+    persisted.as_ref().and_then(config_semantic_hash) != active.and_then(config_semantic_hash)
 }
 
 /// The revision fences file contents, permissions, enabled state and the
@@ -352,6 +446,18 @@ where
                 == Some(id)
             && let Ok(config) = TomlConfig::new_from_str(text)
         {
+            reuse_implicit_identity(&raw, &config, active_config.as_ref());
+            if implicit_secure_identity(&raw)
+                && active_config
+                    .as_ref()
+                    .and_then(|active| active.get_secure_mode())
+                    .is_none_or(|secure| !secure.enabled)
+            {
+                // There is no active identity to report for a stopped file.
+                // Project its durable intent, avoiding a new generated key on
+                // every read and a spuriously increasing catalog generation.
+                omit_generated_identity(&config);
+            }
             entry.status = "ready".into();
             entry.network_name = config.get_network_identity().network_name;
             entry.source = config_source_to_rpc(config.get_network_config_source());
@@ -445,10 +551,12 @@ where
 
 pub(super) fn start_observer<F, H>(
     manager: &Arc<InstanceManager<F>>,
+    hooks: Arc<dyn InstanceMutationHooks>,
     storage: Arc<dyn ConfigFileStorage>,
     state: Arc<InstanceStateStore>,
 ) where
     F: InstanceFactory<Instance = CoreInstance<H>, CreateContext = ()>,
+    F::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
     H: CoreInstanceHost,
 {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -464,20 +572,57 @@ pub(super) fn start_observer<F, H>(
         return;
     }
     let catalog = manager.local_config_catalog().clone();
+    let live = storage.supports_live_reconcile();
+    let changed_catalog = Arc::downgrade(&catalog);
+    let watcher = if live {
+        storage.watch_configs(manager.config_dir().unwrap(), Arc::new(move || {
+            if let Some(catalog) = changed_catalog.upgrade() {
+                catalog.request_refresh();
+            }
+        })).unwrap_or_else(|error| {
+            tracing::warn!(%error, "config directory watcher unavailable; using periodic reconciliation");
+            None
+        })
+    } else {
+        None
+    };
+    let scan_interval = if live && watcher.is_none() {
+        Duration::from_secs(1)
+    } else {
+        CATALOG_SCAN_INTERVAL
+    };
     let manager = Arc::downgrade(manager);
     runtime.spawn(async move {
-        let mut timer = tokio::time::interval(CATALOG_SCAN_INTERVAL);
+        let _watcher = watcher;
+        let mut timer = tokio::time::interval(scan_interval);
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = timer.tick() => {},
                 _ = catalog.refresh_requested.notified() => {},
             }
+            if live {
+                // Editors commonly truncate then write or replace via rename.
+                // Coalesce their event bursts before interpreting deletion.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
             let Some(manager) = manager.upgrade() else {
                 return;
             };
             let lock = manager.mutation_lock();
             let _operation = lock.lock().await;
+            if live {
+                let management = ProcessManagement {
+                    instances: manager.clone(),
+                    hooks: hooks.clone(),
+                    storage: storage.clone(),
+                    mutation_lock: lock.clone(),
+                    state_store: state.clone(),
+                };
+                if let Err(error) = management.reconcile_local_files_locked().await {
+                    tracing::warn!(%error, "local config reconciliation failed; retaining running instances");
+                }
+            }
             if refresh_configs(&manager, storage.as_ref(), &state)
                 .await
                 .is_err()
@@ -493,6 +638,25 @@ pub(super) fn start_observer<F, H>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn implicit_identity_never_replaces_explicit_keys_or_environment_references() {
+        let omitted = "[secure_mode]\nenabled=true\n";
+        assert!(implicit_secure_identity(omitted.as_bytes()));
+        for field in ["local_private_key", "localPrivateKey"] {
+            for value in ["", " ", "${PRIVATE_KEY}", "not-base64"] {
+                let explicit = format!("{omitted}{field}='{value}'\n");
+                assert!(!implicit_secure_identity(explicit.as_bytes()));
+            }
+            for value in ["", " "] {
+                let invalid = format!("{omitted}{field}='{value}'\n");
+                assert!(
+                    TomlConfig::new_from_str(&invalid).is_err(),
+                    "blank explicit keys are rejected by the normalizer, not generated"
+                );
+            }
+        }
+    }
 
     #[test]
     fn empty_catalog_establishes_a_generation_and_does_not_repeat_it() {

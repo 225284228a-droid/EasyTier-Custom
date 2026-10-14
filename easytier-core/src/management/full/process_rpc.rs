@@ -99,6 +99,22 @@ pub trait ConfigFileStorage: Send + Sync + 'static {
         false
     }
 
+    /// Native file owners opt into applying external edits. Other Hosts can
+    /// retain an observation-only catalog (for example an embedded config store).
+    fn supports_live_reconcile(&self) -> bool {
+        false
+    }
+
+    /// Keep the returned guard alive for as long as directory notifications
+    /// are needed. Hosts without a watcher use the reconciliation poller.
+    fn watch_configs(
+        &self,
+        _directory: &Path,
+        _changed: Arc<dyn Fn() + Send + Sync>,
+    ) -> anyhow::Result<Option<Box<dyn Send>>> {
+        Ok(None)
+    }
+
     async fn list_configs(&self, _directory: &Path) -> anyhow::Result<Vec<PathBuf>> {
         anyhow::bail!("configuration observation is unsupported by this Host")
     }
@@ -236,6 +252,8 @@ where
     ) -> Self {
         let mutation_lock = instances.mutation_lock();
         #[cfg(feature = "management")]
+        let storage = super::local_reconcile::coordinated_storage(&instances, storage);
+        #[cfg(feature = "management")]
         let state_store = if instances.config_dir().is_some() && storage.supports_catalog() {
             instances
                 .local_config_catalog()
@@ -244,7 +262,12 @@ where
             state_store
         };
         #[cfg(feature = "management")]
-        super::local_catalog::start_observer(&instances, storage.clone(), state_store.clone());
+        super::local_catalog::start_observer(
+            &instances,
+            hooks.clone(),
+            storage.clone(),
+            state_store.clone(),
+        );
         Self {
             instances,
             hooks,
@@ -459,7 +482,7 @@ where
         Ok(())
     }
 
-    async fn prepare_start_locked(&self, config: &TomlConfig) -> anyhow::Result<()> {
+    pub(super) async fn prepare_start_locked(&self, config: &TomlConfig) -> anyhow::Result<()> {
         let active = self
             .instances
             .instances()
@@ -734,9 +757,22 @@ where
                 .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
             let merged =
                 super::persisted_merge::merge_legacy_form_changes(text, &legacy_candidate)?;
-            let merged = TomlConfig::new_from_str(&merged)
+            let merged_config = TomlConfig::new_from_str(&merged)
                 .map_err(|_| anyhow::anyhow!("invalid persisted configuration"))?;
-            config.replace_from_snapshot(&merged);
+            config.replace_from_snapshot(&merged_config);
+            super::local_catalog::reuse_implicit_identity(
+                merged.as_bytes(),
+                &config,
+                self.instances.config(instance_id).as_ref(),
+            );
+        }
+        #[cfg(feature = "management")]
+        if let Some(contents) = persisted_contents {
+            super::local_catalog::reuse_implicit_identity(
+                contents,
+                &config,
+                self.instances.config(instance_id).as_ref(),
+            );
         }
         if !replacing {
             self.state_store.set_enabled(instance_id, false)?;
@@ -785,6 +821,11 @@ where
                 match merged {
                     Ok((merged, merged_config)) => {
                         config.replace_from_snapshot(&merged_config);
+                        super::local_catalog::reuse_implicit_identity(
+                            merged.as_bytes(),
+                            &config,
+                            self.instances.config(instance_id).as_ref(),
+                        );
                         written = merged.into_bytes();
                     }
                     Err(error) => {
@@ -1727,6 +1768,34 @@ where
         _: BaseController,
         _: ListNetworkInstanceRequest,
     ) -> rpc_types::error::Result<ListNetworkInstanceResponse> {
+        #[cfg(feature = "management")]
+        let local_disabled = if self.management.storage.supports_live_reconcile()
+            && self.management.instances.config_dir().is_some()
+        {
+            let _coordinator = self.management.mutation_lock.lock().await;
+            let snapshot = self.management.refresh_local_configs_locked().await?;
+            Some(
+                snapshot
+                    .entries
+                    .into_iter()
+                    .filter(|entry| !entry.running)
+                    .filter_map(|entry| entry.inst_id)
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        let disabled_inst_ids = self
+            .management
+            .state_store
+            .disabled_instance_ids()
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        #[cfg(feature = "management")]
+        let disabled_inst_ids = local_disabled.unwrap_or(disabled_inst_ids);
         Ok(ListNetworkInstanceResponse {
             inst_ids: self
                 .management
@@ -1735,13 +1804,7 @@ where
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-            disabled_inst_ids: self
-                .management
-                .state_store
-                .disabled_instance_ids()
-                .into_iter()
-                .map(Into::into)
-                .collect(),
+            disabled_inst_ids,
             supports_persisted_config_management: Some(true),
             runtime_capabilities: self.management.instances.management_capabilities(),
         })
@@ -1852,7 +1915,20 @@ where
                 source: config_source_to_rpc(config.get_network_config_source()),
             });
         }
-        for instance_id in self.management.state_store.disabled_instance_ids() {
+        let stopped_ids = self.management.state_store.disabled_instance_ids();
+        #[cfg(feature = "management")]
+        let stopped_ids = if self.management.storage.supports_live_reconcile() {
+            stopped_ids
+                .into_iter()
+                .chain(self.management.instances.managed_config_ids())
+                .filter(|id| self.management.instances.instance(*id).is_none())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            stopped_ids
+        };
+        for instance_id in stopped_ids {
             // Only include disabled instances the caller explicitly asked for;
             // skip any disabled instance not in the request, so the response is
             // exactly the requested set (running ones above, disabled ones here).

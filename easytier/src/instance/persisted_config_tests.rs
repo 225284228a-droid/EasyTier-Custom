@@ -349,6 +349,347 @@ fn initial(id: uuid::Uuid, hostname: &str) -> String {
     )
 }
 
+fn live_config(id: uuid::Uuid, hostname: &str) -> String {
+    format!(
+        "instance_id = '{id}'\ninstance_name = '{id}'\nhostname = '{hostname}'\nlisteners = []\n[network_identity]\nnetwork_name = 'live-mesh'\nnetwork_secret = 'secret'\n[flags]\nno_tun = true\nbind_device = false\ndisable_upnp = true\n"
+    )
+}
+
+async fn wait_for_live_config(
+    manager: &NativeInstanceManager,
+    id: uuid::Uuid,
+    hostname: Option<&str>,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let matches = match hostname {
+                Some(hostname) => {
+                    manager
+                        .config(id)
+                        .is_some_and(|config| config.get_hostname() == hostname)
+                        && manager.instance(id).is_some_and(|instance| {
+                            instance.state() == easytier_core::instance::CoreInstanceState::Running
+                        })
+                }
+                None => manager.instance(id).is_none(),
+            };
+            if matches {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("native directory notifications must apply edits without an ObserveConfigs request");
+}
+
+#[tokio::test]
+async fn live_native_files_add_edit_replace_rename_and_delete_without_polling() {
+    use super::config_storage::NativeConfigFileStorage;
+    let directory = tempfile::tempdir().unwrap();
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+    let storage = Arc::new(NativeConfigFileStorage::new(true));
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        storage.clone(),
+        state.clone(),
+    );
+    let id = uuid::Uuid::new_v4();
+    let path = directory.path().join(format!("{id}.toml"));
+    storage
+        .write(&path, live_config(id, "first").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("first")).await;
+    let original = manager.instance(id).unwrap();
+    storage
+        .write(
+            &path,
+            format!("# a comment\n{}", live_config(id, "first")).as_bytes(),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        Arc::ptr_eq(&original, &manager.instance(id).unwrap()),
+        "comments must not restart a network"
+    );
+    storage
+        .write(&path, b"[flags]\nno_tun = 'invalid'")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        Arc::ptr_eq(&original, &manager.instance(id).unwrap()),
+        "a partially written or invalid file must preserve the running network"
+    );
+    storage
+        .write(&path, live_config(id, "second").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("second")).await;
+    assert!(!Arc::ptr_eq(&original, &manager.instance(id).unwrap()));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        live_config(id, "second"),
+        "local application must never rewrite the user's document"
+    );
+    let renamed = directory.path().join("renamed.toml");
+    std::fs::rename(&path, &renamed).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !manager
+            .config_control(id)
+            .is_some_and(|control| control.path.as_ref() == Some(&renamed))
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    wait_for_live_config(&manager, id, Some("second")).await;
+    std::fs::remove_file(&renamed).unwrap();
+    wait_for_live_config(&manager, id, None).await;
+    let snapshot = observe(&rpc).await;
+    assert!(snapshot.entries.is_empty());
+    assert!(manager.managed_config_ids().is_empty());
+    assert_eq!(state.enabled_state(&id), None);
+    // Recreating identical bytes must be a new local addition, even if an RPC
+    // had previously acknowledged that same file content.
+    storage
+        .write(&path, live_config(id, "second").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("second")).await;
+}
+
+#[tokio::test]
+async fn live_native_files_preserve_explicit_pause_and_persist_only_but_reap_deleted_state() {
+    use super::config_storage::NativeConfigFileStorage;
+    let directory = tempfile::tempdir().unwrap();
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+    let storage = Arc::new(NativeConfigFileStorage::new(true));
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        storage.clone(),
+        state.clone(),
+    );
+    let id = uuid::Uuid::new_v4();
+    let path = directory.path().join(format!("{id}.toml"));
+    storage
+        .write(&path, live_config(id, "active").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("active")).await;
+    let original = manager.instance(id).unwrap();
+    let revision = observe(&rpc).await.entries[0].revision.clone();
+    let saved = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        patch(
+            id,
+            revision,
+            "persist-only",
+            PersistedConfigApplyMode::PersistOnly,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved.status, PersistedConfigMutationStatus::Success as i32);
+    assert!(saved.entry.unwrap().pending_apply);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        Arc::ptr_eq(&original, &manager.instance(id).unwrap()),
+        "our own PersistOnly write must not trigger auto-apply"
+    );
+    let persist_only_contents = std::fs::read(&path).unwrap();
+    storage
+        .write(&path, live_config(id, "external").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("external")).await;
+    // A later manual revert to previously acknowledged RPC bytes is still a
+    // fresh external edit. Acknowledgements must be consumed only once.
+    storage.write(&path, &persist_only_contents).await.unwrap();
+    wait_for_live_config(&manager, id, Some("persist-only")).await;
+    WebClientService::set_network_instance_enabled(
+        &rpc,
+        BaseController::default(),
+        SetNetworkInstanceEnabledRequest {
+            inst_id: Some(id.into()),
+            enabled: false,
+            expected_revision: None,
+        },
+    )
+    .await
+    .unwrap();
+    storage
+        .write(&path, live_config(id, "paused-edit").as_bytes())
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(manager.instance(id).is_none());
+    assert!(!state.is_enabled(&id));
+    let paused_path = directory.path().join("paused-renamed.toml");
+    std::fs::rename(&path, &paused_path).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        manager.instance(id).is_none(),
+        "renaming a paused file must keep it paused"
+    );
+    assert!(!state.is_enabled(&id));
+    assert_eq!(
+        manager.managed_config_control(id).unwrap().path.as_ref(),
+        Some(&paused_path)
+    );
+    std::fs::remove_file(&paused_path).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.enabled_state(&id).is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let listed = WebClientService::list_network_instance(
+        &rpc,
+        BaseController::default(),
+        easytier_proto::api::manage::ListNetworkInstanceRequest {},
+    )
+    .await
+    .unwrap();
+    assert!(listed.inst_ids.is_empty() && listed.disabled_inst_ids.is_empty());
+    assert!(observe(&rpc).await.entries.is_empty());
+    storage
+        .write(&path, live_config(id, "recreated").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("recreated")).await;
+}
+
+#[tokio::test]
+async fn live_native_files_apply_env_protected_configs_and_isolate_duplicate_identities() {
+    use super::config_storage::NativeConfigFileStorage;
+    let directory = tempfile::tempdir().unwrap();
+    let duplicate = uuid::Uuid::new_v4();
+    let id = uuid::Uuid::new_v4();
+    let path = directory.path().join(format!("{id}.toml"));
+    let duplicate_path = directory.path().join(format!("{duplicate}.toml"));
+    let alias = directory.path().join("alias.toml");
+    std::fs::write(&duplicate_path, live_config(duplicate, "duplicate")).unwrap();
+    std::fs::write(
+        &alias,
+        format!("instance_id='{duplicate}'\n[flags]\nno_tun='invalid'\n"),
+    )
+    .unwrap();
+    let env = live_config(id, "env").replace(
+        "network_secret = 'secret'",
+        "network_secret = '${ET_LIVE_ENV_TEST:-fallback}'",
+    );
+    std::fs::write(&path, &env).unwrap();
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        Arc::new(NativeConfigFileStorage::default()),
+        Arc::new(InstanceStateStore::new(Some(directory.path()))),
+    );
+    wait_for_live_config(&manager, id, Some("env")).await;
+    assert!(manager.instance(duplicate).is_none());
+    assert_eq!(
+        manager
+            .config(id)
+            .unwrap()
+            .get_network_identity()
+            .network_secret
+            .as_deref(),
+        Some("fallback")
+    );
+    let snapshot = observe(&rpc).await;
+    let entry = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.inst_id == Some(id.into()))
+        .unwrap();
+    assert_eq!(entry.status, "protected");
+    assert!(entry.persisted_toml.is_none() && entry.config.is_none());
+    std::fs::write(
+        &path,
+        env.replace("hostname = 'env'", "hostname = 'env-edited'"),
+    )
+    .unwrap();
+    wait_for_live_config(&manager, id, Some("env-edited")).await;
+    std::fs::remove_file(&alias).unwrap();
+    wait_for_live_config(&manager, duplicate, Some("duplicate")).await;
+}
+
+#[tokio::test]
+async fn live_native_files_keep_the_previous_runtime_when_host_apply_fails() {
+    use super::config_storage::NativeConfigFileStorage;
+    use easytier_core::management::InstanceMutationHooks;
+    struct RejectApply(std::sync::Weak<NativeInstanceManager>, Arc<Notify>);
+    #[async_trait::async_trait]
+    impl InstanceMutationHooks for RejectApply {
+        async fn post_run_network_instance(&self, id: &uuid::Uuid) -> Result<(), String> {
+            if self
+                .0
+                .upgrade()
+                .and_then(|manager| manager.config(*id))
+                .is_some_and(|config| config.get_hostname() == "rejected")
+            {
+                self.1.notify_one();
+                return Err("simulated Host failure".into());
+            }
+            Ok(())
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let failed = Arc::new(Notify::new());
+    let storage = Arc::new(NativeConfigFileStorage::new(true));
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(RejectApply(Arc::downgrade(&manager), failed.clone())),
+        storage.clone(),
+        Arc::new(InstanceStateStore::new(Some(directory.path()))),
+    );
+    let id = uuid::Uuid::new_v4();
+    let path = directory.path().join(format!("{id}.toml"));
+    storage
+        .write(&path, live_config(id, "working").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("working")).await;
+    storage
+        .write(&path, live_config(id, "rejected").as_bytes())
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), failed.notified())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("working")).await;
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        live_config(id, "rejected")
+    );
+    assert!(observe(&rpc).await.entries[0].pending_apply);
+    storage
+        .write(&path, live_config(id, "fixed").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("fixed")).await;
+}
+
 async fn observe(
     rpc: &ProcessManagementRpc<super::factory::NativeInstanceFactory>,
 ) -> easytier_proto::api::manage::ObserveConfigsResponse {
@@ -2055,5 +2396,149 @@ async fn cas_delete_preserves_files_changed_by_post_stop_hook() {
                 Some("manual")
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn live_native_files_preserve_implicit_secure_identity_and_stable_observations() {
+    use super::config_storage::NativeConfigFileStorage;
+    let directory = tempfile::tempdir().unwrap();
+    let id = uuid::Uuid::new_v4();
+    let path = directory.path().join(format!("{id}.toml"));
+    let secure = |hostname: &str| {
+        format!(
+            "{}[secure_mode]\nenabled = true\n",
+            live_config(id, hostname)
+        )
+    };
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+    state.set_enabled(id, false).unwrap();
+    let storage = Arc::new(NativeConfigFileStorage::new(true));
+    let rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        storage.clone(),
+        state,
+    );
+    storage
+        .write(&path, secure("secure-first").as_bytes())
+        .await
+        .unwrap();
+    let stopped = observe(&rpc).await;
+    assert!(!stopped.entries[0].running);
+    assert!(
+        stopped.entries[0]
+            .config
+            .as_ref()
+            .unwrap()
+            .secure_mode
+            .as_ref()
+            .unwrap()
+            .local_private_key
+            .is_none()
+    );
+    assert_eq!(
+        stopped,
+        observe(&rpc).await,
+        "stopped implicit identity must not change on every observation"
+    );
+    WebClientService::set_network_instance_enabled(
+        &rpc,
+        BaseController::default(),
+        SetNetworkInstanceEnabledRequest {
+            inst_id: Some(id.into()),
+            enabled: true,
+            expected_revision: Some(stopped.entries[0].revision.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    wait_for_live_config(&manager, id, Some("secure-first")).await;
+    let original = manager.instance(id).unwrap();
+    let identity = manager.config(id).unwrap().get_secure_mode().unwrap();
+    assert!(identity.local_private_key.is_some());
+    let running = observe(&rpc).await;
+    assert!(!running.entries[0].pending_apply);
+    assert_eq!(
+        running,
+        observe(&rpc).await,
+        "active implicit identity must remain stable across catalog scans"
+    );
+    storage
+        .write(
+            &path,
+            format!("# format-only change\n{}", secure("secure-first")).as_bytes(),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        Arc::ptr_eq(&original, &manager.instance(id).unwrap()),
+        "a secure file's comment edit must not regenerate its identity or restart it"
+    );
+    assert_eq!(
+        manager.config(id).unwrap().get_secure_mode(),
+        Some(identity.clone())
+    );
+    assert!(!observe(&rpc).await.entries[0].pending_apply);
+    storage
+        .write(&path, secure("secure-updated").as_bytes())
+        .await
+        .unwrap();
+    wait_for_live_config(&manager, id, Some("secure-updated")).await;
+    assert!(!Arc::ptr_eq(&original, &manager.instance(id).unwrap()));
+    assert_eq!(
+        manager.config(id).unwrap().get_secure_mode(),
+        Some(identity.clone())
+    );
+    let updated = observe(&rpc).await;
+    assert!(!updated.entries[0].pending_apply);
+    assert_eq!(updated, observe(&rpc).await);
+    assert!(
+        !std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("local_private_key"),
+        "local application must not rewrite implicit keys into the user's TOML"
+    );
+    let saved = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        patch(
+            id,
+            updated.entries[0].revision.clone(),
+            "secure-rpc-updated",
+            PersistedConfigApplyMode::SaveAndApply,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved.status, PersistedConfigMutationStatus::Success as i32);
+    wait_for_live_config(&manager, id, Some("secure-rpc-updated")).await;
+    assert_eq!(
+        manager.config(id).unwrap().get_secure_mode(),
+        Some(identity)
+    );
+    assert!(!observe(&rpc).await.entries[0].pending_apply);
+    for blank in ["", " "] {
+        let active = manager.instance(id).unwrap();
+        let invalid = format!(
+            "{}local_private_key = '{blank}'\n",
+            secure("secure-updated")
+        );
+        storage
+            .write(
+                &directory.path().join(format!("{id}.toml")),
+                invalid.as_bytes(),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            Arc::ptr_eq(&active, &manager.instance(id).unwrap()),
+            "an invalid blank explicit key must preserve the prior runtime"
+        );
     }
 }

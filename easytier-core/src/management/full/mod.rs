@@ -6,6 +6,8 @@ mod instance_info;
 #[cfg(feature = "management")]
 mod local_catalog;
 #[cfg(feature = "management")]
+pub(crate) mod local_reconcile;
+#[cfg(feature = "management")]
 mod logger_rpc;
 #[cfg(feature = "management")]
 pub(super) mod packet_proxy;

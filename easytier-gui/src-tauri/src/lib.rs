@@ -590,6 +590,11 @@ async fn restore_managed_configs(
             if state_store.is_enabled(&file.config.get_id()) {
                 manager.run_network_instance(file.config, file.control)?;
             }
+            if let Some(contents) = file.original_contents.as_deref() {
+                manager
+                    .local_config_catalog()
+                    .acknowledge_file(&file.path, contents);
+            }
             Ok(())
         })();
         if let Err(error) = result {

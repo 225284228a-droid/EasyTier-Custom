@@ -1,11 +1,13 @@
 // sea-orm-cli generate entity -u sqlite:./et.db -o easytier-web/src/db/entity/ --with-serde both --with-copy-enums
 mod central_intent;
+mod central_local_delivery;
 mod devices;
 #[allow(unused_imports)]
 pub mod entity;
 pub(crate) mod local_config_mirror;
 
 pub(crate) use central_intent::{CentralIntentError, CentralOwnedRuntimeConfig};
+pub(crate) use central_local_delivery::CentralLocalDelivery;
 pub use devices::DeviceHeartbeatRecord;
 
 use easytier::common::config::{ConfigSource, NetworkConfig};

@@ -235,6 +235,8 @@ where
         manager: Arc<InstanceManager<F>>,
         storage: Arc<dyn ConfigFileStorage>,
     ) -> Self {
+        #[cfg(feature = "management")]
+        let storage = super::full::local_reconcile::coordinated_storage(&manager, storage);
         let persistence = Arc::new(ManagerConfigPatchPersistence {
             manager: manager.clone(),
             storage,

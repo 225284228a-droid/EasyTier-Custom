@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod central_local_delivery_tests;
+#[cfg(test)]
 mod listener_tests;
 mod local_configs;
 mod managed_config;

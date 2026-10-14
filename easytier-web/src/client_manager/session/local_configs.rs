@@ -278,7 +278,17 @@ impl Session {
             .map_err(|_| LocalConfigError::Unknown)?
             .map_err(|_| LocalConfigError::Unknown)?;
         match response.status {
-            0 => refreshed.map_err(|_| LocalConfigError::Unknown),
+            0 => {
+                let refreshed = refreshed.map_err(|_| LocalConfigError::Unknown)?;
+                let applied = response.entry.ok_or(LocalConfigError::Unknown)?;
+                // A later observation can already contain another console's
+                // write. Never acknowledge that revision as this mutation's
+                // result, otherwise a publisher can silently adopt its edits.
+                if !patch_result_is_current(&refreshed, &applied) {
+                    return Err(LocalConfigError::Conflict(None));
+                }
+                Ok(refreshed)
+            }
             1 => Err(LocalConfigError::Conflict(
                 response.entry.map(|entry| entry.revision),
             )),
@@ -373,6 +383,24 @@ impl Session {
             Err(_) => Err(LocalConfigError::Unknown),
         }
     }
+}
+
+fn patch_result_is_current(
+    mirror: &LocalConfigMirror,
+    applied: &easytier::proto::api::manage::PersistedConfigEntry,
+) -> bool {
+    if applied.inst_id.is_none() || applied.revision.is_empty() {
+        return false;
+    }
+    let mut observed = mirror
+        .snapshot
+        .entries
+        .iter()
+        .filter(|entry| entry.inst_id == applied.inst_id);
+    observed
+        .next()
+        .is_some_and(|entry| entry.revision == applied.revision)
+        && observed.next().is_none()
 }
 
 fn validate_capability_mask(
