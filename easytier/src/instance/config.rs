@@ -102,7 +102,7 @@ pub(crate) fn test_core_instance_config(
         .expect("test configuration should normalize")
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn test_runtime_instance_config(
     global_ctx: &ArcGlobalCtx,
 ) -> easytier_core::config::runtime::CoreInstanceRuntimeConfig {

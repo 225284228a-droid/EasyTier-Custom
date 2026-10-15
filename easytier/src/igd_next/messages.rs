@@ -8,12 +8,12 @@ ST:urn:schemas-upnp-org:device:InternetGatewayDevice:1\r
 Man:\"ssdp:discover\"\r
 MX:3\r\n\r\n";
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) const GET_EXTERNAL_IP_ACTION: &str = "GetExternalIPAddress";
 pub(super) const ADD_ANY_PORT_MAPPING_ACTION: &str = "AddAnyPortMapping";
 pub(super) const ADD_PORT_MAPPING_ACTION: &str = "AddPortMapping";
 pub(super) const DELETE_PORT_MAPPING_ACTION: &str = "DeletePortMapping";
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) const GET_GENERIC_PORT_MAPPING_ENTRY_ACTION: &str = "GetGenericPortMappingEntry";
 
 const MESSAGE_HEAD: &str = r#"<?xml version="1.0"?>
@@ -45,7 +45,7 @@ fn xml_escape(input: &str) -> String {
     output
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn format_get_external_ip_message(service_type: &str) -> String {
     format_message(format!(
         r#"<m:GetExternalIPAddress xmlns:m="{service_type}">
@@ -162,7 +162,7 @@ pub(super) fn format_delete_port_message(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn format_get_generic_port_mapping_entry_message(
     service_type: &str,
     port_mapping_index: u32,

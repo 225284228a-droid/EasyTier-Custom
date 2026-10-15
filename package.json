@@ -4,7 +4,7 @@
   "scripts": {
     "test": "pnpm test:unit",
     "test:unit": "pnpm --dir easytier-web/frontend-lib test:config-ui && pnpm --dir easytier-web/frontend test:unit && pnpm --dir easytier-gui test:unit && pnpm test:ci-scripts",
-    "test:ci-scripts": "node --test .github/scripts/prune-build-artifacts.test.cjs"
+    "test:ci-scripts": "node --test .github/scripts/prune-build-artifacts.test.cjs .github/scripts/builds.test.js .github/scripts/nightly-release.test.js"
   },
   "pnpm": {
     "overrides": {

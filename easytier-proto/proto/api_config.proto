@@ -29,7 +29,10 @@ message InstanceConfigPatch {
   optional bool prefer_peer_relay = 17;
   // Custom subnet exit VPN (fork feature). Replaces the whole [vpn]
   // section when present.
-  optional api.manage.VpnConfig vpn = 20;
+  optional api.manage.VpnConfig vpn = 50020;
+  // Applies with routes: true preserves an empty manual list; false restores
+  // automatic routes. Omission preserves legacy RoutePatch behavior.
+  optional bool enable_manual_routes = 18;
 }
 
 message VpnPortalClientPatch {

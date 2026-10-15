@@ -89,16 +89,16 @@ message Flags {
   bool prefer_peer_relay = 44 [(easytier.flag) = { default: "false" }];
 
   // Restrict automatic P2P/hole-punch attempts to disguised protocols.
-  bool only_use_wss_http3_for_hole_punching = 45 [(easytier.flag) = { default: "false" }];
+  bool only_use_wss_http3_for_hole_punching = 50045 [(easytier.flag) = { default: "false" }];
 
   // Prefer WSS/HTTP3 for automatic P2P while still allowing TCP/UDP fallback.
   // Enabled by default: both peers must advertise the preference (or one side
   // must require it) before disguised punches and WSS/HTTP3 ranking apply, so
   // nodes that explicitly disable it keep the raw protocol ordering.
-  bool prefer_wss_http3_for_p2p = 46 [(easytier.flag) = { default: "true" }];
+  bool prefer_wss_http3_for_p2p = 50046 [(easytier.flag) = { default: "true" }];
 
   // Do not use WSS/HTTP3 for automatic P2P at all.
-  bool disable_wss_http3_for_p2p = 47 [(easytier.flag) = { default: "false" }];
+  bool disable_wss_http3_for_p2p = 50047 [(easytier.flag) = { default: "false" }];
 
   // Enabled by default in configuration. Requires both peers to negotiate cleanup support and
   // confirm usability with a round trip. Keep one manually configured initial
@@ -110,12 +110,12 @@ message Flags {
   // TCP preference favors WSS and UDP preference favors HTTP3 among automatic
   // connections. Equally ranked automatic connections remain. This does not
   // change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
-  bool close_redundant_conns_when_disguised = 49 [(easytier.flag) = { default: "true" }];
+  bool close_redundant_conns_when_disguised = 50049 [(easytier.flag) = { default: "true" }];
 
   // Automatic P2P disguise policy: prefer, off, disabled, or only.
   // Empty/unset preserves legacy boolean configuration. A nonempty mode
-  // overrides the three legacy booleans above; peer wire flags stay unchanged.
-  string p2p_disguise_mode = 50 [(easytier.flag) = { default: "", form: true }];
+  // overrides the three legacy TOML booleans above.
+  string p2p_disguise_mode = 50050 [(easytier.flag) = { default: "", form: true }];
 }
 
 
@@ -285,9 +285,9 @@ message PeerFeatureFlag {
   bool is_credential_peer = 8;
   bool need_p2p = 9;
   bool disable_p2p = 10;
-  bool prefer_wss_http3_for_p2p = 12;
-  bool disable_wss_http3_for_p2p = 13;
-  bool only_use_wss_http3_for_p2p = 14;
+  bool prefer_wss_http3_for_p2p = 50012;
+  bool disable_wss_http3_for_p2p = 50013;
+  bool only_use_wss_http3_for_p2p = 50014;
 }
 
 enum SocketType {

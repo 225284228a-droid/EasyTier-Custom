@@ -455,10 +455,7 @@ mod tests {
         };
         entry.revision = "new-revision".into();
         assert!(check_baseline(&row, Some(&entry), "old-epoch").is_err());
-        assert_eq!(
-            check_baseline(&row, Some(&entry), "new-epoch").unwrap(),
-            true
-        );
+        assert!(check_baseline(&row, Some(&entry), "new-epoch").unwrap());
         entry.pending_apply = true;
         assert!(check_baseline(&row, Some(&entry), "new-epoch").is_err());
         entry.pending_apply = false;

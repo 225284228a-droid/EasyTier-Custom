@@ -252,62 +252,6 @@ fn recv_from_with_dst_ip_once(
     Ok((len as usize, remote_addr, dst_ip))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub(crate) async fn send_to_with_src_ip(
-    socket: &UdpSocket,
-    src_ip: IpAddr,
-    dst_addr: SocketAddr,
-    buf: &[u8],
-) -> io::Result<usize> {
-    socket
-        .async_io(tokio::io::Interest::WRITABLE, || {
-            send_to_with_src_ip_raw(socket, src_ip, dst_addr, buf)
-        })
-        .await
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-pub(crate) async fn send_to_with_src_ip(
-    socket: &UdpSocket,
-    src_ip: IpAddr,
-    dst_addr: SocketAddr,
-    buf: &[u8],
-) -> io::Result<usize> {
-    match (src_ip, dst_addr) {
-        (IpAddr::V4(src), SocketAddr::V4(dst)) => {
-            socket
-                .async_io(tokio::io::Interest::WRITABLE, || {
-                    send_to_with_src_ipv4_to_addr(socket, src, SocketAddr::V4(dst), buf)
-                })
-                .await
-        }
-        (IpAddr::V4(src), SocketAddr::V6(dst)) => {
-            if dst.ip().to_ipv4_mapped().is_none() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("source address {src} does not match destination {dst} family"),
-                ));
-            }
-            socket
-                .async_io(tokio::io::Interest::WRITABLE, || {
-                    send_to_with_src_ipv4_to_addr(socket, src, SocketAddr::V6(dst), buf)
-                })
-                .await
-        }
-        (IpAddr::V6(src), SocketAddr::V6(dst)) => {
-            socket
-                .async_io(tokio::io::Interest::WRITABLE, || {
-                    send_to_with_src_ipv6(socket, src, 0, dst, buf)
-                })
-                .await
-        }
-        (src, dst) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("source address {src} does not match destination {dst} family"),
-        )),
-    }
-}
-
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn send_to_with_src_ipv4_to_addr(
     socket: &UdpSocket,

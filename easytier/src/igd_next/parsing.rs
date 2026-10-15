@@ -1,13 +1,13 @@
 use std::{collections::HashMap, io, net::SocketAddr};
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use std::str::FromStr;
 
 use url::Url;
 use xmltree::Element;
 
 use super::errors::{AddAnyPortError, AddPortError, RemovePortError, RequestError, SearchError};
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use super::{
     PortMappingEntry, PortMappingProtocol,
     errors::{GetExternalIpError, GetGenericPortMappingEntryError},
@@ -171,7 +171,7 @@ pub(super) fn parse_response(text: String, expected: &str) -> RequestResult {
     Err(RequestError::ErrorCode(code, description))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn parse_get_external_ip_response(
     result: RequestResult,
 ) -> Result<std::net::IpAddr, GetExternalIpError> {
@@ -254,7 +254,7 @@ pub(super) fn parse_delete_port_mapping_response(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn parse_get_generic_port_mapping_entry(
     result: RequestResult,
 ) -> Result<PortMappingEntry, GetGenericPortMappingEntryError> {
@@ -298,7 +298,7 @@ pub(super) fn parse_get_generic_port_mapping_entry(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn parse_number<T: FromStr>(
     xml: &Element,
     name: &str,

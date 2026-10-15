@@ -114,7 +114,7 @@ rcgen = { version = "0.14.10", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 
 # for tap device
-tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", features = [
+tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", rev = "5ba6be073e5b486b68c12f80fac5cfb50601f024", features = [
     "async",
 ], optional = true }
 # for net ns
@@ -128,6 +128,7 @@ nix = { version = "0.31.3", features = [
 
 uuid = { workspace = true, features = [
     "v4",
+    "v5",
     "fast-rng",
     "macro-diagnostics",
     "serde",
@@ -255,6 +256,10 @@ windows = { workspace = true, features = [
     "Win32_System_Variant",
     "Win32_Networking_WinSock",
     "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Devices_DeviceAndDriverInstallation",
 ] }
 encoding = "0.2"
 winreg = "0.56"
@@ -362,7 +367,7 @@ mimalloc = ["dep:mimalloc"]
 aes-gcm = ["easytier-core/aes-gcm"]
 openssl-crypto = ["easytier-core/openssl-crypto"]
 ring-crypto = ["easytier-core/ring-crypto"]
-tun = ["dep:tun", "linux-netlink"]
+tun = ["dep:tun", "dep:smoltcp", "linux-netlink", "tokio/rt-multi-thread"]
 linux-netlink = ["dep:netlink-sys"]
 proxy-cidr-monitor = ["easytier-core/proxy-cidr-monitor"]
 websocket = [
@@ -410,10 +415,12 @@ endpoint-discovery = [
     "easytier-core/endpoint-discovery",
 ]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
+dhcp-ipv6 = ["easytier-core/dhcp-ipv6"]
 vpn-portal = ["easytier-core/vpn-portal"]
 wrapped-transport = ["easytier-core/wrapped-transport"]
 extended-services = [
     "dhcp-ipv4",
+    "dhcp-ipv6",
     "vpn-portal",
     "wrapped-transport",
     "proxy-cidr-monitor",

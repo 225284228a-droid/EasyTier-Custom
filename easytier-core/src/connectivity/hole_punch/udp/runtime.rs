@@ -21,7 +21,8 @@ use crate::{
     socket::{
         ListenerConnectionCounter, SocketContext,
         udp::{
-            UdpBindOptions, UdpSession, UdpSessionSocket, VirtualUdpSocket, VirtualUdpSocketFactory,
+            UdpBindOptions, UdpHolePunchObserverRegistry, UdpSession, UdpSessionSocket,
+            VirtualUdpSocket, VirtualUdpSocketFactory,
         },
     },
     tunnel::Tunnel,
@@ -102,6 +103,7 @@ fn punch_url(scheme: &str, addr: SocketAddr) -> url::Url {
 
 pub struct UdpPunchListener<S> {
     pub socket: Arc<S>,
+    pub hole_punch_observers: UdpHolePunchObserverRegistry,
     pub mapped_addr: SocketAddr,
     pub conn_counter: Arc<dyn ListenerConnectionCounter>,
     pub acceptor: Box<dyn UdpPunchAcceptor>,
@@ -156,12 +158,14 @@ pub struct SelectPunchListener {
     pub force_new: bool,
     pub prefer_port_mapping: bool,
     pub scheme: UdpPunchScheme,
+    pub transaction_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectPunchListenerResponse {
     pub listener_mapped_addr: SocketAddr,
     pub scheme: UdpPunchScheme,
+    pub transaction_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

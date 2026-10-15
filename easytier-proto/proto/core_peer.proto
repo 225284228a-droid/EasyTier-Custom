@@ -16,10 +16,10 @@ message PeerConnStats {
 
   // Actual transport sending-window/RTT estimates, in bit/s. RX is reported
   // by the peer's sending transport. Zero means unknown, never a traffic rate.
-  uint64 estimated_rx_bps = 6;
-  uint64 estimated_tx_bps = 7;
+  uint64 estimated_rx_bps = 50006;
+  uint64 estimated_tx_bps = 50007;
   // 1 = transmission-window formula. Missing/0 is the retired traffic estimator.
-  uint32 bandwidth_estimate_version = 8;
+  uint32 bandwidth_estimate_version = 50008;
 }
 
 message PeerConnInfo {

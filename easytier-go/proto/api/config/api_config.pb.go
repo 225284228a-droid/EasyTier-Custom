@@ -91,9 +91,12 @@ type InstanceConfigPatch struct {
 	PreferPeerRelay    *bool                        `protobuf:"varint,17,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
 	// Custom subnet exit VPN (fork feature). Replaces the whole [vpn]
 	// section when present.
-	Vpn           *manage.VpnConfig `protobuf:"bytes,20,opt,name=vpn,proto3,oneof" json:"vpn,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Vpn *manage.VpnConfig `protobuf:"bytes,50020,opt,name=vpn,proto3,oneof" json:"vpn,omitempty"`
+	// Applies with routes: true preserves an empty manual list; false restores
+	// automatic routes. Omission preserves legacy RoutePatch behavior.
+	EnableManualRoutes *bool `protobuf:"varint,18,opt,name=enable_manual_routes,json=enableManualRoutes,proto3,oneof" json:"enable_manual_routes,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *InstanceConfigPatch) Reset() {
@@ -222,6 +225,13 @@ func (x *InstanceConfigPatch) GetVpn() *manage.VpnConfig {
 		return x.Vpn
 	}
 	return nil
+}
+
+func (x *InstanceConfigPatch) GetEnableManualRoutes() bool {
+	if x != nil && x.EnableManualRoutes != nil {
+		return *x.EnableManualRoutes
+	}
+	return false
 }
 
 type VpnPortalClientPatch struct {
@@ -793,7 +803,7 @@ var File_api_config_proto protoreflect.FileDescriptor
 const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_config.proto\x12\n" +
-	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\xfa\x06\n" +
+	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\xcc\a\n" +
 	"\x13InstanceConfigPatch\x12\x1f\n" +
 	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01\x12)\n" +
 	"\x04ipv4\x18\x02 \x01(\v2\x10.common.Ipv4InetH\x01R\x04ipv4\x88\x01\x01\x12)\n" +
@@ -810,15 +820,17 @@ const file_api_config_proto_rawDesc = "" +
 	"\x12disable_relay_data\x18\x0e \x01(\bH\x04R\x10disableRelayData\x88\x01\x01\x12N\n" +
 	"\x12vpn_portal_clients\x18\x0f \x03(\v2 .api.config.VpnPortalClientPatchR\x10vpnPortalClients\x12Q\n" +
 	"\x13managed_credentials\x18\x10 \x01(\v2 .api.manage.ManagedCredentialSetR\x12managedCredentials\x12/\n" +
-	"\x11prefer_peer_relay\x18\x11 \x01(\bH\x05R\x0fpreferPeerRelay\x88\x01\x01\x12,\n" +
-	"\x03vpn\x18\x14 \x01(\v2\x15.api.manage.VpnConfigH\x06R\x03vpn\x88\x01\x01B\v\n" +
+	"\x11prefer_peer_relay\x18\x11 \x01(\bH\x05R\x0fpreferPeerRelay\x88\x01\x01\x12.\n" +
+	"\x03vpn\x18\xe4\x86\x03 \x01(\v2\x15.api.manage.VpnConfigH\x06R\x03vpn\x88\x01\x01\x125\n" +
+	"\x14enable_manual_routes\x18\x12 \x01(\bH\aR\x12enableManualRoutes\x88\x01\x01B\v\n" +
 	"\t_hostnameB\a\n" +
 	"\x05_ipv4B\a\n" +
 	"\x05_ipv6B\x06\n" +
 	"\x04_aclB\x15\n" +
 	"\x13_disable_relay_dataB\x14\n" +
 	"\x12_prefer_peer_relayB\x06\n" +
-	"\x04_vpn\"\x88\x01\n" +
+	"\x04_vpnB\x17\n" +
+	"\x15_enable_manual_routes\"\x88\x01\n" +
 	"\x14VpnPortalClientPatch\x125\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1d.api.config.ConfigPatchActionR\x06action\x129\n" +
 	"\x06client\x18\x02 \x01(\v2!.api.manage.VpnPortalClientConfigR\x06client\"x\n" +

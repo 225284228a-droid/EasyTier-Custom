@@ -145,7 +145,7 @@ message GetIpListResponse {
   repeated common.Ipv6Addr interface_ipv6s = 4;
   repeated common.Url listeners = 5;
   // HTTP3 aliases for UDP listeners accepting both protocols on the same socket.
-  repeated common.Url udp_http3_listeners = 6;
+  repeated common.Url udp_http3_listeners = 50006;
 }
 
 message SendUdpHolePunchPacketRequest {
@@ -164,16 +164,20 @@ message SelectPunchListenerRequest {
   bool force_new = 1;
   bool prefer_port_mapping = 2;
   // Empty keeps the official raw-UDP punch protocol compatible.
-  string scheme = 3;
+  string scheme = 50003;
   // Only used with http3. Absent keeps legacy EasyTier UDP encapsulation.
-  bool native_http3 = 4;
+  bool native_http3 = 50004;
+  // Register source observation before returning the listener address.
+  optional uint32 transaction_id = 3;
 }
 
 message SelectPunchListenerResponse {
   common.SocketAddr listener_mapped_addr = 1;
   // Empty keeps the official raw-UDP punch protocol compatible.
-  string scheme = 2;
-  bool native_http3 = 3;
+  string scheme = 50002;
+  bool native_http3 = 50003;
+  // Echoed only after source observation is registered; absent on older peers.
+  optional uint32 transaction_id = 2;
 }
 
 message SendPunchPacketConeRequest {
@@ -216,16 +220,16 @@ message SendPunchPacketBothEasySymRequest {
 
   uint32 dst_port_num = 4;
   uint32 wait_time_ms = 5;
-  string scheme = 6;
-  bool native_http3 = 7;
+  string scheme = 50006;
+  bool native_http3 = 50007;
 }
 
 message SendPunchPacketBothEasySymResponse {
   // is doing punch with other peer
   bool is_busy = 1;
   common.SocketAddr base_mapped_addr = 2;
-  string scheme = 3;
-  bool native_http3 = 4;
+  string scheme = 50003;
+  bool native_http3 = 50004;
 }
 
 service UdpHolePunchRpc {
@@ -258,27 +262,27 @@ enum PortSequenceDirection {
 message TcpHolePunchPredictedPorts {
   // STUN observed base mapping of the responder; predicted ports continue
   // from this address in `direction`.
-  common.SocketAddr base_mapped_addr = 1;
+  common.SocketAddr base_mapped_addr = 50001;
   // Number of ports to spray starting at base_mapped_addr (k = 0..max-1).
-  uint32 max_port_num = 2;
-  PortSequenceDirection direction = 3;
+  uint32 max_port_num = 50002;
+  PortSequenceDirection direction = 50003;
 }
 
 message TcpHolePunchRequest {
   common.SocketAddr connector_mapped_addr = 1;
   // Empty means the original TCP hole punch. wss upgrades the punched socket.
-  string scheme = 2;
+  string scheme = 50002;
   // Set by nodes that understand `TcpHolePunchPredictedPorts`. When false
   // (e.g. upstream peers) the response must not carry prediction info.
-  bool supports_port_prediction = 3;
+  bool supports_port_prediction = 50003;
 }
 
 message TcpHolePunchResponse {
   common.SocketAddr listener_mapped_addr = 1;
-  string scheme = 2;
+  string scheme = 50002;
   // Only present when the request advertised `supports_port_prediction` and
   // the responder is an easy-symmetric NAT.
-  TcpHolePunchPredictedPorts predicted_ports = 3;
+  TcpHolePunchPredictedPorts predicted_ports = 50003;
 }
 
 service TcpHolePunchRpc {

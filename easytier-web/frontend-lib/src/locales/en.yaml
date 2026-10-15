@@ -13,6 +13,12 @@ initial_nodes_help: |
 initial_node_placeholder: "Example: node.example.com"
 virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
+dhcp_ipv4_cidr: DHCP IPv4 bootstrap CIDR
+dhcp_ipv4_cidr_placeholder: "Example: 10.10.0.0/24"
+dhcp_ipv4_cidr_help: Used until DHCP learns a subnet from peers.
+dhcpv6: Enable DHCPv6
+dhcp_ipv6_cidr: DHCPv6 CIDR
+dhcp_ipv6_cidr_placeholder: "Example: fd12::/64"
 network_name: Network Name
 network_secret: Network Secret
 secure_mode: Secure Mode
@@ -357,6 +363,8 @@ event:
   VpnPortalStarted: VpnPortalStarted
   VpnPortalClientConnected: VpnPortalClientConnected
   VpnPortalClientDisconnected: VpnPortalClientDisconnected
+  DhcpIpv6Changed: DHCP IPv6 address changed
+  DhcpIpv6Conflicted: DHCP IPv6 address conflict
   DhcpIpv4Changed: DhcpIpv4Changed
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded

@@ -599,7 +599,6 @@ pub(crate) mod tests {
                 Endpoint::new_with_abstract_socket(endpoint_config(), None, socket, runtime)
                     .unwrap();
             endpoint.set_default_client_config(client_config());
-
             let server_task = tokio::spawn(async move {
                 let session = listener.accept().await.unwrap();
                 let admission = ServerProtocolAdmissionController::new(1, 2)

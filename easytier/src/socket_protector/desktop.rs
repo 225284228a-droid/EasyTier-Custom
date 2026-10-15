@@ -213,7 +213,7 @@ pub(crate) fn with_udp_scope<T>(
         set_scope(socket, ipv6, index)?;
         let result = operation();
         set_scope(socket, ipv6, previous)?;
-        return Ok(result);
+        Ok(result)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {

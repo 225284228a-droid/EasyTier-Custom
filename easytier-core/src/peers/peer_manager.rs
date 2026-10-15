@@ -95,6 +95,7 @@ pub struct PeerSnapshot {
 pub struct NodeSnapshot {
     pub peer_id: PeerId,
     pub ipv4_addr: Option<cidr::Ipv4Inet>,
+    pub ipv6_addr: Option<cidr::Ipv6Inet>,
     pub proxy_networks: Vec<ProxyNetworkConfig>,
     pub hostname: String,
     pub stun_info: StunInfo,
@@ -280,6 +281,9 @@ fn retain_runtime_owned_peer_state(
     next_peer.runtime.stun_info = current.peer.runtime.stun_info.clone();
     if current.services.dhcp_ipv4 && next.services.dhcp_ipv4 {
         next_peer.runtime.core.routes.ipv4 = current.peer.runtime.core.routes.ipv4.clone();
+    }
+    if current.services.dhcp_ipv6 && next.services.dhcp_ipv6 {
+        next_peer.runtime.core.routes.ipv6 = current.peer.runtime.core.routes.ipv6.clone();
     }
 }
 
@@ -1339,6 +1343,7 @@ impl PeerManagerCore {
         NodeSnapshot {
             peer_id: self.my_peer_id,
             ipv4_addr: self.context.ipv4(),
+            ipv6_addr: self.context.ipv6(),
             proxy_networks: self.context.proxy_networks(),
             hostname: self.context.hostname(),
             stun_info: self.context.stun_info(),

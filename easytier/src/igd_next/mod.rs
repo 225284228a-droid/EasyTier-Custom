@@ -9,7 +9,7 @@ mod parsing;
 
 use std::{collections::HashMap, fmt, net::SocketAddr, time::Duration};
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use std::net::IpAddr;
 
 use bytes::Bytes;
@@ -28,9 +28,9 @@ use rand::Rng as _;
 use tokio::time::timeout;
 
 pub(crate) use errors::AddAnyPortError;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use errors::GetExternalIpError;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) use errors::GetGenericPortMappingEntryError;
 use errors::{AddPortError, HttpTransportError, RemovePortError, RequestError, SearchError};
 
@@ -44,7 +44,7 @@ const MAX_HTTP_RESPONSE_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PortMappingProtocol {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     Tcp,
     Udp,
 }
@@ -52,7 +52,7 @@ pub(crate) enum PortMappingProtocol {
 impl fmt::Display for PortMappingProtocol {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             Self::Tcp => "TCP",
             Self::Udp => "UDP",
         })
@@ -85,7 +85,7 @@ pub(crate) struct Gateway {
     service_type: String,
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) struct PortMappingEntry {
     pub(crate) external_port: u16,
     pub(crate) protocol: PortMappingProtocol,
@@ -263,7 +263,7 @@ impl Gateway {
         parsing::parse_response(response, expected_response)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) async fn get_external_ip(&self) -> Result<IpAddr, GetExternalIpError> {
         let result = self
             .perform_request(
@@ -464,7 +464,7 @@ impl Gateway {
         parsing::parse_delete_port_mapping_response(result)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) async fn get_generic_port_mapping_entry(
         &self,
         index: u32,

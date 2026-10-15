@@ -1251,7 +1251,7 @@ mod tests {
     use easytier::{
         common::{
             MachineIdOptions,
-            config::{ConfigSource, NetworkConfigExt},
+            config::{ConfigLoader, ConfigSource, NetworkConfigExt},
         },
         instance::factory::{
             NativeInstanceManager, native_compact_instance_manager_with_runtime,
@@ -2050,7 +2050,9 @@ mod tests {
         assert_eq!(updated.disable_sym_hole_punching, Some(true));
         assert_eq!(updated.disable_upnp, Some(true));
         assert_eq!(updated.disable_relay_data, Some(true));
-        assert_eq!(updated.enable_private_mode, Some(true));
+        // Runtime projections omit flags that match the Custom defaults.
+        // Check the effective setting after the managed-config round trip.
+        assert!(updated.gen_config().unwrap().get_flags().private_mode);
         assert_eq!(updated.mtu, Some(1360));
         assert_eq!(
             updated.data_compress_algo,

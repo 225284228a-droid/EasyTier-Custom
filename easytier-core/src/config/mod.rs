@@ -10,6 +10,7 @@ pub mod api_input;
     target_os = "unknown"
 ))]
 mod browser;
+mod dhcp;
 mod encryption;
 pub mod gateway;
 pub mod peers;
@@ -18,6 +19,8 @@ pub mod toml;
 pub mod vpn;
 
 pub use crate::proto::common::P2pDisguiseMode;
+pub use dhcp::DhcpConfig;
+pub(crate) use dhcp::valid_ipv6_subnet;
 pub use encryption::EncryptionAlgorithm;
 
 use crate::proto::common::PeerFeatureFlag;

@@ -436,10 +436,10 @@ type PeerConnStats struct {
 	LatencyUs uint64                 `protobuf:"varint,5,opt,name=latency_us,json=latencyUs,proto3" json:"latency_us,omitempty"`
 	// Actual transport sending-window/RTT estimates, in bit/s. RX is reported
 	// by the peer's sending transport. Zero means unknown, never a traffic rate.
-	EstimatedRxBps uint64 `protobuf:"varint,6,opt,name=estimated_rx_bps,json=estimatedRxBps,proto3" json:"estimated_rx_bps,omitempty"`
-	EstimatedTxBps uint64 `protobuf:"varint,7,opt,name=estimated_tx_bps,json=estimatedTxBps,proto3" json:"estimated_tx_bps,omitempty"`
+	EstimatedRxBps uint64 `protobuf:"varint,50006,opt,name=estimated_rx_bps,json=estimatedRxBps,proto3" json:"estimated_rx_bps,omitempty"`
+	EstimatedTxBps uint64 `protobuf:"varint,50007,opt,name=estimated_tx_bps,json=estimatedTxBps,proto3" json:"estimated_tx_bps,omitempty"`
 	// 1 = transmission-window formula. Missing/0 is the retired traffic estimator.
-	BandwidthEstimateVersion uint32 `protobuf:"varint,8,opt,name=bandwidth_estimate_version,json=bandwidthEstimateVersion,proto3" json:"bandwidth_estimate_version,omitempty"`
+	BandwidthEstimateVersion uint32 `protobuf:"varint,50008,opt,name=bandwidth_estimate_version,json=bandwidthEstimateVersion,proto3" json:"bandwidth_estimate_version,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -3633,10 +3633,10 @@ func (x *ListCredentialsResponse) GetCredentials() []*CredentialInfo {
 
 type VpnRuleStatus struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
-	Cidr     string                 `protobuf:"bytes,1,opt,name=cidr,proto3" json:"cidr,omitempty"`
-	ExitAddr string                 `protobuf:"bytes,10,opt,name=exit_addr,json=exitAddr,proto3" json:"exit_addr,omitempty"`
+	Cidr     string                 `protobuf:"bytes,50001,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	ExitAddr string                 `protobuf:"bytes,50010,opt,name=exit_addr,json=exitAddr,proto3" json:"exit_addr,omitempty"`
 	// up | down
-	State         string `protobuf:"bytes,11,opt,name=state,proto3" json:"state,omitempty"`
+	State         string `protobuf:"bytes,50011,opt,name=state,proto3" json:"state,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3694,7 +3694,7 @@ func (x *VpnRuleStatus) GetState() string {
 
 type GetVpnStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Instance      *InstanceIdentifier    `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
+	Instance      *InstanceIdentifier    `protobuf:"bytes,50001,opt,name=instance,proto3" json:"instance,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3738,21 +3738,21 @@ func (x *GetVpnStatusRequest) GetInstance() *InstanceIdentifier {
 
 type GetVpnStatusResponse struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
-	Enabled bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Enabled bool                   `protobuf:"varint,50001,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// this node offers exit forwarding for peers
-	ExitEnabled bool             `protobuf:"varint,2,opt,name=exit_enabled,json=exitEnabled,proto3" json:"exit_enabled,omitempty"`
-	Rules       []*VpnRuleStatus `protobuf:"bytes,4,rep,name=rules,proto3" json:"rules,omitempty"`
+	ExitEnabled bool             `protobuf:"varint,50002,opt,name=exit_enabled,json=exitEnabled,proto3" json:"exit_enabled,omitempty"`
+	Rules       []*VpnRuleStatus `protobuf:"bytes,50004,rep,name=rules,proto3" json:"rules,omitempty"`
 	// host-side route manager state, filled when available
-	RoutesActive    bool   `protobuf:"varint,8,opt,name=routes_active,json=routesActive,proto3" json:"routes_active,omitempty"`
-	RoutesInstalled uint32 `protobuf:"varint,9,opt,name=routes_installed,json=routesInstalled,proto3" json:"routes_installed,omitempty"`
+	RoutesActive    bool   `protobuf:"varint,50008,opt,name=routes_active,json=routesActive,proto3" json:"routes_active,omitempty"`
+	RoutesInstalled uint32 `protobuf:"varint,50009,opt,name=routes_installed,json=routesInstalled,proto3" json:"routes_installed,omitempty"`
 	// Complete positive TUN routes, including overlay and policy capture.
-	CaptureRoutes []string `protobuf:"bytes,13,rep,name=capture_routes,json=captureRoutes,proto3" json:"capture_routes,omitempty"`
+	CaptureRoutes []string `protobuf:"bytes,50013,rep,name=capture_routes,json=captureRoutes,proto3" json:"capture_routes,omitempty"`
 	// Changes with policy/address context, independently of exit liveness.
-	PolicyGeneration uint64 `protobuf:"varint,14,opt,name=policy_generation,json=policyGeneration,proto3" json:"policy_generation,omitempty"`
+	PolicyGeneration uint64 `protobuf:"varint,50014,opt,name=policy_generation,json=policyGeneration,proto3" json:"policy_generation,omitempty"`
 	// Actual virtual IPv6 address and prefix, empty if IPv6 is unconfigured.
-	Ipv6Addr string `protobuf:"bytes,15,opt,name=ipv6_addr,json=ipv6Addr,proto3" json:"ipv6_addr,omitempty"`
+	Ipv6Addr string `protobuf:"bytes,50015,opt,name=ipv6_addr,json=ipv6Addr,proto3" json:"ipv6_addr,omitempty"`
 	// Host protection or route setup error; empty after successful activation.
-	ActivationError string `protobuf:"bytes,16,opt,name=activation_error,json=activationError,proto3" json:"activation_error,omitempty"`
+	ActivationError string `protobuf:"bytes,50016,opt,name=activation_error,json=activationError,proto3" json:"activation_error,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -4022,7 +4022,7 @@ const file_api_instance_proto_rawDesc = "" +
 	"\bselector\"6\n" +
 	"\x06Status\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xb4\x02\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xba\x02\n" +
 	"\rPeerConnStats\x12\x19\n" +
 	"\brx_bytes\x18\x01 \x01(\x04R\arxBytes\x12\x19\n" +
 	"\btx_bytes\x18\x02 \x01(\x04R\atxBytes\x12\x1d\n" +
@@ -4031,10 +4031,10 @@ const file_api_instance_proto_rawDesc = "" +
 	"\n" +
 	"tx_packets\x18\x04 \x01(\x04R\ttxPackets\x12\x1d\n" +
 	"\n" +
-	"latency_us\x18\x05 \x01(\x04R\tlatencyUs\x12(\n" +
-	"\x10estimated_rx_bps\x18\x06 \x01(\x04R\x0eestimatedRxBps\x12(\n" +
-	"\x10estimated_tx_bps\x18\a \x01(\x04R\x0eestimatedTxBps\x12<\n" +
-	"\x1abandwidth_estimate_version\x18\b \x01(\rR\x18bandwidthEstimateVersion\"\xdc\x04\n" +
+	"latency_us\x18\x05 \x01(\x04R\tlatencyUs\x12*\n" +
+	"\x10estimated_rx_bps\x18ֆ\x03 \x01(\x04R\x0eestimatedRxBps\x12*\n" +
+	"\x10estimated_tx_bps\x18׆\x03 \x01(\x04R\x0eestimatedTxBps\x12>\n" +
+	"\x1abandwidth_estimate_version\x18؆\x03 \x01(\rR\x18bandwidthEstimateVersion\"\xdc\x04\n" +
 	"\fPeerConnInfo\x12\x17\n" +
 	"\aconn_id\x18\x01 \x01(\tR\x06connId\x12\x1c\n" +
 	"\n" +
@@ -4282,25 +4282,24 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x16public_key_fingerprint\x18\a \x01(\tR\x14publicKeyFingerprintB\v\n" +
 	"\t_reusable\"Y\n" +
 	"\x17ListCredentialsResponse\x12>\n" +
-	"\vcredentials\x18\x01 \x03(\v2\x1c.api.instance.CredentialInfoR\vcredentials\"\xd5\x01\n" +
-	"\rVpnRuleStatus\x12\x12\n" +
-	"\x04cidr\x18\x01 \x01(\tR\x04cidr\x12\x1b\n" +
-	"\texit_addr\x18\n" +
-	" \x01(\tR\bexitAddr\x12\x14\n" +
-	"\x05state\x18\v \x01(\tR\x05stateJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
-	"R\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x0eeffective_exitR\apacketsR\x05bytesR\x05exits\"S\n" +
-	"\x13GetVpnStatusRequest\x12<\n" +
-	"\binstance\x18\x01 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"\x82\x04\n" +
-	"\x14GetVpnStatusResponse\x12\x18\n" +
-	"\aenabled\x18\x01 \x01(\bR\aenabled\x12!\n" +
-	"\fexit_enabled\x18\x02 \x01(\bR\vexitEnabled\x121\n" +
-	"\x05rules\x18\x04 \x03(\v2\x1b.api.instance.VpnRuleStatusR\x05rules\x12#\n" +
-	"\rroutes_active\x18\b \x01(\bR\froutesActive\x12)\n" +
-	"\x10routes_installed\x18\t \x01(\rR\x0froutesInstalled\x12%\n" +
-	"\x0ecapture_routes\x18\r \x03(\tR\rcaptureRoutes\x12+\n" +
-	"\x11policy_generation\x18\x0e \x01(\x04R\x10policyGeneration\x12\x1b\n" +
-	"\tipv6_addr\x18\x0f \x01(\tR\bipv6Addr\x12)\n" +
-	"\x10activation_error\x18\x10 \x01(\tR\x0factivationErrorJ\x04\b\x03\x10\x04J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\n" +
+	"\vcredentials\x18\x01 \x03(\v2\x1c.api.instance.CredentialInfoR\vcredentials\"\xdb\x01\n" +
+	"\rVpnRuleStatus\x12\x14\n" +
+	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
+	"\texit_addr\x18چ\x03 \x01(\tR\bexitAddr\x12\x16\n" +
+	"\x05state\x18ۆ\x03 \x01(\tR\x05stateJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"R\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x0eeffective_exitR\apacketsR\x05bytesR\x05exits\"U\n" +
+	"\x13GetVpnStatusRequest\x12>\n" +
+	"\binstance\x18ц\x03 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"\x94\x04\n" +
+	"\x14GetVpnStatusResponse\x12\x1a\n" +
+	"\aenabled\x18ц\x03 \x01(\bR\aenabled\x12#\n" +
+	"\fexit_enabled\x18҆\x03 \x01(\bR\vexitEnabled\x123\n" +
+	"\x05rules\x18Ԇ\x03 \x03(\v2\x1b.api.instance.VpnRuleStatusR\x05rules\x12%\n" +
+	"\rroutes_active\x18؆\x03 \x01(\bR\froutesActive\x12+\n" +
+	"\x10routes_installed\x18ن\x03 \x01(\rR\x0froutesInstalled\x12'\n" +
+	"\x0ecapture_routes\x18݆\x03 \x03(\tR\rcaptureRoutes\x12-\n" +
+	"\x11policy_generation\x18ކ\x03 \x01(\x04R\x10policyGeneration\x12\x1d\n" +
+	"\tipv6_addr\x18߆\x03 \x01(\tR\bipv6Addr\x12+\n" +
+	"\x10activation_error\x18\xe0\x86\x03 \x01(\tR\x0factivationErrorJ\x04\b\x03\x10\x04J\x04\b\x06\x10\aJ\x04\b\a\x10\bJ\x04\b\n" +
 	"\x10\vJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x05\x10\x06R\x05exitsR\vdns_protectR\fipv6_protectR\x13protected_endpointsR\x12system_dns_serversR\x0eignore_privateR\tfail_mode*\x8b\x01\n" +
 	"\x12TrustedKeySourcePb\x12%\n" +
 	"!TRUSTED_KEY_SOURCE_PB_UNSPECIFIED\x10\x00\x12#\n" +

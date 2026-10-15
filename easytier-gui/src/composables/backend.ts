@@ -92,10 +92,21 @@ export async function setLoggingLevel(level: string) {
   return await invoke('set_logging_level', { level })
 }
 
-export async function setTunFd(fd: number, instanceId: string, generation: string) {
-  return await invoke('set_tun_fd', { fd, instanceId, generation })
+export interface MobileTunConfig {
+  instance_ids: string[]
+  addresses: string[]
+  routes: string[]
+  dns?: string | null
+  rejected: { instance_id: string, error: string }[]
 }
 
+export async function setTunFd(fd: number, instanceIds?: string[], generation?: string) {
+  return invoke<MobileTunConfig>('set_tun_fd', { fd, instanceIds, generation })
+}
+
+export async function getMobileTunConfig(instanceIds: string[]) {
+  return invoke<MobileTunConfig>('get_mobile_tun_config', { instanceIds })
+}
 
 export async function getEasytierVersion() {
   return await invoke<string>('easytier_version')

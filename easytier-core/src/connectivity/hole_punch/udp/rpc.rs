@@ -59,6 +59,7 @@ fn select_listener_request_to_rpc(request: SelectPunchListener) -> SelectPunchLi
         prefer_port_mapping: request.prefer_port_mapping,
         scheme: request.scheme.as_str().to_owned(),
         native_http3: request.scheme.is_native_http3(),
+        transaction_id: request.transaction_id,
     }
 }
 
@@ -67,6 +68,7 @@ fn select_listener_request_from_rpc(input: SelectPunchListenerRequest) -> Select
         force_new: input.force_new,
         prefer_port_mapping: input.prefer_port_mapping,
         scheme: UdpPunchScheme::from_wire(&input.scheme, input.native_http3),
+        transaction_id: input.transaction_id,
     }
 }
 
@@ -75,6 +77,7 @@ fn select_listener_response_from_rpc(
 ) -> Result<CoreSelectPunchListenerResponse, UdpHolePunchSignalError> {
     Ok(CoreSelectPunchListenerResponse {
         scheme: UdpPunchScheme::from_wire(&response.scheme, response.native_http3),
+        transaction_id: response.transaction_id,
         listener_mapped_addr: SocketAddr::from(
             response
                 .listener_mapped_addr
@@ -90,6 +93,7 @@ fn select_listener_response_to_rpc(
         listener_mapped_addr: Some(response.listener_mapped_addr.into()),
         scheme: response.scheme.as_str().to_owned(),
         native_http3: response.scheme.is_native_http3(),
+        transaction_id: response.transaction_id,
     }
 }
 
@@ -603,7 +607,110 @@ where
 mod tests {
     use std::{future, net::Ipv4Addr, time::Duration};
 
+    use prost::Message;
+
     use super::*;
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacySelectPunchListenerRequest {
+        #[prost(bool, tag = "1")]
+        force_new: bool,
+        #[prost(bool, tag = "2")]
+        prefer_port_mapping: bool,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacySelectPunchListenerResponse {
+        #[prost(message, optional, tag = "1")]
+        listener_mapped_addr: Option<crate::proto::common::SocketAddr>,
+    }
+
+    #[test]
+    fn listener_registration_fields_are_compatible_with_legacy_wire_messages() {
+        let request = select_listener_request_to_rpc(SelectPunchListener {
+            scheme: UdpPunchScheme::Udp,
+            force_new: true,
+            prefer_port_mapping: false,
+            transaction_id: Some(0),
+        });
+        assert_eq!(
+            SelectPunchListenerRequest::decode(request.encode_to_vec().as_slice())
+                .unwrap()
+                .transaction_id,
+            Some(0)
+        );
+        let legacy_request =
+            LegacySelectPunchListenerRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert!(legacy_request.force_new);
+        let request =
+            SelectPunchListenerRequest::decode(legacy_request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(
+            select_listener_request_from_rpc(request).transaction_id,
+            None
+        );
+
+        let mapped_addr = "198.51.100.1:31001".parse().unwrap();
+        let response = select_listener_response_to_rpc(CoreSelectPunchListenerResponse {
+            scheme: UdpPunchScheme::Udp,
+            listener_mapped_addr: mapped_addr,
+            transaction_id: Some(0),
+        });
+        let legacy_response =
+            LegacySelectPunchListenerResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        let response =
+            SelectPunchListenerResponse::decode(legacy_response.encode_to_vec().as_slice())
+                .unwrap();
+        let response = select_listener_response_from_rpc(response).unwrap();
+        assert_eq!(response.listener_mapped_addr, mapped_addr);
+        assert_eq!(response.transaction_id, None);
+    }
+
+    #[test]
+    fn official_transaction_fields_coexist_with_custom_http3_negotiation() {
+        #[derive(Clone, PartialEq, Message)]
+        struct OfficialRequest {
+            #[prost(bool, tag = "1")]
+            force_new: bool,
+            #[prost(bool, tag = "2")]
+            prefer_port_mapping: bool,
+            #[prost(uint32, optional, tag = "3")]
+            transaction_id: Option<u32>,
+        }
+        #[derive(Clone, PartialEq, Message)]
+        struct OfficialResponse {
+            #[prost(message, optional, tag = "1")]
+            listener_mapped_addr: Option<crate::proto::common::SocketAddr>,
+            #[prost(uint32, optional, tag = "2")]
+            transaction_id: Option<u32>,
+        }
+
+        let request = select_listener_request_to_rpc(SelectPunchListener {
+            force_new: false,
+            prefer_port_mapping: true,
+            transaction_id: Some(42),
+            scheme: UdpPunchScheme::Http3,
+        });
+        let official = OfficialRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(official.transaction_id, Some(42));
+        let decoded =
+            SelectPunchListenerRequest::decode(official.encode_to_vec().as_slice()).unwrap();
+        let decoded = select_listener_request_from_rpc(decoded);
+        assert_eq!(decoded.transaction_id, Some(42));
+        assert_eq!(decoded.scheme, UdpPunchScheme::Udp);
+
+        let response = select_listener_response_to_rpc(CoreSelectPunchListenerResponse {
+            listener_mapped_addr: "198.51.100.1:31001".parse().unwrap(),
+            transaction_id: Some(42),
+            scheme: UdpPunchScheme::Http3,
+        });
+        let official = OfficialResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(official.transaction_id, Some(42));
+        let decoded =
+            SelectPunchListenerResponse::decode(official.encode_to_vec().as_slice()).unwrap();
+        let decoded = select_listener_response_from_rpc(decoded).unwrap();
+        assert_eq!(decoded.transaction_id, Some(42));
+        assert_eq!(decoded.scheme, UdpPunchScheme::Udp);
+    }
 
     #[test]
     fn outbound_rpc_controllers_preserve_timeouts() {
@@ -619,18 +726,21 @@ mod tests {
             force_new: true,
             prefer_port_mapping: false,
             scheme: UdpPunchScheme::Http3,
+            transaction_id: Some(0),
         };
         let rpc_request = select_listener_request_to_rpc(domain_request.clone());
         assert!(rpc_request.force_new);
         assert!(!rpc_request.prefer_port_mapping);
         assert_eq!(rpc_request.scheme, "http3");
         assert!(rpc_request.native_http3);
+        assert_eq!(rpc_request.transaction_id, Some(0));
         assert_eq!(
             select_listener_request_from_rpc(SelectPunchListenerRequest {
                 force_new: true,
                 prefer_port_mapping: false,
                 scheme: "http3".to_owned(),
                 native_http3: true,
+                transaction_id: Some(0),
             }),
             domain_request
         );
@@ -639,6 +749,7 @@ mod tests {
         let core_response = CoreSelectPunchListenerResponse {
             listener_mapped_addr: mapped_addr,
             scheme: UdpPunchScheme::Http3,
+            transaction_id: Some(0),
         };
         let rpc_response = select_listener_response_to_rpc(core_response.clone());
         assert_eq!(
@@ -666,6 +777,7 @@ mod tests {
         );
         assert_eq!(
             select_listener_response_from_rpc(SelectPunchListenerResponse {
+                transaction_id: None,
                 listener_mapped_addr: Some(
                     "198.51.100.1:31001".parse::<SocketAddr>().unwrap().into()
                 ),
@@ -708,6 +820,7 @@ mod tests {
             });
             assert_eq!(request.scheme, scheme);
             let response = CoreSelectPunchListenerResponse {
+                transaction_id: None,
                 listener_mapped_addr: mapped_addr,
                 scheme,
             };
@@ -754,7 +867,7 @@ mod tests {
 
         #[derive(Clone, PartialEq, prost::Message)]
         struct LegacySelectRequest {
-            #[prost(string, tag = "3")]
+            #[prost(string, tag = "50003")]
             scheme: String,
         }
 
@@ -762,7 +875,7 @@ mod tests {
         struct LegacySelectResponse {
             #[prost(message, optional, tag = "1")]
             listener_mapped_addr: Option<crate::proto::common::SocketAddr>,
-            #[prost(string, tag = "2")]
+            #[prost(string, tag = "50002")]
             scheme: String,
         }
 
@@ -770,7 +883,7 @@ mod tests {
         struct LegacyBothRequest {
             #[prost(message, optional, tag = "2")]
             public_ip: Option<crate::proto::common::Ipv4Addr>,
-            #[prost(string, tag = "6")]
+            #[prost(string, tag = "50006")]
             scheme: String,
         }
 
@@ -780,11 +893,12 @@ mod tests {
             is_busy: bool,
             #[prost(message, optional, tag = "2")]
             base_mapped_addr: Option<crate::proto::common::SocketAddr>,
-            #[prost(string, tag = "3")]
+            #[prost(string, tag = "50003")]
             scheme: String,
         }
 
         let request = select_listener_request_to_rpc(SelectPunchListener {
+            transaction_id: None,
             force_new: false,
             prefer_port_mapping: false,
             scheme: UdpPunchScheme::Http3,
@@ -801,6 +915,7 @@ mod tests {
 
         let mapped_addr: SocketAddr = "198.51.100.1:31001".parse().unwrap();
         let response = select_listener_response_to_rpc(CoreSelectPunchListenerResponse {
+            transaction_id: None,
             listener_mapped_addr: mapped_addr,
             scheme: UdpPunchScheme::Http3,
         });

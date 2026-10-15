@@ -56,7 +56,7 @@ use crate::{
         },
     },
     events::CoreEventSink,
-    gateway::dhcp::DhcpIpv4Host,
+    gateway::dhcp::DhcpHost,
     host::{
         dns::{DnsRecordResolver, DnsResolver},
         packet::{HostPacketReceiver, PacketSink, host_packet_channel},
@@ -90,8 +90,8 @@ use crate::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 use crate::gateway::vpn_portal::PortalHost;
 use crate::gateway::vpn_portal::PortalRuntimeConfig;
 
-#[cfg(feature = "dhcp-ipv4")]
-use crate::gateway::dhcp::DhcpIpv4Runtime;
+#[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+use crate::gateway::dhcp::DhcpRuntime;
 #[cfg(feature = "proxy-cidr-monitor")]
 use crate::gateway::proxy::cidr_monitor::ProxyCidrMonitorRuntime;
 #[cfg(feature = "proxy-packet")]
@@ -230,7 +230,7 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>>;
+    ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>>;
 
     async fn shutdown(&self);
 
@@ -280,7 +280,7 @@ impl InstanceRuntimeHost for () {
     async fn prepare(
         &self,
         _packet_plane: Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         Ok(None)
     }
 
@@ -441,8 +441,8 @@ where
     packet_proxy: Arc<CoreProxyModule<H>>,
     #[cfg(feature = "proxy-cidr-monitor")]
     proxy_cidr_monitor: ProxyCidrMonitorRuntime,
-    #[cfg(feature = "dhcp-ipv4")]
-    dhcp_ipv4: DhcpIpv4Runtime,
+    #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+    dhcp: DhcpRuntime,
     pub(super) packet_egress: Arc<dyn PacketEgressHost>,
     pub(super) packet_receiver: Mutex<Option<HostPacketReceiver>>,
     pub(super) peer_center: Arc<PeerCenterInstance>,
@@ -912,8 +912,8 @@ where
             packet_proxy,
             #[cfg(feature = "proxy-cidr-monitor")]
             proxy_cidr_monitor,
-            #[cfg(feature = "dhcp-ipv4")]
-            dhcp_ipv4: DhcpIpv4Runtime::new(),
+            #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
+            dhcp: DhcpRuntime::new(),
             packet_egress,
             packet_receiver: Mutex::new(Some(packet_rx)),
             peer_center,

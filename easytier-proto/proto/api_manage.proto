@@ -103,16 +103,20 @@ message NetworkConfig {
   optional VpnPortalConfig vpn_portal_config = 69;
   repeated ManagedCredentialConfig managed_credentials = 71;
   optional bool prefer_peer_relay = 72;
-  optional string sni = 73;
-  optional bool only_use_wss_http3_for_hole_punching = 74;
-  optional bool prefer_wss_http3_for_p2p = 75;
-  optional bool disable_wss_http3_for_p2p = 76;
+  // Bootstrap subnet used when DHCP has not learned a subnet from peers.
+  optional string dhcp_ipv4_cidr = 74;
+  optional bool dhcpv6 = 75;
+  optional string dhcp_ipv6_cidr = 76;
+  optional string sni = 50073;
+  optional bool only_use_wss_http3_for_hole_punching = 50074;
+  optional bool prefer_wss_http3_for_p2p = 50075;
+  optional bool disable_wss_http3_for_p2p = 50076;
 
   // Preferred underlay transport for automatic P2P connect attempts: "tcp" or
   // "udp". Disguise policy separately decides whether dialing uses WSS/HTTP3;
   // when it does, this preference also picks the disguised transport -
   // "udp" prefers HTTP3, "tcp" prefers WSS. Unset or empty means "udp".
-  optional string p2p_prefer_protocol = 78;
+  optional string p2p_prefer_protocol = 50078;
 
   // Enabled when omitted; explicit false is preserved. Requires both peers to negotiate cleanup support and
   // confirm usability with a round trip. Keep one manually configured initial
@@ -124,33 +128,33 @@ message NetworkConfig {
   // TCP preference favors WSS and UDP preference favors HTTP3 among automatic
   // connections. Equally ranked automatic connections remain. This does not
   // change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
-  optional bool close_redundant_conns_when_disguised = 79;
+  optional bool close_redundant_conns_when_disguised = 50079;
 
   // Custom subnet exit VPN (fork feature).
-  optional VpnConfig vpn = 80;
+  optional VpnConfig vpn = 50080;
 
   // prefer: negotiate disguise with raw fallback (default); off: do not
   // initiate disguise but accept a peer requiring it; disabled: forbid
   // automatic disguised P2P; only: require disguise. Manual peers are unaffected.
-  // A nonempty mode overrides legacy disguise booleans (fields 74-76).
-  optional string p2p_disguise_mode = 81;
+  // A nonempty mode overrides legacy TOML disguise booleans (fields 50074-50076).
+  optional string p2p_disguise_mode = 50081;
 }
 
 // One destination subnet mapped to exactly one virtual node address.
 // Matching uses longest-prefix first; duplicate CIDRs are invalid.
 message VpnRuleConfig {
-  string cidr = 1;
+  string cidr = 50001;
   reserved 2, 3, 4, 5, 6;
   reserved "action", "exit", "fallback_exits", "priority", "exits";
-  string exit_addr = 7;
+  string exit_addr = 50007;
 }
 
 message VpnConfig {
   reserved 1, 3, 4, 5, 6, 8;
   reserved "enabled", "dns_protect", "ipv6_protect", "fail_mode", "exits", "ignore_private";
   // This node forwards and NATs exit traffic for peers.
-  bool exit_enabled = 2;
-  repeated VpnRuleConfig rules = 7;
+  bool exit_enabled = 50002;
+  repeated VpnRuleConfig rules = 50007;
 }
 
 message ManagedCredentialConfig {
@@ -203,15 +207,16 @@ message MyNodeInfo {
   repeated common.Url listeners = 6;
   optional string vpn_portal_cfg = 7 [deprecated = true];
   uint32 peer_id = 8;
+  common.Ipv6Inet virtual_ipv6 = 9;
 }
 
 message NodeLocation {
-  string public_ip = 1;
-  string country = 2;
-  string city = 3;
-  string region = 4;
-  optional double latitude = 5;
-  optional double longitude = 6;
+  string public_ip = 50001;
+  string country = 50002;
+  string city = 50003;
+  string region = 50004;
+  optional double latitude = 50005;
+  optional double longitude = 50006;
 }
 
 message NetworkInstanceRunningInfo {
@@ -224,8 +229,8 @@ message NetworkInstanceRunningInfo {
   bool running = 7;
   optional string error_msg = 8;
   peer_rpc.RouteForeignNetworkSummary foreign_network_summary = 9;
-  NodeLocation node_location = 10;
-  string network_name = 11;
+  NodeLocation node_location = 50010;
+  string network_name = 50011;
 }
 
 message NetworkInstanceRunningInfoMap {
@@ -267,8 +272,8 @@ message ListNetworkInstanceRequest {}
 
 message ListNetworkInstanceResponse {
   repeated common.UUID inst_ids = 1;
-  repeated common.UUID disabled_inst_ids = 2;
-  optional bool supports_persisted_config_management = 3;
+  repeated common.UUID disabled_inst_ids = 50002;
+  optional bool supports_persisted_config_management = 50003;
   repeated string runtime_capabilities = 50005;
 }
 
@@ -293,55 +298,55 @@ message ListNetworkInstanceMetaRequest { repeated common.UUID inst_ids = 1; }
 message ListNetworkInstanceMetaResponse { repeated NetworkMeta metas = 1; }
 
 message SaveNetworkInstanceConfigRequest {
-  common.UUID inst_id = 1;
-  NetworkConfig config = 2;
-  ConfigSource source = 3;
+  common.UUID inst_id = 50001;
+  NetworkConfig config = 50002;
+  ConfigSource source = 50003;
 }
 
 message SaveNetworkInstanceConfigResponse {}
 
 message SetNetworkInstanceEnabledRequest {
-  common.UUID inst_id = 1;
-  bool enabled = 2;
+  common.UUID inst_id = 51001;
+  bool enabled = 50002;
   optional string expected_revision = 50001;
 }
 
 message SetNetworkInstanceEnabledResponse {}
 
 message RemoveNetworkInstanceConfigRequest {
-  repeated common.UUID inst_ids = 1;
+  repeated common.UUID inst_ids = 51001;
   optional string expected_revision = 50001;
 }
 
 message RemoveNetworkInstanceConfigResponse {
-  repeated common.UUID remain_inst_ids = 1;
+  repeated common.UUID remain_inst_ids = 50001;
 }
 
 message ObserveConfigsRequest {}
 
 message ObserveConfigsResponse {
-  string catalog_epoch = 1;
-  uint64 catalog_generation = 2;
-  repeated PersistedConfigEntry entries = 3;
+  string catalog_epoch = 50001;
+  uint64 catalog_generation = 50002;
+  repeated PersistedConfigEntry entries = 50003;
 }
 
 // One captured entry from the node-owned configuration directory. Protected
 // or invalid entries carry metadata only, with no config or original TOML.
 message PersistedConfigEntry {
-  string entry_key = 1;
-  common.UUID inst_id = 2;
-  string revision = 3;
-  optional string persisted_toml = 4;
-  NetworkConfig config = 5;
-  uint32 config_permission = 6;
-  bool enabled = 7;
-  bool running = 8;
-  string persisted_raw_hash = 9;
-  optional string active_raw_hash = 10;
-  bool pending_apply = 11;
-  string status = 12;
-  string network_name = 13;
-  ConfigSource source = 14;
+  string entry_key = 50001;
+  common.UUID inst_id = 50002;
+  string revision = 50003;
+  optional string persisted_toml = 50004;
+  NetworkConfig config = 50005;
+  uint32 config_permission = 50006;
+  bool enabled = 50007;
+  bool running = 50008;
+  string persisted_raw_hash = 50009;
+  optional string active_raw_hash = 50010;
+  bool pending_apply = 50011;
+  string status = 50012;
+  string network_name = 50013;
+  ConfigSource source = 50014;
 }
 
 enum PersistedConfigApplyMode {
@@ -360,21 +365,21 @@ enum PersistedConfigMutationStatus {
 }
 
 message PatchPersistedConfigRequest {
-  common.UUID inst_id = 1;
+  common.UUID inst_id = 50001;
   // Empty permits creation only when both identity and target file are absent.
-  string expected_revision = 2;
-  NetworkConfig config = 3;
+  string expected_revision = 50002;
+  NetworkConfig config = 50003;
   // Snake-case typed paths. Repeated fields are replaced atomically.
-  repeated string field_mask = 4;
-  PersistedConfigApplyMode apply_mode = 5;
+  repeated string field_mask = 50004;
+  PersistedConfigApplyMode apply_mode = 50005;
 }
 
 message PatchPersistedConfigResponse {
-  PersistedConfigMutationStatus status = 1;
-  optional string message = 2;
-  PersistedConfigEntry entry = 3;
-  string catalog_epoch = 4;
-  uint64 catalog_generation = 5;
+  PersistedConfigMutationStatus status = 50001;
+  optional string message = 50002;
+  PersistedConfigEntry entry = 50003;
+  string catalog_epoch = 50004;
+  uint64 catalog_generation = 50005;
 }
 
 service PersistedConfigService {

@@ -373,6 +373,7 @@ where
             // Queue the first QUIC Initial even before the accept task is polled.
             layer.enable_classified_accept(UdpSessionProtocol::Quic)?;
         }
+        let hole_punch_observers = layer.hole_punch_observers();
         let conn_counter = Arc::new(CoreUdpPunchConnCounter {
             layer: Arc::downgrade(&layer),
         });
@@ -380,6 +381,7 @@ where
 
         Ok(UdpPunchListener {
             socket,
+            hole_punch_observers,
             mapped_addr: resolved.mapped_addr,
             conn_counter,
             acceptor,

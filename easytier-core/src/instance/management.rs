@@ -23,7 +23,7 @@ fn projected_vpn_activation_error(
     running: bool,
     no_tun: bool,
     has_virtual_address: bool,
-    dhcp_ipv4: bool,
+    dhcp_enabled: bool,
     host_error: Option<&str>,
 ) -> String {
     // These prerequisite reports describe current configuration, rather than
@@ -47,7 +47,7 @@ fn projected_vpn_activation_error(
         return "VPN capture unavailable: no_tun disables the native interface".to_owned();
     }
     if !has_virtual_address {
-        return if dhcp_ipv4 {
+        return if dhcp_enabled {
             "VPN capture pending: waiting for DHCP to assign a virtual address"
         } else {
             "VPN capture unavailable: no virtual IPv4 or IPv6 address is configured"
@@ -313,7 +313,7 @@ where
             runtime.peer.flags.no_tun,
             runtime.peer.runtime.core.routes.ipv4.is_some()
                 || runtime.peer.runtime.core.routes.ipv6.is_some(),
-            runtime.services.dhcp_ipv4,
+            runtime.services.dhcp_ipv4 || runtime.services.dhcp_ipv6,
             host_state
                 .as_ref()
                 .and_then(|state| state.activation_error.as_deref()),

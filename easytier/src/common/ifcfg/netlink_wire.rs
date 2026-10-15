@@ -36,6 +36,7 @@ const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
 const RTA_GATEWAY: u16 = 5;
 pub(crate) const RTA_PRIORITY: u16 = 6;
+const RTA_PREFSRC: u16 = 7;
 const RTA_TABLE: u16 = 15;
 
 fn align4(len: usize) -> Option<usize> {
@@ -516,6 +517,13 @@ impl RouteMessageBuilder {
         self
     }
 
+    pub(crate) fn preferred_source(mut self, address: IpAddr) -> Self {
+        self.message
+            .attributes
+            .push(Attribute::new(RTA_PREFSRC, ip_bytes(address)));
+        self
+    }
+
     pub(crate) fn table(mut self, table: u32) -> Self {
         if let Ok(table) = u8::try_from(table) {
             self.message.table = table;
@@ -579,6 +587,22 @@ mod tests {
         assert_eq!(decoded.priority(), Some(42));
         assert_eq!(decoded.route_type(), RouteType::Unicast);
         assert_eq!(encode(&decoded), bytes);
+    }
+
+    #[test]
+    fn route_builder_encodes_preferred_source() {
+        let source = "10.231.1.1".parse().unwrap();
+        let message = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination("10.99.0.0".parse().unwrap(), 24)
+            .preferred_source(source)
+            .oif(7)
+            .table(libc::RT_TABLE_MAIN.into())
+            .build();
+        let bytes = encode(&message);
+        let attributes = parse_attributes(&bytes[12..]).unwrap();
+        assert!(attributes.iter().any(|attribute| {
+            attribute.kind == RTA_PREFSRC && attribute.value == ip_bytes(source)
+        }));
     }
 
     #[test]

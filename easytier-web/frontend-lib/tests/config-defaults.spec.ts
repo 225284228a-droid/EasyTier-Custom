@@ -22,4 +22,39 @@ describe('kernel-specific configuration defaults', () => {
       expect(toBackendNetworkConfig(config, capabilities).enable_private_mode).toBe(value)
     }
   })
+
+  it('round-trips configured DHCP subnets and leaves omitted defaults unset', () => {
+    const defaults = DEFAULT_NETWORK_CONFIG()
+    const backendDefaults = toBackendNetworkConfig(defaults)
+    expect(backendDefaults).not.toHaveProperty('dhcp_ipv4_cidr')
+    expect(backendDefaults).not.toHaveProperty('dhcpv6')
+    expect(backendDefaults).not.toHaveProperty('dhcp_ipv6_cidr')
+
+    const configured = {
+      ...defaults,
+      dhcp: true,
+      dhcp_ipv4_cidr: '192.0.2.0/24',
+      dhcpv6: true,
+      dhcp_ipv6_cidr: 'fd12:3456::/64',
+    }
+    const normalized = normalizeNetworkConfig(configured)
+    expect(normalized).toMatchObject({
+      dhcp_ipv4_cidr: '192.0.2.0/24',
+      dhcpv6: true,
+      dhcp_ipv6_cidr: 'fd12:3456::/64',
+    })
+    expect(toBackendNetworkConfig(normalized)).toMatchObject({
+      dhcp_ipv4_cidr: '192.0.2.0/24',
+      dhcpv6: true,
+      dhcp_ipv6_cidr: 'fd12:3456::/64',
+    })
+
+    const disabled = normalizeNetworkConfig({ ...configured, dhcpv6: false })
+    expect(toBackendNetworkConfig(disabled)).toMatchObject({ dhcpv6: false, dhcp_ipv6_cidr: 'fd12:3456::/64' })
+
+    const inferred = normalizeNetworkConfig({ ...defaults, dhcpv6: undefined, dhcp_ipv6_cidr: 'fd12:3456::/64' })
+    expect(inferred.dhcpv6).toBeUndefined()
+    expect(toBackendNetworkConfig(inferred)).not.toHaveProperty('dhcpv6')
+    expect(toBackendNetworkConfig(inferred).dhcp_ipv6_cidr).toBe('fd12:3456::/64')
+  })
 })

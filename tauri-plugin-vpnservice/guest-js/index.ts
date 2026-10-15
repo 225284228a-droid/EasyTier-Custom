@@ -14,20 +14,18 @@ export interface InvokeResponse {
 }
 
 export interface StartVpnRequest {
-  ipv4Addr?: string;
-  ipv6Addr?: string;
+  ipv4Addrs?: string[];
   routes?: string[];
   dnsServers?: string[];
   disallowedApplications?: string[];
   mtu?: number;
-  instanceId?: string;
+  instanceIds?: string[];
   generation?: string;
 }
 
 export interface VpnStatusResponse {
   running: boolean;
-  ipv4Addr?: string;
-  ipv6Addr?: string;
+  ipv4Addrs?: string[];
   routes?: string[];
   dnsServers?: string[];
   generation?: string;

@@ -18,6 +18,84 @@ pub(crate) struct CentralLocalDelivery {
     pub error: Option<String>,
 }
 
+impl Db {
+    pub(crate) async fn project_central_local_configs(
+        &self,
+        user_id: UserIdInDb,
+        device_id: Uuid,
+        configs: &BTreeMap<Uuid, NetworkConfig>,
+    ) -> Result<Vec<CentralLocalDelivery>, sea_orm::DbErr> {
+        let mut transaction = self
+            .db
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(sqlx_db_error)?;
+        // Retire only identities already in this journal. Local/user files and
+        // another console's identities are never inferred from a node catalog.
+        sqlx::query("UPDATE central_local_config_deliveries SET desired_config = NULL WHERE user_id = ? AND device_id = ?")
+            .bind(user_id).bind(device_id.to_string())
+            .execute(&mut *transaction).await.map_err(sqlx_db_error)?;
+        for (instance_id, config) in configs {
+            let config = serde_json::to_string(config)
+                .map_err(|error| sea_orm::DbErr::Json(error.to_string()))?;
+            sqlx::query(
+                "INSERT INTO central_local_config_deliveries (user_id, device_id, instance_id, desired_config) VALUES (?, ?, ?, ?) \
+                 ON CONFLICT(user_id, device_id, instance_id) DO UPDATE SET desired_config = excluded.desired_config",
+            )
+            .bind(user_id).bind(device_id.to_string()).bind(instance_id.to_string()).bind(config)
+            .execute(&mut *transaction).await.map_err(sqlx_db_error)?;
+        }
+        let rows = sqlx::query_as(
+            "SELECT instance_id, desired_config, delivered_config, revision, baseline, pending_operation, error \
+             FROM central_local_config_deliveries WHERE user_id = ? AND device_id = ? ORDER BY instance_id",
+        )
+        .bind(user_id).bind(device_id.to_string())
+        .fetch_all(&mut *transaction).await.map_err(sqlx_db_error)?;
+        transaction.commit().await.map_err(sqlx_db_error)?;
+        Ok(rows)
+    }
+
+    pub(crate) async fn update_central_local_delivery(
+        &self,
+        user_id: UserIdInDb,
+        device_id: Uuid,
+        row: &CentralLocalDelivery,
+    ) -> Result<bool, sea_orm::DbErr> {
+        // An old in-flight RPC must not mark a later projection as delivered.
+        let result = sqlx::query(
+            "UPDATE central_local_config_deliveries SET delivered_config = ?, revision = ?, baseline = ?, pending_operation = ?, error = ? \
+             WHERE user_id = ? AND device_id = ? AND instance_id = ? AND desired_config IS ?",
+        )
+        .bind(&row.delivered_config).bind(&row.revision).bind(&row.baseline).bind(row.pending_operation).bind(&row.error)
+        .bind(user_id).bind(device_id.to_string()).bind(&row.instance_id).bind(&row.desired_config)
+        .execute(&self.db).await.map_err(sqlx_db_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub(crate) async fn remove_central_local_delivery(
+        &self,
+        user_id: UserIdInDb,
+        device_id: Uuid,
+        instance_id: Uuid,
+    ) -> Result<(), sea_orm::DbErr> {
+        sqlx::query("DELETE FROM central_local_config_deliveries WHERE user_id = ? AND device_id = ? AND instance_id = ? AND desired_config IS NULL")
+            .bind(user_id).bind(device_id.to_string()).bind(instance_id.to_string())
+            .execute(&self.db).await.map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn central_local_delivery_error(
+        &self,
+        user_id: UserIdInDb,
+        device_id: Uuid,
+        instance_id: Uuid,
+    ) -> Result<Option<String>, sea_orm::DbErr> {
+        Ok(sqlx::query_scalar::<_, Option<String>>("SELECT error FROM central_local_config_deliveries WHERE user_id = ? AND device_id = ? AND instance_id = ?")
+            .bind(user_id).bind(device_id.to_string()).bind(instance_id.to_string())
+            .fetch_optional(&self.db).await.map_err(sqlx_db_error)?.flatten())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,83 +183,5 @@ mod tests {
                 .len(),
             1
         );
-    }
-}
-
-impl Db {
-    pub(crate) async fn project_central_local_configs(
-        &self,
-        user_id: UserIdInDb,
-        device_id: Uuid,
-        configs: &BTreeMap<Uuid, NetworkConfig>,
-    ) -> Result<Vec<CentralLocalDelivery>, sea_orm::DbErr> {
-        let mut transaction = self
-            .db
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(sqlx_db_error)?;
-        // Retire only identities already in this journal. Local/user files and
-        // another console's identities are never inferred from a node catalog.
-        sqlx::query("UPDATE central_local_config_deliveries SET desired_config = NULL WHERE user_id = ? AND device_id = ?")
-            .bind(user_id).bind(device_id.to_string())
-            .execute(&mut *transaction).await.map_err(sqlx_db_error)?;
-        for (instance_id, config) in configs {
-            let config = serde_json::to_string(config)
-                .map_err(|error| sea_orm::DbErr::Json(error.to_string()))?;
-            sqlx::query(
-                "INSERT INTO central_local_config_deliveries (user_id, device_id, instance_id, desired_config) VALUES (?, ?, ?, ?) \
-                 ON CONFLICT(user_id, device_id, instance_id) DO UPDATE SET desired_config = excluded.desired_config",
-            )
-            .bind(user_id).bind(device_id.to_string()).bind(instance_id.to_string()).bind(config)
-            .execute(&mut *transaction).await.map_err(sqlx_db_error)?;
-        }
-        let rows = sqlx::query_as(
-            "SELECT instance_id, desired_config, delivered_config, revision, baseline, pending_operation, error \
-             FROM central_local_config_deliveries WHERE user_id = ? AND device_id = ? ORDER BY instance_id",
-        )
-        .bind(user_id).bind(device_id.to_string())
-        .fetch_all(&mut *transaction).await.map_err(sqlx_db_error)?;
-        transaction.commit().await.map_err(sqlx_db_error)?;
-        Ok(rows)
-    }
-
-    pub(crate) async fn update_central_local_delivery(
-        &self,
-        user_id: UserIdInDb,
-        device_id: Uuid,
-        row: &CentralLocalDelivery,
-    ) -> Result<bool, sea_orm::DbErr> {
-        // An old in-flight RPC must not mark a later projection as delivered.
-        let result = sqlx::query(
-            "UPDATE central_local_config_deliveries SET delivered_config = ?, revision = ?, baseline = ?, pending_operation = ?, error = ? \
-             WHERE user_id = ? AND device_id = ? AND instance_id = ? AND desired_config IS ?",
-        )
-        .bind(&row.delivered_config).bind(&row.revision).bind(&row.baseline).bind(row.pending_operation).bind(&row.error)
-        .bind(user_id).bind(device_id.to_string()).bind(&row.instance_id).bind(&row.desired_config)
-        .execute(&self.db).await.map_err(sqlx_db_error)?;
-        Ok(result.rows_affected() == 1)
-    }
-
-    pub(crate) async fn remove_central_local_delivery(
-        &self,
-        user_id: UserIdInDb,
-        device_id: Uuid,
-        instance_id: Uuid,
-    ) -> Result<(), sea_orm::DbErr> {
-        sqlx::query("DELETE FROM central_local_config_deliveries WHERE user_id = ? AND device_id = ? AND instance_id = ? AND desired_config IS NULL")
-            .bind(user_id).bind(device_id.to_string()).bind(instance_id.to_string())
-            .execute(&self.db).await.map_err(sqlx_db_error)?;
-        Ok(())
-    }
-
-    pub(crate) async fn central_local_delivery_error(
-        &self,
-        user_id: UserIdInDb,
-        device_id: Uuid,
-        instance_id: Uuid,
-    ) -> Result<Option<String>, sea_orm::DbErr> {
-        Ok(sqlx::query_scalar::<_, Option<String>>("SELECT error FROM central_local_config_deliveries WHERE user_id = ? AND device_id = ? AND instance_id = ?")
-            .bind(user_id).bind(device_id.to_string()).bind(instance_id.to_string())
-            .fetch_optional(&self.db).await.map_err(sqlx_db_error)?.flatten())
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use easytier_core::{
-    gateway::dhcp::DhcpIpv4Host,
+    gateway::dhcp::DhcpHost,
     host::packet::HostPacketReceiver,
     instance::{CorePacketPlane, InstanceRuntimeHost, PacketEgressHost},
 };
@@ -17,7 +17,7 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
     async fn prepare(
         &self,
         packet_plane: Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         self.prepare_runtime(packet_plane).await
     }
 
@@ -54,12 +54,12 @@ impl InstanceRuntimeHost for NativeInstanceRuntimeHost {
         self.attach_runtime_tun_fd(fd)
     }
 
-    #[cfg(mobile)]
+    #[cfg(all(feature = "tun", mobile))]
     async fn attach_tun_fd_and_wait(&self, fd: i32) -> anyhow::Result<()> {
         self.tun.attach_fd_and_wait(fd, None).await
     }
 
-    #[cfg(mobile)]
+    #[cfg(all(feature = "tun", mobile))]
     async fn attach_tun_fd_and_wait_with_generation(
         &self,
         fd: i32,

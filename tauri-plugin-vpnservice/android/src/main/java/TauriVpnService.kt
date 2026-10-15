@@ -19,20 +19,18 @@ class TauriVpnService : VpnService() {
     companion object {
         @JvmField var triggerCallback: (String, JSObject) -> Unit = { _, _ -> }
         @JvmField var self: TauriVpnService? = null
-        @JvmField var ipv4Addr: String? = null
-        @JvmField var ipv6Addr: String? = null
+        @JvmField var ipv4Addrs: Array<String> = emptyArray()
         @JvmField var routes: Array<String> = emptyArray()
         @JvmField var dnsServers: Array<String> = emptyArray()
         @JvmField var generation: String? = null
         @JvmField var generationHighWater: String? = null
 
-        const val IPV4_ADDR = "IPV4_ADDR"
-        const val IPV6_ADDR = "IPV6_ADDR"
+        const val IPV4_ADDRS = "IPV4_ADDRS"
         const val ROUTES = "ROUTES"
         const val DNS_SERVERS = "DNS_SERVERS"
         const val DISALLOWED_APPLICATIONS = "DISALLOWED_APPLICATIONS"
         const val MTU = "MTU"
-        const val INSTANCE_ID = "INSTANCE_ID"
+        const val INSTANCE_IDS = "INSTANCE_IDS"
         const val GENERATION = "GENERATION"
 
         private const val NOTIFICATION_CHANNEL_ID = "easytier_vpn_channel"
@@ -74,11 +72,11 @@ class TauriVpnService : VpnService() {
         val generation = generationText
             ?.takeIf { value -> value.isNotEmpty() && value.all { it in '0'..'9' } }
             ?.toLongOrNull()
-        val instanceId = args.getString(INSTANCE_ID) ?: ""
+        val instanceIds = args.getStringArray(INSTANCE_IDS) ?: emptyArray()
         if (generation == null || generation <= 0) {
             val eventData = JSObject()
             eventData.put("generation", generationText ?: "")
-            eventData.put("instanceId", instanceId)
+            eventData.put("instanceIds", instanceIds)
             eventData.put("error", "Invalid VPN generation")
             triggerCallback("vpn_service_error", eventData)
             return START_STICKY
@@ -100,8 +98,7 @@ class TauriVpnService : VpnService() {
             disconnected = false
             self = this
 
-            ipv4Addr = args.getString(IPV4_ADDR)
-            ipv6Addr = args.getString(IPV6_ADDR)
+            ipv4Addrs = args.getStringArray(IPV4_ADDRS) ?: emptyArray()
             routes = args.getStringArray(ROUTES) ?: emptyArray()
             dnsServers = args.getStringArray(DNS_SERVERS) ?: emptyArray()
             TauriVpnService.generation = generation.toString()
@@ -110,12 +107,12 @@ class TauriVpnService : VpnService() {
             val eventData = JSObject()
             eventData.put("fd", candidate.fd)
             eventData.put("generation", generation.toString())
-            eventData.put("instanceId", instanceId)
+            eventData.put("instanceIds", instanceIds)
             triggerCallback("vpn_service_start", eventData)
         } catch (error: Exception) {
             val eventData = JSObject()
             eventData.put("generation", generation.toString())
-            eventData.put("instanceId", instanceId)
+            eventData.put("instanceIds", instanceIds)
             eventData.put("error", error.message ?: error.toString())
             triggerCallback("vpn_service_error", eventData)
             println("vpn interface configuration failed generation=$generation: $error")
@@ -156,15 +153,16 @@ class TauriVpnService : VpnService() {
         if (disconnected) return
         disconnected = true
         if (self == this) {
-            triggerCallback("vpn_service_stop", JSObject())
+            val eventData = JSObject()
+            eventData.put("generation", generation)
+            triggerCallback("vpn_service_stop", eventData)
         }
         interfaceLifecycle.closeAll()
         clearStatus()
     }
 
     private fun clearStatus() {
-        ipv4Addr = null
-        ipv6Addr = null
+        ipv4Addrs = emptyArray()
         routes = emptyArray()
         dnsServers = emptyArray()
         generation = null
@@ -241,23 +239,16 @@ class TauriVpnService : VpnService() {
                 .setBlocking(false)
         
         var mtu = args?.getInt(MTU) ?: 1500
-        var ipv4Addr = args?.getString(IPV4_ADDR) ?: "10.126.126.1/24"
-        var ipv6Addr: String? = args?.getString(IPV6_ADDR)
+        val addresses = args?.getStringArray(IPV4_ADDRS) ?: emptyArray()
         var dnsServers = args?.getStringArray(DNS_SERVERS) ?: emptyArray()
         var routes = args?.getStringArray(ROUTES) ?: emptyArray()
         var disallowedApplications = args?.getStringArray(DISALLOWED_APPLICATIONS) ?: emptyArray()
 
-        println("vpn create vpn interface. mtu: $mtu, ipv4Addr: $ipv4Addr, ipv6Addr: $ipv6Addr, dnsServers:" +
-            "${java.util.Arrays.toString(dnsServers)}, routes: ${java.util.Arrays.toString(routes)}," +
-            "disallowedApplications:  ${java.util.Arrays.toString(disallowedApplications)}")
-
-        val ipParts = ipv4Addr.split("/")
-        if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
-        builder.addAddress(ipParts[0], ipParts[1].toInt())
-        ipv6Addr?.let {
-            val ipv6Parts = it.split("/")
-            if (ipv6Parts.size != 2) throw IllegalArgumentException("Invalid IPv6 addr string")
-            builder.addAddress(ipv6Parts[0], ipv6Parts[1].toInt())
+        require(addresses.isNotEmpty()) { "VPN requires at least one address" }
+        for (address in addresses.distinct()) {
+            val ipParts = address.split("/")
+            require(ipParts.size == 2) { "Invalid IP address CIDR" }
+            builder.addAddress(ipParts[0], ipParts[1].toInt())
         }
 
         builder.setMtu(mtu)
@@ -271,7 +262,7 @@ class TauriVpnService : VpnService() {
             builder.addRoute(ipParts[0], ipParts[1].toInt())
         }
 
-        val hasIpv6Traffic = ipv6Addr != null ||
+        val hasIpv6Traffic = addresses.any { it.substringBefore('/').contains(':') } ||
             routes.any { it.substringBefore('/').contains(':') } ||
             dnsServers.any { it.contains(':') }
         if (!hasIpv6Traffic) {

@@ -53,7 +53,7 @@ pub struct RuntimeUdpSocket {
 }
 
 impl RuntimeUdpSocket {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn new(socket: Arc<UdpSocket>) -> Self {
         let clone: std::net::UdpSocket = socket2::SockRef::from(socket.as_ref())
             .try_clone()

@@ -257,14 +257,14 @@ type Flags struct {
 	// advertising another direct edge to the same destination.
 	PreferPeerRelay bool `protobuf:"varint,44,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3" json:"prefer_peer_relay,omitempty"`
 	// Restrict automatic P2P/hole-punch attempts to disguised protocols.
-	OnlyUseWssHttp3ForHolePunching bool `protobuf:"varint,45,opt,name=only_use_wss_http3_for_hole_punching,json=onlyUseWssHttp3ForHolePunching,proto3" json:"only_use_wss_http3_for_hole_punching,omitempty"`
+	OnlyUseWssHttp3ForHolePunching bool `protobuf:"varint,50045,opt,name=only_use_wss_http3_for_hole_punching,json=onlyUseWssHttp3ForHolePunching,proto3" json:"only_use_wss_http3_for_hole_punching,omitempty"`
 	// Prefer WSS/HTTP3 for automatic P2P while still allowing TCP/UDP fallback.
 	// Enabled by default: both peers must advertise the preference (or one side
 	// must require it) before disguised punches and WSS/HTTP3 ranking apply, so
 	// nodes that explicitly disable it keep the raw protocol ordering.
-	PreferWssHttp3ForP2P bool `protobuf:"varint,46,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
+	PreferWssHttp3ForP2P bool `protobuf:"varint,50046,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
 	// Do not use WSS/HTTP3 for automatic P2P at all.
-	DisableWssHttp3ForP2P bool `protobuf:"varint,47,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
+	DisableWssHttp3ForP2P bool `protobuf:"varint,50047,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
 	// Enabled by default in configuration. Requires both peers to negotiate cleanup support and
 	// confirm usability with a round trip. Keep one manually configured initial
 	// peer connection, chosen in a shared deterministic order, and close all other
@@ -275,9 +275,13 @@ type Flags struct {
 	// TCP preference favors WSS and UDP preference favors HTTP3 among automatic
 	// connections. Equally ranked automatic connections remain. This does not
 	// change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
-	CloseRedundantConnsWhenDisguised bool `protobuf:"varint,49,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3" json:"close_redundant_conns_when_disguised,omitempty"`
-	unknownFields                    protoimpl.UnknownFields
-	sizeCache                        protoimpl.SizeCache
+	CloseRedundantConnsWhenDisguised bool `protobuf:"varint,50049,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3" json:"close_redundant_conns_when_disguised,omitempty"`
+	// Automatic P2P disguise policy: prefer, off, disabled, or only.
+	// Empty/unset preserves legacy boolean configuration. A nonempty mode
+	// overrides the three legacy TOML booleans above.
+	P2PDisguiseMode string `protobuf:"bytes,50050,opt,name=p2p_disguise_mode,json=p2pDisguiseMode,proto3" json:"p2p_disguise_mode,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Flags) Reset() {
@@ -617,6 +621,13 @@ func (x *Flags) GetCloseRedundantConnsWhenDisguised() bool {
 		return x.CloseRedundantConnsWhenDisguised
 	}
 	return false
+}
+
+func (x *Flags) GetP2PDisguiseMode() string {
+	if x != nil {
+		return x.P2PDisguiseMode
+	}
+	return ""
 }
 
 type RpcDescriptor struct {
@@ -1889,9 +1900,9 @@ type PeerFeatureFlag struct {
 	IsCredentialPeer      bool                   `protobuf:"varint,8,opt,name=is_credential_peer,json=isCredentialPeer,proto3" json:"is_credential_peer,omitempty"`
 	NeedP2P               bool                   `protobuf:"varint,9,opt,name=need_p2p,json=needP2p,proto3" json:"need_p2p,omitempty"`
 	DisableP2P            bool                   `protobuf:"varint,10,opt,name=disable_p2p,json=disableP2p,proto3" json:"disable_p2p,omitempty"`
-	PreferWssHttp3ForP2P  bool                   `protobuf:"varint,12,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
-	DisableWssHttp3ForP2P bool                   `protobuf:"varint,13,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
-	OnlyUseWssHttp3ForP2P bool                   `protobuf:"varint,14,opt,name=only_use_wss_http3_for_p2p,json=onlyUseWssHttp3ForP2p,proto3" json:"only_use_wss_http3_for_p2p,omitempty"`
+	PreferWssHttp3ForP2P  bool                   `protobuf:"varint,50012,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
+	DisableWssHttp3ForP2P bool                   `protobuf:"varint,50013,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
+	OnlyUseWssHttp3ForP2P bool                   `protobuf:"varint,50014,opt,name=only_use_wss_http3_for_p2p,json=onlyUseWssHttp3ForP2p,proto3" json:"only_use_wss_http3_for_p2p,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -2187,7 +2198,7 @@ var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
 	"\n" +
-	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xe3\x15\n" +
+	"\fcommon.proto\x12\x06common\x1a\x11annotations.proto\x1a\verror.proto\"\xa2\x16\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2236,9 +2247,9 @@ const file_common_proto_rawDesc = "" +
 	"\x11disable_relay_kcp\x18\x14 \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\x0fdisableRelayKcp\x12B\n" +
 	"\x17proxy_forward_by_system\x18\x15 \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x14proxyForwardBySystem\x12E\n" +
-	"\fprivate_mode\x18\x17 \x01(\bB\"\x8a\xb5\x18\x1e\n" +
-	"\x05false\x12\x15\n" +
+	"\x05falseR\x14proxyForwardBySystem\x12D\n" +
+	"\fprivate_mode\x18\x17 \x01(\bB!\x8a\xb5\x18\x1d\n" +
+	"\x04true\x12\x15\n" +
 	"\x13enable_private_modeR\vprivateMode\x127\n" +
 	"\x11enable_quic_proxy\x18\x18 \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\x0fenableQuicProxy\x129\n" +
@@ -2280,17 +2291,19 @@ const file_common_proto_rawDesc = "" +
 	"\vsocket_mark\x18+ \x01(\rB\x06\x8a\xb5\x18\x02\x18\x01H\x00R\n" +
 	"socketMark\x88\x01\x01\x127\n" +
 	"\x11prefer_peer_relay\x18, \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x0fpreferPeerRelay\x12Y\n" +
-	"$only_use_wss_http3_for_hole_punching\x18- \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x1eonlyUseWssHttp3ForHolePunching\x12B\n" +
-	"\x18prefer_wss_http3_for_p2p\x18. \x01(\bB\n" +
+	"\x05falseR\x0fpreferPeerRelay\x12[\n" +
+	"$only_use_wss_http3_for_hole_punching\x18\xfd\x86\x03 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x1eonlyUseWssHttp3ForHolePunching\x12D\n" +
+	"\x18prefer_wss_http3_for_p2p\x18\xfe\x86\x03 \x01(\bB\n" +
 	"\x8a\xb5\x18\x06\n" +
-	"\x04trueR\x14preferWssHttp3ForP2p\x12E\n" +
-	"\x19disable_wss_http3_for_p2p\x18/ \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x15disableWssHttp3ForP2p\x12Z\n" +
-	"$close_redundant_conns_when_disguised\x181 \x01(\bB\n" +
+	"\x04trueR\x14preferWssHttp3ForP2p\x12G\n" +
+	"\x19disable_wss_http3_for_p2p\x18\xff\x86\x03 \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x15disableWssHttp3ForP2p\x12\\\n" +
+	"$close_redundant_conns_when_disguised\x18\x81\x87\x03 \x01(\bB\n" +
 	"\x8a\xb5\x18\x06\n" +
-	"\x04trueR closeRedundantConnsWhenDisguisedB\x0e\n" +
+	"\x04trueR closeRedundantConnsWhenDisguised\x126\n" +
+	"\x11p2p_disguise_mode\x18\x82\x87\x03 \x01(\tB\b\x8a\xb5\x18\x04\n" +
+	"\x00\x18\x01R\x0fp2pDisguiseModeB\x0e\n" +
 	"\f_socket_markJ\x04\b\x16\x10\x17J\x04\b\x1f\x10 R\n" +
 	"accept_dnsR\ftld_dns_zone\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
@@ -2394,7 +2407,7 @@ const file_common_proto_rawDesc = "" +
 	"\x10last_update_time\x18\x03 \x01(\x03R\x0elastUpdateTime\x12\x1b\n" +
 	"\tpublic_ip\x18\x04 \x03(\tR\bpublicIp\x12\x19\n" +
 	"\bmin_port\x18\x05 \x01(\rR\aminPort\x12\x19\n" +
-	"\bmax_port\x18\x06 \x01(\rR\amaxPort\"\xb3\x04\n" +
+	"\bmax_port\x18\x06 \x01(\rR\amaxPort\"\xb9\x04\n" +
 	"\x0fPeerFeatureFlag\x12(\n" +
 	"\x10is_public_server\x18\x01 \x01(\bR\x0eisPublicServer\x12(\n" +
 	"\x10avoid_relay_data\x18\x02 \x01(\bR\x0eavoidRelayData\x12\x1b\n" +
@@ -2409,10 +2422,10 @@ const file_common_proto_rawDesc = "" +
 	"\bneed_p2p\x18\t \x01(\bR\aneedP2p\x12\x1f\n" +
 	"\vdisable_p2p\x18\n" +
 	" \x01(\bR\n" +
-	"disableP2p\x126\n" +
-	"\x18prefer_wss_http3_for_p2p\x18\f \x01(\bR\x14preferWssHttp3ForP2p\x128\n" +
-	"\x19disable_wss_http3_for_p2p\x18\r \x01(\bR\x15disableWssHttp3ForP2p\x129\n" +
-	"\x1aonly_use_wss_http3_for_p2p\x18\x0e \x01(\bR\x15onlyUseWssHttp3ForP2p\"\xaa\x01\n" +
+	"disableP2p\x128\n" +
+	"\x18prefer_wss_http3_for_p2p\x18܆\x03 \x01(\bR\x14preferWssHttp3ForP2p\x12:\n" +
+	"\x19disable_wss_http3_for_p2p\x18݆\x03 \x01(\bR\x15disableWssHttp3ForP2p\x12;\n" +
+	"\x1aonly_use_wss_http3_for_p2p\x18ކ\x03 \x01(\bR\x15onlyUseWssHttp3ForP2p\"\xaa\x01\n" +
 	"\x13PortForwardConfigPb\x12/\n" +
 	"\tbind_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\bbindAddr\x12-\n" +
 	"\bdst_addr\x18\x02 \x01(\v2\x12.common.SocketAddrR\adstAddr\x123\n" +

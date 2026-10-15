@@ -16,7 +16,7 @@ use crate::{
     config::PeerId,
     connectivity::stun::StunInfoProvider,
     packet::{HOLE_PUNCH_PACKET_BODY_LEN, new_hole_punch_packet},
-    socket::udp::{UdpBindOptions, VirtualUdpSocketFactory},
+    socket::udp::{UdpBindOptions, VirtualUdpSocket},
 };
 
 use super::{
@@ -77,8 +77,6 @@ where
     tracing::info!(?dst_peer_id, "start hole punching");
     let tid = rand::random();
 
-    let udp_array = UdpSocketArray::new_with_context(1, runtime.clone(), runtime.socket_context());
-
     let resp = signaling
         .select_punch_listener(
             dst_peer_id,
@@ -86,9 +84,23 @@ where
                 force_new: false,
                 prefer_port_mapping: true,
                 scheme: desired_scheme,
+                transaction_id: Some(tid),
             },
         )
         .await?;
+    if resp
+        .transaction_id
+        .is_some_and(|registered| registered != tid)
+    {
+        return Err(UdpHolePunchSignalError::RemoteRejected(
+            "listener registered a different hole-punch transaction".into(),
+        )
+        .into());
+    }
+    tracing::debug!(
+        source_observation_registered = resp.transaction_id == Some(tid),
+        "selected hole-punch listener"
+    );
     let remote_mapped_addr = resp.listener_mapped_addr;
     let actual_scheme = resp.scheme;
     validate_negotiated_scheme(actual_scheme, require_http3)?;
@@ -114,11 +126,19 @@ where
         "hole punch got remote listener"
     );
 
-    udp_array.add_new_socket(local_socket).await?;
-    udp_array.add_interest_tid(tid);
+    // Native QUIC must connect to the source observed by hole-punch traffic.
+    // EasyTier UDP sessions perform source observation during their handshake.
+    let native_array = if actual_scheme.is_native_http3() {
+        let array = UdpSocketArray::new_with_context(1, runtime.clone(), runtime.socket_context());
+        array.add_interest_tid(tid);
+        array.add_new_socket(local_socket.clone()).await?;
+        Some(array)
+    } else {
+        None
+    };
     let punch_packet = new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
 
-    send_from_local(&udp_array, &punch_packet, remote_mapped_addr).await?;
+    send_from_local(local_socket.as_ref(), &punch_packet, remote_mapped_addr).await?;
 
     let signaling_for_task = signaling.clone();
     let punch_task = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -140,38 +160,65 @@ where
         }
     }));
 
-    let mut finish_time: Option<Instant> = None;
-    while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
-        crate::foundation::time::sleep(std::time::Duration::from_millis(200)).await;
+    if let Some(udp_array) = native_array {
+        let mut finish_time: Option<Instant> = None;
+        while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
+            crate::foundation::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        if finish_time.is_none() && punch_task.is_finished() {
-            finish_time = Some(Instant::now());
+            if finish_time.is_none() && punch_task.is_finished() {
+                finish_time = Some(Instant::now());
+            }
+
+            let Some(socket) = udp_array.try_fetch_punched_socket(tid) else {
+                tracing::debug!("no punched socket found, send some more hole punch packets");
+                send_from_local(local_socket.as_ref(), &punch_packet, remote_mapped_addr).await?;
+                continue;
+            };
+
+            tracing::debug!(?socket, ?tid, "punched socket found, try connect with it");
+            let remote_addr = socket.remote_addr;
+
+            for _ in 0..2 {
+                match runtime
+                    .connect_with_socket(socket.socket.clone(), remote_addr, actual_scheme)
+                    .await
+                {
+                    Ok(socket) => {
+                        tracing::info!(?socket, "hole punched");
+                        return Ok(Some(socket));
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, "failed to connect with socket");
+                    }
+                }
+            }
         }
 
-        let Some(socket) = udp_array.try_fetch_punched_socket(tid) else {
-            tracing::debug!("no punched socket found, send some more hole punch packets");
-            send_from_local(&udp_array, &punch_packet, remote_mapped_addr).await?;
-            continue;
-        };
+        return Ok(None);
+    }
 
-        tracing::debug!(?socket, ?tid, "punched socket found, try connect with it");
-        let remote_addr = if actual_scheme.is_native_http3() {
-            socket.remote_addr
-        } else {
-            remote_mapped_addr
-        };
-
-        for _ in 0..2 {
-            match runtime
-                .connect_with_socket(socket.socket.clone(), remote_addr, actual_scheme)
-                .await
-            {
-                Ok(socket) => {
-                    tracing::info!(?socket, "hole punched");
-                    return Ok(Some(socket));
+    // The session layer owns receive while connecting. A reachable listener can
+    // reply to SYN's actual source even when the STUN candidate differs.
+    for _ in 0..2 {
+        let connect =
+            runtime.connect_with_socket(local_socket.clone(), remote_mapped_addr, actual_scheme);
+        tokio::pin!(connect);
+        loop {
+            tokio::select! {
+                result = &mut connect => {
+                    match result {
+                        Ok(socket) => {
+                            tracing::info!(?socket, "hole punched");
+                            return Ok(Some(socket));
+                        }
+                        Err(e) => {
+                            tracing::error!(?e, "failed to connect with socket");
+                            break;
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::error!(?e, "failed to connect with socket");
+                _ = crate::foundation::time::sleep(std::time::Duration::from_millis(200)) => {
+                    send_from_local(local_socket.as_ref(), &punch_packet, remote_mapped_addr).await?;
                 }
             }
         }
@@ -180,17 +227,20 @@ where
     Ok(None)
 }
 
-async fn send_from_local<R>(
-    udp_array: &UdpSocketArray<R>,
+async fn send_from_local<S>(
+    socket: &S,
     punch_packet: &[u8],
     remote_mapped_addr: SocketAddr,
 ) -> UdpHolePunchClientResult<()>
 where
-    R: VirtualUdpSocketFactory,
+    S: VirtualUdpSocket,
 {
-    udp_array
-        .send_with_all(punch_packet, remote_mapped_addr)
-        .await?;
+    for _ in 0..3 {
+        socket
+            .send_to(punch_packet, remote_mapped_addr)
+            .await
+            .map_err(anyhow::Error::from)?;
+    }
     Ok(())
 }
 
@@ -383,6 +433,7 @@ where
                     force_new: false,
                     prefer_port_mapping: true,
                     scheme: desired_scheme,
+                    transaction_id: None,
                 },
             )
             .await?;
@@ -673,9 +724,10 @@ mod tests {
     struct MockSocket {
         local_addr: SocketAddr,
         observed_remote: Option<SocketAddr>,
-        incoming_tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
-        incoming_rx:
-            tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>>,
+        incoming: std::sync::Mutex<std::collections::VecDeque<(Vec<u8>, SocketAddr)>>,
+        incoming_notify: tokio::sync::Notify,
+        sent: std::sync::Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+        drop_syn_packets: AtomicUsize,
     }
 
     #[async_trait]
@@ -684,22 +736,44 @@ mod tests {
             Ok(self.local_addr)
         }
 
-        async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> io::Result<usize> {
+        async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+            self.sent.lock().unwrap().push((data.to_vec(), addr));
             if let Some(remote) = self.observed_remote
                 && crate::packet::hole_punch_packet_tid(data, HOLE_PUNCH_PACKET_BODY_LEN).is_some()
             {
-                let _ = self.incoming_tx.send((data.to_vec(), remote));
+                self.incoming
+                    .lock()
+                    .unwrap()
+                    .push_back((data.to_vec(), remote));
+                self.incoming_notify.notify_one();
+            }
+            if data.len() == 16 && data[4] == crate::packet::UdpPacketType::Syn as u8 {
+                if self.drop_syn_packets.load(Ordering::Relaxed) != 0 {
+                    self.drop_syn_packets.fetch_sub(1, Ordering::Relaxed);
+                    return Ok(data.len());
+                }
+                let conn_id = u32::from_le_bytes(data[..4].try_into().unwrap());
+                let magic = u64::from_le_bytes(data[8..].try_into().unwrap());
+                self.incoming.lock().unwrap().push_back((
+                    crate::socket::udp::new_sack_packet(conn_id, magic)
+                        .into_bytes()
+                        .to_vec(),
+                    addr,
+                ));
+                self.incoming_notify.notify_one();
             }
             Ok(data.len())
         }
 
         async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-            let (data, remote) = self.incoming_rx.lock().await.recv().await.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::UnexpectedEof, "mock socket closed")
-            })?;
-            let len = data.len().min(buf.len());
-            buf[..len].copy_from_slice(&data[..len]);
-            Ok((len, remote))
+            loop {
+                if let Some((data, addr)) = self.incoming.lock().unwrap().pop_front() {
+                    let len = data.len().min(buf.len());
+                    buf[..len].copy_from_slice(&data[..len]);
+                    return Ok((len, addr));
+                }
+                self.incoming_notify.notified().await;
+            }
         }
     }
 
@@ -710,6 +784,8 @@ mod tests {
         observed_remote: Option<SocketAddr>,
         connect_remotes: tokio::sync::Mutex<Vec<SocketAddr>>,
         bind_options: tokio::sync::Mutex<Vec<UdpBindOptions>>,
+        sockets: std::sync::Mutex<Vec<std::sync::Weak<MockSocket>>>,
+        drop_syn_packets: usize,
     }
 
     impl MockRuntime {
@@ -721,6 +797,8 @@ mod tests {
                 observed_remote: None,
                 connect_remotes: tokio::sync::Mutex::new(Vec::new()),
                 bind_options: tokio::sync::Mutex::new(Vec::new()),
+                sockets: std::sync::Mutex::new(Vec::new()),
+                drop_syn_packets: 0,
             }
         }
 
@@ -737,22 +815,26 @@ mod tests {
         async fn bind_udp(&self, options: UdpBindOptions) -> anyhow::Result<Arc<Self::Socket>> {
             self.bind_options.lock().await.push(options);
             let bind_idx = self.bind_count.fetch_add(1, Ordering::Relaxed);
-            let (incoming_tx, incoming_rx) = tokio::sync::mpsc::unbounded_channel();
-            Ok(Arc::new(MockSocket {
+            let socket = Arc::new(MockSocket {
                 local_addr: SocketAddr::from(([127, 0, 0, 1], 10000 + bind_idx as u16)),
                 observed_remote: self.observed_remote,
-                incoming_tx,
-                incoming_rx: tokio::sync::Mutex::new(incoming_rx),
-            }))
+                incoming: std::sync::Mutex::new(std::collections::VecDeque::new()),
+                incoming_notify: tokio::sync::Notify::new(),
+                sent: std::sync::Mutex::new(Vec::new()),
+                drop_syn_packets: AtomicUsize::new(self.drop_syn_packets),
+            });
+            self.sockets.lock().unwrap().push(Arc::downgrade(&socket));
+            Ok(socket)
         }
 
         async fn resolve_udp_public_addr(
             &self,
-            _socket: Arc<Self::Socket>,
+            socket: Arc<Self::Socket>,
         ) -> anyhow::Result<super::super::UdpResolvedPublicAddr> {
+            assert_eq!(socket.local_addr()?.port(), 10000);
             self.resolve_count.fetch_add(1, Ordering::Relaxed);
             Ok(super::super::UdpResolvedPublicAddr {
-                mapped_addr: SocketAddr::from(([203, 0, 113, 1], 10000)),
+                mapped_addr: SocketAddr::from(([203, 0, 113, 1], 40000)),
                 port_mapping_lease: None,
             })
         }
@@ -781,16 +863,22 @@ mod tests {
         ) -> anyhow::Result<UdpPunchSocket> {
             self.connect_count.fetch_add(1, Ordering::Relaxed);
             self.connect_remotes.lock().await.push(remote);
-            let kind = if scheme.is_native_http3() {
-                UdpSessionKind::Quic
-            } else {
-                UdpSessionKind::EasyTierMux
-            };
-            let session = UdpSession::identity_standalone(socket, remote, kind)?;
+            if scheme.is_native_http3() {
+                let session =
+                    UdpSession::identity_standalone(socket, remote, UdpSessionKind::Quic)?;
+                return Ok(UdpPunchSocket::new_with_scheme(
+                    session,
+                    remote,
+                    (),
+                    scheme.as_str(),
+                ));
+            }
+            let layer = Arc::new(crate::socket::udp::UdpSessionLayer::new(socket));
+            let session = layer.connect(remote).await?;
             Ok(UdpPunchSocket::new_with_scheme(
                 session,
                 remote,
-                (),
+                layer,
                 scheme.as_str(),
             ))
         }
@@ -902,6 +990,8 @@ mod tests {
     struct RecordingSignaling {
         select_response_scheme: Option<UdpPunchScheme>,
         select_requests: tokio::sync::Mutex<Vec<SelectPunchListener>>,
+        listener_requests: tokio::sync::Mutex<Vec<SelectPunchListener>>,
+        confirm_transaction_id: bool,
         easy_requests: tokio::sync::Mutex<Vec<SendPunchPacketEasySym>>,
         hard_requests: tokio::sync::Mutex<Vec<SendPunchPacketHardSym>>,
         both_requests: tokio::sync::Mutex<Vec<SendPunchPacketBothEasySym>>,
@@ -909,11 +999,115 @@ mod tests {
         next_port_index: u32,
     }
 
+    #[tokio::test]
+    async fn cone_connects_without_reverse_hole_punch_and_retries_dropped_syn() {
+        for (drop_syn_packets, confirm_transaction_id) in
+            [(0, true), (1, true), (0, false), (1, false)]
+        {
+            let mut runtime = MockRuntime::new();
+            runtime.drop_syn_packets = drop_syn_packets;
+            let runtime = Arc::new(runtime);
+            let mut signaling = RecordingSignaling::new(0);
+            signaling.confirm_transaction_id = confirm_transaction_id;
+            let signaling = Arc::new(signaling);
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                punch_cone_to_cone(
+                    runtime.clone(),
+                    signaling.clone(),
+                    2,
+                    UdpPunchScheme::Udp,
+                    false,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+            assert_eq!(runtime.bind_count.load(Ordering::Relaxed), 1);
+            assert_eq!(runtime.resolve_count.load(Ordering::Relaxed), 1);
+            let tid = signaling.listener_requests.lock().await[0]
+                .transaction_id
+                .unwrap();
+            let socket = runtime.sockets.lock().unwrap()[0].upgrade().unwrap();
+            let sent = socket.sent.lock().unwrap();
+            let syns = sent
+                .iter()
+                .filter(|(packet, _)| packet[4] == crate::packet::UdpPacketType::Syn as u8)
+                .count();
+            assert_eq!(syns, drop_syn_packets + 1);
+            assert!(sent.iter().any(|(packet, _)| {
+                crate::packet::hole_punch_packet_tid(packet, HOLE_PUNCH_PACKET_BODY_LEN)
+                    == Some(tid)
+            }));
+            assert!(
+                sent.iter()
+                    .all(|(_, addr)| *addr == SocketAddr::from(([127, 0, 0, 1], 30000)))
+            );
+            drop(sent);
+            drop(result);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_cone_connect_releases_socket_and_receive_task() {
+        let mut runtime = MockRuntime::new();
+        runtime.drop_syn_packets = usize::MAX;
+        let runtime = Arc::new(runtime);
+        let task_runtime = runtime.clone();
+        let task = tokio::spawn(async move {
+            punch_cone_to_cone(
+                task_runtime,
+                Arc::new(RecordingSignaling::new(0)),
+                2,
+                UdpPunchScheme::Udp,
+                false,
+            )
+            .await
+        });
+        let socket = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let socket = runtime
+                    .sockets
+                    .lock()
+                    .unwrap()
+                    .first()
+                    .and_then(std::sync::Weak::upgrade);
+                if let Some(socket) = socket
+                    && socket
+                        .sent
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|(packet, _)| packet[4] == crate::packet::UdpPacketType::Syn as u8)
+                {
+                    break socket;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let weak = Arc::downgrade(&socket);
+        drop(socket);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     impl RecordingSignaling {
         fn new(next_port_index: u32) -> Self {
             Self {
                 select_response_scheme: None,
                 select_requests: tokio::sync::Mutex::new(Vec::new()),
+                listener_requests: tokio::sync::Mutex::new(Vec::new()),
+                confirm_transaction_id: true,
                 easy_requests: tokio::sync::Mutex::new(Vec::new()),
                 hard_requests: tokio::sync::Mutex::new(Vec::new()),
                 both_requests: tokio::sync::Mutex::new(Vec::new()),
@@ -949,10 +1143,16 @@ mod tests {
             request: SelectPunchListener,
         ) -> Result<super::super::SelectPunchListenerResponse, UdpHolePunchSignalError> {
             let scheme = self.select_response_scheme.unwrap_or(request.scheme);
-            self.select_requests.lock().await.push(request);
+            let transaction_id = self
+                .confirm_transaction_id
+                .then_some(request.transaction_id)
+                .flatten();
+            self.select_requests.lock().await.push(request.clone());
+            self.listener_requests.lock().await.push(request);
             Ok(super::super::SelectPunchListenerResponse {
                 listener_mapped_addr: SocketAddr::from(([127, 0, 0, 1], 30000)),
                 scheme,
+                transaction_id,
             })
         }
 
@@ -1093,6 +1293,7 @@ mod tests {
         assert_eq!(
             signaling.select_requests.lock().await.as_slice(),
             &[SelectPunchListener {
+                transaction_id: None,
                 force_new: false,
                 prefer_port_mapping: true,
                 scheme: UdpPunchScheme::Http3,

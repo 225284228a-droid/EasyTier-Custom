@@ -5,8 +5,13 @@ mod elevate;
 mod service_conflicts;
 
 use anyhow::Context;
+use easytier::instance::factory::MobileTunConfig;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use easytier::instance::factory::{
+    attach_mobile_tun_fd_with_generation, get_mobile_tun_config as native_mobile_tun_config,
+};
 use easytier::proto::api::config::{
     ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, VpnPortalClientPatch,
 };
@@ -287,15 +292,12 @@ async fn set_logging_level(level: String) -> Result<(), String> {
 #[tauri::command]
 async fn set_tun_fd(
     fd: i32,
-    instance_id: String,
+    instance_ids: Option<Vec<Uuid>>,
     generation: Option<String>,
-) -> Result<(), String> {
+) -> Result<MobileTunConfig, String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    let uuid = instance_id
-        .parse::<uuid::Uuid>()
-        .map_err(|e| e.to_string())?;
     let generation = generation
         .map(|value| {
             if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -304,12 +306,36 @@ async fn set_tun_fd(
             value.parse::<u64>().map_err(|e| e.to_string())
         })
         .transpose()?;
-    let result = instance_manager
-        .attach_tun_fd_and_wait_with_generation(uuid, fd, generation)
-        .await
-        .map_err(|e| e.to_string());
-    tracing::debug!(?generation, %instance_id, "mobile TUN attach acknowledgement completed");
-    result
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return attach_mobile_tun_fd_with_generation(
+        instance_manager.as_ref(),
+        fd,
+        instance_ids.as_deref(),
+        generation,
+    )
+    .await
+    .map_err(|error| error.to_string());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (instance_manager, fd, instance_ids, generation);
+        Err("mobile TUN attachment is unavailable on this platform".to_owned())
+    }
+}
+
+#[tauri::command]
+async fn get_mobile_tun_config(instance_ids: Vec<Uuid>) -> Result<MobileTunConfig, String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let Some(manager) = INSTANCE_MANAGER.read().await.clone() else {
+            return Err("mobile TUN configuration is not supported in remote mode".to_owned());
+        };
+        Ok(native_mobile_tun_config(manager.as_ref(), &instance_ids).await)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = instance_ids;
+        Err("mobile TUN configuration is unavailable on this platform".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -1233,10 +1259,12 @@ mod manager {
                 tokio::spawn(async move {
                     loop {
                         let event = match receiver.recv().await {
-                            Ok(easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(
-                                _,
-                                _,
-                            )) => "dhcp_ip_changed",
+                            Ok(
+                                easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _)
+                                | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Conflicted(_)
+                                | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv6Changed(_, _)
+                                | easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv6Conflicted(_),
+                            ) => "dhcp_ip_changed",
                             Ok(
                                 easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated(
                                     _,
@@ -2978,6 +3006,7 @@ pub fn run_gui() -> std::process::ExitCode {
             patch_vpn_portal_clients,
             set_logging_level,
             set_tun_fd,
+            get_mobile_tun_config,
             easytier_version,
             set_dock_visibility,
             list_network_instance_ids,

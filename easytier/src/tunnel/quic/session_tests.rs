@@ -40,7 +40,9 @@ pub(crate) async fn connected_udp_session_fixture(
     let mut listener = new_runtime_udp_session_listener(
         format!("{scheme}://{bind_addr}").parse().unwrap(),
         UdpSessionListenRequest::new(
-            UdpBindOptions::port_bound_listener(bind_addr).with_only_v6(false),
+            UdpBindOptions::direct_connect()
+                .with_local_addr(Some(bind_addr))
+                .with_only_v6(false),
         ),
         UdpSessionAcceptKind::Classified(UdpSessionProtocol::Quic),
         NetNS::new(None),

@@ -6,10 +6,15 @@
 //! values that were present before the first lease was acquired.
 
 use crate::common::netns::NetNS;
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
+#[cfg(any(target_os = "linux", test))]
+use anyhow::{Context, anyhow};
+#[cfg(any(target_os = "linux", test))]
 use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(target_os = "linux")]
 static NEXT_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Owns this instance's IPv6 exit-forwarding setup.
@@ -19,7 +24,9 @@ static NEXT_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 /// in place so callers can retry.
 pub struct VpnExitForwardingLease {
     net_ns: NetNS,
+    #[cfg(target_os = "linux")]
     owner_id: u64,
+    #[cfg(target_os = "linux")]
     active: Option<ActiveLease>,
 }
 
@@ -27,7 +34,9 @@ impl VpnExitForwardingLease {
     pub fn new(net_ns: NetNS) -> Self {
         Self {
             net_ns,
+            #[cfg(target_os = "linux")]
             owner_id: NEXT_LEASE_ID.fetch_add(1, Ordering::Relaxed),
+            #[cfg(target_os = "linux")]
             active: None,
         }
     }
@@ -78,7 +87,6 @@ impl VpnExitForwardingLease {
                 );
             }
             let _ = (&self.net_ns, ifname);
-            self.active = None;
             Ok(())
         }
     }
@@ -92,21 +100,30 @@ impl VpnExitForwardingLease {
 
         #[cfg(not(target_os = "linux"))]
         {
-            self.active = None;
             Ok(())
         }
     }
 
     pub fn prefix(&self) -> Option<&str> {
-        self.active
-            .as_ref()
-            .map(|active| active.rule.prefix.as_str())
+        #[cfg(target_os = "linux")]
+        {
+            self.active
+                .as_ref()
+                .map(|active| active.rule.prefix.as_str())
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
     }
 
     pub fn ifname(&self) -> Option<&str> {
-        self.active
-            .as_ref()
-            .map(|active| active.rule.ifname.as_str())
+        #[cfg(target_os = "linux")]
+        {
+            self.active
+                .as_ref()
+                .map(|active| active.rule.ifname.as_str())
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
     }
 
     #[cfg(target_os = "linux")]
@@ -209,18 +226,21 @@ impl Drop for VpnExitForwardingLease {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[cfg(any(target_os = "linux", test))]
 struct NamespaceIdentity {
     device: u64,
     inode: u64,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[cfg(any(target_os = "linux", test))]
 struct NatRule {
     prefix: String,
     ifname: String,
 }
 
 #[derive(Clone)]
+#[cfg(any(target_os = "linux", test))]
 struct ActiveLease {
     owner_id: u64,
     namespace: NamespaceIdentity,
@@ -229,7 +249,9 @@ struct ActiveLease {
     forwarding_held: bool,
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl ActiveLease {
+    #[cfg(target_os = "linux")]
     fn is_fully_held(&self) -> bool {
         self.nat_held && self.forwarding_held
     }
@@ -240,10 +262,12 @@ impl ActiveLease {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg(any(target_os = "linux", test))]
 struct ForwardingSnapshot {
     values: BTreeMap<String, Vec<u8>>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 trait PlatformOps {
     fn snapshot_forwarding(&mut self, namespace: &NamespaceIdentity) -> Result<ForwardingSnapshot>;
     fn enable_forwarding(&mut self, namespace: &NamespaceIdentity) -> Result<()>;
@@ -258,27 +282,32 @@ trait PlatformOps {
 }
 
 #[derive(Default)]
+#[cfg(any(target_os = "linux", test))]
 struct LeaseManager {
     forwarding: HashMap<NamespaceIdentity, ForwardingOwners>,
     nat_rules: HashMap<RuleIdentity, NatOwners>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 struct ForwardingOwners {
     baseline: ForwardingSnapshot,
     owners: HashSet<u64>,
 }
 
+#[cfg(any(target_os = "linux", test))]
 struct NatOwners {
     owned_by_us: bool,
     owners: HashSet<u64>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[cfg(any(target_os = "linux", test))]
 struct RuleIdentity {
     namespace: NamespaceIdentity,
     rule: NatRule,
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl LeaseManager {
     fn acquire(
         &mut self,
@@ -638,6 +667,7 @@ impl PlatformOps for LinuxOps {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn forwarding_restore_order(snapshot: &ForwardingSnapshot) -> Vec<&str> {
     let mut order = Vec::with_capacity(snapshot.values.len());
     for path in [

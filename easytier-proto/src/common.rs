@@ -614,7 +614,7 @@ mod tests {
     use super::{Flags, FlagsPatch, PeerFeatureFlag, TunnelInfo, Url, normalize_tunnel_url};
 
     #[test]
-    fn disguise_defaults_and_wire_tags_remain_compatible() {
+    fn disguise_defaults_and_high_wire_tags() {
         let defaults = Flags::defaults();
         assert_eq!(defaults.default_protocol, "udp");
         assert!(!defaults.only_use_wss_http3_for_hole_punching);
@@ -624,10 +624,10 @@ mod tests {
 
         for (name, number) in [
             ("default_protocol", 1),
-            ("only_use_wss_http3_for_hole_punching", 45),
-            ("prefer_wss_http3_for_p2p", 46),
-            ("disable_wss_http3_for_p2p", 47),
-            ("close_redundant_conns_when_disguised", 49),
+            ("only_use_wss_http3_for_hole_punching", 50045),
+            ("prefer_wss_http3_for_p2p", 50046),
+            ("disable_wss_http3_for_p2p", 50047),
+            ("close_redundant_conns_when_disguised", 50049),
         ] {
             let field = Flags::flags()
                 .iter()
@@ -637,7 +637,7 @@ mod tests {
             assert!(Flags::form().contains(&name));
         }
 
-        // Advertising the existing feature bits must retain their wire fields.
+        // Golden wire bytes pin the new Custom extension allocation.
         let feature = PeerFeatureFlag {
             prefer_wss_http3_for_p2p: true,
             disable_wss_http3_for_p2p: true,
@@ -646,7 +646,7 @@ mod tests {
         };
         assert_eq!(
             prost::Message::encode_to_vec(&feature),
-            [96, 1, 104, 1, 112, 1]
+            [224, 181, 24, 1, 232, 181, 24, 1, 240, 181, 24, 1]
         );
     }
 

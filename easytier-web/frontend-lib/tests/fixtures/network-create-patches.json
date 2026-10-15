@@ -120,6 +120,9 @@
         "vpn_portal_config",
         "managed_credentials",
         "prefer_peer_relay",
+        "dhcp_ipv4_cidr",
+        "dhcpv6",
+        "dhcp_ipv6_cidr",
         "sni",
         "only_use_wss_http3_for_hole_punching",
         "prefer_wss_http3_for_p2p",
@@ -257,6 +260,9 @@
         "vpn_portal_config",
         "managed_credentials",
         "prefer_peer_relay",
+        "dhcp_ipv4_cidr",
+        "dhcpv6",
+        "dhcp_ipv6_cidr",
         "close_redundant_conns_when_disguised"
       ],
       "apply_mode": 1
@@ -382,7 +388,10 @@
         "peers",
         "vpn_portal_config",
         "managed_credentials",
-        "prefer_peer_relay"
+        "prefer_peer_relay",
+        "dhcp_ipv4_cidr",
+        "dhcpv6",
+        "dhcp_ipv6_cidr"
       ],
       "apply_mode": 1
     }
@@ -494,7 +503,10 @@
         "peers",
         "vpn_portal_config",
         "managed_credentials",
-        "prefer_peer_relay"
+        "prefer_peer_relay",
+        "dhcp_ipv4_cidr",
+        "dhcpv6",
+        "dhcp_ipv6_cidr"
       ],
       "apply_mode": 1
     }

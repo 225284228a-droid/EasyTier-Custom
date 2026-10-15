@@ -96,6 +96,8 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "hostname" => vec!["hostname"],
         "sni" => vec!["sni"],
         "dhcp" => vec!["dhcp", "ipv4"],
+        "dhcp_ipv4_cidr" => vec!["dhcp"],
+        "dhcpv6" | "dhcp_ipv6_cidr" => vec!["dhcpv6"],
         "virtual_ipv4" | "network_length" => vec!["ipv4"],
         "network_name" => vec!["network_identity.network_name"],
         "network_secret" => vec![
@@ -586,6 +588,7 @@ pub(super) fn merge_legacy_form_changes(
         "hostname",
         "sni",
         "dhcp",
+        "dhcpv6",
         "vpn",
         "secure_mode",
         "mapped_listeners",
@@ -601,6 +604,53 @@ pub(super) fn merge_legacy_form_changes(
 mod tests {
     use super::*;
     const ORIGINAL: &str = "# retained comment\ninstance_id = '11111111-1111-1111-1111-111111111111'\nhostname = 'old'\nnetns = 'keep'\nstun_servers = ['udp://stun.example:3478']\n[network_identity]\nnetwork_name = 'home'\nnetwork_secret = 'secret'\n[flags]\ndefault_protocol = 'udp'\nmtu = 1200\n";
+
+    #[test]
+    fn dhcp_cidr_patches_preserve_unselected_toml_and_custom_policy() {
+        let original = format!(
+            "dhcp = '10.50.0.0/24'\ndhcpv6 = 'fd50::/64'\nipv4 = '10.99.0.2/24'\nipv6 = 'fd99::2/64'\n{ORIGINAL}p2p_disguise_mode = 'only'\n"
+        );
+        let patched = merge_persisted_config(
+            &original,
+            &NetworkConfig {
+                dhcp_ipv4_cidr: Some("10.51.0.0/24".into()),
+                dhcp_ipv6_cidr: Some("fd51::/64".into()),
+                ..Default::default()
+            },
+            &["dhcp_ipv4_cidr".into(), "dhcp_ipv6_cidr".into()],
+        )
+        .unwrap();
+        let before = TomlConfig::new_from_str(&original).unwrap();
+        let after = TomlConfig::new_from_str(&patched).unwrap();
+        assert_eq!(
+            after.get_dhcp_config().cidr().unwrap().to_string(),
+            "10.51.0.0/24"
+        );
+        assert_eq!(
+            after.get_dhcpv6_config().cidr().unwrap().to_string(),
+            "fd51::/64"
+        );
+        assert_eq!(after.get_ipv4(), before.get_ipv4());
+        assert_eq!(after.get_ipv6(), before.get_ipv6());
+        assert_eq!(after.get_flags(), before.get_flags());
+        assert!(patched.contains("# retained comment"));
+        assert!(patched.contains("netns = 'keep'"));
+
+        let disabled = merge_persisted_config(
+            &patched,
+            &NetworkConfig {
+                dhcpv6: Some(false),
+                ..Default::default()
+            },
+            &["dhcpv6".into()],
+        )
+        .unwrap();
+        let disabled = TomlConfig::new_from_str(&disabled).unwrap();
+        assert!(!disabled.get_dhcpv6());
+        assert_eq!(disabled.get_ipv6(), before.get_ipv6());
+        assert_eq!(disabled.get_dhcp_config(), after.get_dhcp_config());
+        assert_eq!(disabled.get_flags(), before.get_flags());
+    }
 
     #[test]
     fn legacy_disguise_patch_edits_effective_mode_flags_without_losing_siblings() {

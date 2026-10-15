@@ -268,16 +268,17 @@ where
             let needs_start = self.instances.instance(id).is_none_or(|instance| {
                 instance.state() == crate::instance::CoreInstanceState::Stopped
             });
-            if (!unchanged || needs_start) && !coordinated && self.state_store.is_enabled(&id) {
-                if let Err(error) = self
+            if (!unchanged || needs_start)
+                && !coordinated
+                && self.state_store.is_enabled(&id)
+                && let Err(error) = self
                     .apply_local_file_locked(config, control, &path, &hash)
                     .await
-                {
-                    // Leave the last applied baseline intact so the fallback
-                    // scan retries recoverable failures without losing the edit.
-                    tracing::warn!(%error, %id, config_file = ?path, "could not apply local configuration; keeping previous runtime");
-                    continue;
-                }
+            {
+                // Leave the last applied baseline intact so the fallback
+                // scan retries recoverable failures without losing the edit.
+                tracing::warn!(%error, %id, config_file = ?path, "could not apply local configuration; keeping previous runtime");
+                continue;
             }
             next.insert(path, ReconciledFile { hash, id: Some(id) });
         }

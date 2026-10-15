@@ -22,13 +22,12 @@ class PingArgs {
 
 @InvokeArg
 class StartVpnArgs {
-    var ipv4Addr: String? = null
-    var ipv6Addr: String? = null
+    var ipv4Addrs: Array<String> = emptyArray()
     var routes: Array<String> = emptyArray()
     var dnsServers: Array<String> = emptyArray()
     var disallowedApplications: Array<String> = emptyArray()
     var mtu: Int? = null
-    var instanceId: String? = null
+    var instanceIds: Array<String> = emptyArray()
     var generation: String? = null
 }
 
@@ -123,13 +122,12 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
                 ret.put("errorMsg", "need_prepare")
             } else {
                 val intent = Intent(activity, TauriVpnService::class.java)
-                intent.putExtra(TauriVpnService.IPV4_ADDR, args.ipv4Addr)
-                intent.putExtra(TauriVpnService.IPV6_ADDR, args.ipv6Addr)
+                intent.putExtra(TauriVpnService.IPV4_ADDRS, args.ipv4Addrs)
                 intent.putExtra(TauriVpnService.ROUTES, args.routes)
                 intent.putExtra(TauriVpnService.DNS_SERVERS, args.dnsServers)
                 intent.putExtra(TauriVpnService.DISALLOWED_APPLICATIONS, args.disallowedApplications)
                 intent.putExtra(TauriVpnService.MTU, args.mtu)
-                intent.putExtra(TauriVpnService.INSTANCE_ID, args.instanceId)
+                intent.putExtra(TauriVpnService.INSTANCE_IDS, args.instanceIds)
                 intent.putExtra(TauriVpnService.GENERATION, args.generation)
 
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -171,8 +169,7 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     fun getVpnStatus(invoke: Invoke) {
         val ret = JSObject()
         ret.put("running", TauriVpnService.self != null)
-        ret.put("ipv4Addr", TauriVpnService.ipv4Addr)
-        ret.put("ipv6Addr", TauriVpnService.ipv6Addr)
+        ret.put("ipv4Addrs", TauriVpnService.ipv4Addrs)
         ret.put("routes", TauriVpnService.routes)
         ret.put("dnsServers", TauriVpnService.dnsServers)
         ret.put("generation", TauriVpnService.generation)

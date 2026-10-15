@@ -35,6 +35,7 @@ import {
   Flags as FlagsPb,
   NatType,
   type PeerFeatureFlag,
+  type Ipv6Inet,
   type SecureModeConfig,
 } from '../generated/proto/common'
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
@@ -45,6 +46,20 @@ export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, Netwo
 export { VpnPortalClientState }
 export type { GetVpnStatusResponse, VpnRuleStatus } from '../generated/proto/api_instance'
 export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig, VpnPortalClientConfig, VpnPortalClientInfo, VpnPortalConfig, VpnPortalInfo }
+
+export const PEER_PROTOCOLS: { [proto: string]: number } = {
+  tcp: 11010,
+  udp: 11010,
+  wg: 11011,
+  ws: 11011,
+  wss: 11012,
+  quic: 11012,
+  faketcp: 11013,
+  http: 80,
+  https: 443,
+  txt: 0,
+  srv: 0,
+}
 
 export type NetworkConfig = Omit<
   ProtoNetworkConfig,
@@ -499,6 +514,7 @@ export interface Url {
 
 export interface NodeInfo {
   virtual_ipv4: Ipv4Inet,
+  virtual_ipv6?: Ipv6Inet,
   hostname: string
   version: string
   ips: {
@@ -633,6 +649,8 @@ export enum EventType {
   VpnPortalClientConnected = 'VpnPortalClientConnected', // string, string
   VpnPortalClientDisconnected = 'VpnPortalClientDisconnected', // string, string, string
 
+  DhcpIpv6Changed = 'DhcpIpv6Changed',
+  DhcpIpv6Conflicted = 'DhcpIpv6Conflicted',
   DhcpIpv4Changed = 'DhcpIpv4Changed', // ipv4 | null, ipv4 | null
   DhcpIpv4Conflicted = 'DhcpIpv4Conflicted', // ipv4 | null
 

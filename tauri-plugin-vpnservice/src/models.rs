@@ -21,13 +21,12 @@ pub struct VoidRequest {}
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartVpnRequest {
-    pub ipv4_addr: Option<String>,
-    pub ipv6_addr: Option<String>,
+    pub ipv4_addrs: Option<Vec<String>>,
     pub routes: Option<Vec<String>>,
     pub dns_servers: Option<Vec<String>>,
     pub disallowed_applications: Option<Vec<String>>,
     pub mtu: Option<u32>,
-    pub instance_id: Option<String>,
+    pub instance_ids: Option<Vec<String>>,
     pub generation: Option<String>,
 }
 
@@ -55,8 +54,7 @@ pub struct Status {
 #[serde(rename_all = "camelCase")]
 pub struct VpnStatus {
     pub running: bool,
-    pub ipv4_addr: Option<String>,
-    pub ipv6_addr: Option<String>,
+    pub ipv4_addrs: Option<Vec<String>>,
     pub routes: Option<Vec<String>>,
     pub dns_servers: Option<Vec<String>>,
     pub generation: Option<String>,

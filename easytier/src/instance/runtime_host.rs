@@ -3,13 +3,16 @@ use std::sync::Arc;
 #[cfg(any(feature = "web-client", test))]
 use easytier_core::config::runtime::CoreInstanceRuntimeConfig;
 use easytier_core::{
-    gateway::dhcp::DhcpIpv4Host, host::packet::HostPacketReceiver, instance::CorePacketPlane,
+    gateway::dhcp::DhcpHost, host::packet::HostPacketReceiver, instance::CorePacketPlane,
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::ArcGlobalCtx;
+#[cfg(feature = "tun")]
+use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 
+mod dhcp;
 mod event_journal;
 mod implementation;
 #[cfg(feature = "tun")]
@@ -28,6 +31,11 @@ use super::runtime_executor::NativeInstanceExecutor;
 use event_journal::EventJournal;
 use tun_runtime::NativeTunRuntime;
 
+#[cfg(feature = "tun")]
+#[derive(Debug, thiserror::Error)]
+#[error("stale mobile TUN generation {0:?}")]
+pub(crate) struct StaleMobileTunGeneration(pub Option<u64>);
+
 pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
     operation: Arc<Mutex<()>>,
@@ -39,16 +47,30 @@ pub(crate) struct NativeInstanceRuntimeHost {
 
 impl NativeInstanceRuntimeHost {
     #[cfg(test)]
-    pub(crate) fn new(global_ctx: ArcGlobalCtx) -> Arc<Self> {
-        Self::new_with_executor(global_ctx, None)
+    pub(crate) fn new(
+        global_ctx: ArcGlobalCtx,
+        #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
+    ) -> Arc<Self> {
+        Self::new_with_executor(
+            global_ctx,
+            #[cfg(feature = "tun")]
+            shared_virtual_nic_registry,
+            None,
+        )
     }
 
     pub(super) fn new_with_executor(
         global_ctx: ArcGlobalCtx,
+        #[cfg(feature = "tun")] shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
         executor: Option<NativeInstanceExecutor>,
     ) -> Arc<Self> {
         let cancel = CancellationToken::new();
-        let tun = NativeTunRuntime::new(global_ctx.clone(), cancel.clone());
+        let tun = NativeTunRuntime::new(
+            global_ctx.clone(),
+            cancel.clone(),
+            #[cfg(feature = "tun")]
+            shared_virtual_nic_registry,
+        );
         let event_journal = EventJournal::new(&global_ctx);
         Arc::new(Self {
             global_ctx,
@@ -63,7 +85,7 @@ impl NativeInstanceRuntimeHost {
     async fn prepare_runtime(
         &self,
         packet_plane: Arc<CorePacketPlane>,
-    ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+    ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
         self.event_journal.start(self.cancel.clone()).await;
         self.tun.prepare(packet_plane.clone()).await?;
         Ok(Some(
@@ -110,7 +132,7 @@ impl NativeInstanceRuntimeHost {
                     &config.peer,
                 ));
         }
-        if patch.ipv6.is_some() {
+        if patch.ipv6.is_some() && !config.services.dhcp_ipv6 {
             self.global_ctx
                 .set_ipv6(crate::common::global_ctx::GlobalCtx::runtime_ipv6(
                     &config.peer,
@@ -125,8 +147,51 @@ impl NativeInstanceRuntimeHost {
         self.global_ctx.subscribe()
     }
 
+    #[cfg(all(feature = "tun", mobile))]
+    pub(crate) fn tun_enabled(&self) -> bool {
+        !self.global_ctx.get_flags().no_tun
+    }
+
     fn attach_runtime_tun_fd(&self, fd: i32) -> anyhow::Result<()> {
         self.tun.attach_fd(fd)
+    }
+
+    #[cfg(all(feature = "tun", mobile))]
+    pub(crate) async fn attach_mobile_tun_fd(
+        &self,
+        fd: i32,
+        replace_tun_fd: bool,
+        claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
+    ) -> anyhow::Result<()> {
+        self.tun.attach_mobile_fd(fd, replace_tun_fd, claims).await
+    }
+
+    #[cfg(all(feature = "tun", mobile))]
+    pub(crate) async fn attach_mobile_tun_fd_with_generation(
+        &self,
+        fd: i32,
+        replace_tun_fd: bool,
+        claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
+        generation: Option<u64>,
+    ) -> anyhow::Result<()> {
+        self.tun
+            .attach_mobile_fd_with_generation(fd, replace_tun_fd, claims, generation)
+            .await
+    }
+
+    #[cfg(all(feature = "tun", mobile))]
+    pub(crate) async fn mobile_tun_claims(
+        &self,
+        packet_plane: &CorePacketPlane,
+    ) -> (
+        crate::instance::shared_virtual_nic::SharedIfConfigClaims,
+        Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
+    ) {
+        (
+            crate::instance::virtual_nic::NicCtx::mobile_tun_claims(&self.global_ctx, packet_plane)
+                .await,
+            self.tun.current_mobile_tun_claims().await,
+        )
     }
 
     fn install_packet_receiver(&self, receiver: HostPacketReceiver) -> anyhow::Result<()> {
@@ -142,6 +207,16 @@ mod tests {
         global_ctx::{GlobalCtx, GlobalCtxEvent},
     };
 
+    fn runtime_host(global_ctx: ArcGlobalCtx) -> Arc<NativeInstanceRuntimeHost> {
+        NativeInstanceRuntimeHost::new(
+            global_ctx,
+            #[cfg(feature = "tun")]
+            Arc::new(tokio::sync::Mutex::new(
+                crate::instance::shared_virtual_nic::SharedVirtualNicRegistry::new(),
+            )),
+        )
+    }
+
     #[cfg(feature = "web-client")]
     fn runtime_config(config: &TomlConfig) -> CoreInstanceRuntimeConfig {
         let normalized = easytier_core::instance::CoreInstanceConfig::from_toml(config).unwrap();
@@ -154,7 +229,7 @@ mod tests {
     #[test]
     fn runtime_host_owns_event_subscription_context() {
         let global_ctx = Arc::new(GlobalCtx::new(TomlConfig::default()));
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let runtime_host = runtime_host(global_ctx.clone());
         let mut events = runtime_host.subscribe_event();
 
         global_ctx.issue_event(GlobalCtxEvent::CredentialChanged);
@@ -175,7 +250,7 @@ mod tests {
         config.set_ipv4(Some("10.20.0.1/24".parse().unwrap()));
         config.set_ipv6(Some("fd00::1/64".parse().unwrap()));
         let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let runtime_host = runtime_host(global_ctx.clone());
 
         assert_eq!(global_ctx.get_hostname(), "before");
         assert_eq!(global_ctx.get_ipv4(), Some("10.20.0.1/24".parse().unwrap()));
@@ -217,7 +292,7 @@ mod tests {
         let config = TomlConfig::default();
         config.set_dhcp(true);
         let global_ctx = Arc::new(GlobalCtx::new(config.clone()));
-        let runtime_host = NativeInstanceRuntimeHost::new(global_ctx.clone());
+        let runtime_host = runtime_host(global_ctx.clone());
         let lease = "10.20.0.7/24".parse().unwrap();
         global_ctx.set_ipv4(Some(lease));
 

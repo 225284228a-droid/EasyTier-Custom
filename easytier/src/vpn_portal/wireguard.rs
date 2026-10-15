@@ -376,7 +376,7 @@ fn append_label(output: &mut Vec<u8>, label: &[u8]) {
     output.extend_from_slice(label);
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn test_wireguard_keys(
     config: &VpnPortalConfig,
     client_name: &str,

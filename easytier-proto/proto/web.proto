@@ -30,6 +30,9 @@ message HeartbeatRequest {
   string local_config_catalog_epoch = 50003;
   uint64 local_config_catalog_generation = 50004;
   repeated string runtime_capabilities = 50005;
+  // Supports explicit manual mode patches and typed empty-manual readback.
+  // Older peers silently ignore unknown patch fields; missing means false.
+  bool support_manual_routes_patch = 12;
 }
 
 message HeartbeatResponse {

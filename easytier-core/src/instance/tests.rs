@@ -670,6 +670,57 @@ mod portable_runtime {
         );
     }
 
+    #[cfg(feature = "dhcp-ipv6")]
+    #[tokio::test]
+    async fn runtime_update_preserves_dhcp_owned_ipv6() {
+        let mut initial = test_config("dhcp-runtime-update");
+        initial.connectivity.runtime.dhcp_ipv6 = true;
+        let instance = build_instance(initial).unwrap();
+        let lease = IpPrefix {
+            address: "fd12::7".parse().unwrap(),
+            prefix_len: 64,
+        };
+        instance.runtime_config.update_peer_with(|peer| {
+            peer.runtime.core.routes.ipv6 = Some(lease.clone());
+        });
+
+        let mut replacement = test_config("dhcp-runtime-update");
+        replacement.connectivity.runtime.dhcp_ipv6 = true;
+        instance
+            .update_runtime_config(runtime_snapshot(&replacement))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv6,
+            Some(lease)
+        );
+
+        let static_replacement = test_config("dhcp-runtime-update");
+        instance
+            .update_runtime_config(runtime_snapshot(&static_replacement))
+            .await
+            .unwrap();
+        assert_eq!(
+            instance
+                .runtime_config
+                .snapshot()
+                .peer
+                .runtime
+                .core
+                .routes
+                .ipv6,
+            None
+        );
+    }
+
     #[tokio::test]
     async fn core_instance_is_a_direct_managed_record() {
         let instance = build_instance(test_config("managed-directly")).unwrap();
@@ -749,6 +800,9 @@ mod portable_runtime {
             r#"
 instance_name = "managed-by-name"
 hostname = "core-owned-config"
+
+[vpn]
+exit_enabled = false
 
 [network_identity]
 network_name = "managed-network"
@@ -870,6 +924,88 @@ network_secret = "network-secret"
         .unwrap_err();
 
         assert!(error.to_string().contains("instance is not ready"));
+    }
+
+    #[cfg(feature = "management")]
+    #[tokio::test]
+    async fn manual_route_patch_preserves_empty_mode_without_restart() {
+        use easytier_proto::api::config::{ConfigPatchAction, InstanceConfigPatch, RoutePatch};
+
+        let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
+        let config = TomlConfig::new_from_str(
+            "[network_identity]\nnetwork_name = 'manual-routes'\nnetwork_secret = 'secret'",
+        )
+        .unwrap();
+        let instance =
+            CoreInstance::from_toml(config, adapters(None, Arc::new(packet_sink))).unwrap();
+        instance.start().await.unwrap();
+        let peer_id = instance.peer_id();
+        let persistence = RecordingConfigPatchPersistence {
+            writes: std::sync::Mutex::new(Vec::new()),
+            fail: AtomicBool::new(true),
+        };
+        let route: cidr::Ipv4Cidr = "10.20.0.0/24".parse().unwrap();
+        let add = RoutePatch {
+            action: ConfigPatchAction::Add as i32,
+            cidr: Some("10.20.0.0/24".parse::<cidr::Ipv4Inet>().unwrap().into()),
+        };
+        let clear = RoutePatch {
+            action: ConfigPatchAction::Clear as i32,
+            ..Default::default()
+        };
+        let failed = crate::management::apply_config_patch(
+            &instance,
+            InstanceConfigPatch {
+                enable_manual_routes: Some(true),
+                routes: vec![add],
+                ..Default::default()
+            },
+            Some(&persistence),
+        )
+        .await;
+        assert!(failed.is_err());
+        assert_eq!(instance.toml_config().unwrap().get_routes(), None);
+        assert_eq!(
+            instance.runtime_config.snapshot().services.manual_routes,
+            None
+        );
+        assert!(persistence.writes.lock().unwrap().is_empty());
+        persistence.fail.store(false, Ordering::Relaxed);
+
+        for (mode, patches, expected) in [
+            (Some(true), Vec::new(), Some(Vec::new())),
+            (Some(true), vec![add], Some(vec![route])),
+            (Some(true), vec![clear], Some(Vec::new())),
+            (Some(false), Vec::new(), None),
+            // Released callers that omit the new mode keep their old behavior.
+            (None, vec![add], Some(vec![route])),
+            (None, vec![clear], None),
+        ] {
+            crate::management::apply_config_patch(
+                &instance,
+                InstanceConfigPatch {
+                    enable_manual_routes: mode,
+                    routes: patches,
+                    ..Default::default()
+                },
+                Some(&persistence),
+            )
+            .await
+            .unwrap();
+            assert_eq!(instance.toml_config().unwrap().get_routes(), expected);
+            assert_eq!(
+                instance.runtime_config.snapshot().services.manual_routes,
+                expected
+                    .as_ref()
+                    .map(|routes| routes.iter().copied().collect())
+            );
+            let writes = persistence.writes.lock().unwrap();
+            let persisted = TomlConfig::new_from_str(writes.last().unwrap()).unwrap();
+            assert_eq!(persisted.get_routes(), expected);
+            assert_eq!(instance.peer_id(), peer_id);
+            assert_eq!(instance.state(), CoreInstanceState::Running);
+        }
+        instance.stop().await;
     }
 
     #[cfg(feature = "management")]
@@ -1371,7 +1507,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 
@@ -1405,7 +1541,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 anyhow::bail!("host prepare failed")
             }
 
@@ -1516,7 +1652,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 self.prepare_started.notify_one();
                 self.prepare_release.notified().await;
                 Ok(None)
@@ -1570,7 +1706,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 assert_eq!(tokio::runtime::Handle::current().id(), self.handle.id());
                 self.prepare_started.notify_one();
                 if self.block_prepare {
@@ -1655,7 +1791,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 
@@ -1737,7 +1873,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 
@@ -2032,7 +2168,7 @@ virtual_ip = "10.82.0.2/24"
             async fn prepare(
                 &self,
                 _packet_plane: Arc<CorePacketPlane>,
-            ) -> anyhow::Result<Option<Arc<dyn DhcpIpv4Host>>> {
+            ) -> anyhow::Result<Option<Arc<dyn DhcpHost>>> {
                 Ok(None)
             }
 
@@ -2557,18 +2693,21 @@ virtual_ip = "10.82.0.2/24"
         }
     }
 
+    #[cfg(unix)]
     #[derive(Debug, Default)]
     struct BlockingListenerState {
         start_entered: Notify,
         drop_calls: AtomicUsize,
     }
 
+    #[cfg(unix)]
     #[derive(Debug)]
     struct BlockingSocketListener {
         url: Url,
         state: Arc<BlockingListenerState>,
     }
 
+    #[cfg(unix)]
     #[async_trait]
     impl SocketListener for BlockingSocketListener {
         type Accepted = AcceptedTransport<TestTcpSocket>;
@@ -2587,16 +2726,19 @@ virtual_ip = "10.82.0.2/24"
         }
     }
 
+    #[cfg(unix)]
     impl Drop for BlockingSocketListener {
         fn drop(&mut self) {
             self.state.drop_calls.fetch_add(1, Ordering::Relaxed);
         }
     }
 
+    #[cfg(unix)]
     struct BlockingExternalListenerFactory {
         state: Arc<BlockingListenerState>,
     }
 
+    #[cfg(unix)]
     impl ExternalListenerFactory<AcceptedTransport<TestTcpSocket>> for BlockingExternalListenerFactory {
         fn supports_scheme(&self, scheme: &str) -> bool {
             scheme == "unix"

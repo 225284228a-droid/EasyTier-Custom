@@ -106,10 +106,12 @@ fn bootstrap_without_systemd_stub(
 
 #[cfg(feature = "dns-resolver")]
 fn resolver_config_for_namespace(
-    mut config: ResolverConfig,
+    config: ResolverConfig,
     mut options: ResolverOpts,
     namespace: Option<&str>,
 ) -> (ResolverConfig, ResolverOpts) {
+    #[cfg(target_os = "linux")]
+    let mut config = config;
     #[cfg(target_os = "linux")]
     {
         // A stub's upstream query belongs to systemd-resolved, so marking our

@@ -11,6 +11,7 @@ use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
     ifcfg::{IfConfiger, IfConfiguerTrait},
+    netns::NetNS,
 };
 
 use easytier_core::{
@@ -43,15 +44,18 @@ use zerocopy::{NativeEndian, NetworkEndian};
 #[cfg(target_os = "windows")]
 use crate::common::ifcfg::RegistryManager;
 
+use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicMember};
+
 /// Netlink sockets and their runtime stay on one thread while a namespace is
 /// selected. A setns guard must never migrate between Tokio worker threads.
 async fn configure_interface<F, Fut>(
     net_ns: crate::common::netns::NetNS,
     ifname: String,
+    ifcfg: Arc<dyn IfConfiguerTrait + Send + Sync>,
     operation: F,
 ) -> Result<(), Error>
 where
-    F: FnOnce(IfConfiger, String) -> Fut + Send + 'static,
+    F: FnOnce(Arc<dyn IfConfiguerTrait + Send + Sync>, String) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
 {
     #[cfg(target_os = "linux")]
@@ -60,7 +64,7 @@ where
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            net_ns.run(|| runtime.block_on(operation(IfConfiger {}, ifname)))
+            net_ns.run(|| runtime.block_on(operation(ifcfg, ifname)))
         })
         .await
         .map_err(|error| Error::AnyhowError(anyhow::Error::from(error)))?
@@ -68,7 +72,7 @@ where
     #[cfg(not(target_os = "linux"))]
     {
         let _ = net_ns;
-        operation(IfConfiger {}, ifname).await
+        operation(ifcfg, ifname).await
     }
 }
 
@@ -295,37 +299,72 @@ impl AsyncWrite for TunAsyncWrite {
     }
 }
 
+pub struct VirtualNicConfig {
+    dev_name: String,
+    mtu: u32,
+    net_ns: NetNS,
+}
+
+impl VirtualNicConfig {
+    pub fn new(dev_name: String, mtu: u32, net_ns: NetNS) -> Self {
+        Self {
+            dev_name,
+            mtu,
+            net_ns,
+        }
+    }
+
+    pub fn mtu(&self) -> u32 {
+        self.mtu
+    }
+
+    pub fn net_ns_name(&self) -> Option<String> {
+        self.net_ns.name()
+    }
+}
+
 pub struct VirtualNic {
-    global_ctx: ArcGlobalCtx,
+    config: VirtualNicConfig,
 
     ifname: Option<String>,
-    ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
+    ifcfg: Arc<dyn IfConfiguerTrait + Send + Sync + 'static>,
+
+    // Keep the name reserved through firewall cleanup. The device
+    // itself may already have disappeared when its forwarding tasks stop.
+    #[cfg(target_os = "windows")]
+    name_reservation: Option<std::os::windows::io::OwnedHandle>,
 }
 
 impl Drop for VirtualNic {
     fn drop(&mut self) {
         #[cfg(target_os = "windows")]
-        {
-            if let Some(ref ifname) = self.ifname {
-                // Try to clean up firewall rules, but don't panic in destructor
-                if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
-                    tracing::warn!(
-                        %error,
-                        "failed to remove firewall rules for interface {}",
-                        ifname
-                    );
-                }
-            }
-        }
+        self.clear_windows_device();
     }
 }
 
 impl VirtualNic {
-    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn clear_windows_device(&mut self) {
+        if let Some(ifname) = self.ifname.take() {
+            // Try to clean up firewall rules, but don't panic in destructor
+            if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(&ifname) {
+                tracing::warn!(
+                    %error,
+                    "failed to remove firewall rules for interface {}",
+                    ifname
+                );
+            }
+        }
+        self.name_reservation.take();
+    }
+
+    pub fn new(config: VirtualNicConfig) -> Self {
         Self {
-            global_ctx,
+            config,
             ifname: None,
-            ifcfg: Box::new(IfConfiger {}),
+            ifcfg: Arc::new(IfConfiger::default()),
+            #[cfg(target_os = "windows")]
+            name_reservation: None,
         }
     }
 
@@ -542,14 +581,14 @@ impl VirtualNic {
         Ok(())
     }
 
-    async fn create_tun(&self) -> Result<tun::platform::Device, Error> {
+    async fn create_tun(&mut self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
         // FreeBSD specific: Check and restore TUN interfaces before creating new one
         #[cfg(target_os = "freebsd")]
         {
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            let dev_name = self.config.dev_name.clone();
 
             if !dev_name.is_empty() {
                 // Restore TUN interface name if needed, ignoring errors as it's not critical
@@ -562,7 +601,7 @@ impl VirtualNic {
             // Check and create TUN device node if necessary (Linux only)
             Self::ensure_tun_device_node().await;
 
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            let dev_name = self.config.dev_name.clone();
             if !dev_name.is_empty() {
                 config.tun_name(&dev_name);
             }
@@ -576,7 +615,13 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            if self.name_reservation.is_none() {
+                let (name, reservation) =
+                    crate::arch::windows::reserve_tun_name(&self.config.dev_name)?;
+                self.config.dev_name = name;
+                self.name_reservation = Some(reservation);
+            }
+            let dev_name = self.config.dev_name.clone();
 
             match crate::arch::windows::add_self_to_firewall_allowlist() {
                 Ok(_) => tracing::info!("add_self_to_firewall_allowlist successful!"),
@@ -588,33 +633,14 @@ impl VirtualNic {
                 }
             }
 
-            match RegistryManager::reg_delete_obsoleted_items(&dev_name) {
-                Ok(_) => tracing::trace!("delete successful!"),
-                Err(e) => tracing::error!("An error occurred: {}", e),
-            }
-
-            if !dev_name.is_empty() {
-                config.tun_name(&dev_name);
-            } else {
-                use rand::distributions::Distribution as _;
-                let c = crate::arch::windows::interface_count()?;
-                let mut rng = rand::thread_rng();
-                let s: String = rand::distributions::Alphanumeric
-                    .sample_iter(&mut rng)
-                    .take(4)
-                    .map(char::from)
-                    .collect::<String>()
-                    .to_lowercase();
-
-                let random_dev_name = format!("et_{}_{}", c, s);
-                config.tun_name(random_dev_name.clone());
-
-                let mut flags = self.global_ctx.get_flags();
-                flags.dev_name = random_dev_name.clone();
-                self.global_ctx.set_flags(flags);
-            }
-
+            config.tun_name(&dev_name);
             config.platform_config(|config| {
+                // Wintun uses the GUID for Windows network profile identity.
+                // Include the name so explicitly shared NICs use the same GUID.
+                let identity = format!("https://easytier.rs/wintun/{}", dev_name.to_lowercase());
+                config.device_guid(
+                    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, identity.as_bytes()).as_u128(),
+                );
                 config.skip_config(true);
                 config.ring_cap(Some(std::cmp::min(
                     config.min_ring_cap() * 32,
@@ -625,11 +651,16 @@ impl VirtualNic {
 
         config.up();
 
-        let _g = self.global_ctx.net_ns.guard();
+        let _g = self.config.net_ns.guard();
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(mobile)]
+    #[cfg(any(mobile, all(test, unix)))]
+    pub fn set_mobile_tun_fd_name(&mut self, tun_fd: std::os::fd::RawFd) {
+        self.ifname = Some(format!("tunfd_{}", tun_fd));
+    }
+
+    #[cfg(any(mobile, all(test, unix)))]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
@@ -664,7 +695,7 @@ impl VirtualNic {
             None,
         );
 
-        self.ifname = Some(format!("tunfd_{}", tun_fd));
+        self.set_mobile_tun_fd_name(tun_fd);
 
         Ok(Box::new(ft))
     }
@@ -682,7 +713,7 @@ impl VirtualNic {
         // FreeBSD TUN interface rename functionality
         #[cfg(target_os = "freebsd")]
         {
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            let dev_name = self.config.dev_name.clone();
 
             if !dev_name.is_empty() && dev_name != ifname {
                 // Use ifconfig to rename the TUN interface
@@ -718,19 +749,28 @@ impl VirtualNic {
 
         let dev = AsyncDevice::new(dev)?;
 
-        let flags = self.global_ctx.get_flags();
-        let mut mtu_in_config = flags.mtu;
-        if flags.enable_encryption {
-            mtu_in_config -= 20;
-        }
         {
             // set mtu by ourselves, rust-tun does not handle it correctly on windows
+            let mtu = self.config.mtu;
             configure_interface(
-                self.global_ctx.net_ns.clone(),
+                self.config.net_ns.clone(),
                 ifname.clone(),
-                move |ifcfg, ifname| async move { ifcfg.set_mtu(&ifname, mtu_in_config).await },
+                self.ifcfg.clone(),
+                move |ifcfg, ifname| async move { ifcfg.set_mtu(&ifname, mtu).await },
             )
             .await?;
+        }
+
+        #[cfg(any(
+            all(target_os = "macos", not(feature = "macos-ne")),
+            target_os = "freebsd"
+        ))]
+        {
+            // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
+            let _ = self
+                .ifcfg
+                .remove_ipv4_route(&ifname, "10.0.0.0".parse().unwrap(), 24)
+                .await;
         }
 
         let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
@@ -778,17 +818,81 @@ impl VirtualNic {
 
     pub async fn link_up(&self) -> Result<(), Error> {
         configure_interface(
-            self.global_ctx.net_ns.clone(),
+            self.config.net_ns.clone(),
             self.ifname().to_owned(),
-            |ifcfg, ifname| async move { ifcfg.set_link_status(&ifname, true).await },
+            self.ifcfg.clone(),
+            move |ifcfg, ifname| async move { ifcfg.set_link_status(&ifname, true).await },
         )
         .await
     }
 
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
-        configure_interface(self.global_ctx.net_ns.clone(), self.ifname().to_owned(), move |ifcfg, ifname| async move {
-            ifcfg.add_ipv4_route(&ifname, address, cidr, None).await
-        }).await
+        self.add_route_with_cost(address, cidr, None).await
+    }
+
+    pub async fn add_route_with_cost(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        self.add_route_with_cost_and_source_hint(address, cidr, cost, None)
+            .await
+    }
+
+    pub async fn add_route_with_cost_and_source_hint(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        configure_interface(
+            self.config.net_ns.clone(),
+            self.ifname().to_owned(),
+            self.ifcfg.clone(),
+            move |ifcfg, ifname| async move {
+                ifcfg
+                    .add_ipv4_route_with_source_hint(&ifname, address, cidr, cost, source_hint)
+                    .await
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        configure_interface(self.config.net_ns.clone(), self.ifname().to_owned(), self.ifcfg.clone(),
+            move |ifcfg, ifname| async move {
+        ifcfg
+            .remove_ipv4_route(&ifname, address, cidr)
+            .await
+            }).await
+    }
+
+    pub async fn remove_route_with_cost_and_source_hint(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> Result<(), Error> {
+        configure_interface(
+            self.config.net_ns.clone(),
+            self.ifname().to_owned(),
+            self.ifcfg.clone(),
+            move |ifcfg, ifname| async move {
+                ifcfg
+                    .remove_ipv4_route_with_cost_and_source_hint(
+                        &ifname,
+                        address,
+                        cidr,
+                        cost,
+                        source_hint,
+                    )
+                    .await
+            },
+        )
+        .await
     }
 
     pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
@@ -801,21 +905,28 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        configure_interface(self.global_ctx.net_ns.clone(), self.ifname().to_owned(), move |ifcfg, ifname| async move {
-            ifcfg.add_ipv6_route(&ifname, address, cidr, cost).await
-        }).await
+        configure_interface(self.config.net_ns.clone(), self.ifname().to_owned(), self.ifcfg.clone(),
+            move |ifcfg, ifname| async move {
+        ifcfg
+            .add_ipv6_route(&ifname, address, cidr, cost)
+            .await
+            }).await
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
-        configure_interface(self.global_ctx.net_ns.clone(), self.ifname().to_owned(), move |ifcfg, ifname| async move {
-            ifcfg.remove_ipv6_route(&ifname, address, cidr).await
-        }).await
+        configure_interface(self.config.net_ns.clone(), self.ifname().to_owned(), self.ifcfg.clone(),
+            move |ifcfg, ifname| async move {
+        ifcfg
+            .remove_ipv6_route(&ifname, address, cidr)
+            .await
+            }).await
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         configure_interface(
-            self.global_ctx.net_ns.clone(),
+            self.config.net_ns.clone(),
             self.ifname().to_owned(),
+            self.ifcfg.clone(),
             move |ifcfg, ifname| async move { ifcfg.remove_ip(&ifname, ip).await },
         )
         .await
@@ -823,8 +934,9 @@ impl VirtualNic {
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         configure_interface(
-            self.global_ctx.net_ns.clone(),
+            self.config.net_ns.clone(),
             self.ifname().to_owned(),
+            self.ifcfg.clone(),
             move |ifcfg, ifname| async move { ifcfg.remove_ipv6(&ifname, ip).await },
         )
         .await
@@ -832,8 +944,9 @@ impl VirtualNic {
 
     pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
         configure_interface(
-            self.global_ctx.net_ns.clone(),
+            self.config.net_ns.clone(),
             self.ifname().to_owned(),
+            self.ifcfg.clone(),
             move |ifcfg, ifname| async move { ifcfg.add_ipv4_ip(&ifname, ip, cidr as u8).await },
         )
         .await
@@ -841,15 +954,205 @@ impl VirtualNic {
 
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
         configure_interface(
-            self.global_ctx.net_ns.clone(),
+            self.config.net_ns.clone(),
             self.ifname().to_owned(),
+            self.ifcfg.clone(),
             move |ifcfg, ifname| async move { ifcfg.add_ipv6_ip(&ifname, ip, cidr as u8).await },
         )
         .await
     }
 
-    pub fn get_ifcfg(&self) -> impl IfConfiguerTrait + use<> {
-        IfConfiger {}
+    pub async fn set_mtu(&self, mtu: u32) -> Result<(), Error> {
+        configure_interface(
+            self.config.net_ns.clone(),
+            self.ifname().to_owned(),
+            self.ifcfg.clone(),
+            move |ifcfg, ifname| async move { ifcfg.set_mtu(&ifname, mtu).await },
+        )
+        .await
+    }
+
+    pub fn configured_mtu(&self) -> u32 {
+        self.config.mtu
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_ifname_for_test(&mut self, ifname: String) {
+        self.ifname = Some(ifname);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_ifcfg_for_test(
+        &mut self,
+        ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
+    ) {
+        self.ifcfg = ifcfg.into();
+    }
+
+    pub fn get_ifcfg(&self) -> IfConfiger {
+        IfConfiger::default()
+    }
+}
+
+#[derive(Clone)]
+pub enum NicBackend {
+    Dedicated(Arc<Mutex<VirtualNic>>),
+    Shared(SharedVirtualNicMember),
+}
+
+impl NicBackend {
+    pub async fn create_dev(&self) -> Result<Box<dyn Tunnel>, Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.create_dev().await,
+            Self::Shared(member) => member.create_dev().await,
+        }
+    }
+
+    #[cfg(mobile)]
+    pub async fn create_dev_for_mobile(
+        &self,
+        tun_fd: std::os::fd::RawFd,
+        replace_tun_fd: bool,
+    ) -> Result<Box<dyn Tunnel>, Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.create_dev_for_mobile(tun_fd).await,
+            Self::Shared(member) => member.create_dev_for_mobile(tun_fd, replace_tun_fd).await,
+        }
+    }
+
+    pub async fn ifname(&self) -> Option<String> {
+        match self {
+            Self::Dedicated(nic) => nic
+                .lock()
+                .await
+                .ifname
+                .as_ref()
+                .map(|ifname| ifname.to_owned()),
+            Self::Shared(member) => {
+                let shared_nic = member.shared_nic();
+                let nic = {
+                    let shared_nic = shared_nic.lock().await;
+                    shared_nic.nic()
+                };
+                nic.lock()
+                    .await
+                    .ifname
+                    .as_ref()
+                    .map(|ifname| ifname.to_owned())
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    /// Returns a raw ifcfg handle and interface name for platform cleanup.
+    ///
+    /// This does not carry `VirtualNic`'s netns guard. Use the typed
+    /// `NicBackend` methods for normal IP and route configuration.
+    pub async fn ifcfg_and_ifname(&self) -> Result<(IfConfiger, String), Error> {
+        match self {
+            Self::Dedicated(nic) => {
+                let nic = nic.lock().await;
+                Ok((nic.get_ifcfg(), nic.ifname().to_owned()))
+            }
+            Self::Shared(member) => member.ifcfg_and_ifname().await,
+        }
+    }
+
+    pub async fn link_up(&self) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.link_up().await,
+            Self::Shared(member) => member.link_up().await,
+        }
+    }
+
+    pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_route(address, cidr).await,
+            Self::Shared(member) => member.add_route(address, cidr).await,
+        }
+    }
+
+    pub async fn add_route_with_cost(
+        &self,
+        address: Ipv4Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => {
+                nic.lock()
+                    .await
+                    .add_route_with_cost(address, cidr, cost)
+                    .await
+            }
+            Self::Shared(member) => member.add_route_with_cost(address, cidr, cost).await,
+        }
+    }
+
+    pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_route(address, cidr).await,
+            Self::Shared(member) => member.remove_route(address, cidr).await,
+        }
+    }
+
+    pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_ipv6_route(address, cidr).await,
+            Self::Shared(member) => member.add_ipv6_route(address, cidr).await,
+        }
+    }
+
+    pub async fn add_ipv6_route_with_cost(
+        &self,
+        address: Ipv6Addr,
+        cidr: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => {
+                nic.lock()
+                    .await
+                    .add_ipv6_route_with_cost(address, cidr, cost)
+                    .await
+            }
+            Self::Shared(member) => member.add_ipv6_route_with_cost(address, cidr, cost).await,
+        }
+    }
+
+    pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_ipv6_route(address, cidr).await,
+            Self::Shared(member) => member.remove_ipv6_route(address, cidr).await,
+        }
+    }
+
+    pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_ip(ip).await,
+            Self::Shared(member) => member.remove_ip(ip).await,
+        }
+    }
+
+    pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.remove_ipv6(ip).await,
+            Self::Shared(member) => member.remove_ipv6(ip).await,
+        }
+    }
+
+    pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_ip(ip, cidr).await,
+            Self::Shared(member) => member.add_ip(ip, cidr).await,
+        }
+    }
+
+    pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
+        match self {
+            Self::Dedicated(nic) => nic.lock().await.add_ipv6(ip, cidr).await,
+            Self::Shared(member) => member.add_ipv6(ip, cidr).await,
+        }
     }
 }
 
@@ -860,14 +1163,10 @@ pub struct NicCtx {
 
     close_notifier: Arc<Notify>,
 
-    nic: Arc<Mutex<VirtualNic>>,
+    backend: NicBackend,
     tasks: JoinSet<()>,
     control_tasks: JoinSet<()>,
     cancellation: tokio_util::sync::CancellationToken,
-
-    /// Exit-forwarding state this NIC activated, so the disable path can
-    /// remove exactly what the enable path installed. Shared with the
-    /// config-patch watcher and released during awaited shutdown.
     vpn_exit_active: Arc<Mutex<super::vpn_exit_forwarding::VpnExitForwardingLease>>,
 
     #[cfg(target_os = "windows")]
@@ -885,14 +1184,25 @@ impl Drop for NicCtx {
 }
 
 impl NicCtx {
-    pub(crate) fn new(
+    fn virtual_nic_config(global_ctx: &ArcGlobalCtx) -> VirtualNicConfig {
+        let flags = global_ctx.get_flags();
+        let mut mtu = flags.mtu;
+        if flags.enable_encryption {
+            mtu -= 20;
+        }
+
+        let dev_name = flags.dev_name;
+
+        VirtualNicConfig::new(dev_name, mtu, global_ctx.net_ns.clone())
+    }
+
+    fn new_with_backend(
         global_ctx: ArcGlobalCtx,
         packet_plane: Arc<CorePacketPlane>,
         peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
         close_notifier: Arc<Notify>,
+        backend: NicBackend,
     ) -> Self {
-        let forwarding =
-            super::vpn_exit_forwarding::VpnExitForwardingLease::new(global_ctx.net_ns.clone());
         NicCtx {
             global_ctx: global_ctx.clone(),
             packet_plane,
@@ -900,15 +1210,56 @@ impl NicCtx {
 
             close_notifier,
 
-            nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
+            backend,
             tasks: JoinSet::new(),
             control_tasks: JoinSet::new(),
             cancellation: tokio_util::sync::CancellationToken::new(),
-            vpn_exit_active: Arc::new(Mutex::new(forwarding)),
+            vpn_exit_active: Arc::new(Mutex::new(
+                super::vpn_exit_forwarding::VpnExitForwardingLease::new(global_ctx.net_ns.clone()),
+            )),
 
             #[cfg(target_os = "windows")]
             windows_udp_broadcast_relay: None,
         }
+    }
+
+    pub(crate) async fn new(
+        global_ctx: ArcGlobalCtx,
+        packet_plane: Arc<CorePacketPlane>,
+        peer_packet_receiver: Arc<Mutex<HostPacketReceiver>>,
+        close_notifier: Arc<Notify>,
+        registry: ArcSharedVirtualNicRegistry,
+    ) -> Self {
+        let nic_config = Self::virtual_nic_config(&global_ctx);
+        #[cfg(mobile)]
+        let nic_config = VirtualNicConfig {
+            dev_name: String::new(),
+            net_ns: NetNS::new(None),
+            ..nic_config
+        };
+        // Only an explicitly configured name opts into sharing.
+        let backend = if cfg!(mobile) || !global_ctx.get_flags().dev_name.is_empty() {
+            NicBackend::Shared(registry.lock().await.create_member(
+                nic_config.dev_name.clone(),
+                nic_config,
+                global_ctx.get_id(),
+                close_notifier.clone(),
+            ))
+        } else {
+            NicBackend::Dedicated(Arc::new(Mutex::new(VirtualNic::new(nic_config))))
+        };
+
+        Self::new_with_backend(
+            global_ctx,
+            packet_plane,
+            peer_packet_receiver,
+            close_notifier,
+            backend,
+        )
+    }
+
+    pub async fn ifname(&self) -> Option<String> {
+        self.backend.ifname().await
     }
 
     /// Stop packet I/O, then await every route owner and forwarding lease
@@ -922,42 +1273,51 @@ impl NicCtx {
         {
             self.windows_udp_broadcast_relay.take();
         }
+        if let NicBackend::Shared(member) = &self.backend
+            && let Err(error) = member.shutdown().await
+        {
+            tracing::error!(?error, "failed to release shared NIC member");
+        }
     }
 
-    pub async fn ifname(&self) -> Option<String> {
-        let nic = self.nic.lock().await;
-        nic.ifname.as_ref().map(|s| s.to_owned())
+    async fn tun_ifname(&self) -> Result<String, Error> {
+        self.backend
+            .ifname()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("tun device has no interface name").into())
     }
 
     pub async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
-        let nic = self.nic.lock().await;
-        nic.link_up().await?;
-        nic.remove_ip(None).await?;
-        nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
+        self.backend.link_up().await?;
+        self.backend.remove_ip(None).await?;
+        self.backend
+            .add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
             .await?;
         #[cfg(any(
             all(target_os = "macos", not(feature = "macos-ne")),
             target_os = "freebsd"
         ))]
         {
-            nic.add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
+            self.backend
+                .add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
                 .await?;
         }
         Ok(())
     }
 
     pub async fn assign_ipv6_to_tun_device(&self, ipv6_addr: cidr::Ipv6Inet) -> Result<(), Error> {
-        let nic = self.nic.lock().await;
-        nic.link_up().await?;
-        nic.remove_ipv6(None).await?;
-        nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
+        self.backend.link_up().await?;
+        self.backend.remove_ipv6(None).await?;
+        self.backend
+            .add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
             .await?;
         #[cfg(any(
             all(target_os = "macos", not(feature = "macos-ne")),
             target_os = "freebsd"
         ))]
         {
-            nic.add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
+            self.backend
+                .add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
                 .await?;
         }
         Ok(())
@@ -1022,6 +1382,15 @@ impl NicCtx {
         });
     }
 
+    fn start_tunnel_forwarding(&mut self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+        let (stream, sink) = tunnel.split();
+
+        self.do_forward_nic_to_peers_task(stream)?;
+        self.do_forward_peers_to_nic(sink);
+
+        Ok(())
+    }
+
     #[cfg(target_os = "windows")]
     fn start_windows_udp_broadcast_relay(&mut self, virtual_ipv4: Ipv4Inet) {
         if !self.global_ctx.get_flags().enable_udp_broadcast_relay {
@@ -1047,12 +1416,11 @@ impl NicCtx {
     }
 
     async fn apply_route_changes(
-        ifname: &str,
-        net_ns: &crate::common::netns::NetNS,
+        backend: &NicBackend,
         cur_proxy_cidrs: &mut BTreeSet<easytier_core::config::vpn::VpnCidr>,
         added: Vec<easytier_core::config::vpn::VpnCidr>,
         removed: Vec<easytier_core::config::vpn::VpnCidr>,
-    ) {
+    ) -> Result<(), Error> {
         tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
 
         // Remove routes
@@ -1060,33 +1428,18 @@ impl NicCtx {
             if !cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let ret = configure_interface(
-                net_ns.clone(),
-                ifname.to_owned(),
-                move |ifcfg, ifname| async move {
-                    match cidr {
-                        easytier_core::config::vpn::VpnCidr::V4(cidr) => {
-                            ifcfg
-                                .remove_ipv4_route(
-                                    &ifname,
-                                    cidr.first_address(),
-                                    cidr.network_length(),
-                                )
-                                .await
-                        }
-                        easytier_core::config::vpn::VpnCidr::V6(cidr) => {
-                            ifcfg
-                                .remove_ipv6_route(
-                                    &ifname,
-                                    cidr.first_address(),
-                                    cidr.network_length(),
-                                )
-                                .await
-                        }
-                    }
-                },
-            )
-            .await;
+            let ret = match cidr {
+                easytier_core::config::vpn::VpnCidr::V4(cidr) => {
+                    backend
+                        .remove_route(cidr.first_address(), cidr.network_length())
+                        .await
+                }
+                easytier_core::config::vpn::VpnCidr::V6(cidr) => {
+                    backend
+                        .remove_ipv6_route(cidr.first_address(), cidr.network_length())
+                        .await
+                }
+            };
 
             if ret.is_err() {
                 tracing::trace!(
@@ -1105,35 +1458,18 @@ impl NicCtx {
             if cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let ret = configure_interface(
-                net_ns.clone(),
-                ifname.to_owned(),
-                move |ifcfg, ifname| async move {
-                    match cidr {
-                        easytier_core::config::vpn::VpnCidr::V4(cidr) => {
-                            ifcfg
-                                .add_ipv4_route(
-                                    &ifname,
-                                    cidr.first_address(),
-                                    cidr.network_length(),
-                                    None,
-                                )
-                                .await
-                        }
-                        easytier_core::config::vpn::VpnCidr::V6(cidr) => {
-                            ifcfg
-                                .add_ipv6_route(
-                                    &ifname,
-                                    cidr.first_address(),
-                                    cidr.network_length(),
-                                    None,
-                                )
-                                .await
-                        }
-                    }
-                },
-            )
-            .await;
+            let ret = match cidr {
+                easytier_core::config::vpn::VpnCidr::V4(cidr) => {
+                    backend
+                        .add_route(cidr.first_address(), cidr.network_length())
+                        .await
+                }
+                easytier_core::config::vpn::VpnCidr::V6(cidr) => {
+                    backend
+                        .add_ipv6_route(cidr.first_address(), cidr.network_length())
+                        .await
+                }
+            };
 
             if ret.is_err() {
                 tracing::trace!(
@@ -1146,35 +1482,37 @@ impl NicCtx {
             // exist. Only successful creates belong to this route owner.
             if ret.is_ok() {
                 cur_proxy_cidrs.insert(cidr);
+            } else if matches!(backend, NicBackend::Shared(_)) {
+                // A shared member must reject overlap conflicts as an attachment
+                // failure. Dedicated interfaces may already own a connected route.
+                return ret;
             }
         }
+        Ok(())
     }
 
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
         let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
-        let net_ns = self.global_ctx.net_ns.clone();
-        let nic = self.nic.lock().await;
-        let ifname = nic.ifname().to_owned();
+        let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
         let cancellation = self.cancellation.clone();
 
+        let mut cur_proxy_cidrs = BTreeSet::new();
+
+        // Keep known overlay regions captured even when a remote peer
+        // becomes unreachable. Public advertised subnets must not fall
+        // through to the host's physical default in that state.
+        let initial = overlay_routes(packet_plane.vpn_route_exclusions().await);
+        Self::apply_route_changes(
+            &backend,
+            &mut cur_proxy_cidrs,
+            initial.iter().copied().collect(),
+            Vec::new(),
+        )
+        .await?;
+
         self.control_tasks.spawn(async move {
-            let mut cur_proxy_cidrs = BTreeSet::new();
-
-            // Keep known overlay regions captured even when a remote peer
-            // becomes unreachable. Public advertised subnets must not fall
-            // through to the host's physical default in that state.
-            let initial = overlay_routes(packet_plane.vpn_route_exclusions().await);
-            Self::apply_route_changes(
-                &ifname,
-                &net_ns,
-                &mut cur_proxy_cidrs,
-                initial.iter().copied().collect(),
-                Vec::new(),
-            )
-            .await;
-
             loop {
                 let event = match tokio::select! {
                     _ = cancellation.cancelled() => break,
@@ -1200,11 +1538,14 @@ impl NicCtx {
                 let added = desired.difference(&cur_proxy_cidrs).copied().collect();
                 let removed = cur_proxy_cidrs.difference(&desired).copied().collect();
 
-                Self::apply_route_changes(&ifname, &net_ns, &mut cur_proxy_cidrs, added, removed)
-                    .await;
+                if let Err(error) =
+                    Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, added, removed).await
+                {
+                    tracing::error!(?error, "overlay route update failed");
+                }
             }
             let removed = cur_proxy_cidrs.iter().copied().collect();
-            Self::apply_route_changes(&ifname, &net_ns, &mut cur_proxy_cidrs, Vec::new(), removed)
+            let _ = Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, Vec::new(), removed)
                 .await;
         });
 
@@ -1216,9 +1557,8 @@ impl NicCtx {
     /// can be removed again on disable and on shutdown.
     async fn sync_vpn_exit_forwarding(&self) {
         let vpn = self.global_ctx.config.get_vpn();
-        let ifname = {
-            let nic = self.nic.lock().await;
-            nic.ifname().to_owned()
+        let Some(ifname) = self.backend.ifname().await else {
+            return;
         };
         let prefix = self
             .global_ctx
@@ -1240,10 +1580,7 @@ impl NicCtx {
     async fn run_vpn_exit_forwarding_updater(&mut self) -> Result<(), Error> {
         let global_ctx = self.global_ctx.clone();
         let state = self.vpn_exit_active.clone();
-        let ifname = {
-            let nic = self.nic.lock().await;
-            nic.ifname().to_owned()
-        };
+        let ifname = self.tun_ifname().await?;
         let mut event_receiver = global_ctx.subscribe();
         let cancellation = self.cancellation.clone();
         self.control_tasks.spawn(async move {
@@ -1263,6 +1600,7 @@ impl NicCtx {
                     event,
                     GlobalCtxEvent::ConfigPatched(_)
                         | GlobalCtxEvent::DhcpIpv4Changed(_, _)
+                        | GlobalCtxEvent::DhcpIpv6Changed(_, _)
                         | GlobalCtxEvent::TunDeviceReady(_)
                 ) {
                     continue;
@@ -1289,12 +1627,15 @@ impl NicCtx {
         let status = global_ctx.vpn_route_status();
         let packet_plane = self.packet_plane.clone();
         let cancellation = self.cancellation.clone();
-        let nic = self.nic.lock().await;
         let ifcfg: std::sync::Arc<dyn crate::common::ifcfg::IfConfiguerTrait> =
-            std::sync::Arc::new(crate::common::ifcfg::IfConfiger {});
-        let ifname = nic.ifname().to_owned();
-        drop(nic);
+            std::sync::Arc::new(crate::common::ifcfg::IfConfiger::default());
+        let ifname = self.tun_ifname().await?;
         let (ready, completion) = tokio::sync::oneshot::channel();
+        let shared_member: Option<Arc<dyn super::vpn_routes::VpnCaptureClaims>> =
+            match &self.backend {
+                NicBackend::Shared(member) => Some(Arc::new(member.clone())),
+                NicBackend::Dedicated(_) => None,
+            };
 
         self.control_tasks.spawn(async move {
             super::vpn_routes::run_vpn_route_manager(
@@ -1306,6 +1647,7 @@ impl NicCtx {
                     net_ns,
                     status,
                     cancellation,
+                    shared_member,
                 },
                 ready,
             )
@@ -1335,43 +1677,25 @@ impl NicCtx {
         ipv4_addr: Option<cidr::Ipv4Inet>,
         ipv6_addr: Option<cidr::Ipv6Inet>,
     ) -> Result<(), Error> {
-        let tunnel = {
-            let mut nic = self.nic.lock().await;
-            match nic.create_dev().await {
-                Ok(ret) => {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let dev_name = self.global_ctx.get_flags().dev_name;
-                        let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
-                    }
+        let tunnel = match self.backend.create_dev().await {
+            Ok(ret) => {
+                let ifname = self.tun_ifname().await?;
 
-                    #[cfg(any(
-                        all(target_os = "macos", not(feature = "macos-ne")),
-                        target_os = "freebsd"
-                    ))]
-                    {
-                        // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
-                        let _ = nic
-                            .ifcfg
-                            .remove_ipv4_route(nic.ifname(), "10.0.0.0".parse().unwrap(), 24)
-                            .await;
-                    }
+                #[cfg(target_os = "windows")]
+                {
+                    let _ = RegistryManager::reg_change_catrgory_in_profile(&ifname);
+                }
 
-                    self.global_ctx
-                        .set_tun_device_ready(nic.ifname().to_string());
-                    ret
-                }
-                Err(err) => {
-                    self.global_ctx.set_tun_device_error(err.to_string());
-                    return Err(err);
-                }
+                self.global_ctx.set_tun_device_ready(ifname);
+                ret
+            }
+            Err(err) => {
+                self.global_ctx.set_tun_device_error(err.to_string());
+                return Err(err);
             }
         };
 
-        let (stream, sink) = tunnel.split();
-
-        self.do_forward_nic_to_peers_task(stream)?;
-        self.do_forward_peers_to_nic(sink);
+        self.start_tunnel_forwarding(tunnel)?;
 
         // Assign IPv4 address if provided
         if let Some(ipv4_addr) = ipv4_addr {
@@ -1395,26 +1719,85 @@ impl NicCtx {
     }
 
     #[cfg(mobile)]
-    pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
-        let tunnel = {
-            let mut nic = self.nic.lock().await;
-            match nic.create_dev_for_mobile(tun_fd).await {
-                Ok(ret) => {
-                    self.global_ctx
-                        .set_tun_device_ready(nic.ifname().to_string());
-                    ret
+    pub(crate) async fn mobile_tun_claims(
+        global_ctx: &ArcGlobalCtx,
+        packet_plane: &CorePacketPlane,
+    ) -> super::shared_virtual_nic::SharedIfConfigClaims {
+        use super::shared_virtual_nic::{SharedIfConfigClaims, SharedIpv4Route, SharedIpv6Route};
+        let mut claims = SharedIfConfigClaims::default();
+        claims.ipv4_addresses.extend(global_ctx.get_ipv4());
+        claims.ipv6_addresses.extend(global_ctx.get_ipv6());
+        for route in packet_plane.vpn_route_plan().await.0.capture_routes {
+            match route {
+                easytier_core::config::vpn::VpnCidr::V4(route) => {
+                    claims.ipv4_routes.insert(SharedIpv4Route::new(
+                        route.first_address(),
+                        route.network_length(),
+                        None,
+                    ));
                 }
-                Err(err) => {
-                    self.global_ctx.set_tun_device_error(err.to_string());
-                    return Err(err);
+                easytier_core::config::vpn::VpnCidr::V6(route) => {
+                    claims.ipv6_routes.insert(SharedIpv6Route::new(
+                        route.first_address(),
+                        route.network_length(),
+                        None,
+                    ));
                 }
+            }
+        }
+        claims
+    }
+
+    #[cfg(mobile)]
+    pub(crate) async fn current_mobile_tun_claims(
+        &self,
+    ) -> Option<super::shared_virtual_nic::SharedIfConfigClaims> {
+        match &self.backend {
+            NicBackend::Shared(member) => Some(member.claims().await),
+            NicBackend::Dedicated(_) => None,
+        }
+    }
+
+    #[cfg(mobile)]
+    async fn apply_mobile_tun_claims(
+        &self,
+        claims: super::shared_virtual_nic::SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        let NicBackend::Shared(member) = &self.backend else {
+            return Err(anyhow::anyhow!("mobile TUN requires a shared NIC").into());
+        };
+        member.replace_claims(claims).await
+    }
+
+    #[cfg(mobile)]
+    pub async fn run_for_mobile(
+        &mut self,
+        tun_fd: std::os::fd::RawFd,
+        replace_tun_fd: bool,
+        claims: super::shared_virtual_nic::SharedIfConfigClaims,
+    ) -> Result<(), Error> {
+        // Reject the entire member configuration before touching the shared fd.
+        self.apply_mobile_tun_claims(claims).await?;
+        let (tunnel, ifname) = match self
+            .backend
+            .create_dev_for_mobile(tun_fd, replace_tun_fd)
+            .await
+        {
+            Ok(ret) => {
+                let ifname = self.tun_ifname().await?;
+                (ret, ifname)
+            }
+            Err(err) => {
+                self.global_ctx.set_tun_device_error(err.to_string());
+                return Err(err);
             }
         };
 
-        let (stream, sink) = tunnel.split();
+        self.run_proxy_cidrs_route_updater().await?;
 
-        self.do_forward_nic_to_peers_task(stream)?;
-        self.do_forward_peers_to_nic(sink);
+        self.global_ctx.set_tun_device_ready(ifname);
+
+        self.start_tunnel_forwarding(tunnel)?;
 
         Ok(())
     }
@@ -1424,7 +1807,110 @@ impl NicCtx {
 mod tests {
     use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
-    use super::VirtualNic;
+    use super::{NicCtx, VirtualNic};
+
+    #[cfg(target_os = "windows")]
+    #[rstest::rstest]
+    #[case(None)]
+    #[case(Some("et_test_restart"))]
+    #[tokio::test]
+    #[ignore = "requires Administrator privileges and wintun.dll"]
+    async fn windows_device_identity_survives_recreation(#[case] dev_name: Option<&str>) {
+        use crate::{
+            arch::windows::list_interface_firewall_rules,
+            common::{
+                config::{ConfigLoader, TomlConfigLoader},
+                ifcfg::RegistryManager,
+            },
+            instance::test_instance::TestInstance,
+        };
+        use easytier_core::process_runtime::CoreProcessRuntime;
+
+        let process = CoreProcessRuntime::new();
+        let registry = TestInstance::new_shared_virtual_nic_registry();
+        let new_instance = |config: TomlConfigLoader| {
+            if let Some(dev_name) = dev_name {
+                let mut flags = config.get_flags();
+                flags.dev_name = dev_name.to_owned();
+                config.set_flags(flags);
+            }
+            TestInstance::new_with_process_runtime_and_shared_virtual_nic_registry(
+                config,
+                process.clone(),
+                registry.clone(),
+            )
+        };
+        let config =
+            TomlConfigLoader::new_from_str("ipv4 = \"198.18.26.1/30\"\nlisteners = []").unwrap();
+        let mut first = new_instance(config);
+        let saved_config = first.get_global_ctx().config.dump();
+        first.run().await.unwrap();
+        let name = first.get_global_ctx().get_tun_device_name().unwrap();
+        let guid = RegistryManager::find_interface_guid(&name).unwrap();
+        assert_eq!(list_interface_firewall_rules(&name).unwrap().len(), 8);
+        // The resolved name is runtime state, not an explicit request to share
+        // the device when this GlobalCtx next recreates its NIC.
+        assert_eq!(
+            first.get_global_ctx().get_flags().dev_name,
+            dev_name.unwrap_or_default(),
+        );
+        assert_eq!(
+            registry
+                .lock()
+                .await
+                .get_by_dev_name_for_test(&name)
+                .is_some(),
+            dev_name.is_some(),
+        );
+
+        // Keep B running while A is stopped and recreated, as in issue #110.
+        let other_config =
+            TomlConfigLoader::new_from_str("ipv4 = \"198.18.27.1/30\"\nlisteners = []").unwrap();
+        let mut other = new_instance(other_config);
+        other.run().await.unwrap();
+        let other_name = other.get_global_ctx().get_tun_device_name().unwrap();
+        let other_guid = RegistryManager::find_interface_guid(&other_name).unwrap();
+        if dev_name.is_some() {
+            assert_eq!(name, other_name);
+            assert_eq!(guid, other_guid);
+        } else {
+            assert_ne!(name, other_name);
+            assert_ne!(guid, other_guid);
+        }
+        first.clear_resources().await;
+
+        for _ in 0..10 {
+            let config = TomlConfigLoader::new_from_str(&saved_config).unwrap();
+            let mut restarted = new_instance(config);
+            restarted.run().await.unwrap();
+            assert_eq!(
+                restarted.get_global_ctx().get_tun_device_name().unwrap(),
+                name
+            );
+            assert_eq!(RegistryManager::find_interface_guid(&name).unwrap(), guid);
+            assert_eq!(
+                RegistryManager::find_interface_guid(&other_name).unwrap(),
+                other_guid,
+            );
+            assert_eq!(list_interface_firewall_rules(&name).unwrap().len(), 8);
+            restarted.clear_resources().await;
+            assert_eq!(list_interface_firewall_rules(&other_name).unwrap().len(), 8);
+            if dev_name.is_none() {
+                assert!(list_interface_firewall_rules(&name).unwrap().is_empty());
+            }
+        }
+        other.clear_resources().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !list_interface_firewall_rules(&other_name)
+                .unwrap()
+                .is_empty()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn ordinary_overlay_routes_do_not_recapture_local_advertised_subnets() {
@@ -1490,7 +1976,8 @@ mod tests {
     }
 
     async fn run_test_helper() -> Result<VirtualNic, Error> {
-        let mut dev = VirtualNic::new(get_mock_global_ctx());
+        let global_ctx = get_mock_global_ctx();
+        let mut dev = VirtualNic::new(NicCtx::virtual_nic_config(&global_ctx));
         let _tunnel = dev.create_dev().await?;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

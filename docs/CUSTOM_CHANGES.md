@@ -6,11 +6,27 @@
 
 - 上游仓库：https://github.com/EasyTier/EasyTier
 - 本项目仓库：https://github.com/225284228a-droid/EasyTier-Custom
-- 最近已合入的上游基线：`7592951b808c4839cb9d77cc4bc642f124915951`（2026-10-11 合入）。
+- 最近已合入的上游基线：`99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7`（2026-10-16 合入）。
 - 开源协议与该上游版本一致：GNU Lesser General Public License v3.0（LGPL-3.0），见根目录 [LICENSE](../LICENSE)。保留上游历史、作者归属及第三方组件各自的许可证；本项目修改按同一项目许可证发布。
 - 本文对比上述固定基线，不把“尚未合入上游后续提交”当作本项目主动删除的功能。
 
 ## 相对原版的主要改动
+
+### 定制 protobuf 字段编号与版本兼容
+
+- 本次合并中，所有原先使用低位编号的 Custom protobuf 字段均迁移到高位：新编号为原 tag 加 `50000`；若该编号已被占用，则每次再加 `1000`，直到找到空闲编号。已有高位编号保持不变。
+- 本轮共迁移 100 个低位字段，保留 9 个已有高位字段；完整旧/新编号见 [Custom 字段清单](../easytier-proto/tests/custom-fields.json)，官方字段编号、类型和保留状态见 [官方 schema 快照](../easytier-proto/tests/upstream-fields.json)。descriptor 测试与 CI 会检查清单完整性和编号分配。
+- 不保留旧低位编号的双读写兼容路径。使用这些扩展字段通信的定制 Core、Web、GUI、Go 和 JS 组件必须同步升级到对应版本；新版本不再识别旧定制 tag，混用时定制字段无法正确传递。下文的能力降级与旧接口说明不包含迁移前的定制协议版本。
+- 此迁移只调整 protobuf 线上的字段编号；对应 TOML、CLI 和 JSON 字段名保持不变。
+
+### 本轮官方功能适配
+
+- 官方 IPv4 DHCP 子网、IPv6 DHCP 和 IPv6 DHCP 子网沿用官方字段 74、75、76；配置表单、TOML 转换和带 revision/CAS 的字段级保存同时支持这些设置，并保留未编辑的 TOML 内容及定制策略。
+- 共享网卡按成员管理地址、路由和生命周期，成员退出时等待其路由清理完成。重叠的地址或路由 claims 会被拒绝以维持网络隔离；同地址族的全隧道 `/0` VPN 捕获路由因此不能与其他网络同时共享一个 TUN。
+- 桌面 VPN 捕获路由在写入系统前先登记到共享网卡，参与目的地址分发和跨成员冲突检查；系统路由清理成功后才释放归属，失败重试期间继续保留隔离。失效网卡仍执行系统路由清理；清理持续失败时关闭共享网卡的数据分发，防止残留捕获路由把流量送入其他网络。此登记不重复安装系统路由。
+- 移动端多网络配置保留 generation 和 candidate 确认流程，过期安装、停止和回滚操作不能拆除新一代连接；同一代失败重试会重新安装已回滚的成员。
+- 移动端等待重配置确认后再次核对 generation，旧候选的迟到拒绝不会清空新连接状态。仅修改 DHCP IPv4 子网时保留未选中的静态 IPv4 TOML 字段。
+- 合入官方 UDP 打洞与手动路由热更新，并保留本版 WSS/HTTP3 能力协商、TOML 权威和停用状态。Magic DNS 及此前删除的旧出口节点、public IPv6 配置功能仍保持删除。
 
 ### 1. 本地 TOML 与去中心化配置管理
 
@@ -122,7 +138,7 @@
 
 新定制内核以 `[flags].p2p_disguise_mode` 保存一个伪装策略：`prefer` 在双方都偏好或一方要求时协商伪装，并允许回退普通 TCP/UDP；`off` 不主动发起伪装，但仍接受对端要求；`disabled` 禁止自动伪装；`only` 要求自动 P2P 只使用伪装。默认 `prefer` 不写入 TOML。旧的三个布尔字段继续读取；向仅支持旧字段的定制内核保存时，网页会将下拉选择转换为对应布尔值。官方节点不会收到不支持的定制策略字段。GUI/Web 使用紧凑下拉框编辑这四种模式；互相冲突的旧布尔组合在编辑、API 和严格 TOML 加载时会被拒绝。
 
-VPN 出口的 `exit_enabled` 默认 `true`，表示本节点允许提供出口转发；它本身不会启动客户端。`rules` 为空时没有客户端捕获规则，网页输出会省略默认的 `[vpn]`；显式关闭出口时仍保存 `exit_enabled = false`。缺少数据包转发能力的构建或主机会保持普通网络可运行，并在运行配置中关闭默认出口提供能力。`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。保留定制 protobuf 字段编号、既有 CLI 参数和 `ET_*` 环境变量。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
+VPN 出口的 `exit_enabled` 默认 `true`，表示本节点允许提供出口转发；它本身不会启动客户端。`rules` 为空时没有客户端捕获规则，网页输出会省略默认的 `[vpn]`；显式关闭出口时仍保存 `exit_enabled = false`。缺少数据包转发能力的构建或主机会保持普通网络可运行，并在运行配置中关闭默认出口提供能力。`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。定制 protobuf 字段采用本轮高位清单中的编号；既有 CLI 参数和 `ET_*` 环境变量保持不变。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
 
 已合入官方 UDP 绑定的虚拟端口所有权和分片缓存：未先发送的绑定 socket 可接收数据；关闭后重绑不会接收旧绑定的残留分片。`PeerPacketFilterResult::PassBatch` 中的包按原顺序从产生批次的下一个过滤器继续处理。本地实际监听端口的防回环检查与上述虚拟端口所有权共同生效。
 
@@ -135,6 +151,16 @@ git clone https://github.com/225284228a-droid/EasyTier-Custom.git
 cd EasyTier-Custom
 cargo build --release --locked -p easytier
 ```
+
+### 官方主线合入验证（2026-10-16）
+
+本轮固定官方基线为 `99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7`，在原 `main` 上保留双方历史合并。日志保存在本地 `.test-env/upstream-merge-2026-10-16/`，以下结果与旧轮次分开记录。
+
+- protobuf 库测试 39 项通过、2 项默认忽略；descriptor 检查 4 项通过，覆盖全部 109 个定制字段的所有权、编号、类型、presence 和高位编解码，以及官方 DHCP 字段和定制策略同时往返。
+- 原生组合专项 17 项通过，覆盖 IPv4/IPv6 上通过 TCP/WSS 中继发现 HTTP3、手动初始连接优先级、UDP/HTTP3 共端口和 KCP/TCP/WSS 通信。与自报版本 `2.7.0-99db92a3` 的官方 Windows CLI 真实进程互通 6 项通过，包括 WS/WSS 双向 peer、Noise、管理反向 RPC 及未协商 padding 拒绝。
+- 共享前端 176 项、Web 前端 198 项、GUI 前端 62 项单测通过；配置转换脚本 10 项通过。Web、GUI 和配置生成器类型检查、生产构建通过，配置生成器 WASM 与 VPN service JS 插件构建通过；审查修复后再次通过 GUI 类型检查和共享配置 defaults/UI 29 项定向测试。
+- actionlint 检查全部 14 个 workflow 通过。本机 CI 脚本测试 31 项通过，9 项因缺少 Unix `zip` 命令失败；这些打包测试交由 Linux CI 验证。
+- Windows 本机不能验证 Linux TUN/netns、真实跨网络共享 TUN、内核转发和 Android 系统 VPN 生命周期；Linux 集成测试及 Android 完整构建由相应 CI 执行。移动端单元测试验证 generation、candidate 确认、过期停止和失败重试，不能替代真机 VPN 验收。
 
 ### 官方主线合入验证（2026-10-11）
 
@@ -193,8 +219,8 @@ cargo build --release --locked -p easytier
 Git 历史保留了上游提交与本项目提交。克隆后可查看完整差异与变更记录：
 
 ```sh
-git diff 7592951b808c4839cb9d77cc4bc642f124915951 HEAD
-git log --oneline 7592951b808c4839cb9d77cc4bc642f124915951..HEAD
+git diff 99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7 HEAD
+git log --oneline 99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7..HEAD
 ```
 
 原版 README 的安装脚本、官方 Web 服务、发布下载、徽章和赞助链接仍指向上游。使用本项目功能请构建本仓库，问题请提交到本项目 Issues。

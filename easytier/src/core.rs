@@ -20,7 +20,7 @@ use crate::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{Arg, ArgMatches, CommandFactory, FromArgMatches, Parser};
-use easytier_core::config::{EncryptionAlgorithm, normalize_secure_mode_config};
+use easytier_core::config::{DhcpConfig, EncryptionAlgorithm, normalize_secure_mode_config};
 use easytier_core::management::InstanceStateStore;
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
@@ -198,7 +198,16 @@ struct NetworkOptions {
         num_args = 0..=1,
         default_missing_value = "true"
     )]
-    dhcp: Option<bool>,
+    dhcp: Option<DhcpConfig>,
+
+    #[arg(
+        long,
+        env = "ET_DHCPV6",
+        help = t!("core_clap.dhcpv6").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    dhcpv6: Option<DhcpConfig<cidr::Ipv6Cidr>>,
 
     #[arg(
         short,
@@ -669,7 +678,10 @@ impl NetworkOptions {
         }
 
         if let Some(dhcp) = self.dhcp {
-            cfg.set_dhcp(dhcp);
+            cfg.set_dhcp_config(dhcp);
+        }
+        if let Some(dhcp) = self.dhcpv6 {
+            cfg.set_dhcpv6_config(dhcp);
         }
 
         if let Some(ipv4) = &self.ipv4 {
@@ -2078,6 +2090,103 @@ disable_p2p = true
                 Cli::parse_listeners(false, vec![input.to_string()]).is_err(),
                 "input: {}",
                 input
+            );
+        }
+    }
+
+    #[test]
+    fn dhcp_cli_accepts_optional_bool_or_cidr_and_overrides_config() {
+        for (args, expected) in [
+            (vec![], DhcpConfig::Cidr("10.20.0.0/16".parse().unwrap())),
+            (vec!["--dhcp"], DhcpConfig::Enabled(true)),
+            (vec!["-d"], DhcpConfig::Enabled(true)),
+            (vec!["--dhcp", "true"], DhcpConfig::Enabled(true)),
+            (vec!["--dhcp=false"], DhcpConfig::Enabled(false)),
+            (vec!["--dhcp", "false"], DhcpConfig::Enabled(false)),
+            (
+                vec!["--dhcp", "192.168.100.0/24"],
+                DhcpConfig::Cidr("192.168.100.0/24".parse().unwrap()),
+            ),
+            (
+                vec!["-d", "192.168.100.0/30"],
+                DhcpConfig::Cidr("192.168.100.0/30".parse().unwrap()),
+            ),
+            (
+                vec!["--dhcp=192.168.100.0/24"],
+                DhcpConfig::Cidr("192.168.100.0/24".parse().unwrap()),
+            ),
+            (
+                vec!["--dhcp", "--hostname", "dhcp-node"],
+                DhcpConfig::Enabled(true),
+            ),
+        ] {
+            let config = TomlConfigLoader::new_from_str("dhcp = '10.20.0.0/16'").unwrap();
+            let cli = Cli::try_parse_from(std::iter::once("easytier-core").chain(args)).unwrap();
+            cli.network_options.merge_into(&config).unwrap();
+            assert_eq!(config.get_dhcp_config(), expected);
+            let normalized =
+                easytier_core::instance::CoreInstanceConfig::from_toml(&config).unwrap();
+            assert_eq!(
+                normalized.connectivity.runtime.dhcp_ipv4,
+                expected.enabled()
+            );
+            assert_eq!(
+                normalized.connectivity.runtime.dhcp_ipv4_cidr,
+                expected.cidr()
+            );
+        }
+    }
+
+    #[test]
+    fn dhcpv6_cli_accepts_optional_bool_or_cidr() {
+        for (args, expected) in [
+            (vec!["--dhcpv6"], DhcpConfig::Enabled(true)),
+            (vec!["--dhcpv6=false"], DhcpConfig::Enabled(false)),
+            (
+                vec!["--dhcpv6", "fd12::/64"],
+                DhcpConfig::Cidr("fd12::/64".parse().unwrap()),
+            ),
+        ] {
+            let config = TomlConfigLoader::new_from_str("dhcp = true").unwrap();
+            let cli = Cli::try_parse_from(std::iter::once("easytier-core").chain(args)).unwrap();
+            cli.network_options.merge_into(&config).unwrap();
+            assert_eq!(config.get_dhcpv6_config(), expected);
+            assert!(config.get_dhcp());
+            let normalized =
+                easytier_core::instance::CoreInstanceConfig::from_toml(&config).unwrap();
+            assert_eq!(
+                normalized.connectivity.runtime.dhcp_ipv6,
+                expected.enabled()
+            );
+            assert_eq!(
+                normalized.connectivity.runtime.dhcp_ipv6_cidr,
+                expected.cidr()
+            );
+        }
+        for value in [
+            "yes",
+            "10.0.0.0/24",
+            "fd12::1/64",
+            "fe80::/64",
+            "fd12::/127",
+        ] {
+            assert!(Cli::try_parse_from(["easytier-core", "--dhcpv6", value]).is_err());
+        }
+    }
+
+    #[test]
+    fn dhcp_cli_rejects_invalid_or_unusable_subnets() {
+        for value in [
+            "yes",
+            "::/64",
+            "192.168.100.0/31",
+            "192.168.100.1/32",
+            "192.168.100.0/33",
+            "192.168.100.1/24",
+        ] {
+            assert!(
+                Cli::try_parse_from(["easytier-core", "--dhcp", value]).is_err(),
+                "accepted {value}"
             );
         }
     }

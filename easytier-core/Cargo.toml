@@ -126,10 +126,12 @@ endpoint-discovery = [
     "dep:webpki-roots",
 ]
 dhcp-ipv4 = []
+dhcp-ipv6 = []
 vpn-portal = []
 wrapped-transport = []
 extended-services = [
     "dhcp-ipv4",
+    "dhcp-ipv6",
     "vpn-portal",
     "wrapped-transport",
     "proxy-cidr-monitor",

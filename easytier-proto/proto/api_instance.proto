@@ -31,10 +31,10 @@ message PeerConnStats {
 
   // Actual transport sending-window/RTT estimates, in bit/s. RX is reported
   // by the peer's sending transport. Zero means unknown, never a traffic rate.
-  uint64 estimated_rx_bps = 6;
-  uint64 estimated_tx_bps = 7;
+  uint64 estimated_rx_bps = 50006;
+  uint64 estimated_tx_bps = 50007;
   // 1 = transmission-window formula. Missing/0 is the retired traffic estimator.
-  uint32 bandwidth_estimate_version = 8;
+  uint32 bandwidth_estimate_version = 50008;
 }
 
 message PeerConnInfo {
@@ -409,34 +409,34 @@ service CredentialManageRpc {
 // Custom subnet exit VPN status (fork feature).
 
 message VpnRuleStatus {
-  string cidr = 1;
+  string cidr = 50001;
   reserved 2, 3, 4, 5, 6, 7, 8, 9;
   reserved "action", "exit", "fallback_exits", "priority", "effective_exit", "packets", "bytes", "exits";
-  string exit_addr = 10;
+  string exit_addr = 50010;
   // up | down
-  string state = 11;
+  string state = 50011;
 }
 
-message GetVpnStatusRequest { InstanceIdentifier instance = 1; }
+message GetVpnStatusRequest { InstanceIdentifier instance = 50001; }
 
 message GetVpnStatusResponse {
-  bool enabled = 1;
+  bool enabled = 50001;
   // this node offers exit forwarding for peers
-  bool exit_enabled = 2;
+  bool exit_enabled = 50002;
   reserved 3, 6, 7, 10, 11, 12;
   reserved "exits", "dns_protect", "ipv6_protect", "protected_endpoints", "system_dns_servers", "ignore_private";
-  repeated VpnRuleStatus rules = 4;
+  repeated VpnRuleStatus rules = 50004;
   reserved 5;
   reserved "fail_mode";
   // host-side route manager state, filled when available
-  bool routes_active = 8;
-  uint32 routes_installed = 9;
+  bool routes_active = 50008;
+  uint32 routes_installed = 50009;
   // Complete positive TUN routes, including overlay and policy capture.
-  repeated string capture_routes = 13;
+  repeated string capture_routes = 50013;
   // Changes with policy/address context, independently of exit liveness.
-  uint64 policy_generation = 14;
+  uint64 policy_generation = 50014;
   // Actual virtual IPv6 address and prefix, empty if IPv6 is unconfigured.
-  string ipv6_addr = 15;
+  string ipv6_addr = 50015;
   // Host protection or route setup error; empty after successful activation.
-  string activation_error = 16;
+  string activation_error = 50016;
 }

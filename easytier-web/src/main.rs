@@ -16,7 +16,6 @@ use easytier::{
         config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
         constants::EASYTIER_VERSION,
         log,
-        network::{local_ipv4, local_ipv6},
     },
     proto::rpc::standalone::{runtime_rpc_listener, runtime_udp_tunnel_listener},
     utils::panic::setup_panic_handler,
@@ -28,6 +27,8 @@ use mimalloc::MiMalloc;
 
 mod central_network;
 mod client_manager;
+#[cfg(test)]
+mod config_server_listener_tests;
 mod db;
 mod geolocation;
 mod migrator;
@@ -376,7 +377,7 @@ pub fn get_listener_by_url(
 }
 
 /// Build one listener entry per bind target. Wildcard tcp/udp urls are expanded
-/// to dual-stack ([::] + 0.0.0.0) targets gated on local address availability.
+/// to dual-stack ([::] + 0.0.0.0) targets without probing public routes.
 async fn create_config_server_listeners(
     urls: &[url::Url],
 ) -> Vec<(
@@ -398,20 +399,16 @@ async fn create_config_server_listeners(
                 let port = url.port().unwrap_or(CONFIG_SERVER_DEFAULT_PORT);
                 let mut bind_targets: Vec<url::Url> = Vec::new();
                 if is_wildcard_host(&url) {
-                    if local_ipv6().await.is_ok() {
-                        bind_targets.push(
-                            format!("{scheme}://[::]:{port}")
-                                .parse()
-                                .expect("valid url"),
-                        );
-                    }
-                    if local_ipv4().await.is_ok() {
-                        bind_targets.push(
-                            format!("{scheme}://0.0.0.0:{port}")
-                                .parse()
-                                .expect("valid url"),
-                        );
-                    }
+                    bind_targets.push(
+                        format!("{scheme}://[::]:{port}")
+                            .parse()
+                            .expect("valid url"),
+                    );
+                    bind_targets.push(
+                        format!("{scheme}://0.0.0.0:{port}")
+                            .parse()
+                            .expect("valid url"),
+                    );
                 } else {
                     bind_targets.push(url.clone());
                 }

@@ -556,9 +556,9 @@ async fn live_native_files_add_edit_replace_rename_and_delete_without_polling() 
     let renamed = directory.path().join("renamed.toml");
     std::fs::rename(&path, &renamed).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !manager
+        while manager
             .config_control(id)
-            .is_some_and(|control| control.path.as_ref() == Some(&renamed))
+            .is_none_or(|control| control.path.as_ref() != Some(&renamed))
         {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }

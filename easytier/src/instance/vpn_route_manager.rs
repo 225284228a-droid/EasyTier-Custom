@@ -18,6 +18,12 @@ use tokio_util::sync::CancellationToken;
 
 type BoxedIfCfg = Arc<dyn IfConfiguerTrait>;
 
+#[async_trait]
+pub trait VpnCaptureClaims: Send + Sync {
+    async fn replace_routes(&self, routes: BTreeSet<VpnCidr>) -> anyhow::Result<()>;
+    async fn quarantine(&self) -> anyhow::Result<()>;
+}
+
 pub struct VpnRouteManagerContext {
     pub global_ctx: ArcGlobalCtx,
     pub packet_plane: Arc<CorePacketPlane>,
@@ -26,6 +32,7 @@ pub struct VpnRouteManagerContext {
     pub net_ns: NetNS,
     pub status: VpnRouteStatusCell,
     pub cancellation: CancellationToken,
+    pub shared_member: Option<Arc<dyn VpnCaptureClaims>>,
 }
 
 #[derive(Clone, Default)]
@@ -71,6 +78,7 @@ pub async fn run_vpn_route_manager(
         net_ns,
         status,
         cancellation,
+        shared_member,
     } = context;
     let mut events = global_ctx.subscribe();
     let mut owner = RouteOwner::default();
@@ -89,15 +97,19 @@ pub async fn run_vpn_route_manager(
             .into_iter()
             .flat_map(split_default)
             .collect();
-        let result = owner
-            .reconcile(
+        let result = reconcile_shared_capture(
+            shared_member.as_deref(),
+            owner.capture_claims(&desired),
+            &desired,
+            owner.reconcile(
                 &ifcfg,
                 &net_ns,
                 &ifname,
                 &desired,
                 global_ctx.get_flags().socket_mark.unwrap_or(0),
-            )
-            .await;
+            ),
+        )
+        .await;
         if let Err(error) = &result {
             tracing::error!(
                 ?error,
@@ -134,18 +146,28 @@ pub async fn run_vpn_route_manager(
     }
     // Keep ownership on failure and retry partial startup/shutdown cleanup.
     // A remaining Linux lease survives for recovery by the next process.
-    let mut cleanup = owner
-        .reconcile(&ifcfg, &net_ns, &ifname, &BTreeSet::new(), 0)
-        .await;
+    let empty = BTreeSet::new();
+    let mut cleanup = reconcile_shared_capture(
+        shared_member.as_deref(),
+        owner.capture_claims(&empty),
+        &empty,
+        owner.reconcile(&ifcfg, &net_ns, &ifname, &empty, 0),
+    )
+    .await;
     for _ in 0..2 {
         if cleanup.is_ok() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        cleanup = owner
-            .reconcile(&ifcfg, &net_ns, &ifname, &BTreeSet::new(), 0)
-            .await;
+        cleanup = reconcile_shared_capture(
+            shared_member.as_deref(),
+            owner.capture_claims(&empty),
+            &empty,
+            owner.reconcile(&ifcfg, &net_ns, &ifname, &empty, 0),
+        )
+        .await;
     }
+    let cleanup = finish_shared_capture_cleanup(shared_member.as_deref(), cleanup).await;
     if let Err(error) = &cleanup {
         tracing::error!(
             ?error,
@@ -162,6 +184,52 @@ pub async fn run_vpn_route_manager(
     });
 }
 
+pub(crate) async fn reconcile_shared_capture<F>(
+    member: Option<&dyn VpnCaptureClaims>,
+    held: BTreeSet<VpnCidr>,
+    desired: &BTreeSet<VpnCidr>,
+    reconcile: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = anyhow::Result<()>>,
+{
+    if !desired.is_empty()
+        && let Some(member) = member
+    {
+        // Reserve all old and proposed destinations before any OS operation.
+        // A conflicting member must never install capture routes on this NIC.
+        member.replace_routes(held).await?;
+    }
+    // Disabling only removes routes. It must still run if the shared NIC was
+    // invalidated: its dispatcher and claim updates can already be unavailable.
+    reconcile.await?;
+    if let Some(member) = member {
+        // Keep old destinations dispatched to their owner until their native
+        // routes have been removed successfully, including shutdown retries.
+        member.replace_routes(desired.clone()).await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn finish_shared_capture_cleanup(
+    member: Option<&dyn VpnCaptureClaims>,
+    cleanup: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if cleanup.is_err()
+        && let Some(member) = member
+    {
+        // A remaining native capture must never feed another member after its
+        // owner unregisters. Stop this shared dispatcher before releasing it.
+        if let Err(error) = member.quarantine().await {
+            tracing::error!(
+                ?error,
+                "failed to quarantine shared NIC after VPN route cleanup failure"
+            );
+        }
+    }
+    cleanup
+}
+
 fn split_default(cidr: VpnCidr) -> Vec<VpnCidr> {
     if !cidr.is_default_route() {
         return vec![cidr];
@@ -174,6 +242,17 @@ fn split_default(cidr: VpnCidr) -> Vec<VpnCidr> {
 }
 
 impl RouteOwner {
+    fn capture_claims(&self, desired: &BTreeSet<VpnCidr>) -> BTreeSet<VpnCidr> {
+        let claims = self
+            .installed
+            .union(desired)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        #[cfg(target_os = "linux")]
+        let claims = claims.union(&self.pending).copied().collect();
+        claims
+    }
+
     fn active(&self) -> bool {
         #[cfg(target_os = "linux")]
         return self.protection.is_some()
@@ -289,11 +368,13 @@ impl RouteOwner {
         to_add.sort();
         to_add.dedup();
         for cidr in to_add {
+            #[cfg(target_os = "linux")]
             if let Err(error) = self.add(ifcfg, net_ns, ifname, cidr).await {
-                #[cfg(target_os = "linux")]
                 self.pending.insert(cidr);
                 return Err(error);
             }
+            #[cfg(not(target_os = "linux"))]
+            self.add(ifcfg, net_ns, ifname, cidr).await?;
             self.installed.insert(cidr);
             #[cfg(target_os = "linux")]
             self.pending.remove(&cidr);

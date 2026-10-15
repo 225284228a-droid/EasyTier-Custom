@@ -1300,7 +1300,7 @@ type GetIpListResponse struct {
 	InterfaceIpv6S []*common.Ipv6Addr     `protobuf:"bytes,4,rep,name=interface_ipv6s,json=interfaceIpv6s,proto3" json:"interface_ipv6s,omitempty"`
 	Listeners      []*common.Url          `protobuf:"bytes,5,rep,name=listeners,proto3" json:"listeners,omitempty"`
 	// HTTP3 aliases for UDP listeners accepting both protocols on the same socket.
-	UdpHttp3Listeners []*common.Url `protobuf:"bytes,6,rep,name=udp_http3_listeners,json=udpHttp3Listeners,proto3" json:"udp_http3_listeners,omitempty"`
+	UdpHttp3Listeners []*common.Url `protobuf:"bytes,50006,rep,name=udp_http3_listeners,json=udpHttp3Listeners,proto3" json:"udp_http3_listeners,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1450,9 +1450,11 @@ type SelectPunchListenerRequest struct {
 	ForceNew          bool                   `protobuf:"varint,1,opt,name=force_new,json=forceNew,proto3" json:"force_new,omitempty"`
 	PreferPortMapping bool                   `protobuf:"varint,2,opt,name=prefer_port_mapping,json=preferPortMapping,proto3" json:"prefer_port_mapping,omitempty"`
 	// Empty keeps the official raw-UDP punch protocol compatible.
-	Scheme string `protobuf:"bytes,3,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	Scheme string `protobuf:"bytes,50003,opt,name=scheme,proto3" json:"scheme,omitempty"`
 	// Only used with http3. Absent keeps legacy EasyTier UDP encapsulation.
-	NativeHttp3   bool `protobuf:"varint,4,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	NativeHttp3 bool `protobuf:"varint,50004,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	// Register source observation before returning the listener address.
+	TransactionId *uint32 `protobuf:"varint,3,opt,name=transaction_id,json=transactionId,proto3,oneof" json:"transaction_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1515,12 +1517,21 @@ func (x *SelectPunchListenerRequest) GetNativeHttp3() bool {
 	return false
 }
 
+func (x *SelectPunchListenerRequest) GetTransactionId() uint32 {
+	if x != nil && x.TransactionId != nil {
+		return *x.TransactionId
+	}
+	return 0
+}
+
 type SelectPunchListenerResponse struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	ListenerMappedAddr *common.SocketAddr     `protobuf:"bytes,1,opt,name=listener_mapped_addr,json=listenerMappedAddr,proto3" json:"listener_mapped_addr,omitempty"`
 	// Empty keeps the official raw-UDP punch protocol compatible.
-	Scheme        string `protobuf:"bytes,2,opt,name=scheme,proto3" json:"scheme,omitempty"`
-	NativeHttp3   bool   `protobuf:"varint,3,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	Scheme      string `protobuf:"bytes,50002,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	NativeHttp3 bool   `protobuf:"varint,50003,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	// Echoed only after source observation is registered; absent on older peers.
+	TransactionId *uint32 `protobuf:"varint,2,opt,name=transaction_id,json=transactionId,proto3,oneof" json:"transaction_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1574,6 +1585,13 @@ func (x *SelectPunchListenerResponse) GetNativeHttp3() bool {
 		return x.NativeHttp3
 	}
 	return false
+}
+
+func (x *SelectPunchListenerResponse) GetTransactionId() uint32 {
+	if x != nil && x.TransactionId != nil {
+		return *x.TransactionId
+	}
+	return 0
 }
 
 type SendPunchPacketConeRequest struct {
@@ -1874,8 +1892,8 @@ type SendPunchPacketBothEasySymRequest struct {
 	TransactionId  uint32                 `protobuf:"varint,3,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
 	DstPortNum     uint32                 `protobuf:"varint,4,opt,name=dst_port_num,json=dstPortNum,proto3" json:"dst_port_num,omitempty"`
 	WaitTimeMs     uint32                 `protobuf:"varint,5,opt,name=wait_time_ms,json=waitTimeMs,proto3" json:"wait_time_ms,omitempty"`
-	Scheme         string                 `protobuf:"bytes,6,opt,name=scheme,proto3" json:"scheme,omitempty"`
-	NativeHttp3    bool                   `protobuf:"varint,7,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	Scheme         string                 `protobuf:"bytes,50006,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	NativeHttp3    bool                   `protobuf:"varint,50007,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1964,8 +1982,8 @@ type SendPunchPacketBothEasySymResponse struct {
 	// is doing punch with other peer
 	IsBusy         bool               `protobuf:"varint,1,opt,name=is_busy,json=isBusy,proto3" json:"is_busy,omitempty"`
 	BaseMappedAddr *common.SocketAddr `protobuf:"bytes,2,opt,name=base_mapped_addr,json=baseMappedAddr,proto3" json:"base_mapped_addr,omitempty"`
-	Scheme         string             `protobuf:"bytes,3,opt,name=scheme,proto3" json:"scheme,omitempty"`
-	NativeHttp3    bool               `protobuf:"varint,4,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
+	Scheme         string             `protobuf:"bytes,50003,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	NativeHttp3    bool               `protobuf:"varint,50004,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2034,10 +2052,10 @@ type TcpHolePunchPredictedPorts struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// STUN observed base mapping of the responder; predicted ports continue
 	// from this address in `direction`.
-	BaseMappedAddr *common.SocketAddr `protobuf:"bytes,1,opt,name=base_mapped_addr,json=baseMappedAddr,proto3" json:"base_mapped_addr,omitempty"`
+	BaseMappedAddr *common.SocketAddr `protobuf:"bytes,50001,opt,name=base_mapped_addr,json=baseMappedAddr,proto3" json:"base_mapped_addr,omitempty"`
 	// Number of ports to spray starting at base_mapped_addr (k = 0..max-1).
-	MaxPortNum    uint32                `protobuf:"varint,2,opt,name=max_port_num,json=maxPortNum,proto3" json:"max_port_num,omitempty"`
-	Direction     PortSequenceDirection `protobuf:"varint,3,opt,name=direction,proto3,enum=peer_rpc.PortSequenceDirection" json:"direction,omitempty"`
+	MaxPortNum    uint32                `protobuf:"varint,50002,opt,name=max_port_num,json=maxPortNum,proto3" json:"max_port_num,omitempty"`
+	Direction     PortSequenceDirection `protobuf:"varint,50003,opt,name=direction,proto3,enum=peer_rpc.PortSequenceDirection" json:"direction,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2097,10 +2115,10 @@ type TcpHolePunchRequest struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	ConnectorMappedAddr *common.SocketAddr     `protobuf:"bytes,1,opt,name=connector_mapped_addr,json=connectorMappedAddr,proto3" json:"connector_mapped_addr,omitempty"`
 	// Empty means the original TCP hole punch. wss upgrades the punched socket.
-	Scheme string `protobuf:"bytes,2,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	Scheme string `protobuf:"bytes,50002,opt,name=scheme,proto3" json:"scheme,omitempty"`
 	// Set by nodes that understand `TcpHolePunchPredictedPorts`. When false
 	// (e.g. upstream peers) the response must not carry prediction info.
-	SupportsPortPrediction bool `protobuf:"varint,3,opt,name=supports_port_prediction,json=supportsPortPrediction,proto3" json:"supports_port_prediction,omitempty"`
+	SupportsPortPrediction bool `protobuf:"varint,50003,opt,name=supports_port_prediction,json=supportsPortPrediction,proto3" json:"supports_port_prediction,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -2159,10 +2177,10 @@ func (x *TcpHolePunchRequest) GetSupportsPortPrediction() bool {
 type TcpHolePunchResponse struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	ListenerMappedAddr *common.SocketAddr     `protobuf:"bytes,1,opt,name=listener_mapped_addr,json=listenerMappedAddr,proto3" json:"listener_mapped_addr,omitempty"`
-	Scheme             string                 `protobuf:"bytes,2,opt,name=scheme,proto3" json:"scheme,omitempty"`
+	Scheme             string                 `protobuf:"bytes,50002,opt,name=scheme,proto3" json:"scheme,omitempty"`
 	// Only present when the request advertised `supports_port_prediction` and
 	// the responder is an easy-symmetric NAT.
-	PredictedPorts *TcpHolePunchPredictedPorts `protobuf:"bytes,3,opt,name=predicted_ports,json=predictedPorts,proto3" json:"predicted_ports,omitempty"`
+	PredictedPorts *TcpHolePunchPredictedPorts `protobuf:"bytes,50003,opt,name=predicted_ports,json=predictedPorts,proto3" json:"predicted_ports,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3385,7 +3403,7 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\x10missing_peer_ids\x18\x04 \x03(\rR\x0emissingPeerIds\x121\n" +
 	"\x15missing_conn_peer_ids\x18\x05 \x03(\rR\x12missingConnPeerIdsB\b\n" +
 	"\x06_error\"\x12\n" +
-	"\x10GetIpListRequest\"\xd7\x02\n" +
+	"\x10GetIpListRequest\"\xd9\x02\n" +
 	"\x11GetIpListResponse\x121\n" +
 	"\vpublic_ipv4\x18\x01 \x01(\v2\x10.common.Ipv4AddrR\n" +
 	"publicIpv4\x129\n" +
@@ -3393,22 +3411,26 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\vpublic_ipv6\x18\x03 \x01(\v2\x10.common.Ipv6AddrR\n" +
 	"publicIpv6\x129\n" +
 	"\x0finterface_ipv6s\x18\x04 \x03(\v2\x10.common.Ipv6AddrR\x0einterfaceIpv6s\x12)\n" +
-	"\tlisteners\x18\x05 \x03(\v2\v.common.UrlR\tlisteners\x12;\n" +
-	"\x13udp_http3_listeners\x18\x06 \x03(\v2\v.common.UrlR\x11udpHttp3Listeners\"\xfc\x01\n" +
+	"\tlisteners\x18\x05 \x03(\v2\v.common.UrlR\tlisteners\x12=\n" +
+	"\x13udp_http3_listeners\x18ֆ\x03 \x03(\v2\v.common.UrlR\x11udpHttp3Listeners\"\xfc\x01\n" +
 	"\x1dSendUdpHolePunchPacketRequest\x129\n" +
 	"\x0econnector_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\rconnectorAddr\x12#\n" +
 	"\rlistener_port\x18\x02 \x01(\rR\flistenerPort\x12>\n" +
 	"\x12preferred_src_ipv6\x18\x03 \x01(\v2\x10.common.Ipv6AddrR\x10preferredSrcIpv6\x12;\n" +
-	"\x0fconnector_addrs\x18\x04 \x03(\v2\x12.common.SocketAddrR\x0econnectorAddrs\"\xa4\x01\n" +
+	"\x0fconnector_addrs\x18\x04 \x03(\v2\x12.common.SocketAddrR\x0econnectorAddrs\"\xe7\x01\n" +
 	"\x1aSelectPunchListenerRequest\x12\x1b\n" +
 	"\tforce_new\x18\x01 \x01(\bR\bforceNew\x12.\n" +
-	"\x13prefer_port_mapping\x18\x02 \x01(\bR\x11preferPortMapping\x12\x16\n" +
-	"\x06scheme\x18\x03 \x01(\tR\x06scheme\x12!\n" +
-	"\fnative_http3\x18\x04 \x01(\bR\vnativeHttp3\"\x9e\x01\n" +
+	"\x13prefer_port_mapping\x18\x02 \x01(\bR\x11preferPortMapping\x12\x18\n" +
+	"\x06scheme\x18ӆ\x03 \x01(\tR\x06scheme\x12#\n" +
+	"\fnative_http3\x18Ԇ\x03 \x01(\bR\vnativeHttp3\x12*\n" +
+	"\x0etransaction_id\x18\x03 \x01(\rH\x00R\rtransactionId\x88\x01\x01B\x11\n" +
+	"\x0f_transaction_id\"\xe1\x01\n" +
 	"\x1bSelectPunchListenerResponse\x12D\n" +
-	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12\x16\n" +
-	"\x06scheme\x18\x02 \x01(\tR\x06scheme\x12!\n" +
-	"\fnative_http3\x18\x03 \x01(\bR\vnativeHttp3\"\xcb\x02\n" +
+	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12\x18\n" +
+	"\x06scheme\x18҆\x03 \x01(\tR\x06scheme\x12#\n" +
+	"\fnative_http3\x18ӆ\x03 \x01(\bR\vnativeHttp3\x12*\n" +
+	"\x0etransaction_id\x18\x02 \x01(\rH\x00R\rtransactionId\x88\x01\x01B\x11\n" +
+	"\x0f_transaction_id\"\xcb\x02\n" +
 	"\x1aSendPunchPacketConeRequest\x12D\n" +
 	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12/\n" +
 	"\tdest_addr\x18\x02 \x01(\v2\x12.common.SocketAddrR\bdestAddr\x12%\n" +
@@ -3434,7 +3456,7 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\rbase_port_num\x18\x04 \x01(\rR\vbasePortNum\x12 \n" +
 	"\fmax_port_num\x18\x05 \x01(\rR\n" +
 	"maxPortNum\x12%\n" +
-	"\x0eis_incremental\x18\x06 \x01(\bR\risIncremental\"\xa2\x02\n" +
+	"\x0eis_incremental\x18\x06 \x01(\bR\risIncremental\"\xa6\x02\n" +
 	"!SendPunchPacketBothEasySymRequest\x12(\n" +
 	"\x10udp_socket_count\x18\x01 \x01(\rR\x0eudpSocketCount\x12-\n" +
 	"\tpublic_ip\x18\x02 \x01(\v2\x10.common.Ipv4AddrR\bpublicIp\x12%\n" +
@@ -3442,27 +3464,27 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\fdst_port_num\x18\x04 \x01(\rR\n" +
 	"dstPortNum\x12 \n" +
 	"\fwait_time_ms\x18\x05 \x01(\rR\n" +
-	"waitTimeMs\x12\x16\n" +
-	"\x06scheme\x18\x06 \x01(\tR\x06scheme\x12!\n" +
-	"\fnative_http3\x18\a \x01(\bR\vnativeHttp3\"\xb6\x01\n" +
+	"waitTimeMs\x12\x18\n" +
+	"\x06scheme\x18ֆ\x03 \x01(\tR\x06scheme\x12#\n" +
+	"\fnative_http3\x18׆\x03 \x01(\bR\vnativeHttp3\"\xba\x01\n" +
 	"\"SendPunchPacketBothEasySymResponse\x12\x17\n" +
 	"\ais_busy\x18\x01 \x01(\bR\x06isBusy\x12<\n" +
-	"\x10base_mapped_addr\x18\x02 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\x12\x16\n" +
-	"\x06scheme\x18\x03 \x01(\tR\x06scheme\x12!\n" +
-	"\fnative_http3\x18\x04 \x01(\bR\vnativeHttp3\"\xbb\x01\n" +
-	"\x1aTcpHolePunchPredictedPorts\x12<\n" +
-	"\x10base_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\x12 \n" +
-	"\fmax_port_num\x18\x02 \x01(\rR\n" +
-	"maxPortNum\x12=\n" +
-	"\tdirection\x18\x03 \x01(\x0e2\x1f.peer_rpc.PortSequenceDirectionR\tdirection\"\xaf\x01\n" +
+	"\x10base_mapped_addr\x18\x02 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\x12\x18\n" +
+	"\x06scheme\x18ӆ\x03 \x01(\tR\x06scheme\x12#\n" +
+	"\fnative_http3\x18Ԇ\x03 \x01(\bR\vnativeHttp3\"\xc1\x01\n" +
+	"\x1aTcpHolePunchPredictedPorts\x12>\n" +
+	"\x10base_mapped_addr\x18ц\x03 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\x12\"\n" +
+	"\fmax_port_num\x18҆\x03 \x01(\rR\n" +
+	"maxPortNum\x12?\n" +
+	"\tdirection\x18ӆ\x03 \x01(\x0e2\x1f.peer_rpc.PortSequenceDirectionR\tdirection\"\xb3\x01\n" +
 	"\x13TcpHolePunchRequest\x12F\n" +
-	"\x15connector_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x13connectorMappedAddr\x12\x16\n" +
-	"\x06scheme\x18\x02 \x01(\tR\x06scheme\x128\n" +
-	"\x18supports_port_prediction\x18\x03 \x01(\bR\x16supportsPortPrediction\"\xc3\x01\n" +
+	"\x15connector_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x13connectorMappedAddr\x12\x18\n" +
+	"\x06scheme\x18҆\x03 \x01(\tR\x06scheme\x12:\n" +
+	"\x18supports_port_prediction\x18ӆ\x03 \x01(\bR\x16supportsPortPrediction\"\xc7\x01\n" +
 	"\x14TcpHolePunchResponse\x12D\n" +
-	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12\x16\n" +
-	"\x06scheme\x18\x02 \x01(\tR\x06scheme\x12M\n" +
-	"\x0fpredicted_ports\x18\x03 \x01(\v2$.peer_rpc.TcpHolePunchPredictedPortsR\x0epredictedPorts\"8\n" +
+	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12\x18\n" +
+	"\x06scheme\x18҆\x03 \x01(\tR\x06scheme\x12O\n" +
+	"\x0fpredicted_ports\x18ӆ\x03 \x01(\v2$.peer_rpc.TcpHolePunchPredictedPortsR\x0epredictedPorts\"8\n" +
 	"\x17DirectConnectedPeerInfo\x12\x1d\n" +
 	"\n" +
 	"latency_ms\x18\x01 \x01(\x05R\tlatencyMs\"\xcd\x01\n" +
@@ -3776,6 +3798,8 @@ func file_peer_rpc_proto_init() {
 		(*SyncRouteInfoRequest_ConnPeerList)(nil),
 	}
 	file_peer_rpc_proto_msgTypes[13].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[17].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[18].OneofWrappers = []any{}
 	file_peer_rpc_proto_msgTypes[34].OneofWrappers = []any{}
 	file_peer_rpc_proto_msgTypes[37].OneofWrappers = []any{}
 	file_peer_rpc_proto_msgTypes[38].OneofWrappers = []any{}

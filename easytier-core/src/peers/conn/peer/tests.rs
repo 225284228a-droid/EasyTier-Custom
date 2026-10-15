@@ -569,13 +569,16 @@ async fn manual_connections_agree_on_one_winner_without_route_metadata() {
             a.add_peer_conn(a_conn).await.unwrap();
             b.add_peer_conn(b_conn).await.unwrap();
         }
+        let winner = manual_keys.into_iter().min().unwrap().1;
+        // Admission already reconciles connections. A verified manual path can
+        // retire other IDs before this wait, so only the agreed winner must
+        // remain available to prove liveness and complete the cleanup.
         tokio::join!(
-            wait_until_latency_verified(&a, &a_ids),
-            wait_until_latency_verified(&b, &b_ids)
+            wait_until_latency_verified(&a, std::slice::from_ref(&a_ids[winner])),
+            wait_until_latency_verified(&b, std::slice::from_ref(&b_ids[winner]))
         );
         assert_eq!(a.negotiated_disguise.load(), None);
         assert_eq!(b.negotiated_disguise.load(), None);
-        let winner = manual_keys.into_iter().min().unwrap().1;
         tokio::join!(a.reconcile_connections(), b.reconcile_connections());
         let enabled = cleanup.into_iter().any(|enabled| enabled);
         if enabled {

@@ -22,6 +22,9 @@ pub(crate) mod udp_hole_punch;
 pub(crate) mod listeners;
 
 #[cfg(feature = "tun")]
+pub mod shared_virtual_nic;
+
+#[cfg(feature = "tun")]
 pub mod virtual_nic;
 pub mod vpn_exit_forwarding;
 pub mod vpn_routes;
