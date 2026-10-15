@@ -17,6 +17,7 @@ pub mod runtime;
 pub mod toml;
 pub mod vpn;
 
+pub use crate::proto::common::P2pDisguiseMode;
 pub use encryption::EncryptionAlgorithm;
 
 use crate::proto::common::PeerFeatureFlag;

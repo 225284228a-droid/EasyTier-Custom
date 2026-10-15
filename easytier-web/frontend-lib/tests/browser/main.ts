@@ -7,7 +7,7 @@ import { DEFAULT_NETWORK_CONFIG, type NetworkConfig } from '../../src/types/netw
 import I18nUtils from '../../src/modules/i18n'
 import '../../src/style.css'
 
-await I18nUtils.loadLanguageAsync('cn')
+await I18nUtils.loadLanguageAsync(new URL(window.location.href).searchParams.get('lang') === 'en' ? 'en' : 'cn')
 
 const BrowserHarness = defineComponent({
   setup() {

@@ -118,13 +118,33 @@ pub struct VpnRuleConfig {
     pub exit: IpAddr,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VpnConfig {
-    #[serde(default)]
+    #[serde(
+        default = "exit_forwarding_default",
+        skip_serializing_if = "exit_forwarding_enabled"
+    )]
     pub exit_enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<VpnRuleConfig>,
+}
+
+fn exit_forwarding_default() -> bool {
+    true
+}
+
+fn exit_forwarding_enabled(enabled: &bool) -> bool {
+    *enabled
+}
+
+impl Default for VpnConfig {
+    fn default() -> Self {
+        Self {
+            exit_enabled: true,
+            rules: Vec::new(),
+        }
+    }
 }
 impl VpnConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -210,7 +230,7 @@ mod tests {
     #[test]
     fn defaults_and_toml_roundtrip() {
         let mut c: VpnConfig = toml::from_str("").unwrap();
-        assert!(!c.client_active() && !c.exit_enabled);
+        assert!(!c.client_active() && c.exit_enabled);
         c.rules = vec![
             rule("0.0.0.0/0", "10.0.0.2"),
             rule("2001:db8::/32", "fd00::3"),

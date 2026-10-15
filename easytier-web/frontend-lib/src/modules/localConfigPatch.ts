@@ -3,6 +3,7 @@ import { normalizeNetworkConfig, toBackendNetworkConfig, type NetworkConfig } fr
 import { type UUID, UuidToStr } from './utils'
 import { ConfigFilePermission } from './api'
 import { assertLocalConfigApplyCapability, assertPatchCapabilities, configFieldSupported, LOCAL_CONFIG_REVISION_CAPABILITY } from './capabilities'
+import { LEGACY_P2P_DISGUISE_FIELDS, P2P_DISGUISE_MODE_CAPABILITY } from './p2pDisguise'
 
 export enum LocalConfigApplyMode {
   SaveAndApply = 0,
@@ -139,14 +140,17 @@ export function buildLocalConfigPatch(
     }
   }
   assertPatchCapabilities(current, mask, capabilities)
-  const backend = toBackendNetworkConfig(current)
+  const backend = toBackendNetworkConfig(current, capabilities)
+  const wireMask = [...new Set(mask.flatMap(field =>
+    field === 'p2p_disguise_mode' && !capabilities.includes(P2P_DISGUISE_MODE_CAPABILITY)
+      ? [...LEGACY_P2P_DISGUISE_FIELDS] : [field]))]
   const config: Record<string, unknown> = {}
-  for (const field of mask) putPath(config, field.split('.'), valueAt(backend, field.split('.')))
+  for (const field of wireMask) putPath(config, field.split('.'), valueAt(backend, field.split('.')))
   return {
     inst_id: instId,
     expected_revision: entry.revision,
     config: config as Partial<NetworkConfig>,
-    field_mask: mask,
+    field_mask: wireMask,
     apply_mode: applyMode,
   }
 }

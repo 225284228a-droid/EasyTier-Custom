@@ -169,6 +169,7 @@ impl CoreInstanceConfig {
         config: &TomlConfig,
         host: &CoreInstanceHostConfig,
     ) -> anyhow::Result<Self> {
+        config.get_flags_patch().validate_p2p_disguise()?;
         let flags = host.runtime_flags(config.get_flags());
         let instance_id = config.get_id();
         let identity: crate::config::NetworkIdentity = config.get_network_identity().into();
@@ -248,9 +249,21 @@ impl CoreInstanceConfig {
                 hmac_secret_digest: false,
             });
         let vpn = if host.ignore_unsupported_config && !host.proxy_enabled {
-            crate::config::vpn::VpnConfig::default()
+            crate::config::vpn::VpnConfig {
+                exit_enabled: false,
+                rules: Vec::new(),
+            }
         } else {
-            config.get_vpn()
+            let mut vpn = config.get_vpn();
+            // Offering an exit is an implicit default, so builds/hosts without
+            // a packet proxy can still run ordinary networks. Explicit client
+            // rules retain capability validation instead of being discarded.
+            if (!cfg!(feature = "proxy-packet") || !host.proxy_enabled)
+                && vpn == crate::config::vpn::VpnConfig::default()
+            {
+                vpn.exit_enabled = false;
+            }
+            vpn
         };
         let peer = PortablePeerManagerConfig {
             snapshot: peer_snapshot,
@@ -395,6 +408,31 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     use super::*;
+
+    #[cfg(not(feature = "proxy-packet"))]
+    #[test]
+    fn default_exit_offer_does_not_require_unavailable_packet_proxy() {
+        let config = TomlConfig::default();
+        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
+        assert!(config.get_vpn().exit_enabled);
+        assert!(!normalized.connectivity.runtime.proxy.vpn_exit);
+        assert!(!normalized.peer.vpn.exit_enabled);
+    }
+
+    #[test]
+    fn runtime_normalization_rejects_invalid_programmatic_disguise_policy() {
+        let config = TomlConfig::default();
+        config.patch_flags(crate::proto::common::FlagsPatch {
+            p2p_disguise_mode: Some("invalid".into()),
+            ..Default::default()
+        });
+        assert!(
+            CoreInstanceConfig::from_toml(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("p2p_disguise_mode")
+        );
+    }
 
     #[test]
     fn tcp_stun_servers_follow_toml_override_rules() {

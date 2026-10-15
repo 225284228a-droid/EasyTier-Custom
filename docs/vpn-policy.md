@@ -1,10 +1,10 @@
 # 网段出口 VPN
 
-每条规则将一个目标网段交给一个 EasyTier 出口节点。支持 IPv4、IPv6、默认网段和多个网段分别使用不同出口。
+每条规则将一个目标网段交给一个 EasyTier 出口节点。支持 IPv4、IPv6、默认网段和多个网段分别使用不同出口。出口节点的转发开关 `exit_enabled` 默认开启；规则为空时不会启动客户端，也不需要保存默认的 `[vpn]` 配置块。
 
 ```toml
 [vpn]
-exit_enabled = false
+# exit_enabled 默认为 true；设为 false 可关闭本节点的出口转发。
 
 [[vpn.rules]]
 cidr = "203.0.113.0/24"
@@ -15,7 +15,7 @@ cidr = "2001:db8::/32"
 exit = "10.144.144.3"
 ```
 
-出口填写本网络节点的虚拟 IPv4 或 IPv6 地址，不能填写域名或节点代理子网内的普通地址。出口节点必须启用 `[vpn] exit_enabled = true`；Linux 自动管理所需 forwarding 和 NAT，其他平台沿用现有代理转发能力。
+出口填写本网络节点的虚拟 IPv4 或 IPv6 地址，不能填写域名或节点代理子网内的普通地址。出口节点须保持 `exit_enabled = true`；省略该字段等同于开启，显式设置为 `false` 会保留关闭状态。Linux 自动管理所需 forwarding 和 NAT，其他平台沿用现有代理转发能力。
 
 ## 匹配与生命周期
 

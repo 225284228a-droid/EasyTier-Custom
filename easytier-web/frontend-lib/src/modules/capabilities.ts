@@ -1,8 +1,10 @@
 import type { NetworkConfig } from '../types/network'
+import { adaptP2pDisguisePayload, legacyP2pDisguiseSupported, P2P_DISGUISE_MODE_CAPABILITY } from './p2pDisguise'
 
 export const LOCAL_CONFIG_REVISION_CAPABILITY = 'management:persisted-config-revision-v1'
 export const LOCAL_CONFIG_APPLY_CAPABILITY = 'management:persisted-config-apply-v1'
 export const HTTP3_CAPABILITY = 'transport:http3-framed-v1'
+export const PRIVATE_MODE_DEFAULT_CAPABILITY = 'config:private-mode-default-true-v1'
 
 export function assertLocalConfigApplyCapability(capabilities: readonly string[]): void {
   if (!capabilities.includes(LOCAL_CONFIG_APPLY_CAPABILITY)) {
@@ -11,6 +13,7 @@ export function assertLocalConfigApplyCapability(capabilities: readonly string[]
 }
 
 export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = {
+  p2p_disguise_mode: P2P_DISGUISE_MODE_CAPABILITY,
   sni: 'config:sni',
   p2p_prefer_protocol: 'config:p2p_prefer_protocol',
   only_use_wss_http3_for_hole_punching: 'config:only_use_wss_http3_for_hole_punching',
@@ -21,6 +24,7 @@ export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = {
 }
 
 export function configFieldSupported(field: string, capabilities: readonly string[] = []): boolean {
+  if (field.split('.')[0] === 'p2p_disguise_mode' && legacyP2pDisguiseSupported(capabilities)) return true
   const required = CONFIG_FIELD_CAPABILITIES[field.split('.')[0]]
   return required === undefined || capabilities.includes(required)
 }
@@ -34,6 +38,7 @@ const URL_FIELDS = ['peer_urls', 'listener_urls', 'mapped_listeners'] as const
 /** Filter extensions individually. Official WS/WSS remain ordinary transports. */
 export function filterConfigPayload<T extends object>(config: T, capabilities: readonly string[]): T {
   const filtered = { ...config } as Record<string, unknown>
+  adaptP2pDisguisePayload(filtered, capabilities)
   for (const [field, capability] of Object.entries(CONFIG_FIELD_CAPABILITIES)) {
     if (!capabilities.includes(capability)) delete filtered[field]
   }
@@ -78,12 +83,12 @@ export function assertLegacyConfigPreservable(
 ): void {
   if (!existing) return
   const required: string[] = []
-  for (const [field, capability] of Object.entries(CONFIG_FIELD_CAPABILITIES)) {
+  for (const field of Object.keys(CONFIG_FIELD_CAPABILITIES)) {
     const value = existing[field as keyof NetworkConfig]
     const present = strictPresence
       ? Object.prototype.hasOwnProperty.call(existing, field)
       : value === true || (typeof value === 'string' && value.trim() !== '')
-    if (!capabilities.includes(capability) && present) {
+    if (!configFieldSupported(field, capabilities) && present) {
       required.push(field)
     }
   }

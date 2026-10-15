@@ -6,6 +6,7 @@ import { ScalarType } from '@protobuf-ts/runtime'
 import type { FlagMeta } from '../src/generated/proto/annotations'
 import { NetworkConfig as NetworkConfigPb } from '../src/generated/proto/api_manage'
 import { Flags as FlagsPb } from '../src/generated/proto/common'
+import { PRIVATE_MODE_DEFAULT_CAPABILITY } from '../src/modules/capabilities'
 import {
   DEFAULT_NETWORK_CONFIG,
   normalizeNetworkConfig,
@@ -398,6 +399,7 @@ function makeConfig(): NetworkConfig {
     no_tun: true,
     hostname: 'host-a',
     sni: 'www.cloudflare.com',
+    p2p_disguise_mode: undefined,
     only_use_wss_http3_for_hole_punching: true,
     prefer_wss_http3_for_p2p: false,
     disable_wss_http3_for_p2p: false,
@@ -487,6 +489,49 @@ async function setInput(wrapper: VueWrapper, selector: string, value: string) {
 }
 
 describe('Config.vue network config projection', () => {
+  it.each([
+    { capabilities: [PRIVATE_MODE_DEFAULT_CAPABILITY], explicit: undefined, expected: true },
+    { capabilities: [], explicit: undefined, expected: false },
+    { capabilities: [PRIVATE_MODE_DEFAULT_CAPABILITY], explicit: false, expected: false },
+    { capabilities: [], explicit: true, expected: true },
+  ])('shows the target private mode default and preserves explicit values: %j', async ({ capabilities, explicit, expected }) => {
+    const config = DEFAULT_NETWORK_CONFIG()
+    config.advanced_settings = true
+    config.enable_private_mode = explicit
+    const { curNetwork, wrapper } = mountConfig(config, capabilities)
+    await nextTick()
+    expect(input(wrapper, '#enable_private_mode').checked).toBe(expected)
+    expect(curNetwork.enable_private_mode).toBe(explicit)
+    wrapper.unmount()
+  })
+
+  it('shows a new custom VPN exit as enabled and allows explicitly disabling it', async () => {
+    const config = DEFAULT_NETWORK_CONFIG()
+    config.advanced_settings = true
+    const { curNetwork, wrapper } = mountConfig(config, ['config:vpn-subnet-exit-v1'])
+    await nextTick()
+    expect(input(wrapper, '#vpn_exit_enabled').checked).toBe(true)
+    expect(curNetwork.vpn?.exit_enabled).toBe(true)
+    await wrapper.find('#vpn_exit_enabled').setValue(false)
+    expect(curNetwork.vpn?.exit_enabled).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('uses a compact policy dropdown and one field on current custom kernels', async () => {
+    const { curNetwork, wrapper } = mountConfig(makeConfig(), ['config:p2p_disguise_mode'])
+    await nextTick()
+    const selector = wrapper.find('select#p2p_disguise_mode')
+    expect(selector.exists()).toBe(true)
+    expect(selector.attributes('data-stub')).toBe('select')
+    await selector.setValue('disabled')
+    expect(curNetwork.p2p_disguise_mode).toBe('disabled')
+    for (const field of ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'] as const) {
+      expect(curNetwork[field]).toBeUndefined()
+    }
+    expect(toBackendNetworkConfig(curNetwork, ['config:p2p_disguise_mode']).p2p_disguise_mode).toBe('disabled')
+    wrapper.unmount()
+  })
+
   it('keeps every custom setting available when no runtime capability filter is supplied', async () => {
     const { wrapper } = mountConfig()
     await nextTick()
@@ -577,6 +622,7 @@ describe('Config.vue network config projection', () => {
       const config = DEFAULT_NETWORK_CONFIG()
       config.advanced_settings = true
       if (legacy) {
+        delete config.p2p_disguise_mode
         delete config.prefer_wss_http3_for_p2p
         delete config.only_use_wss_http3_for_hole_punching
         delete config.disable_wss_http3_for_p2p
@@ -757,9 +803,7 @@ describe('Config.vue network config projection', () => {
       disable_ipv6: false,
       hostname: 'host-edited',
       sni: 'cdn.example.com',
-      prefer_wss_http3_for_p2p: true,
-      disable_wss_http3_for_p2p: false,
-      only_use_wss_http3_for_hole_punching: false,
+      p2p_disguise_mode: 'prefer',
       proxy_cidrs: ['10.7.0.0/16', '172.17.0.0/16'],
       vpn_portal_config: {
         wireguard_listen: '[::]:23000',
@@ -829,6 +873,7 @@ describe('Config.vue network config projection', () => {
     // the UI must render it as its own state instead of collapsing it into
     // prefer (which would flip the flag to true on the next save).
     const config = makeConfig()
+    delete config.p2p_disguise_mode
     config.only_use_wss_http3_for_hole_punching = false
     config.prefer_wss_http3_for_p2p = false
     config.disable_wss_http3_for_p2p = false
@@ -836,20 +881,22 @@ describe('Config.vue network config projection', () => {
     const { curNetwork, wrapper } = mountConfig(config)
     await nextTick()
 
-    expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('default')
+    expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('off')
 
-    // Re-selecting the default state must keep every flag false.
-    await wrapper.find('select#p2p_disguise_mode').setValue('default')
+    // Selecting off stores one explicit policy and clears legacy overrides.
+    await wrapper.find('select#p2p_disguise_mode').setValue('off')
     await nextTick()
-    expect(curNetwork.prefer_wss_http3_for_p2p).toBe(false)
-    expect(curNetwork.disable_wss_http3_for_p2p).toBe(false)
-    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBe(false)
+    expect(curNetwork.p2p_disguise_mode).toBe('off')
+    expect(curNetwork.prefer_wss_http3_for_p2p).toBeUndefined()
+    expect(curNetwork.disable_wss_http3_for_p2p).toBeUndefined()
+    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBeUndefined()
 
     await wrapper.find('select#p2p_disguise_mode').setValue('prefer')
     await nextTick()
-    expect(curNetwork.prefer_wss_http3_for_p2p).toBe(true)
-    expect(curNetwork.disable_wss_http3_for_p2p).toBe(false)
-    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBe(false)
+    expect(curNetwork.p2p_disguise_mode).toBe('prefer')
+    expect(curNetwork.prefer_wss_http3_for_p2p).toBeUndefined()
+    expect(curNetwork.disable_wss_http3_for_p2p).toBeUndefined()
+    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBeUndefined()
   })
 
   it('shows a flag the configuration does not state as the value the core resolves without setting it', async () => {

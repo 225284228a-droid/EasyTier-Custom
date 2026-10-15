@@ -14,6 +14,12 @@ use crate::config::{
     toml::{ConfigLoader as _, TomlConfig},
 };
 
+const LEGACY_DISGUISE_FIELDS: [&str; 3] = [
+    "prefer_wss_http3_for_p2p",
+    "disable_wss_http3_for_p2p",
+    "only_use_wss_http3_for_hole_punching",
+];
+
 /// Only fixed reasons and validated field names may cross the management RPC.
 /// Conversion errors can contain configuration values, URLs or key material.
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +123,12 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
             vec!["flags.relay_network_whitelist"]
         }
         "p2p_prefer_protocol" => vec!["flags.default_protocol"],
+        "p2p_disguise_mode" => vec![
+            "flags.p2p_disguise_mode",
+            "flags.prefer_wss_http3_for_p2p",
+            "flags.disable_wss_http3_for_p2p",
+            "flags.only_use_wss_http3_for_hole_punching",
+        ],
         "latency_first" => vec!["flags.latency_first"],
         "dev_name" => vec!["flags.dev_name"],
         "use_smoltcp" => vec!["flags.use_smoltcp"],
@@ -162,6 +174,7 @@ pub(super) fn required_capability(field: &str) -> Option<String> {
     match field.split('.').next().unwrap_or_default() {
         field @ ("sni"
         | "p2p_prefer_protocol"
+        | "p2p_disguise_mode"
         | "only_use_wss_http3_for_hole_punching"
         | "prefer_wss_http3_for_p2p"
         | "disable_wss_http3_for_p2p"
@@ -277,6 +290,18 @@ fn get_item<'a>(document: &'a DocumentMut, path: &str) -> Option<&'a Item> {
 }
 
 fn set_item(document: &mut DocumentMut, path: &str, value: Option<Item>) {
+    // Flags accept protobuf camelCase aliases when reading. A selected reset
+    // must remove that spelling too, or an omitted default would leave the
+    // old alias active (and a non-default write could create duplicate keys).
+    if let Some(name) = path.strip_prefix("flags.")
+        && let Some(field) = easytier_proto::common::Flags::flags()
+            .iter()
+            .find(|field| field.name.as_deref() == Some(name))
+        && let Some(alias) = field.json_name.as_deref().filter(|alias| *alias != name)
+        && let Some(flags) = document.get_mut("flags").and_then(Item::as_table_like_mut)
+    {
+        flags.remove(alias);
+    }
     fn write_path(table: &mut dyn TableLike, keys: &[&str], value: Option<Item>) {
         if keys.len() == 1 {
             match value {
@@ -293,6 +318,13 @@ fn set_item(document: &mut DocumentMut, path: &str, value: Option<Item>) {
             }
             if let Some(child) = table.get_mut(keys[0]).and_then(Item::as_table_like_mut) {
                 write_path(child, &keys[1..], value);
+            }
+            if table
+                .get(keys[0])
+                .and_then(Item::as_table_like)
+                .is_some_and(|child| child.is_empty())
+            {
+                table.remove(keys[0]);
             }
         }
     }
@@ -333,12 +365,43 @@ pub(super) fn merge_persisted_config(
         serde_json::to_value(network_config_from_toml(&loaded))
             .map_err(|_| invalid_patch("invalid persisted configuration values", []))?,
     );
+    let legacy_disguise_edit = !field_mask.iter().any(|field| field == "p2p_disguise_mode")
+        && field_mask
+            .iter()
+            .any(|field| LEGACY_DISGUISE_FIELDS.contains(&field.as_str()))
+        && loaded
+            .get_flags_patch()
+            .p2p_disguise_mode
+            .as_deref()
+            .is_some_and(|mode| !mode.trim().is_empty());
+    if legacy_disguise_edit {
+        // An older client edits the boolean projection of a unified policy.
+        // Start from its effective values, so changing one flag preserves the
+        // other two, then retire the mode that would otherwise override it.
+        let flags = loaded.get_flags();
+        let object = base.as_object_mut().unwrap();
+        object.remove("p2p_disguise_mode");
+        for (field, value) in [
+            ("prefer_wss_http3_for_p2p", flags.prefer_wss_http3_for_p2p),
+            ("disable_wss_http3_for_p2p", flags.disable_wss_http3_for_p2p),
+            (
+                "only_use_wss_http3_for_hole_punching",
+                flags.only_use_wss_http3_for_hole_punching,
+            ),
+        ] {
+            object.insert(field.into(), Value::Bool(value));
+        }
+    }
     let values = normalized_json(
         serde_json::to_value(values)
             .map_err(|_| invalid_patch("invalid configuration values", fields()))?,
     );
     let mut selected = HashSet::new();
     let mut locations = HashSet::new();
+    if legacy_disguise_edit {
+        locations.insert("flags.p2p_disguise_mode".to_owned());
+        locations.extend(LEGACY_DISGUISE_FIELDS.map(|field| format!("flags.{field}")));
+    }
     for path in field_mask {
         if path.is_empty()
             || path.split('.').any(|part| {
@@ -406,6 +469,13 @@ pub(super) fn merge_persisted_config(
     }
     if selected.contains("public_server_url") && !selected.contains("peers") {
         base.as_object_mut().unwrap().remove("peers");
+    }
+    if selected.contains("p2p_disguise_mode") {
+        // Selecting/resetting the unified policy replaces legacy overrides,
+        // including when the selected default is omitted from the payload.
+        for field in LEGACY_DISGUISE_FIELDS {
+            base.as_object_mut().unwrap().remove(field);
+        }
     }
     let merged: NetworkConfig = serde_json::from_value(base)
         .map_err(|_| invalid_patch("invalid field mask values", fields()))?;
@@ -499,13 +569,168 @@ pub(super) fn merge_legacy_form_changes(
         .gen_config()
         .map_err(|_| anyhow::anyhow!("persisted configuration cannot be edited"))?;
     before.set_network_config_source(Some(original_config.get_network_config_source()));
-    merge_active_changes(original, &before.dump(), &candidate.dump())
+    let candidate_toml = candidate.dump();
+    let merged = merge_active_changes(original, &before.dump(), &candidate_toml)?;
+    let generated = candidate_toml.parse::<DocumentMut>()?;
+    let mut merged = merged.parse::<DocumentMut>()?;
+    // A full form save owns these defaults even when normalization made the
+    // before/after projections identical. Remove old explicit defaults too,
+    // while retaining flags and tables that the form cannot represent.
+    for flag in easytier_proto::common::Flags::form() {
+        let path = format!("flags.{flag}");
+        if get_item(&generated, &path).is_none() {
+            set_item(&mut merged, &path, None);
+        }
+    }
+    for path in [
+        "hostname",
+        "sni",
+        "dhcp",
+        "vpn",
+        "secure_mode",
+        "mapped_listeners",
+    ] {
+        if get_item(&generated, path).is_none() {
+            set_item(&mut merged, path, None);
+        }
+    }
+    Ok(merged.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     const ORIGINAL: &str = "# retained comment\ninstance_id = '11111111-1111-1111-1111-111111111111'\nhostname = 'old'\nnetns = 'keep'\nstun_servers = ['udp://stun.example:3478']\n[network_identity]\nnetwork_name = 'home'\nnetwork_secret = 'secret'\n[flags]\ndefault_protocol = 'udp'\nmtu = 1200\n";
+
+    #[test]
+    fn legacy_disguise_patch_edits_effective_mode_flags_without_losing_siblings() {
+        let original = format!("{ORIGINAL}p2p_disguise_mode = 'disabled'\n");
+        let changed = merge_persisted_config(
+            &original,
+            &NetworkConfig {
+                disable_wss_http3_for_p2p: Some(false),
+                ..Default::default()
+            },
+            &["disable_wss_http3_for_p2p".into()],
+        )
+        .unwrap();
+        let flags = TomlConfig::new_from_str(&changed).unwrap().get_flags();
+        assert!(!flags.disable_wss_http3_for_p2p);
+        assert!(!flags.prefer_wss_http3_for_p2p);
+        assert!(!flags.only_use_wss_http3_for_hole_punching);
+        assert!(!changed.contains("p2p_disguise_mode ="));
+
+        let original = format!("{ORIGINAL}p2p_disguise_mode = 'only'\n");
+        let changed = merge_persisted_config(
+            &original,
+            &NetworkConfig {
+                prefer_wss_http3_for_p2p: Some(true),
+                ..Default::default()
+            },
+            &["prefer_wss_http3_for_p2p".into()],
+        )
+        .unwrap();
+        let flags = TomlConfig::new_from_str(&changed).unwrap().get_flags();
+        assert!(flags.prefer_wss_http3_for_p2p);
+        assert!(flags.only_use_wss_http3_for_hole_punching);
+        assert!(!flags.disable_wss_http3_for_p2p);
+        assert!(!changed.contains("p2p_disguise_mode ="));
+        assert!(changed.contains("# retained comment"));
+    }
+
+    #[test]
+    fn unified_disguise_patch_replaces_legacy_flags_and_reset_uses_default() {
+        let original = format!(
+            "{ORIGINAL}prefer_wss_http3_for_p2p = false\nonly_use_wss_http3_for_hole_punching = true\n"
+        );
+        let mask = ["p2p_disguise_mode".to_owned()];
+        let merged = merge_persisted_config(
+            &original,
+            &NetworkConfig {
+                p2p_disguise_mode: Some("off".into()),
+                ..Default::default()
+            },
+            &mask,
+        )
+        .unwrap();
+        let flags = TomlConfig::new_from_str(&merged).unwrap().get_flags();
+        assert!(!flags.prefer_wss_http3_for_p2p);
+        assert!(!flags.only_use_wss_http3_for_hole_punching);
+        assert!(merged.contains("# retained comment"));
+        assert!(!merged.contains("prefer_wss_http3_for_p2p ="));
+        assert!(!merged.contains("only_use_wss_http3_for_hole_punching ="));
+
+        // An omitted selected value resets the whole policy, including old overrides.
+        let reset = merge_persisted_config(&original, &NetworkConfig::default(), &mask).unwrap();
+        let flags = TomlConfig::new_from_str(&reset).unwrap().get_flags();
+        assert!(flags.prefer_wss_http3_for_p2p);
+        assert!(!flags.only_use_wss_http3_for_hole_punching);
+        assert!(!reset.contains("p2p_disguise_mode ="));
+        assert!(!reset.contains("only_use_wss_http3_for_hole_punching ="));
+    }
+
+    #[test]
+    fn full_form_save_removes_explicit_defaults_and_keeps_unmanaged_values() {
+        let original = format!(
+            "{ORIGINAL}private_mode = true\nlatency_first = false\nmulti_thread_count = 7\n[vpn]\nexit_enabled = true\nrules = []\n"
+        );
+        let loaded = TomlConfig::new_from_str(&original).unwrap();
+        let form = network_config_from_toml(&loaded);
+        let merged = merge_legacy_form_changes(&original, &form.gen_config().unwrap()).unwrap();
+        assert!(merged.starts_with("# retained comment"));
+        let document: toml::Table = toml::from_str(&merged).unwrap();
+        assert!(!document.contains_key("vpn"));
+        let flags = document["flags"].as_table().unwrap();
+        assert!(!flags.contains_key("default_protocol"));
+        assert!(!flags.contains_key("private_mode"));
+        assert!(!flags.contains_key("latency_first"));
+        assert_eq!(flags["multi_thread_count"].as_integer(), Some(7));
+        assert_eq!(flags["mtu"].as_integer(), Some(1200));
+        assert_eq!(
+            TomlConfig::new_from_str(&merged).unwrap().get_flags(),
+            loaded.get_flags()
+        );
+    }
+
+    #[test]
+    fn selected_reset_removes_default_and_empty_flags_table() {
+        let original = "[flags]\nprivate_mode = false\n";
+        let merged = merge_persisted_config(
+            original,
+            &NetworkConfig {
+                enable_private_mode: Some(true),
+                ..Default::default()
+            },
+            &["enable_private_mode".into()],
+        )
+        .unwrap();
+        assert!(!merged.contains("[flags]"));
+        assert!(
+            TomlConfig::new_from_str(&merged)
+                .unwrap()
+                .get_flags()
+                .private_mode
+        );
+    }
+
+    #[test]
+    fn selected_flag_reset_removes_accepted_camel_case_alias() {
+        let original = "# retained\n[flags]\ndisableP2p = true\nmultiThreadCount = 7\n";
+        let merged = merge_persisted_config(
+            original,
+            &NetworkConfig {
+                disable_p2p: Some(false),
+                ..Default::default()
+            },
+            &["disable_p2p".into()],
+        )
+        .unwrap();
+        assert!(!merged.contains("disableP2p"));
+        assert!(merged.contains("multiThreadCount = 7"));
+        let parsed = TomlConfig::new_from_str(&merged).unwrap();
+        assert!(!parsed.get_flags().disable_p2p);
+        assert_eq!(parsed.get_flags().multi_thread_count, 7);
+    }
 
     #[test]
     fn persisted_field_mappings_cover_the_current_management_schema() {

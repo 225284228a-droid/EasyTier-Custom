@@ -1030,12 +1030,16 @@ fn flags_from(matches: &ArgMatches) -> Result<FlagsPatch, clap::Error> {
             Some((name.to_owned(), value))
         })
         .collect::<serde_json::Map<_, _>>();
-    serde_json::from_value(Value::Object(given)).map_err(|error| {
+    let patch: FlagsPatch = serde_json::from_value(Value::Object(given)).map_err(|error| {
         clap::Error::raw(
             clap::error::ErrorKind::ValueValidation,
             format!("{error:#}"),
         )
-    })
+    })?;
+    patch.validate_p2p_disguise().map_err(|error| {
+        clap::Error::raw(clap::error::ErrorKind::ValueValidation, error.to_string())
+    })?;
+    Ok(patch)
 }
 
 fn cli_command() -> clap::Command {
@@ -1076,6 +1080,12 @@ fn cli_command() -> clap::Command {
                 arg(name, "compression").value_parser(parsed::<CompressionAlgoPb>)
             }
             "encryption_algorithm" => arg(name, name).value_parser(parsed::<EncryptionAlgorithm>),
+            "p2p_disguise_mode" => arg(name, name).value_parser(|value: &str| {
+                value
+                    .parse::<easytier_proto::common::P2pDisguiseMode>()
+                    .map(|mode| json!(mode.as_str()))
+                    .map_err(|error| error.to_string())
+            }),
             "mtu" => arg(name, name).value_parser(parsed::<u16>),
             "relay_network_whitelist" => arg(name, name)
                 .value_delimiter(',')
@@ -2093,6 +2103,23 @@ enabled = true
         assert_eq!(identity.network_secret, None);
         assert_eq!(identity.network_secret_digest, None);
         assert_eq!(cfg.get_hostname(), "override-host");
+    }
+
+    #[test]
+    fn test_cli_disguise_policy_is_validated_before_merging() {
+        for mode in ["prefer", "off", "disabled", "only"] {
+            let patch = parse_flags(&["easytier", "--p2p-disguise-mode", mode]).unwrap();
+            assert_eq!(patch.p2p_disguise_mode.as_deref(), Some(mode));
+        }
+        assert!(parse_flags(&["easytier", "--p2p-disguise-mode", "disable"]).is_err());
+        assert!(
+            parse_flags(&[
+                "easytier",
+                "--disable-wss-http3-for-p2p",
+                "--only-use-wss-http3-for-hole-punching",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

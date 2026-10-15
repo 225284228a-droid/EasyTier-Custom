@@ -18,6 +18,8 @@ use crate::proto::{acl::Acl, common::SecureModeConfig};
 
 pub use crate::proto::common::{Flags, FlagsPatch};
 
+mod tolerant;
+
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
 }
@@ -406,7 +408,7 @@ struct Config {
 
     secure_mode: Option<SecureModeConfig>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "flags_patch_is_empty")]
     flags: FlagsPatch,
 
     acl: Option<Acl>,
@@ -421,6 +423,11 @@ struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     managed_credentials: Vec<ManagedCredentialConfig>,
     source: Option<ConfigSourceConfig>,
+}
+
+#[cfg(feature = "config-write")]
+fn flags_patch_is_empty(flags: &FlagsPatch) -> bool {
+    prost::Message::encoded_len(flags) == 0
 }
 
 #[cfg(feature = "rich-config-errors")]
@@ -474,6 +481,71 @@ impl Default for TomlConfig {
 }
 
 impl TomlConfig {
+    /// Compact only values produced by the web form. General TOML dumps retain
+    /// explicit values, including explicit defaults used in patches.
+    #[cfg(feature = "config-write")]
+    pub(crate) fn prune_form_defaults(&self) {
+        let mut config = self.config.lock().unwrap();
+        config.flags.canonicalize_p2p_disguise();
+        {
+            let mut supplied = serde_json::to_value(&config.flags)
+                .expect("FlagsPatch has a JSON-compatible generated schema");
+            let defaults = serde_json::to_value(Flags::defaults().downgrade())
+                .expect("FlagsPatch defaults have a JSON-compatible generated schema");
+            if let (Some(supplied), Some(defaults)) =
+                (supplied.as_object_mut(), defaults.as_object())
+            {
+                for key in Flags::form() {
+                    if supplied.get(*key) == defaults.get(*key) {
+                        supplied.remove(*key);
+                    }
+                }
+            }
+            config.flags = serde_json::from_value(supplied)
+                .expect("removing optional FlagsPatch fields preserves its schema");
+        }
+        if config.hostname.as_ref().is_some_and(String::is_empty) {
+            config.hostname = None;
+        }
+        if config
+            .sni
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            config.sni = None;
+        }
+        if config.dhcp == Some(false) {
+            config.dhcp = None;
+        }
+        // An explicitly empty listeners/routes list disables implicit defaults.
+        if config.mapped_listeners.as_ref().is_some_and(Vec::is_empty) {
+            config.mapped_listeners = None;
+        }
+        if config.peer.as_ref().is_some_and(Vec::is_empty) {
+            config.peer = None;
+        }
+        if config.proxy_network.as_ref().is_some_and(Vec::is_empty) {
+            config.proxy_network = None;
+        }
+        if config.port_forward.as_ref().is_some_and(Vec::is_empty) {
+            config.port_forward = None;
+        }
+        if config
+            .vpn
+            .as_ref()
+            .is_some_and(|vpn| *vpn == crate::config::vpn::VpnConfig::default())
+        {
+            config.vpn = None;
+        }
+        if config.secure_mode.as_ref().is_some_and(|secure| {
+            !secure.enabled
+                && secure.local_private_key.is_none()
+                && secure.local_public_key.is_none()
+        }) {
+            config.secure_mode = None;
+        }
+    }
+
     fn normalize_config_source(config: &mut Config) {
         if matches!(
             config.source.as_ref().map(|source| source.source),
@@ -487,6 +559,13 @@ impl TomlConfig {
     fn config_for_dump(&self) -> Config {
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
+        if config
+            .vpn
+            .as_ref()
+            .is_some_and(|vpn| *vpn == crate::config::vpn::VpnConfig::default())
+        {
+            config.vpn = None;
+        }
         config
     }
 
@@ -559,18 +638,35 @@ impl TomlConfig {
         })
     }
 
+    /// Load a startup document, ignoring invalid values while retaining the
+    /// remaining fields. API edits should use the strict constructors instead.
+    pub fn new_from_str_tolerant_with_source(
+        source_name: &str,
+        config_str: &str,
+    ) -> Result<Self, anyhow::Error> {
+        let (config, mut warnings) = tolerant::load(config_str)?;
+        let config = Self::new_from_config(config)
+            .with_context(|| format!("failed to load recovered config from {source_name}"))?;
+        tolerant::sanitize_portal(&config, &mut warnings)?;
+        for warning in warnings {
+            // Do not log the input value or deserializer error: either can
+            // contain network secrets or private keys.
+            tracing::warn!(
+                config_source = source_name,
+                field = warning.path,
+                reason = warning.reason,
+                "Ignoring invalid configuration value and continuing startup"
+            );
+        }
+        Ok(config)
+    }
+
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
         if let Some(vpn) = &config.vpn {
             vpn.validate()
                 .map_err(|error| anyhow::anyhow!("invalid [vpn] config: {error}"))?;
         }
-        super::validate_p2p_disguise_flags(
-            config.flags.disable_wss_http3_for_p2p.unwrap_or(false),
-            config
-                .flags
-                .only_use_wss_http3_for_hole_punching
-                .unwrap_or(false),
-        )?;
+        config.flags.validate_p2p_disguise()?;
         config.secure_mode = config
             .secure_mode
             .take()
@@ -861,13 +957,44 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().flags.clone()
     }
 
-    fn patch_flags(&self, flags: FlagsPatch) {
+    fn patch_flags(&self, mut flags: FlagsPatch) {
         // Protobuf merge: an update overwrites exactly the fields it carries,
         // and presence is the encoding, so a flag explicitly set to its default
         // value is applied like any other. Optionize's merge cannot express that
         // here, because the one flattened nullable field would have to assign
         // unconditionally.
         let mut config = self.config.lock().unwrap();
+        let sets_mode = flags
+            .p2p_disguise_mode
+            .as_deref()
+            .is_some_and(|mode| !mode.trim().is_empty());
+        if sets_mode {
+            // A unified policy replaces legacy overrides, even when an older
+            // caller's projection includes both representations in one update.
+            config.flags.prefer_wss_http3_for_p2p = None;
+            config.flags.disable_wss_http3_for_p2p = None;
+            config.flags.only_use_wss_http3_for_hole_punching = None;
+            flags.prefer_wss_http3_for_p2p = None;
+            flags.disable_wss_http3_for_p2p = None;
+            flags.only_use_wss_http3_for_hole_punching = None;
+        } else if (flags.prefer_wss_http3_for_p2p.is_some()
+            || flags.disable_wss_http3_for_p2p.is_some()
+            || flags.only_use_wss_http3_for_hole_punching.is_some())
+            && config
+                .flags
+                .p2p_disguise_mode
+                .as_deref()
+                .is_some_and(|mode| mode.parse::<super::P2pDisguiseMode>().is_ok())
+        {
+            // Legacy CLI/API patches edit the effective boolean policy. Keep
+            // untouched siblings, then retire the mode that would mask edits.
+            let resolved = Flags::resolve(config.flags.clone());
+            config.flags.prefer_wss_http3_for_p2p = Some(resolved.prefer_wss_http3_for_p2p);
+            config.flags.disable_wss_http3_for_p2p = Some(resolved.disable_wss_http3_for_p2p);
+            config.flags.only_use_wss_http3_for_hole_punching =
+                Some(resolved.only_use_wss_http3_for_hole_punching);
+            config.flags.p2p_disguise_mode = None;
+        }
         let update = prost::Message::encode_to_vec(&flags);
         prost::Message::merge(&mut config.flags, update.as_slice())
             .expect("decoding the bytes just encoded cannot fail");
@@ -1348,6 +1475,62 @@ socket_mark = 66
     }
 
     #[test]
+    fn legacy_flag_patches_edit_unified_disguise_policy_and_preserve_siblings() {
+        let config = TomlConfig::new_from_str("[flags]\np2p_disguise_mode = 'disabled'\n").unwrap();
+        config.patch_flags(FlagsPatch {
+            disable_wss_http3_for_p2p: Some(false),
+            ..Default::default()
+        });
+        let flags = config.get_flags();
+        assert!(!flags.prefer_wss_http3_for_p2p);
+        assert!(!flags.disable_wss_http3_for_p2p);
+        assert!(!flags.only_use_wss_http3_for_hole_punching);
+        assert_eq!(config.get_flags_patch().p2p_disguise_mode, None);
+
+        let config = TomlConfig::new_from_str("[flags]\np2p_disguise_mode = 'only'\n").unwrap();
+        config.patch_flags(FlagsPatch {
+            prefer_wss_http3_for_p2p: Some(true),
+            ..Default::default()
+        });
+        let flags = config.get_flags();
+        assert!(flags.prefer_wss_http3_for_p2p);
+        assert!(flags.only_use_wss_http3_for_hole_punching);
+        assert!(!flags.disable_wss_http3_for_p2p);
+        assert_eq!(config.get_flags_patch().p2p_disguise_mode, None);
+    }
+
+    #[test]
+    fn unified_disguise_patch_replaces_legacy_overrides_but_unrelated_patch_keeps_mode() {
+        let config =
+            TomlConfig::new_from_str("[flags]\nonly_use_wss_http3_for_hole_punching = true\n")
+                .unwrap();
+        config.patch_flags(FlagsPatch {
+            p2p_disguise_mode: Some("off".into()),
+            disable_wss_http3_for_p2p: Some(true),
+            ..Default::default()
+        });
+        let patch = config.get_flags_patch();
+        assert_eq!(patch.p2p_disguise_mode.as_deref(), Some("off"));
+        assert_eq!(patch.prefer_wss_http3_for_p2p, None);
+        assert_eq!(patch.disable_wss_http3_for_p2p, None);
+        assert_eq!(patch.only_use_wss_http3_for_hole_punching, None);
+        let flags = config.get_flags();
+        assert!(!flags.prefer_wss_http3_for_p2p);
+        assert!(!flags.disable_wss_http3_for_p2p);
+        assert!(!flags.only_use_wss_http3_for_hole_punching);
+
+        config.patch_flags(FlagsPatch {
+            latency_first: Some(true),
+            ..Default::default()
+        });
+        assert_eq!(
+            config.get_flags_patch().p2p_disguise_mode.as_deref(),
+            Some("off")
+        );
+        assert!(config.get_flags().latency_first);
+    }
+
+    #[test]
     fn contradictory_disguise_flags_are_rejected_on_load() {
         let error = TomlConfig::new_from_str(
             "[flags]\nonly_use_wss_http3_for_hole_punching = true\ndisable_wss_http3_for_p2p = true\n",
@@ -1500,7 +1683,7 @@ socketMark = "0"
         let config = TomlConfigLoader::default();
         let dumped = config.dump();
         let document: toml::Table = toml::from_str(&dumped).unwrap();
-        assert!(document["flags"].as_table().unwrap().is_empty());
+        assert!(!document.contains_key("flags"));
         assert_eq!(
             TomlConfigLoader::new_from_str(&dumped).unwrap().get_flags(),
             Flags::resolve(FlagsPatch::default())

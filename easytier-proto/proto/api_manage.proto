@@ -128,6 +128,12 @@ message NetworkConfig {
 
   // Custom subnet exit VPN (fork feature).
   optional VpnConfig vpn = 80;
+
+  // prefer: negotiate disguise with raw fallback (default); off: do not
+  // initiate disguise but accept a peer requiring it; disabled: forbid
+  // automatic disguised P2P; only: require disguise. Manual peers are unaffected.
+  // A nonempty mode overrides legacy disguise booleans (fields 74-76).
+  optional string p2p_disguise_mode = 81;
 }
 
 // One destination subnet mapped to exactly one virtual node address.

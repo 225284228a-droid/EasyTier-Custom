@@ -31,7 +31,7 @@ impl WasiCoreInstanceCreateConfig {
     }
 
     pub fn parse_config(&self) -> anyhow::Result<TomlConfig> {
-        TomlConfig::new_from_str_with_source("WASI create config", &self.config)
+        TomlConfig::new_from_str_tolerant_with_source("WASI create config", &self.config)
     }
 }
 

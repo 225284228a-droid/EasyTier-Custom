@@ -73,7 +73,7 @@ test('VPN configuration remains editable without horizontal overflow at mobile, 
       ?? await mkdtemp(join(tmpdir(), 'easytier-vpn-ui-'));
     await mkdir(screenshotDir, { recursive: true });
 
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHROMIUM_CHANNEL } : {}) });
     const page = await browser.newPage({ viewport: { width: 360, height: 960 } });
     const pageErrors = [];
     const consoleErrors = [];
@@ -113,6 +113,19 @@ test('VPN configuration remains editable without horizontal overflow at mobile, 
       await page.setViewportSize({ width, height: 960 });
       await page.waitForTimeout(100);
       await assertNoHorizontalOverflow(page, width, 'single-exit rule editor');
+      const disguiseSelector = page.locator('#p2p_disguise_mode');
+      const protocolSelector = page.locator('#p2p_prefer_protocol');
+      await disguiseSelector.scrollIntoViewIfNeeded();
+      await disguiseSelector.click();
+      await assertNoHorizontalOverflow(page, width, 'open disguise dropdown');
+      await page.getByRole('option', { name: '不主动伪装（接受对端要求）', exact: true }).click();
+      assert.match(await disguiseSelector.textContent(), /不主动伪装/);
+      await assertNoHorizontalOverflow(page, width, 'disguise dropdown selected');
+      const tcpOption = protocolSelector.getByRole('button', { name: /优先 TCP/ });
+      await tcpOption.click();
+      assert.equal(await tcpOption.getAttribute('aria-pressed'), 'true');
+      await page.screenshot({ path: join(screenshotDir, `p2p-config-${width}.png`), fullPage: true, animations: 'disabled' });
+      await disguiseSelector.locator('..').locator('..').screenshot({ path: join(screenshotDir, `p2p-controls-${width}.png`), animations: 'disabled' });
       const existingCount = await cards.count();
       await page.getByRole('button', { name: '添加规则', exact: true }).click();
       const newRule = cards.nth(existingCount);
@@ -129,6 +142,20 @@ test('VPN configuration remains editable without horizontal overflow at mobile, 
         fullPage: true,
         animations: 'disabled',
       });
+    }
+
+    // Longer English policy labels must also fit both the field and its overlay.
+    await page.goto(`${url}?lang=en`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await page.getByRole('button', { name: 'Advanced Settings', exact: true }).click();
+    for (const width of [360, 1280]) {
+      await page.setViewportSize({ width, height: 960 });
+      const selector = page.locator('#p2p_disguise_mode');
+      await selector.scrollIntoViewIfNeeded();
+      await selector.click();
+      await assertNoHorizontalOverflow(page, width, 'English disguise dropdown');
+      await page.getByRole('option', { name: 'Do not initiate disguise (accept peer requirement)', exact: true }).click();
+      await assertNoHorizontalOverflow(page, width, 'English disguise selection');
+      await selector.locator('..').locator('..').screenshot({ path: join(screenshotDir, `p2p-controls-en-${width}.png`), animations: 'disabled' });
     }
 
     assert.deepEqual(

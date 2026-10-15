@@ -68,7 +68,10 @@ pub(crate) unsafe fn run_network_instance(cfg_str: *const std::ffi::c_char) -> s
             .to_string_lossy()
             .into_owned()
     };
-    let cfg = match TomlConfigLoader::new_from_str(&cfg_str) {
+    let cfg = match TomlConfigLoader::new_from_str_tolerant_with_source(
+        "FFI instance config",
+        &cfg_str,
+    ) {
         Ok(cfg) => cfg,
         Err(e) => {
             set_error_msg(&format!("failed to parse config: {}", e));

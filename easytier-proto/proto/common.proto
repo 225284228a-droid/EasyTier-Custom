@@ -37,7 +37,7 @@ message Flags {
   bool proxy_forward_by_system = 21 [(easytier.flag) = { default: "false" }];
 
   // enable private mode
-  bool private_mode = 23 [(easytier.flag) = { default: "false", api: { field: "enable_private_mode" } }];
+  bool private_mode = 23 [(easytier.flag) = { default: "true", api: { field: "enable_private_mode" } }];
 
   // should we convert all tcp streams into quic streams
   bool enable_quic_proxy = 24 [(easytier.flag) = { default: "false" }];
@@ -111,6 +111,11 @@ message Flags {
   // connections. Equally ranked automatic connections remain. This does not
   // change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
   bool close_redundant_conns_when_disguised = 49 [(easytier.flag) = { default: "true" }];
+
+  // Automatic P2P disguise policy: prefer, off, disabled, or only.
+  // Empty/unset preserves legacy boolean configuration. A nonempty mode
+  // overrides the three legacy booleans above; peer wire flags stay unchanged.
+  string p2p_disguise_mode = 50 [(easytier.flag) = { default: "", form: true }];
 }
 
 

@@ -10,7 +10,7 @@ const { t } = useI18n()
 const props = defineProps<{ network: NetworkConfig }>()
 type VpnRule = VpnConfig['rules'][number]
 const ruleKeys = new WeakMap<VpnRule, string>()
-const vpn = computed(() => props.network.vpn ??= { exit_enabled: false, rules: [] })
+const vpn = computed(() => props.network.vpn ??= { exit_enabled: true, rules: [] })
 function ruleKey(rule: VpnRule): string {
   if (!ruleKeys.has(rule)) ruleKeys.set(rule, uuidv4())
   return ruleKeys.get(rule)!

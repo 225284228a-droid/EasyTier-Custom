@@ -249,9 +249,13 @@ fn config_semantic_hash(config: &TomlConfig) -> Option<String> {
     // resolve defaults only in this document, leaving the configuration and
     // its management API projection untouched.
     let mut normalized = toml::from_str::<toml::Table>(&config.dump()).ok()?;
+    let mut resolved_flags = config.get_flags();
+    // The mode is a local spelling of the resolved legacy wire flags. Keeping
+    // both would treat a representation-only migration as a pending change.
+    resolved_flags.p2p_disguise_mode.clear();
     normalized.insert(
         "flags".to_owned(),
-        toml::Value::try_from(config.get_flags()).ok()?,
+        toml::Value::try_from(resolved_flags).ok()?,
     );
     Some(raw_hash(toml::to_string(&normalized).ok()?.as_bytes()))
 }
@@ -760,6 +764,37 @@ mod tests {
                 "{changed} should change the runtime behavior"
             );
         }
+    }
+
+    #[test]
+    fn disguise_policy_spelling_does_not_create_a_pending_configuration_change() {
+        let base = "instance_id='11111111-1111-1111-1111-111111111111'\n";
+        for (mode, legacy) in [
+            ("prefer", ""),
+            ("off", "prefer_wss_http3_for_p2p = false\n"),
+        ] {
+            let unified = format!("{base}[flags]\np2p_disguise_mode = '{mode}'\n");
+            let legacy = format!("{base}[flags]\n{legacy}");
+            let active = TomlConfig::new_from_str(&legacy).unwrap();
+            let persisted = TomlConfig::new_from_str(&unified).unwrap();
+            assert!(configs_equivalent(&active, &persisted), "{mode}");
+            assert!(
+                !has_pending_config_change(&unified, Some(&active)),
+                "{mode}"
+            );
+            assert!(
+                !has_pending_config_change(&legacy, Some(&persisted)),
+                "{mode}"
+            );
+            assert_eq!(
+                persisted.get_flags_patch().p2p_disguise_mode.as_deref(),
+                Some(mode)
+            );
+        }
+        let prefer = TomlConfig::new_from_str(base).unwrap();
+        let off = TomlConfig::new_from_str(&format!("{base}[flags]\np2p_disguise_mode = 'off'\n"))
+            .unwrap();
+        assert!(!configs_equivalent(&prefer, &off));
     }
 
     #[test]

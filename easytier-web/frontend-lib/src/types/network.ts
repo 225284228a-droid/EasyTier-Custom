@@ -38,7 +38,8 @@ import {
   type SecureModeConfig,
 } from '../generated/proto/common'
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
-import { filterConfigPayload } from '../modules/capabilities'
+import { filterConfigPayload, PRIVATE_MODE_DEFAULT_CAPABILITY } from '../modules/capabilities'
+import { canonicalizeP2pDisguisePayload, LEGACY_P2P_DISGUISE_FIELDS } from '../modules/p2pDisguise'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
 export { VpnPortalClientState }
@@ -126,7 +127,10 @@ function declaredValue(flag: AnnotatedFlag): boolean {
  * The value a flag runs with when the configuration does not state one, so a
  * form shows what an unset flag means instead of showing it as off.
  */
-export function defaultFlagValue(field: keyof NetworkConfig): boolean {
+export function defaultFlagValue(field: keyof NetworkConfig, capabilities?: readonly string[]): boolean {
+  if (field === 'enable_private_mode' && capabilities !== undefined) {
+    return capabilities.includes(PRIVATE_MODE_DEFAULT_CAPABILITY)
+  }
   const flag = annotatedFlags.find((flag) => flag.field === field)
 
   return flag ? declaredValue(flag) : false
@@ -151,7 +155,13 @@ export function formFlags(): { field: keyof NetworkConfig; help: string }[] {
 function newFlagValues(): Record<string, boolean> {
   const values: Record<string, boolean> = {}
   for (const flag of annotatedFlags) {
-    if (flag.boolean) values[flag.field] = declaredValue(flag)
+    // This default differs between custom and official kernels. Keep it
+    // implicit so each target applies its own default; the form uses its
+    // advertised capability to display the value until the user changes it.
+    if (flag.boolean && flag.field !== 'enable_private_mode'
+      && !(LEGACY_P2P_DISGUISE_FIELDS as readonly string[]).includes(flag.field)) {
+      values[flag.field] = declaredValue(flag)
+    }
   }
 
   return values
@@ -188,6 +198,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     dev_name: '',
 
     p2p_prefer_protocol: 'udp',
+    p2p_disguise_mode: 'prefer',
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,
@@ -420,7 +431,11 @@ export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: rea
   const json = NetworkConfigPb.toJson(backend, {
     useProtoFieldName: true,
   }) as unknown as NetworkConfig
-  return capabilities === undefined ? json : filterConfigPayload(json, capabilities)
+  if (capabilities === undefined) {
+    canonicalizeP2pDisguisePayload(json as unknown as Record<string, unknown>)
+    return json
+  }
+  return filterConfigPayload(json, capabilities)
 }
 
 export function normalizeVpnPortalInfo(info: unknown): VpnPortalInfo {

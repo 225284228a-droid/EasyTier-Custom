@@ -179,6 +179,9 @@ core_clap:
   only_use_wss_http3_for_hole_punching:
     en: "use only WSS and HTTP/3 for automatic P2P and NAT hole punching; ordinary direct and manual connections are unaffected"
     zh-CN: "自动P2P和NAT打洞仅使用 WSS 和 HTTP/3；不影响普通直连或手动连接"
+  p2p_disguise_mode:
+    en: "automatic P2P disguise policy: prefer (default, allow raw fallback), off (accept peers requiring disguise), disabled (raw only), or only (require disguise); overrides legacy disguise booleans; manual peers are unaffected"
+    zh-CN: "自动 P2P 伪装策略：prefer（默认，允许普通协议回退）、off（不主动伪装，接受对端强制要求）、disabled（禁用伪装）或 only（强制伪装）；覆盖旧伪装布尔参数，不影响手动连接"
   prefer_wss_http3_for_p2p:
     en: "prefer WSS and HTTP/3 for automatic P2P and NAT hole punching, falling back to TCP/UDP when unsupported; default true, applied when both peers prefer it (or either requires it), set false to only serve peers that require disguise"
     zh-CN: "自动P2P和NAT打洞优先使用 WSS 和 HTTP/3，不支持时回退到 TCP/UDP；默认 true（双方均开启或一方强制时生效），设为 false 则仅响应需要伪装的对端"

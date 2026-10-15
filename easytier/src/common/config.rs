@@ -40,7 +40,7 @@ pub fn load_toml_config_from_str_with_source(
     source_name: &str,
     config_str: &str,
 ) -> Result<TomlConfigLoader, anyhow::Error> {
-    let config = TomlConfigLoader::new_from_str_with_source(source_name, config_str)?;
+    let config = TomlConfigLoader::new_from_str_tolerant_with_source(source_name, config_str)?;
     #[cfg(feature = "logging")]
     {
         let ignored_sections = ignored_logging_sections(config_str);
@@ -219,16 +219,19 @@ level = 123
     }
 
     #[test]
-    fn path_adapter_preserves_file_name_in_parse_error() {
+    fn path_adapter_recovers_invalid_fields_without_rewriting_file() {
         let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "hostname = 'survives'").unwrap();
         writeln!(file, "dhcp = \"yes\"").unwrap();
 
-        let error = load_toml_config_from_path(&file.path().to_path_buf())
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains(file.path().to_string_lossy().as_ref()));
-        assert!(error.contains("dhcp = \"yes\""));
+        let config = load_toml_config_from_path(&file.path().to_path_buf()).unwrap();
+        assert_eq!(config.get_hostname(), "survives");
+        assert!(!config.get_dhcp());
+        assert!(
+            std::fs::read_to_string(file.path())
+                .unwrap()
+                .contains("dhcp = \"yes\"")
+        );
     }
 
     #[tokio::test]

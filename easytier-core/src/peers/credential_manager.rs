@@ -238,6 +238,13 @@ impl Default for CredentialManager {
 
 /// Validate a complete managed credential replacement with the same
 /// normalization and key-identity rules used when it is installed.
+pub fn validate_managed_credential_configs(
+    credentials: &[ManagedCredentialConfig],
+) -> Result<(), String> {
+    CredentialManager::build_managed_entries(credentials).map(|_| ())
+}
+
+/// Validate the API representation using the shared installation rules.
 #[cfg(any(feature = "management-rpc", feature = "browser-config"))]
 pub fn validate_managed_credential_set(
     credentials: &[crate::proto::api::manage::ManagedCredentialConfig],
@@ -254,7 +261,7 @@ pub fn validate_managed_credential_set(
             reusable: credential.reusable.unwrap_or(true),
         })
         .collect();
-    CredentialManager::build_managed_entries(&credentials).map(|_| ())
+    validate_managed_credential_configs(&credentials)
 }
 
 impl CredentialManager {

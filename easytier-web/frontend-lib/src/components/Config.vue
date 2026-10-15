@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { v4 as uuidv4 } from 'uuid'
-import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputSwitch, InputText, MultiSelect, Panel, Password, SelectButton, ToggleButton } from 'primevue'
+import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputSwitch, InputText, MultiSelect, Panel, Password, Select, SelectButton, ToggleButton } from 'primevue'
 import VpnConfig from './VpnConfig.vue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
@@ -18,6 +18,7 @@ import { useI18n } from 'vue-i18n'
 import AclManager from './acl/AclManager.vue'
 import UrlListInput from './UrlListInput.vue'
 import { configFieldSupported, HTTP3_CAPABILITY } from '../modules/capabilities'
+import { p2pDisguiseMode, setP2pDisguiseMode, type P2pDisguiseMode } from '../modules/p2pDisguise'
 import { createVpnPortalConfig } from '../modules/vpnPortal'
 import { isValidHostIp } from '../modules/ip'
 import type { VpnPortalClientConfig } from '../types/network'
@@ -110,7 +111,7 @@ const protos = computed(() => Object.fromEntries(Object.entries(allProtos).filte
 const listenerProtos = computed(() => Object.fromEntries(
   Object.entries(protos.value).filter(([proto]) => !listenerExcludedProtos.has(proto))))
 const extensionSupported = (field: string) => props.runtimeCapabilities === undefined || configFieldSupported(field, props.runtimeCapabilities)
-const disguiseSupported = computed(() => ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'].every(extensionSupported))
+const disguiseSupported = computed(() => extensionSupported('p2p_disguise_mode'))
 
 const inetSuggestions = ref([''])
 
@@ -139,8 +140,6 @@ interface BoolFlag {
   help: string
 }
 
-type DisguisedP2pMode = 'default' | 'prefer' | 'disable' | 'only'
-
 const disguisedP2pFields = new Set<keyof NetworkConfig>([
   'only_use_wss_http3_for_hole_punching',
   'prefer_wss_http3_for_p2p',
@@ -154,36 +153,15 @@ const bool_flags: BoolFlag[] = [
 ]
 const visibleBoolFlags = computed(() => bool_flags.filter(flag => extensionSupported(flag.field)))
 
-/// What a disguise flag states, or the schema default the network runs with
-/// when it states nothing — the same rule the boolean flag checkboxes use.
-const disguiseFlagState = (field: keyof NetworkConfig): boolean => {
-  const value = curNetwork.value[field]
-
-  return typeof value === 'boolean' ? value : defaultFlagValue(field)
-}
-
-const disguisedP2pMode = computed<DisguisedP2pMode>({
-  get() {
-    if (disguiseFlagState('only_use_wss_http3_for_hole_punching')) return 'only'
-    if (disguiseFlagState('disable_wss_http3_for_p2p')) return 'disable'
-    if (disguiseFlagState('prefer_wss_http3_for_p2p')) return 'prefer'
-    // All three flags explicitly false is a distinct state: never initiate
-    // disguised P2P, but still serve peers that require it. Rendering it as
-    // "prefer" would silently flip the flag to true on the next save. An
-    // unset flag instead shows the schema default the network runs with.
-    return 'default'
-  },
-  set(value: DisguisedP2pMode) {
-    curNetwork.value.prefer_wss_http3_for_p2p = value === 'prefer'
-    curNetwork.value.disable_wss_http3_for_p2p = value === 'disable'
-    curNetwork.value.only_use_wss_http3_for_hole_punching = value === 'only'
-  },
+const disguisedP2pMode = computed<P2pDisguiseMode>({
+  get: () => p2pDisguiseMode(curNetwork.value),
+  set: value => setP2pDisguiseMode(curNetwork.value, value, props.runtimeCapabilities),
 })
 
 const disguisedP2pModeOptions = computed(() => [
-  { label: t('p2p_disguise_mode_default'), value: 'default' },
   { label: t('p2p_disguise_mode_prefer'), value: 'prefer' },
-  { label: t('p2p_disguise_mode_disable'), value: 'disable' },
+  { label: t('p2p_disguise_mode_off'), value: 'off' },
+  { label: t('p2p_disguise_mode_disabled'), value: 'disabled' },
   { label: t('p2p_disguise_mode_only'), value: 'only' },
 ])
 
@@ -214,7 +192,7 @@ const p2pPreferProtocolOptions = computed(() => [
 function flagChecked(field: keyof NetworkConfig): boolean {
   const value = curNetwork.value[field]
 
-  return typeof value === 'boolean' ? value : defaultFlagValue(field)
+  return typeof value === 'boolean' ? value : defaultFlagValue(field, props.runtimeCapabilities)
 }
 
 /** A checkbox states a flag; leaving it alone leaves the config silent. */
@@ -225,7 +203,7 @@ function setFlag(field: keyof NetworkConfig, value: boolean) {
 function ensureVpnConfig(): VpnConfigType {
   if (!curNetwork.value.vpn) {
     curNetwork.value.vpn = {
-      exit_enabled: false,
+      exit_enabled: true,
       rules: [],
     }
   }
@@ -235,7 +213,7 @@ function ensureVpnConfig(): VpnConfigType {
 }
 
 const vpnExitEnabled = computed({
-  get: () => curNetwork.value.vpn?.exit_enabled ?? false,
+  get: () => curNetwork.value.vpn?.exit_enabled ?? true,
   set: (enabled: boolean) => {
     ensureVpnConfig().exit_enabled = enabled
   },
@@ -509,7 +487,7 @@ function removeVpnPortalClient(index: number) {
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_prefer_protocol_help')"></span>
                   </div>
                   <SelectButton id="p2p_prefer_protocol" v-model="p2pPreferProtocol"
-                    :options="p2pPreferProtocolOptions" option-label="label" option-value="value" fluid />
+                    :options="p2pPreferProtocolOptions" option-label="label" option-value="value" :allow-empty="false" fluid />
                 </div>
 
                 <div v-if="disguiseSupported" class="flex flex-col gap-2 basis-5/12 grow">
@@ -517,8 +495,9 @@ function removeVpnPortalClient(index: number) {
                     <label for="p2p_disguise_mode">{{ t('p2p_disguise_mode') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('p2p_disguise_mode_help')"></span>
                   </div>
-                  <SelectButton id="p2p_disguise_mode" v-model="disguisedP2pMode"
-                    :options="disguisedP2pModeOptions" option-label="label" option-value="value" fluid />
+                  <Select id="p2p_disguise_mode" v-model="disguisedP2pMode"
+                    :options="disguisedP2pModeOptions" option-label="label" option-value="value"
+                    overlay-class="max-w-[calc(100vw-2rem)]" :pt="{ optionLabel: { class: 'whitespace-normal break-words' } }" fluid />
                 </div>
               </div>
 

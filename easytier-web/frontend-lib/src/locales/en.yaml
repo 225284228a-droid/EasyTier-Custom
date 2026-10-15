@@ -247,12 +247,12 @@ disable_udp_hole_punching_help: Disable udp hole punching
 only_use_wss_http3_for_hole_punching: Only Use WSS/HTTP3 for P2P
 only_use_wss_http3_for_hole_punching_help: Use only WSS and HTTP/3 for automatic P2P and NAT hole punching; ordinary direct connections and manual connections are unaffected.
 
-p2p_disguise_mode: Automatic P2P Protocol
-p2p_disguise_mode_default: Do not initiate (raw protocols)
-p2p_disguise_mode_prefer: Prefer WSS/HTTP3
-p2p_disguise_mode_disable: Disable WSS/HTTP3
-p2p_disguise_mode_only: Only WSS/HTTP3
-p2p_disguise_mode_help: When unset, WSS/HTTP3 are preferred by default (disguised punching is attempted and disguised connections are kept first, with TCP/UDP fallback) as long as the peer also prefers them or requires them. "Do not initiate" only punches with raw protocols but still serves peers that require disguise. You can also disable both disguise protocols or restrict automatic P2P to them. Manual connections are unaffected.
+p2p_disguise_mode: Automatic P2P disguise policy
+p2p_disguise_mode_prefer: Prefer disguise (default, allow fallback)
+p2p_disguise_mode_off: Do not initiate disguise (accept peer requirement)
+p2p_disguise_mode_disabled: Disable disguise (raw protocols only)
+p2p_disguise_mode_only: Require disguise (no raw fallback)
+p2p_disguise_mode_help: Disguise uses WSS/HTTP3. The default, Prefer disguise, negotiates disguise when both peers prefer it or either requires it, with ordinary TCP/UDP fallback. Do not initiate disguise still accepts peers that require it. Disable disguise forbids automatic disguised connections. Require disguise allows only disguise, so automatic P2P cannot connect to a peer that disables it. Manually configured connections are unaffected. Redundant-connection cleanup separately decides which established connections to keep.
 
 p2p_prefer_protocol: P2P Preferred Protocol
 p2p_prefer_protocol_tcp: Prefer TCP (WSS if available)

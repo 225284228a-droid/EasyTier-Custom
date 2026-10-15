@@ -14,6 +14,9 @@ const IP_SCHEMES: &[&str] = &["tcp", "udp", "wg", "quic", "http3", "ws", "wss", 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 include!(concat!(env!("OUT_DIR"), "/common.serde.rs"));
 
+mod p2p_disguise;
+pub use p2p_disguise::P2pDisguiseMode;
+
 impl Flags {
     /// The flags the message declares, in declaration order, less the ones it
     /// has deprecated: what a user can still set.
@@ -64,8 +67,16 @@ impl Flags {
     /// Applies `patch` over [`Flags::defaults`]. A field the user left out keeps
     /// its default, so nothing downstream has to decide what "unset" means.
     pub fn resolve(patch: FlagsPatch) -> Self {
+        let disguise_mode = patch
+            .p2p_disguise_mode
+            .as_deref()
+            .filter(|mode| !mode.trim().is_empty())
+            .and_then(|mode| mode.parse::<P2pDisguiseMode>().ok());
         let mut flags = Self::defaults();
         flags.load(patch);
+        if let Some(mode) = disguise_mode {
+            mode.apply(&mut flags);
+        }
         if flags.default_protocol.trim().is_empty() {
             flags.default_protocol = Self::defaults().default_protocol;
         }

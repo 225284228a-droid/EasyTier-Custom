@@ -248,12 +248,12 @@ disable_udp_hole_punching_help: 禁用UDP打洞功能
 only_use_wss_http3_for_hole_punching: 仅使用 WSS/HTTP3 进行P2P
 only_use_wss_http3_for_hole_punching_help: 自动P2P和NAT打洞仅使用 WSS 和 HTTP/3；不影响普通直连或手动连接。
 
-p2p_disguise_mode: 自动P2P协议
-p2p_disguise_mode_default: 不主动使用（普通协议优先）
-p2p_disguise_mode_prefer: 优先使用 WSS/HTTP3
-p2p_disguise_mode_disable: 禁用 WSS/HTTP3
-p2p_disguise_mode_only: 仅使用 WSS/HTTP3
-p2p_disguise_mode_help: 未设置时默认优先使用 WSS/HTTP3（尝试伪装打洞并优先保留伪装连接，可回退 TCP/UDP），需对端同样开启或显式要求；"不主动使用"仅发起普通协议打洞，但仍响应需要伪装的对端；也可禁用两个伪装协议，或仅使用这两个协议进行自动P2P。手动连接不受影响。
+p2p_disguise_mode: 自动 P2P 伪装策略
+p2p_disguise_mode_prefer: 优先伪装（默认，可回退）
+p2p_disguise_mode_off: 不主动伪装（接受对端要求）
+p2p_disguise_mode_disabled: 禁用伪装（仅普通协议）
+p2p_disguise_mode_only: 强制伪装（不回退普通协议）
+p2p_disguise_mode_help: 伪装使用 WSS/HTTP3。默认“优先伪装”仅在双方均优先伪装或一方强制伪装时启用，可回退普通 TCP/UDP。“不主动伪装”仍接受强制伪装对端的要求；“禁用伪装”拒绝自动伪装；“强制伪装”仅允许伪装，与禁用伪装的对端无法建立自动 P2P。手动配置的连接不受此策略影响，连接保留另由冗余连接清理规则决定。
 
 p2p_prefer_protocol: P2P 优先协议
 p2p_prefer_protocol_tcp: 优先 TCP（可用时 WSS）
