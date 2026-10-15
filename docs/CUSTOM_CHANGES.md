@@ -156,9 +156,15 @@ cargo build --release --locked -p easytier
 
 本轮固定官方基线为 `99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7`，在原 `main` 上保留双方历史合并。日志保存在本地 `.test-env/upstream-merge-2026-10-16/`，以下结果与旧轮次分开记录。
 
+- 审查后的源码合并提交为 `5ff6fefb7f0a40fe431b206e7e2f3de472e58048`。Go 内嵌 WASM 从包含后续修复的干净源码提交重新生成并单独提交产物，实际来源以两份 `provenance.go` 为准；来源提交表示此次构建的实际输入，未来重新生成时随源码更新，不是永久固定的版本。
+- 首次使用新 WASM 的 Go 集成测试发现 WASI 创建 ABI 使用容错加载器，导致非法配置被丢弃后仍返回成功。已恢复该 API 的严格解析，保留 Host 运行能力过滤和桌面配置文件的容错恢复策略；回归覆盖非法 TOML、DHCP、VPN 字段、重复子网和非法出口地址，以及合法但 Host 不支持的配置只在运行时过滤。
+- Core 完整库测试 1230 项通过；Web 后端 355 项通过、1 项默认忽略；GUI 后端 28 项通过。手动连接竞争测试修复了对已被合法清理连接的 RTT 等待，保留共同胜出连接、双向通信和关闭断言，连续重复 20 次通过。
+- `cargo fmt --all -- --check` 和选定包（Core、原生、proto、Web、GUI）的 all-targets Clippy `-D warnings` 通过；该 Windows 检查不等于 Linux 全 workspace/full 特性验证。
 - protobuf 库测试 39 项通过、2 项默认忽略；descriptor 检查 4 项通过，覆盖全部 109 个定制字段的所有权、编号、类型、presence 和高位编解码，以及官方 DHCP 字段和定制策略同时往返。
 - 原生组合专项 17 项通过，覆盖 IPv4/IPv6 上通过 TCP/WSS 中继发现 HTTP3、手动初始连接优先级、UDP/HTTP3 共端口和 KCP/TCP/WSS 通信。与自报版本 `2.7.0-99db92a3` 的官方 Windows CLI 真实进程互通 6 项通过，包括 WS/WSS 双向 peer、Noise、管理反向 RPC 及未协商 padding 拒绝。
+- 原生共享网卡、移动 TUN、VPN 路由和配置持久化定向测试 99 项通过、3 项忽略；另有 1 项真实 TUN 测试因 Windows 无法创建 Wintun adapter 失败。新增回归覆盖 VPN 捕获规则的归属冲突、IPv4/IPv6 dispatcher 选择、清理失败时保留归属、无效网卡仍执行清理，以及清理耗尽后先隔离共享 dispatcher 再释放成员。
 - 共享前端 176 项、Web 前端 198 项、GUI 前端 62 项单测通过；配置转换脚本 10 项通过。Web、GUI 和配置生成器类型检查、生产构建通过，配置生成器 WASM 与 VPN service JS 插件构建通过；审查修复后再次通过 GUI 类型检查和共享配置 defaults/UI 29 项定向测试。
+- JS 浏览器和 Cloudflare WASI profile 构建、优化及 ABI 检查通过，运行时 28 项、浏览器 2 项、Cloudflare 2 项测试通过；示例类型检查、构建及 Wrangler 部署 dry-run 通过。
 - actionlint 检查全部 14 个 workflow 通过。本机 CI 脚本测试 31 项通过，9 项因缺少 Unix `zip` 命令失败；这些打包测试交由 Linux CI 验证。
 - Windows 本机不能验证 Linux TUN/netns、真实跨网络共享 TUN、内核转发和 Android 系统 VPN 生命周期；Linux 集成测试及 Android 完整构建由相应 CI 执行。移动端单元测试验证 generation、candidate 确认、过期停止和失败重试，不能替代真机 VPN 验收。
 
