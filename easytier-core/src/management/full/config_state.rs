@@ -6,7 +6,7 @@
 //! the next startup can restore the exact run state.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::Write as _,
     path::{Path, PathBuf},
     sync::{
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 pub const STATE_FILE_NAME: &str = "easytier-state.json";
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct InstanceState {
     pub enabled: bool,
 }
@@ -159,10 +159,42 @@ impl InstanceStateStore {
 
     pub fn remove(&self, instance_id: &uuid::Uuid) -> anyhow::Result<()> {
         let mut state = self.inner.lock().unwrap();
+        if !state.instances.contains_key(&instance_id.to_string()) {
+            return Ok(());
+        }
         let mut next = state.clone();
         next.instances.remove(&instance_id.to_string());
         self.persist(&next)?;
         *state = next;
+        Ok(())
+    }
+
+    /// Record the default run state of newly discovered configs and remove
+    /// disappeared identities in one atomic write. An incomplete scan can
+    /// discover configs, but must retain identities it cannot rule out.
+    pub fn reconcile_configs(
+        &self,
+        known_ids: &HashSet<uuid::Uuid>,
+        remove_missing: bool,
+    ) -> anyhow::Result<()> {
+        let mut state = self.inner.lock().unwrap();
+        let mut next = state.clone();
+        if remove_missing {
+            next.instances
+                .retain(|id, _| id.parse().is_ok_and(|id| known_ids.contains(&id)));
+        }
+        // Capture this once: persisting the first new config must not change
+        // the fail-safe default of its siblings after a corrupt state load.
+        let enabled = !self.corrupt_on_load.load(Ordering::Relaxed);
+        for id in known_ids {
+            next.instances
+                .entry(id.to_string())
+                .or_insert(InstanceState { enabled });
+        }
+        if next.instances != state.instances {
+            self.persist(&next)?;
+            *state = next;
+        }
         Ok(())
     }
 
@@ -248,6 +280,79 @@ mod tests {
         // No state file at all: fresh config dir, official scan-and-start.
         let store = InstanceStateStore::new(Some(&dir));
         assert!(store.is_enabled(&uuid::Uuid::new_v4()));
+    }
+
+    #[test]
+    fn reconciliation_records_defaults_preserves_pauses_and_removes_all_missing_states() {
+        let dir = temp_dir();
+        let store = InstanceStateStore::new(Some(&dir));
+        let new = uuid::Uuid::new_v4();
+        let paused = uuid::Uuid::new_v4();
+        let removed_enabled = uuid::Uuid::new_v4();
+        let removed_disabled = uuid::Uuid::new_v4();
+        store.set_enabled(paused, false).unwrap();
+        store.set_enabled(removed_enabled, true).unwrap();
+        store.set_enabled(removed_disabled, false).unwrap();
+
+        let known = HashSet::from([new, paused]);
+        store.reconcile_configs(&known, true).unwrap();
+        let reloaded = InstanceStateStore::new(Some(&dir));
+        assert_eq!(reloaded.enabled_state(&new), Some(true));
+        assert_eq!(reloaded.enabled_state(&paused), Some(false));
+        assert_eq!(reloaded.enabled_state(&removed_enabled), None);
+        assert_eq!(reloaded.enabled_state(&removed_disabled), None);
+
+        // An unchanged scan must not attempt any write, even when the state
+        // path is temporarily unwritable.
+        std::fs::remove_file(dir.join(STATE_FILE_NAME)).unwrap();
+        std::fs::create_dir(dir.join(STATE_FILE_NAME)).unwrap();
+        store.reconcile_configs(&known, true).unwrap();
+    }
+
+    #[test]
+    fn incomplete_scan_records_discoveries_without_removing_unknown_state() {
+        let dir = temp_dir();
+        let store = InstanceStateStore::new(Some(&dir));
+        let new = uuid::Uuid::new_v4();
+        let unknown = uuid::Uuid::new_v4();
+        store.set_enabled(unknown, false).unwrap();
+        store
+            .reconcile_configs(&HashSet::from([new]), false)
+            .unwrap();
+        let reloaded = InstanceStateStore::new(Some(&dir));
+        assert_eq!(reloaded.enabled_state(&new), Some(true));
+        assert_eq!(reloaded.enabled_state(&unknown), Some(false));
+    }
+
+    #[test]
+    fn reconciliation_keeps_all_unknown_configs_paused_after_a_corrupt_load() {
+        let dir = temp_dir();
+        std::fs::write(dir.join(STATE_FILE_NAME), "not json").unwrap();
+        let store = InstanceStateStore::new(Some(&dir));
+        let known = HashSet::from([uuid::Uuid::new_v4(), uuid::Uuid::new_v4()]);
+        store.reconcile_configs(&known, true).unwrap();
+        let reloaded = InstanceStateStore::new(Some(&dir));
+        for id in known {
+            assert_eq!(reloaded.enabled_state(&id), Some(false));
+        }
+    }
+
+    #[test]
+    fn failed_reconciliation_preserves_the_previous_state() {
+        let dir = temp_dir();
+        let store = InstanceStateStore::new(Some(&dir));
+        let old = uuid::Uuid::new_v4();
+        let new = uuid::Uuid::new_v4();
+        store.set_enabled(old, false).unwrap();
+        std::fs::remove_file(dir.join(STATE_FILE_NAME)).unwrap();
+        std::fs::create_dir(dir.join(STATE_FILE_NAME)).unwrap();
+        assert!(
+            store
+                .reconcile_configs(&HashSet::from([new]), true)
+                .is_err()
+        );
+        assert_eq!(store.enabled_state(&old), Some(false));
+        assert_eq!(store.enabled_state(&new), None);
     }
 
     #[test]

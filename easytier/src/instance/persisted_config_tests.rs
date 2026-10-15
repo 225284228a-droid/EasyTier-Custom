@@ -515,6 +515,11 @@ async fn live_native_files_add_edit_replace_rename_and_delete_without_polling() 
         .await
         .unwrap();
     wait_for_live_config(&manager, id, Some("first")).await;
+    assert_eq!(
+        InstanceStateStore::new(Some(directory.path())).enabled_state(&id),
+        Some(true),
+        "manual additions must persist their default enabled state without a console read"
+    );
     let original = manager.instance(id).unwrap();
     storage
         .write(
@@ -563,6 +568,20 @@ async fn live_native_files_add_edit_replace_rename_and_delete_without_polling() 
     wait_for_live_config(&manager, id, Some("second")).await;
     std::fs::remove_file(&renamed).unwrap();
     wait_for_live_config(&manager, id, None).await;
+    // Shutdown can yield after removing the runtime but before persisting its
+    // state. Wait for the whole reconciliation, without requesting a refresh.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.enabled_state(&id).is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        InstanceStateStore::new(Some(directory.path())).enabled_state(&id),
+        None,
+        "manual deletion must remove the enabled record from disk without a console read"
+    );
     let snapshot = observe(&rpc).await;
     assert!(snapshot.entries.is_empty());
     assert!(manager.managed_config_ids().is_empty());
@@ -574,6 +593,47 @@ async fn live_native_files_add_edit_replace_rename_and_delete_without_polling() 
         .await
         .unwrap();
     wait_for_live_config(&manager, id, Some("second")).await;
+    assert_eq!(
+        InstanceStateStore::new(Some(directory.path())).enabled_state(&id),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn live_native_scan_reaps_offline_deletions_and_preserves_existing_pauses() {
+    use super::config_storage::NativeConfigFileStorage;
+    let directory = tempfile::tempdir().unwrap();
+    let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+    let removed_enabled = uuid::Uuid::new_v4();
+    let removed_disabled = uuid::Uuid::new_v4();
+    let paused = uuid::Uuid::new_v4();
+    let added = uuid::Uuid::new_v4();
+    state.set_enabled(removed_enabled, true).unwrap();
+    state.set_enabled(removed_disabled, false).unwrap();
+    state.set_enabled(paused, false).unwrap();
+    for (id, name) in [(paused, "paused"), (added, "manual")] {
+        std::fs::write(
+            directory.path().join(format!("{id}.toml")),
+            live_config(id, name),
+        )
+        .unwrap();
+    }
+    let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+        directory.path().to_owned(),
+    )));
+    let _rpc = ProcessManagementRpc::new(
+        manager.clone(),
+        Arc::new(DefaultHooks),
+        Arc::new(NativeConfigFileStorage::new(true)),
+        state,
+    );
+    wait_for_live_config(&manager, added, Some("manual")).await;
+    assert!(manager.instance(paused).is_none());
+    let reloaded = InstanceStateStore::new(Some(directory.path()));
+    assert_eq!(reloaded.enabled_state(&added), Some(true));
+    assert_eq!(reloaded.enabled_state(&paused), Some(false));
+    assert_eq!(reloaded.enabled_state(&removed_enabled), None);
+    assert_eq!(reloaded.enabled_state(&removed_disabled), None);
 }
 
 #[tokio::test]

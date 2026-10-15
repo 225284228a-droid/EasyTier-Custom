@@ -109,14 +109,41 @@ pub async fn load_config_from_file(
     load_config_from_contents(config_file, config_str, config_dir, disable_env_parsing).await
 }
 
-/// Parse the exact document captured for startup/reconciliation, so the
-/// acknowledgement and the runtime refer to the same file read.
+/// Recover the exact document captured for startup, so the acknowledgement
+/// and the runtime refer to the same file read.
 #[cfg(feature = "management")]
 pub(crate) async fn load_config_from_contents(
     config_file: &PathBuf,
     config_str: String,
     config_dir: Option<&PathBuf>,
     disable_env_parsing: bool,
+) -> Result<(TomlConfigLoader, ConfigFileControl), anyhow::Error> {
+    load_config_from_contents_with_policy(
+        config_file,
+        config_str,
+        config_dir,
+        disable_env_parsing,
+        ConfigLoadPolicy::RecoverInvalid,
+    )
+    .await
+}
+
+#[cfg(feature = "management")]
+pub(crate) enum ConfigLoadPolicy {
+    /// Startup can recover valid parts so one bad field cannot block the node.
+    RecoverInvalid,
+    /// Management and live edits retain the previous runtime on invalid input.
+    Strict,
+}
+
+#[cfg(feature = "management")]
+/// Both parsing policies share environment expansion and file permissions.
+pub(crate) async fn load_config_from_contents_with_policy(
+    config_file: &PathBuf,
+    config_str: String,
+    config_dir: Option<&PathBuf>,
+    disable_env_parsing: bool,
+    policy: ConfigLoadPolicy,
 ) -> Result<(TomlConfigLoader, ConfigFileControl), anyhow::Error> {
     let (expanded_config_str, uses_env_vars) = if disable_env_parsing {
         (config_str, false)
@@ -131,7 +158,14 @@ pub(crate) async fn load_config_from_contents(
     }
 
     let source_name = config_file.display().to_string();
-    let config = load_toml_config_from_str_with_source(&source_name, &expanded_config_str)?;
+    let config = match policy {
+        ConfigLoadPolicy::RecoverInvalid => {
+            load_toml_config_from_str_with_source(&source_name, &expanded_config_str)?
+        }
+        ConfigLoadPolicy::Strict => {
+            TomlConfigLoader::new_from_str_with_source(&source_name, &expanded_config_str)?
+        }
+    };
     let mut control = config_file_control_from_path(config_file.clone()).await;
 
     if uses_env_vars {

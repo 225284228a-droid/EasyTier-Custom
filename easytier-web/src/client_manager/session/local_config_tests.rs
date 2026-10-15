@@ -433,6 +433,157 @@ struct DelayedObservation {
     release: tokio::sync::Notify,
     snapshot: ObserveConfigsResponse,
 }
+
+#[tokio::test]
+async fn page_reads_use_the_current_session_mirror_without_an_observe_rpc() {
+    let storage = Storage::new(Db::memory_db().await);
+    let user = storage
+        .db()
+        .auto_create_user("mirror-owner")
+        .await
+        .unwrap()
+        .id;
+    let machine = uuid::Uuid::new_v4();
+    let snapshot = ObserveConfigsResponse {
+        catalog_epoch: "cached-node".into(),
+        catalog_generation: 4,
+        ..Default::default()
+    };
+    // No node RPC is connected: any attempt to refresh on page read fails.
+    let session = Session::new(
+        storage.weak_ref(),
+        "tcp://127.0.0.1:2401".parse().unwrap(),
+        None,
+        HeartbeatPolicy::default(),
+        Arc::new(FeatureFlags::default()),
+        Arc::new(WebhookConfig::new(None, None, None, None, None)),
+        2,
+    );
+    let token = StorageToken {
+        token: "mirror-owner".into(),
+        client_url: "tcp://127.0.0.1:2401".parse().unwrap(),
+        machine_id: machine,
+        user_id: user,
+    };
+    {
+        let mut data = session.data.write().await;
+        data.storage_token = Some(token.clone());
+        data.auth_state = SessionAuthState::Authorized;
+        data.req = Some(heartbeat_request(machine, &snapshot));
+    }
+    storage.update_session_client(token.clone(), 1, true, 2);
+    let observer = storage.weak_ref().upgrade().unwrap().local_observer_epoch;
+    // A previous session's snapshot cannot satisfy a live page read, even if
+    // it advertises the same catalog revision. Nor can a previous web process.
+    for (old_observer, old_session) in [(uuid::Uuid::new_v4(), 2), (observer, 1)] {
+        storage
+            .db()
+            .store_local_config_snapshot(user, machine, old_observer, old_session, &snapshot, &[])
+            .await
+            .unwrap();
+        assert!(cached_observation(&session.data).await.unwrap().is_none());
+    }
+    storage
+        .db()
+        .store_local_config_snapshot(user, machine, observer, 2, &snapshot, &[])
+        .await
+        .unwrap();
+    let mirror = session.mirrored_local_configs().await.unwrap();
+    assert_eq!(mirror.snapshot, snapshot);
+    assert!(mirror.online && !mirror.stale);
+    assert_eq!(mirror.capabilities, vec![REVISION_CAPABILITY.to_string()]);
+
+    session
+        .data
+        .write()
+        .await
+        .req
+        .as_mut()
+        .unwrap()
+        .local_config_catalog_generation += 1;
+    let pending = session.mirrored_local_configs().await.unwrap();
+    assert_eq!(pending.snapshot, snapshot);
+    assert!(pending.online && pending.stale);
+    session
+        .data
+        .write()
+        .await
+        .req
+        .as_mut()
+        .unwrap()
+        .local_config_catalog_epoch = "new-node-process".into();
+    assert!(session.mirrored_local_configs().await.unwrap().stale);
+
+    // Raw offline reads continue to preserve the last observation as stale.
+    let offline = storage
+        .db()
+        .local_config_mirror(user, machine)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!offline.online && offline.stale);
+    session.data.write().await.auth_state = SessionAuthState::Invalid;
+    assert!(cached_observation(&session.data).await.is_err());
+    session.data.write().await.auth_state = SessionAuthState::Authorized;
+    storage.update_session_client(token, 2, true, 3);
+    assert!(cached_observation(&session.data).await.is_err());
+    session.stop().await;
+}
+
+#[tokio::test]
+async fn page_read_bootstraps_the_current_session_before_reusing_its_mirror() {
+    let machine = uuid::Uuid::new_v4();
+    let process = ProcessManagementRpc::new(
+        Arc::new(
+            easytier::instance::factory::native_instance_manager_with_config_dir(Some(
+                PathBuf::from("mirror-bootstrap-fixture"),
+            )),
+        ),
+        Arc::new(easytier::web_client::DefaultHooks),
+        Arc::new(Files::default()),
+        Arc::new(InstanceStateStore::in_memory()),
+    );
+    let snapshot = process
+        .observe_configs(BaseController::default(), ObserveConfigsRequest {})
+        .await
+        .unwrap();
+    let storage = Storage::new(Db::memory_db().await);
+    let user = storage
+        .db()
+        .auto_create_user("mirror-owner")
+        .await
+        .unwrap()
+        .id;
+    let (session, rpc) = connect_console(&storage, &process, 2402).await;
+    session.local_snapshot_task.as_ref().unwrap().abort();
+    let token = StorageToken {
+        token: "mirror-owner".into(),
+        client_url: "tcp://127.0.0.1:2402".parse().unwrap(),
+        machine_id: machine,
+        user_id: user,
+    };
+    // Bind directly so the heartbeat worker has not already bootstrapped it.
+    {
+        let mut data = session.data.write().await;
+        data.storage_token = Some(token.clone());
+        data.auth_state = SessionAuthState::Authorized;
+        data.req = Some(heartbeat_request(machine, &snapshot));
+    }
+    storage.update_session_client(token, 1, true, 1);
+    assert!(cached_observation(&session.data).await.unwrap().is_none());
+    let initial = session.mirrored_local_configs().await.unwrap();
+    assert_eq!(initial.snapshot, snapshot);
+    assert!(initial.online && !initial.stale);
+    rpc.stop().await;
+    let cached = session.mirrored_local_configs().await.unwrap();
+    assert_eq!(cached.snapshot, snapshot);
+    assert_eq!(
+        cached.observed_at,
+        session.mirrored_local_configs().await.unwrap().observed_at
+    );
+    session.stop().await;
+}
+
 #[async_trait::async_trait]
 impl PersistedConfigService for DelayedObservation {
     type Controller = BaseController;

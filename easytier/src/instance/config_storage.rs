@@ -129,11 +129,12 @@ impl ConfigFileStorage for NativeConfigFileStorage {
             self.disable_env_parsing,
         )
         .await?;
-        match crate::common::config::load_config_from_contents(
+        match crate::common::config::load_config_from_contents_with_policy(
             &path.to_path_buf(),
             String::from_utf8(raw)?,
             config_dir.map(Path::to_path_buf).as_ref(),
             self.disable_env_parsing,
+            crate::common::config::ConfigLoadPolicy::Strict,
         )
         .await
         {
@@ -184,6 +185,34 @@ impl ConfigFileStorage for NativeConfigFileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn management_reads_reject_errors_that_startup_recovers() {
+        use easytier_core::config::toml::ConfigLoader as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let id = uuid::Uuid::new_v4();
+        let path = directory.path().join(format!("{id}.toml"));
+        let original = format!(
+            "instance_id = '{id}'\nhostname = 'survives'\ndhcp = 'invalid'\nlisteners = []\n"
+        );
+        let storage = NativeConfigFileStorage::new(true);
+        storage.write(&path, original.as_bytes()).await.unwrap();
+
+        let startup =
+            super::super::config_dir_startup::load_config_dir_entries(directory.path(), true)
+                .await
+                .unwrap();
+        assert_eq!(startup.files.len(), 1);
+        assert_eq!(startup.files[0].config.get_hostname(), "survives");
+        assert!(
+            storage
+                .load_config(&path, Some(directory.path()))
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
 
     #[tokio::test]
     async fn config_write_is_atomic_and_private() {

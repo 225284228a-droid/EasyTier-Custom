@@ -1186,8 +1186,8 @@ struct StartupConfigs {
 }
 
 impl StartupConfigs {
-    fn gc_disabled_state(&self, state: &InstanceStateStore) {
-        self.directory.gc_disabled_state(state)
+    fn reconcile_state(&self, state: &InstanceStateStore) {
+        self.directory.reconcile_state(state)
     }
 }
 
@@ -1431,12 +1431,10 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         crate_cli_network,
     )?;
 
-    // Garbage collect instance state entries whose config file no longer
-    // exists (e.g. the TOML was deleted by hand while the instance was
-    // stopped). Without this the web console keeps reporting these ids as
-    // disabled instances even though there is nothing to enable.
+    // Materialize defaults for discovered files and remove state belonging
+    // to files deleted while the process was offline.
     if cli.config_dir.is_some() {
-        startup_configs.gc_disabled_state(&instance_state_store);
+        startup_configs.reconcile_state(&instance_state_store);
     }
 
     if crate_cli_network {
@@ -1658,17 +1656,22 @@ mod tests {
         let stopped = uuid::Uuid::new_v4();
         let active = uuid::Uuid::new_v4();
         let removed = uuid::Uuid::new_v4();
+        let removed_enabled = uuid::Uuid::new_v4();
         for id in [invalid, stopped, active] {
-            let mut raw = startup_fixture_config(id);
-            if id == invalid {
-                raw = raw.replace("no_tun = true", "no_tun = 'invalid'");
-            }
+            // Type errors are recoverable. Invalid UTF-8 still exercises the
+            // isolation of a file that cannot be loaded at all.
+            let raw = if id == invalid {
+                vec![0xff, 0xfe]
+            } else {
+                startup_fixture_config(id).into_bytes()
+            };
             std::fs::write(directory.join(format!("{id}.toml")), raw).unwrap();
         }
         let state = InstanceStateStore::new(Some(&directory));
         for id in [invalid, stopped, removed] {
             state.set_enabled(id, false).unwrap();
         }
+        state.set_enabled(removed_enabled, true).unwrap();
         let mut startup = prepare_startup_configs(&[], Some(&directory), true)
             .await
             .unwrap();
@@ -1689,7 +1692,10 @@ mod tests {
         assert!(manager.instance(invalid).is_none());
         assert!(manager.instance(stopped).is_none());
         assert!(manager.managed_config_ids().contains(&stopped));
-        startup.gc_disabled_state(&state);
+        startup.reconcile_state(&state);
+        let reloaded = InstanceStateStore::new(Some(&directory));
+        assert_eq!(reloaded.enabled_state(&active), Some(true));
+        assert_eq!(reloaded.enabled_state(&removed_enabled), None);
         assert!(!state.is_enabled(&invalid));
         assert!(!state.is_enabled(&stopped));
         assert_eq!(state.enabled_state(&removed), None);
@@ -1703,7 +1709,7 @@ mod tests {
             .await
             .unwrap();
         assert!(startup.directory.unidentified_config_dir_entry);
-        startup.gc_disabled_state(&state);
+        startup.reconcile_state(&state);
         assert!(!state.is_enabled(&removed));
     }
 
@@ -1748,7 +1754,7 @@ mod tests {
         .unwrap();
         assert!(manager.instance_ids().is_empty());
         assert_eq!(manager.managed_config_ids(), vec![stopped]);
-        startup.gc_disabled_state(&state);
+        startup.reconcile_state(&state);
         for id in [mixed_duplicate, valid_duplicate, stopped] {
             assert!(!state.is_enabled(&id));
         }
@@ -1832,7 +1838,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let directory = directory.path().to_path_buf();
         let explicit_invalid = directory.join("explicit-invalid.toml");
-        std::fs::write(&explicit_invalid, "[flags]\nno_tun = 'invalid'").unwrap();
+        std::fs::write(&explicit_invalid, [0xff, 0xfe]).unwrap();
         assert!(
             prepare_startup_configs(
                 std::slice::from_ref(&explicit_invalid),

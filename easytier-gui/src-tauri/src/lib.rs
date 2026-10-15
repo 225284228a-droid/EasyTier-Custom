@@ -602,9 +602,8 @@ async fn restore_managed_configs(
         }
     }
 
-    // Match the service core: a removed config cannot remain disabled
-    // forever, deferred while any entry has no confirmed identity.
-    startup.gc_disabled_state(state_store);
+    // Match the service core's discovered defaults and deleted-file cleanup.
+    startup.reconcile_state(state_store);
     Ok(())
 }
 

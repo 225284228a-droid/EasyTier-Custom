@@ -141,6 +141,31 @@ impl Db {
                 .map_err(sqlx_db_error)?;
         row.map(decode_row).transpose()
     }
+
+    /// A previous connection's mirror remains useful offline, but must never
+    /// be presented as a live observation of the current authenticated session.
+    pub(crate) async fn local_config_mirror_for_session(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: Uuid,
+        observer_epoch: Uuid,
+        session_epoch: u64,
+    ) -> Result<Option<LocalConfigMirror>, DbErr> {
+        let session_epoch = i64::try_from(session_epoch)
+            .map_err(|_| DbErr::Custom("session epoch overflow".into()))?;
+        let row = sqlx::query(
+            "SELECT * FROM local_config_snapshots
+             WHERE user_id = ? AND device_id = ? AND observer_epoch = ? AND session_epoch = ?",
+        )
+        .bind(user_id)
+        .bind(machine_id.to_string())
+        .bind(observer_epoch.to_string())
+        .bind(session_epoch)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        row.map(decode_row).transpose()
+    }
 }
 
 #[cfg(test)]

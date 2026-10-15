@@ -35,7 +35,7 @@ pub struct StartupConfigs {
 }
 
 impl StartupConfigs {
-    pub fn gc_disabled_state(&self, state: &InstanceStateStore) {
+    pub fn reconcile_state(&self, state: &InstanceStateStore) {
         // A file can still own a stopped instance even when its flags no
         // longer parse. An unidentified/unreadable file prevents proving
         // that any of the old identities have actually disappeared.
@@ -43,14 +43,11 @@ impl StartupConfigs {
             tracing::warn!(
                 "Deferring instance state cleanup: a config directory entry has no confirmed identity"
             );
-            return;
         }
-        for id in state.disabled_instance_ids() {
-            if !self.config_dir_ids.contains(&id)
-                && let Err(error) = state.remove(&id)
-            {
-                tracing::warn!(%error, %id, "failed to GC stale instance state entry");
-            }
+        if let Err(error) =
+            state.reconcile_configs(&self.config_dir_ids, !self.unidentified_config_dir_entry)
+        {
+            tracing::warn!(%error, "failed to reconcile config directory instance state");
         }
     }
 }

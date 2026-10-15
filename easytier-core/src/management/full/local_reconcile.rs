@@ -182,6 +182,16 @@ where
             }
             candidates.insert(path.clone(), (config, control, hash));
         }
+        // Persist discovery even when the file cannot start yet. Enabled is
+        // the desired run state, so a recoverable start failure stays retryable.
+        // Runtime-only configs also retain their existing lifecycle state.
+        let known_ids = owners
+            .keys()
+            .copied()
+            .chain(self.instances.instance_ids())
+            .collect();
+        self.state_store
+            .reconcile_configs(&known_ids, !unidentified)?;
         // Remove disappeared files and old identities before starting their
         // replacements. Local deletion is authoritative even for read-only files.
         let registered = self
@@ -273,16 +283,6 @@ where
         }
         next.retain(|path, _| paths.contains(path));
         catalog.forget_missing_files(&paths);
-        // Reap stopped IDs as well; instance list RPCs must agree with the file
-        // catalog. Ambiguous documents conservatively preserve unknown state.
-        if !unidentified {
-            let known_ids = owners.keys().copied().collect::<HashSet<_>>();
-            for id in self.state_store.disabled_instance_ids() {
-                if !known_ids.contains(&id) && self.instances.instance(id).is_none() {
-                    self.state_store.remove(&id)?;
-                }
-            }
-        }
         *catalog.reconciled_files.lock().unwrap() = next;
         Ok(())
     }

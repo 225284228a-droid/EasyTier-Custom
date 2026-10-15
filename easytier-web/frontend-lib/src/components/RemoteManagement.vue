@@ -57,19 +57,17 @@ const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefin
 const configBaseline = ref<NetworkTypes.NetworkConfig>();
 const editingEntry = ref<LocalConfigEntry>();
 const configSubmitting = ref(false);
-const openingConfigFile = ref(false);
 const scope = computed(() => props.scopeKey ?? props.api.scope ?? '');
 let generation = 0;
 let configRequest = 0;
-let configFileRequest = 0;
+let pendingConfigLoad: { instanceId: string; current: () => boolean; promise: Promise<void> } | undefined;
 let instanceListRequest = 0;
 const dirtyFields = computed(() => currentNetworkConfig.value && configBaseline.value
     ? changedConfigFields(configBaseline.value, currentNetworkConfig.value) : []);
 const dirty = computed(() => dirtyFields.value.length > 0);
 const clearConfig = () => {
     configRequest++;
-    configFileRequest++;
-    openingConfigFile.value = false;
+    pendingConfigLoad = undefined;
     showConfigEditDialog.value = false;
     currentNetworkConfig.value = undefined;
     configBaseline.value = undefined;
@@ -213,26 +211,40 @@ watch([() => selectedInstanceId.value?.uuid, networkIsDisabled], async ([selecte
     if (selected && !networkMetaCache.value[selected]) await loadNetworkMetas([selected]);
 });
 
-const loadCurrentNetworkConfig = async (force = false) => {
-    if (openingConfigFile.value || showConfigEditDialog.value || (dirty.value && !force)) return;
+const loadCurrentNetworkConfig = async () => {
     const selected = selectedInstanceId.value?.uuid;
     if (!selected) { clearConfig(); return; }
+    // A form and its revision belong to one editing session. Switching between
+    // the form and TOML editor must not refresh either half of that baseline.
+    if (showConfigEditDialog.value || (currentNetworkConfig.value?.instance_id === selected
+        && configBaseline.value?.instance_id === selected)) return;
+    if (pendingConfigLoad?.instanceId === selected && pendingConfigLoad.current()) return pendingConfigLoad.promise;
     const context = requestContext();
     const request = ++configRequest;
-    let config: NetworkTypes.NetworkConfig;
-    let entry: LocalConfigEntry | undefined;
-    if (revisionSupported.value) {
-        const snapshot = await context.api.observe_local_configs!();
-        entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
-        if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
-        config = entry.config!;
-    } else {
-        config = await context.api.get_network_config(selected);
+    const promise = (async () => {
+        let config: NetworkTypes.NetworkConfig;
+        let entry: LocalConfigEntry | undefined;
+        if (revisionSupported.value) {
+            const snapshot = await context.api.observe_local_configs!();
+            entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
+            if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
+            config = entry.config!;
+        } else {
+            config = await context.api.get_network_config(selected);
+        }
+        if (!context.current() || request !== configRequest || selectedInstanceId.value?.uuid !== selected) return;
+        currentNetworkConfig.value = cloneEditableConfig(config);
+        configBaseline.value = cloneEditableConfig(config);
+        editingEntry.value = entry ? { ...entry } : undefined;
+    })();
+    // Creation and the selection watcher can both need this initial baseline.
+    // Await one read, and only release it if it still belongs to this session.
+    pendingConfigLoad = { instanceId: selected, current: context.current, promise };
+    try {
+        await promise;
+    } finally {
+        if (pendingConfigLoad?.promise === promise) pendingConfigLoad = undefined;
     }
-    if (!context.current() || request !== configRequest || selectedInstanceId.value?.uuid !== selected) return;
-    currentNetworkConfig.value = cloneEditableConfig(config);
-    configBaseline.value = cloneEditableConfig(config);
-    editingEntry.value = entry ? { ...entry } : undefined;
 }
 
 const lifecycleRevision = async (api: Api.RemoteClient, selected: string): Promise<string | undefined> => {
@@ -271,40 +283,9 @@ const saveEditedConfig = async (config: NetworkTypes.NetworkConfig, mode: LocalC
     return entry;
 };
 
-const openConfigFileEditor = async () => {
-    const selected = instanceId.value;
-    if (!selected || configSubmitting.value || openingConfigFile.value || showConfigEditDialog.value) return;
-    const context = requestContext();
-    const request = ++configFileRequest;
-    const configLoadRequest = ++configRequest;
-    const current = () => context.current() && request === configFileRequest
-        && configLoadRequest === configRequest && instanceId.value === selected;
-    openingConfigFile.value = true;
-    try {
-        let config: NetworkTypes.NetworkConfig;
-        let entry: LocalConfigEntry | undefined;
-        if (revisionSupported.value) {
-            const snapshot = await context.api.observe_local_configs!();
-            entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
-            if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
-            config = entry.config!;
-        } else {
-            config = await context.api.get_network_config(selected);
-        }
-        if (!current()) return;
-        editingEntry.value = entry ? { ...entry } : undefined;
-        if (!dirty.value) {
-            currentNetworkConfig.value = cloneEditableConfig(config);
-            configBaseline.value = cloneEditableConfig(config);
-        }
-        showConfigEditDialog.value = true;
-    } catch (error) {
-        if (current()) {
-            toast.add({ severity: 'warn', summary: t('web.common.error'), detail: formatError(error), life: 5000 });
-        }
-    } finally {
-        if (request === configFileRequest) openingConfigFile.value = false;
-    }
+const openConfigFileEditor = () => {
+    if (!currentNetworkConfig.value || configSubmitting.value || showConfigEditDialog.value) return;
+    showConfigEditDialog.value = true;
 };
 
 const stopNetwork = async () => {
@@ -366,7 +347,7 @@ const confirmDeleteNetwork = (event: any) => {
 };
 
 const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
-    if (configSubmitting.value || openingConfigFile.value) return;
+    if (configSubmitting.value) return;
     const editedConfig = config ?? currentNetworkConfig.value;
     if (!editedConfig) {
         return;
@@ -424,7 +405,7 @@ const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
 }
 
 const saveNetworkConfig = async () => {
-    if (!currentNetworkConfig.value || configSubmitting.value || openingConfigFile.value) {
+    if (!currentNetworkConfig.value || configSubmitting.value) {
         return;
     }
     const config = currentNetworkConfig.value;
@@ -472,7 +453,7 @@ const newNetwork = async () => {
         loadNetworkMetas([newNetworkConfig.instance_id]),
         loadNetworkInstanceIds(),
     ]);
-    await loadCurrentNetworkConfig(true);
+    await loadCurrentNetworkConfig();
 }
 
 const cancelEditNetwork = () => {
@@ -481,18 +462,21 @@ const cancelEditNetwork = () => {
 }
 
 const editNetwork = async () => {
-    if (!instanceId.value) {
+    const selected = instanceId.value;
+    if (!selected) {
         toast.add({ severity: 'error', summary: 'Error', detail: 'No network instance selected', life: 2000 });
         return;
     }
-
+    const context = requestContext();
     try {
-        await loadCurrentNetworkConfig(true);
-        isEditingNetwork.value = true; // Switch to editing mode instead
+        await loadCurrentNetworkConfig();
+        if (context.current() && instanceId.value === selected && currentNetworkConfig.value?.instance_id === selected) {
+            isEditingNetwork.value = true;
+        }
     } catch (e: any) {
+        if (!context.current() || instanceId.value !== selected) return;
         console.error(e);
         toast.add({ severity: 'error', summary: t('web.common.error'), detail: formatError(e), life: 5000 });
-        return;
     }
 }
 
@@ -800,11 +784,10 @@ onUnmounted(() => {
                 <div class="w-full flex gap-2 flex-wrap justify-start mb-3">
                     <Button @click="openConfigFileEditor" icon="pi pi-file-edit"
                         :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary"
-                        :loading="openingConfigFile" loadingIcon="pi pi-refresh pi-spin" :aria-busy="openingConfigFile"
-                        :disabled="configSubmitting || openingConfigFile" />
+                        :disabled="!currentNetworkConfig || configSubmitting" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" :disabled="configSubmitting" />
-                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting || openingConfigFile"
+                    <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting"
                         icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
                         severity="success" />
                 </div>
@@ -817,7 +800,7 @@ onUnmounted(() => {
                     <span v-if="applySavedConfig && !applySupported"> — {{ t('web.local_configs.apply_unsupported') }}</span>
                 </Message>
 
-                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig || configSubmitting || openingConfigFile"
+                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig || configSubmitting"
                     :runtime-capabilities="runtimeCapabilities" :action-label="configActionLabel"
                     @run-network="saveAndRunNewNetwork"></Config>
             </div>

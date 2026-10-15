@@ -212,6 +212,52 @@ pub(super) async fn worker(
     }
 }
 
+async fn cached_observation(data: &SharedSessionData) -> anyhow::Result<Option<LocalConfigMirror>> {
+    // Hold the binding stable while reading, then recheck storage ownership:
+    // a different connection can supersede this session during the DB await.
+    let data = data.read().await;
+    anyhow::ensure!(data.auth_state.is_authorized(), "local_config_offline");
+    let heartbeat = data
+        .req
+        .as_ref()
+        .filter(|req| supports_revision(req))
+        .ok_or_else(|| anyhow::anyhow!("local_config_unsupported"))?;
+    let token = data
+        .storage_token
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("local_config_offline"))?;
+    let storage = data
+        .storage
+        .upgrade()
+        .ok_or_else(|| anyhow::anyhow!("local_config_offline"))?;
+    anyhow::ensure!(
+        storage.owns_authorized_session(token, data.session_epoch),
+        "local_config_session_changed"
+    );
+    let mirror = storage
+        .db
+        .local_config_mirror_for_session(
+            token.user_id,
+            token.machine_id,
+            storage.local_observer_epoch,
+            data.session_epoch,
+        )
+        .await?;
+    anyhow::ensure!(
+        storage.owns_authorized_session(token, data.session_epoch),
+        "local_config_session_changed"
+    );
+    Ok(mirror.map(|mut mirror| {
+        mirror.online = true;
+        // Heartbeats trigger the worker independently of page reads. While its
+        // next observation is pending, expose the existing snapshot as stale.
+        mirror.stale = mirror.snapshot.catalog_epoch != heartbeat.local_config_catalog_epoch
+            || mirror.snapshot.catalog_generation < heartbeat.local_config_catalog_generation;
+        mirror.capabilities = heartbeat.runtime_capabilities.clone();
+        mirror
+    }))
+}
+
 impl Session {
     pub(super) fn persisted_client(&self) -> PersistedClient {
         self.scoped_client::<PersistedConfigServiceClientFactory<BaseController>>()
@@ -219,6 +265,15 @@ impl Session {
 
     pub(crate) async fn observe_local_configs(&self) -> anyhow::Result<LocalConfigMirror> {
         observe(&self.data, self.persisted_client().as_ref()).await
+    }
+
+    pub(crate) async fn mirrored_local_configs(&self) -> anyhow::Result<LocalConfigMirror> {
+        if let Some(mirror) = cached_observation(&self.data).await? {
+            return Ok(mirror);
+        }
+        // Bootstrap only this authenticated session. Normal page reads consume
+        // the worker's mirror without requesting another node directory scan.
+        self.observe_local_configs().await
     }
 
     pub(crate) async fn has_local_revision_capability(&self) -> bool {

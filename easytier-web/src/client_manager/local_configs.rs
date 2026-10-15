@@ -13,7 +13,7 @@ impl ClientManager {
         if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
             && session.has_local_revision_capability().await
         {
-            return session.observe_local_configs().await.map(Some);
+            return session.mirrored_local_configs().await.map(Some);
         }
         // Cached mirrors contain only observations, and remain stale offline.
         Ok(self
