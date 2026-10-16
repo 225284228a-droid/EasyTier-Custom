@@ -46,7 +46,9 @@ enables signed, notarized GUI DMGs. Corresponding repository secrets are needed.
 
 The build workflow generates proto, shared library, VPN plugin API, Web,
 configuration-generator WASM and GUI assets once. Platform jobs download these
-resources. The Tauri CI configuration disables repeated frontend build hooks.
+resources through a cache scoped to the current run. No frontend
+resource bundle is uploaded to the artifact list. The Tauri CI configuration
+disables repeated frontend build hooks.
 The CI workflow builds only the frontend resources needed for tests and Rust
 backend checks. PR/develop and manual CI additionally compile configuration-generator
 WASM when its frontend or Rust interface changes; main uses the production build
@@ -64,13 +66,33 @@ proto consistency share tool setup; Nix skips its redundant preliminary check.
 
 ## Downloads, cleanup and release
 
-Product artifacts expire after seven days. `easytier-<platform>` contains a
-ready-made Unix `.tar.gz` or Windows `.zip`; tarballs preserve executable modes.
-`easytier-gui-<platform>` and `easytier-mobile-android-aarch64` contain native
-installers plus `COMMIT.txt` and `SHA256SUMS`. The dashboard and configuration
-generator ship inside `easytier-web-embed` in each command-line package, with
-no separate Web download. Intermediate `frontend-assets` and `tests` expire
-after one day and are excluded from release downloads.
+Product artifacts expire after seven days. All six files use direct,
+unarchived uploads (`actions/upload-artifact@v7`, `archive: false`):
+
+| Download | Contents |
+| --- | --- |
+| `easytier-linux-x86_64.tar.gz` | Command-line programs, commit and checksums |
+| `easytier-macos-x86_64.tar.gz` | Command-line programs, commit and checksums |
+| `easytier-windows-x86_64.zip` | Command-line programs, network drivers, commit and checksums |
+| `easytier-gui-windows-x86_64.exe` | Windows GUI installer |
+| `easytier-gui-macos-x86_64.dmg` | macOS GUI installer |
+| `easytier-mobile-android-aarch64.apk` | ARM64 Android application |
+
+Command-line archives need one extraction and preserve Unix executable modes.
+EXE, DMG and APK downloads are the installer itself, without an additional ZIP.
+The dashboard and configuration generator ship inside `easytier-web-embed` in
+the command-line packages; there is no separate Web download. Per-file SHA-256
+and the source commit appear in the job summary. The manual Release validates
+the downloaded bytes against GitHub's recorded artifact digests, preserves each
+file and produces combined `COMMIT.txt` and `SHA256SUMS`.
+
+Frontend resources and the compiled network-test archive use exact caches scoped
+to the run, with no fallback to another build. A successful new run removes older
+completed resource caches from the same workflow and branch. Current-run caches
+remain available for job retries and follow GitHub's normal cache eviction policy.
+If a cache is unavailable (including fork PRs with read-only cache access), the
+consumer rebuilds that resource locally; tests are still required. Internal
+resources are absent from downloadable artifacts.
 
 After a main build succeeds, cleanup first validates all **6 new product
 artifacts** are present, nonempty, unexpired and from this run. Only then does it

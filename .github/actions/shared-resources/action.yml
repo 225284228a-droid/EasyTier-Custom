@@ -1,0 +1,69 @@
+name: Shared build resources
+description: Transfer internal resources through a run-scoped cache instead of downloadable artifacts
+inputs:
+  mode:
+    description: save or restore
+    required: true
+  name:
+    description: frontend or tests
+    required: true
+  path:
+    description: Exact relative file to transfer
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Save shared resources
+      if: inputs.mode == 'save' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ inputs.path }}
+        key: easytier-shared-${{ inputs.name }}-${{ github.run_id }}
+        enableCrossOsArchive: true
+    - name: Restore shared resources
+      id: restore
+      if: inputs.mode == 'restore'
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ inputs.path }}
+        key: easytier-shared-${{ inputs.name }}-${{ github.run_id }}
+        enableCrossOsArchive: true
+        fail-on-cache-miss: false
+    - name: Prepare local frontend resources after a cache miss
+      if: inputs.mode == 'restore' && inputs.name == 'frontend' && steps.restore.outputs.cache-hit != 'true'
+      uses: ./.github/actions/prepare-build
+      with:
+        target: wasm32-unknown-unknown
+        pnpm: true
+        token: ${{ github.token }}
+    - name: Install wasm-pack for local frontend resources
+      if: inputs.mode == 'restore' && inputs.name == 'frontend' && steps.restore.outputs.cache-hit != 'true'
+      uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack
+    - name: Build local frontend resources after a cache miss
+      if: inputs.mode == 'restore' && inputs.name == 'frontend' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        RESOURCE_PATH: ${{ inputs.path }}
+      run: |
+        pnpm build:frontend:ci
+        mkdir -p easytier-web/frontend/dist/config-generator
+        cp -R easytier-web/config-generator/dist/. easytier-web/frontend/dist/config-generator/
+        test -s easytier-web/frontend/dist/index.html
+        test -s easytier-web/frontend/dist/config-generator/index.html
+        test -s easytier-gui/dist/index.html
+        tar -czf "$RESOURCE_PATH" easytier-web/frontend/dist easytier-web/frontend-lib/dist easytier-gui/dist
+    - name: Prepare local network tests after a cache miss
+      if: inputs.mode == 'restore' && inputs.name == 'tests' && steps.restore.outputs.cache-hit != 'true'
+      uses: ./.github/actions/prepare-build
+      with:
+        token: ${{ github.token }}
+    - name: Compile local network tests after a cache miss
+      if: inputs.mode == 'restore' && inputs.name == 'tests' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        RESOURCE_PATH: ${{ inputs.path }}
+      run: >-
+        cargo nextest archive --locked --archive-file "$RESOURCE_PATH"
+        -p easytier -p easytier-core --features full

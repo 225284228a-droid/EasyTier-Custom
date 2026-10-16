@@ -34,9 +34,38 @@ async function archive(name, directory, destination, commit) {
   return output;
 }
 
-module.exports = { checksums, archive };
+async function singleNative(name, directory, destination, commit) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*\.(exe|dmg|apk)$/.test(name)) throw new Error('Invalid native artifact name');
+  if (!/^[a-f0-9]{40,64}$/.test(commit)) throw new Error('A full build commit is required');
+  const extension = path.extname(name);
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  if (entries.length !== 1 || !entries[0].isFile() || !entries[0].name.endsWith(extension)) {
+    throw new Error(`Expected exactly one ${extension} installer`);
+  }
+  const source = path.join(directory, entries[0].name);
+  if (!(await fs.stat(source)).size) throw new Error('Empty native artifact');
+  await fs.mkdir(destination, { recursive: true });
+  const output = path.resolve(destination, name);
+  await fs.copyFile(source, output, require('node:fs').constants.COPYFILE_EXCL);
+  return output;
+}
+
+async function recordDownload(file, commit) {
+  const digest = createHash('sha256');
+  for await (const chunk of require('node:fs').createReadStream(file)) digest.update(chunk);
+  const checksum = digest.digest('hex');
+  if (process.env.GITHUB_OUTPUT) await fs.appendFile(process.env.GITHUB_OUTPUT, `path=${file}\n`);
+  if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY,
+    `### ${path.basename(file)}\n\nCommit: \`${commit}\`\n\nSHA-256: \`${checksum}\`\n\n`);
+  return checksum;
+}
+
+module.exports = { checksums, archive, singleNative, recordDownload };
 if (require.main === module) {
-  const [name, directory, destination, commit] = process.argv.slice(2);
-  const work = name === '--native' ? checksums(directory, destination) : archive(name, directory, destination, commit);
+  const args = process.argv.slice(2);
+  const native = args[0] === '--single-native';
+  const [name, directory, destination, commit] = native ? args.slice(1) : args;
+  const work = (native ? singleNative : archive)(name, directory, destination, commit)
+    .then(file => recordDownload(file, commit));
   work.catch(error => { console.error(error); process.exitCode = 1; });
 }

@@ -39,7 +39,8 @@ Intel runner。Linux x64 包含 mini，验证静态链接和启动；Windows 打
 启用命令行程序 SignPath 测试签名，`sign_macos` 启用 macOS GUI 签名、公证，需对应 secrets。
 
 编译工作流集中生成 proto、公共库、VPN 插件 API、Web、配置生成器 WASM 和 GUI 资源，
-各平台下载复用。Tauri CI 配置关闭打包时重复的前端钩子。CI 工作流只准备测试和 Rust
+各平台通过当前运行限定的内部缓存复用，不上传前端资源产物。
+Tauri CI 配置关闭打包时重复的前端钩子。CI 工作流只准备测试和 Rust
 后端所需的前端资源。配置生成器或 Rust 接口有变化时，PR/develop 和手动 CI 另行编译
 配置生成器 WASM；main 由生产编译覆盖。每个工作流内公共库只构建一次；前端
 单测、CI 脚本单测只在 EasyTier CI 执行。
@@ -52,11 +53,27 @@ main 推送时由 EasyTier Build 正式编译这些目标，省去重复预检�
 
 ## 下载、旧产物清理和手动发布
 
-发布产物保留七天。`easytier-<平台>` 包含 Unix `.tar.gz` 或 Windows `.zip` 成品包，
-tar 保留可执行权限。`easytier-gui-<平台>`、`easytier-mobile-android-aarch64` 包含
-原生安装包、`COMMIT.txt` 和 `SHA256SUMS`。Web 面板和配置生成器内嵌在命令行包的
-`easytier-web-embed` 中，不再提供单独 Web 下载包。
-中间产物 `frontend-assets`、`tests` 保留一天，不进入发布。
+发布产物保留七天。6 个文件均使用 `actions/upload-artifact@v7`、`archive: false`
+直接上传，下载时不额外套 ZIP：
+
+| 下载文件 | 内容 |
+| --- | --- |
+| `easytier-linux-x86_64.tar.gz` | 命令行程序、提交记录及校验和 |
+| `easytier-macos-x86_64.tar.gz` | 命令行程序、提交记录及校验和 |
+| `easytier-windows-x86_64.zip` | 命令行程序、网络驱动、提交记录及校验和 |
+| `easytier-gui-windows-x86_64.exe` | Windows GUI 安装程序 |
+| `easytier-gui-macos-x86_64.dmg` | macOS GUI 安装程序 |
+| `easytier-mobile-android-aarch64.apk` | ARM64 Android 安装程序 |
+
+命令行包只需解压一次，tar 保留 Unix 可执行权限。EXE、DMG、APK 下载即为安装文件。
+Web 面板和配置生成器内嵌在命令行包的 `easytier-web-embed` 中，不另提供 Web 包。
+每个文件的 SHA-256 和源提交记录显示在任务摘要中；手动 Release 根据 GitHub 记录
+的产物摘要校验下载字节，直接复用原文件，另生成统一 `COMMIT.txt`、`SHA256SUMS`。
+
+前端资源和网络测试归档通过当前 run 的精确缓存传递，不回退到其他构建。新运行
+成功后清理同工作流、同分支较早且已结束的资源缓存；保留当前缓存供重试任务使用，
+并遵循 GitHub 缓存回收策略。缓存缺失或 fork PR 只有缓存读权限时，在使用资源的
+任务中本地重建，继续执行测试。下载产物列表只显示分发文件。
 
 新的主线编译成功后，先验证 **6 份新产物** 全部存在、非空、未过期且来源正确，
 再删除较早且已完成的主线构建产物。也清理已退休 Core/GUI/Mobile/Custom Static/OHOS

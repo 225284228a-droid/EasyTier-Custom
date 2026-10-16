@@ -9,14 +9,17 @@ Linux, Windows and macOS products target x86-64 only. Android targets ARM64;
 FreeBSD, HarmonyOS, Magisk and Linux GUI installers are excluded. Product builds
 use Release mode, with mini's size-optimized profile inheriting Release.
 
-Linux x64 archives include Core, CLI, Web, embedded Web and mini. They preserve
-executable permissions and include the source commit and SHA-256 checksums.
+Linux x64 archives include Core, CLI, Web, embedded Web and mini. They download
+directly without an outer ZIP, preserve executable permissions and include the
+source commit and SHA-256 checksums.
 CI rejects dynamic interpreter/shared-library dependencies and smoke-tests
 startup. Mini uses native Clang/LLD for its linker options.
 
 Windows CLI archives include the network drivers and stay separate from GUI
-NSIS installers. CI rejects external VC++/UCRT runtime imports while allowing the
-existing Windows-provided `msvcrt.dll` compatibility layer. The GUI still needs
+NSIS installers. EXE, DMG and APK installers download directly as single files.
+Frontend resources are transferred internally through run-scoped caches. CI
+rejects external VC++/UCRT runtime imports while allowing the existing
+Windows-provided `msvcrt.dll` compatibility layer. The GUI still needs
 WebView2. Frontend workspace packages, including the VPN plugin API, build in
 dependency order; platform bundling reuses their output.
 

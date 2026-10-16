@@ -95,12 +95,11 @@ jobs:
       - run: pnpm test:frontend:ci
       - name: Package resources for Rust checks and backend tests
         run: tar -czf frontend-assets.tar.gz easytier-web/frontend/dist easytier-web/frontend-lib/dist easytier-gui/dist
-      - uses: actions/upload-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: save
+          name: frontend
           path: frontend-assets.tar.gz
-          retention-days: 1
-          if-no-files-found: error
 
   check:
     name: Check (${{ matrix.name }})
@@ -119,9 +118,11 @@ jobs:
         with:
           target: ${{ matrix.target }}
           token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: restore
+          name: frontend
+          path: frontend-assets.tar.gz
       - run: tar -xzf frontend-assets.tar.gz
       - uses: Swatinem/rust-cache@v2
         with:
@@ -148,9 +149,11 @@ jobs:
           components: rustfmt,clippy
           gui: true
           token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: restore
+          name: frontend
+          path: frontend-assets.tar.gz
       - run: tar -xzf frontend-assets.tar.gz
       - uses: Swatinem/rust-cache@v2
         with:
@@ -182,9 +185,11 @@ jobs:
         with:
           gui: true
           token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: restore
+          name: frontend
+          path: frontend-assets.tar.gz
       - run: tar -xzf frontend-assets.tar.gz
       - uses: Swatinem/rust-cache@v2
         with:
@@ -201,12 +206,11 @@ jobs:
         run: >-
           cargo nextest archive --locked --archive-file tests.tar.zst
           -p easytier -p easytier-core --features full
-      - uses: actions/upload-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
+          mode: save
           name: tests
           path: tests.tar.zst
-          retention-days: 1
-          if-no-files-found: error
 
   network:
     name: Network tests (${{ matrix.name }})
@@ -244,9 +248,11 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
+          mode: restore
           name: tests
+          path: tests.tar.zst
       - run: |
           sudo prlimit --pid $$ --nofile=1048576:1048576
           sudo -E env "PATH=$PATH" EASYTIER_LINUX_BPF_INTEGRATION=required \
@@ -284,9 +290,11 @@ jobs:
         with:
           target: ${{ env.TARGET }}
           token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: restore
+          name: frontend
+          path: frontend-assets.tar.gz
       - run: tar -xzf frontend-assets.tar.gz
       - uses: Swatinem/rust-cache@v2
         with:
@@ -369,3 +377,19 @@ jobs:
           WORKFLOW_KIND: check
           BUILD_RESULTS: ${{ toJSON(needs) }}
         run: node .github/scripts/check-build-results.js
+
+  cleanup-resources:
+    name: Remove older internal resource caches
+    needs: [ci-result]
+    if: ${{ always() && needs.ci-result.result == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const clear = require('./.github/scripts/clear-shared-caches.js');
+            await clear({ github, context, core });

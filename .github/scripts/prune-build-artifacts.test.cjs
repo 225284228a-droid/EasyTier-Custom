@@ -44,6 +44,7 @@ function fixture() {
   const reads = [];
   const currentArtifacts = expectedArtifacts().map(({ name }, index) => ({
     id: 1000 + index, name, expired: false, expires_at: '2026-12-01T00:00:00Z', size_in_bytes: 100,
+    digest: `sha256:${'a'.repeat(64)}`,
     workflow_run: { id: 100, repository_id: 1, head_repository_id: 1, head_sha: current.head_sha },
   }));
   let listed = false;
@@ -196,7 +197,7 @@ test('cleanup stops on API errors other than an unknown run', async () => {
 test('cleanup requires every new product before removing older usable products', async () => {
   const f = fixture();
   f.currentArtifacts.pop();
-  await assert.rejects(prune(f.args), /exactly one complete, valid easytier-mobile-android-aarch64/);
+  await assert.rejects(prune(f.args), /exactly one complete, valid easytier-mobile-android-aarch64.apk/);
   assert.deepEqual(f.deleted, []);
   assert.deepEqual(f.reads, [100]);
 });
@@ -205,6 +206,9 @@ test('cleanup refuses duplicate, expired, empty, or mismatched current product a
   for (const changes of [
     { id: 0 }, { expired: true }, { expires_at: 'invalid' },
     { expires_at: '2026-10-16T12:00:00Z' }, { size_in_bytes: 0 },
+    { size_in_bytes: Infinity }, { size_in_bytes: '100' },
+    { digest: undefined }, { digest: '' }, { digest: `md5:${'a'.repeat(64)}` },
+    { digest: `sha256:${'g'.repeat(64)}` },
     { workflow_run: undefined }, { workflow_run: { id: 99 } },
     { workflow_run: { id: 100, repository_id: 2 } },
     { workflow_run: { id: 100, head_repository_id: 2 } },
@@ -223,6 +227,14 @@ test('cleanup refuses duplicate, expired, empty, or mismatched current product a
   reused.currentArtifacts[1].id = reused.currentArtifacts[0].id;
   await assert.rejects(prune(reused.args), /distinct current build artifact IDs/);
   assert.deepEqual(reused.deleted, []);
+});
+
+test('cleanup requires complete filenames and does not accept legacy product names as new products', async () => {
+  const f = fixture();
+  f.currentArtifacts[0].name = 'easytier-linux-x86_64';
+  await assert.rejects(prune(f.args), /exactly one complete, valid easytier-linux-x86_64.tar.gz artifact/);
+  assert.deepEqual(f.deleted, []);
+  assert.deepEqual(f.reads, [100]);
 });
 
 test('cleanup retires legacy architectures, Web, Magisk, HarmonyOS and static build archives', async () => {

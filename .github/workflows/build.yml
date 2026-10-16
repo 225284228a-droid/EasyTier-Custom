@@ -85,12 +85,11 @@ jobs:
           test -s easytier-web/frontend/dist/config-generator/index.html
           test -s easytier-gui/dist/index.html
           tar -czf frontend-assets.tar.gz easytier-web/frontend/dist easytier-web/frontend-lib/dist easytier-gui/dist
-      - uses: actions/upload-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: save
+          name: frontend
           path: frontend-assets.tar.gz
-          retention-days: 1
-          if-no-files-found: error
 
   core:
     name: CLI (${{ matrix.name }})
@@ -114,9 +113,11 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: restore
+          name: frontend
+          path: frontend-assets.tar.gz
       - run: tar -xzf frontend-assets.tar.gz
       - uses: Swatinem/rust-cache@v2
         with:
@@ -173,11 +174,12 @@ jobs:
           pnpm --dir easytier-web/frontend exec playwright install --with-deps chromium
           EASYTIER_SMOKE_BIN_DIR="$PWD/artifacts" pnpm --dir easytier-web/frontend exec node --test tests/local-config-creation.test.mjs
       - name: Package binaries with checksums and Unix executable permissions
+        id: package
         run: node .github/scripts/package-build.js "$ARTIFACT_NAME" artifacts dist "$GITHUB_SHA"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
-          name: easytier-${{ matrix.name }}
-          path: dist/*
+          path: ${{ steps.package.outputs.path }}
+          archive: false
           retention-days: 7
           if-no-files-found: error
 
@@ -199,9 +201,11 @@ jobs:
           target: ${{ matrix.target }}
           pnpm: true
           token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: restore
+          name: frontend
+          path: frontend-assets.tar.gz
       - run: tar -xzf frontend-assets.tar.gz
       - uses: Swatinem/rust-cache@v2
         with:
@@ -263,19 +267,22 @@ jobs:
             xcrun stapler staple "$dmg"
             xcrun stapler validate "$dmg"
           done
-      - name: Collect native installers and checksums
+      - name: Prepare the single native installer
+        id: package
         run: |
           mkdir -p artifacts
           if [[ "$RUNNER_OS" == Windows ]]; then
             cp target/"$TARGET"/release/bundle/nsis/*.exe artifacts/
+            extension=exe
           else
             cp target/"$TARGET"/release/bundle/dmg/*.dmg artifacts/
+            extension=dmg
           fi
-          node .github/scripts/package-build.js --native artifacts "$GITHUB_SHA"
-      - uses: actions/upload-artifact@v5
+          node .github/scripts/package-build.js --single-native "easytier-gui-${{ matrix.name }}.$extension" artifacts dist "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v7
         with:
-          name: easytier-gui-${{ matrix.name }}
-          path: artifacts/*
+          path: ${{ steps.package.outputs.path }}
+          archive: false
           retention-days: 7
           if-no-files-found: error
 
@@ -311,9 +318,11 @@ jobs:
           target: ${{ env.TARGET }}
           pnpm: true
           token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
+      - uses: ./.github/actions/shared-resources
         with:
-          name: frontend-assets
+          mode: restore
+          name: frontend
+          path: frontend-assets.tar.gz
       - run: tar -xzf frontend-assets.tar.gz
       - uses: Swatinem/rust-cache@v2
         with:
@@ -324,17 +333,18 @@ jobs:
         run: >-
           pnpm --dir easytier-gui tauri android build --ci --apk --target "$ARCH"
           --split-per-abi --config ../.github/tauri-ci.json
-      - name: Collect APKs and checksums
+      - name: Prepare the single ARM64 APK
+        id: package
         if: needs.prepare.outputs.full == 'true'
         run: |
           mkdir -p artifacts
           cp easytier-gui/src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk artifacts/
-          node .github/scripts/package-build.js --native artifacts "$GITHUB_SHA"
-      - uses: actions/upload-artifact@v5
+          node .github/scripts/package-build.js --single-native "easytier-mobile-android-$ARCH.apk" artifacts dist "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v7
         if: needs.prepare.outputs.full == 'true'
         with:
-          name: easytier-mobile-android-${{ matrix.arch }}
-          path: artifacts/*
+          path: ${{ steps.package.outputs.path }}
+          archive: false
           retention-days: 7
           if-no-files-found: error
 
@@ -365,3 +375,19 @@ jobs:
           script: |
             const prune = require('./.github/scripts/prune-build-artifacts.cjs');
             await prune({ github, context, core });
+
+  cleanup-resources:
+    name: Remove older internal resource caches
+    needs: [build-result]
+    if: ${{ always() && needs.build-result.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const clear = require('./.github/scripts/clear-shared-caches.js');
+            await clear({ github, context, core });

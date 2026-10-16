@@ -1,5 +1,5 @@
 const BUILD_PATH = '.github/workflows/build.yml';
-const { expectedArtifacts } = require('./validate-release-builds.js');
+const { expectedArtifacts, validDigest } = require('./validate-release-builds.js');
 // Bounded migration for artifacts left by the retired split build workflows.
 const LEGACY_BUILD_PATHS = new Set([
   '.github/workflows/core.yml',
@@ -41,7 +41,8 @@ module.exports = async ({ github, context, core, now = Date.now() }) => {
     const source = artifact?.workflow_run;
     if (matches.length !== 1 || !Number.isSafeInteger(artifact.id) || artifact.id <= 0 ||
         artifact.expired !== false || !Number.isFinite(Date.parse(artifact.expires_at)) ||
-        Date.parse(artifact.expires_at) <= now || !(artifact.size_in_bytes > 0) ||
+        Date.parse(artifact.expires_at) <= now || !Number.isSafeInteger(artifact.size_in_bytes) ||
+        artifact.size_in_bytes <= 0 || !validDigest(artifact.digest) ||
         source?.id !== current.id ||
         (source.repository_id != null && source.repository_id !== current.repository.id) ||
         (source.head_repository_id != null && source.head_repository_id !== current.repository.id) ||

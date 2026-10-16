@@ -40,7 +40,7 @@ jobs:
             await validate({ github, context, core });
 
       - name: Download validated release artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ steps.build.outputs.artifact_ids }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -48,11 +48,14 @@ jobs:
           run-id: ${{ inputs.build_run_id }}
           path: release_artifacts
           merge-multiple: false
+          skip-decompress: true
+          digest-mismatch: error
 
       - name: Prepare release assets and checksums
         uses: actions/github-script@v8
         env:
           BUILD_SHA: ${{ steps.build.outputs.build_sha }}
+          ARTIFACT_METADATA: ${{ steps.build.outputs.artifact_metadata }}
         with:
           script: |
             const { prepareReleaseAssets } = require('./.github/scripts/validate-release-builds.js');
@@ -60,6 +63,7 @@ jobs:
               sourceDir: 'release_artifacts',
               destinationDir: 'release_assets',
               commit: process.env.BUILD_SHA,
+              artifacts: JSON.parse(process.env.ARTIFACT_METADATA),
             });
 
       - name: Create draft release

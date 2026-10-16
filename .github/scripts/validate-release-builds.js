@@ -4,19 +4,21 @@ const BUILD_PATH = '.github/workflows/build.yml';
 function expectedArtifacts() {
   const { coreTargets, guiTargets, androidArchs } = require('./build-config.js');
   return [
-    ...coreTargets.map(({ target, name }) => ({
-      name: `easytier-${name}`, kind: 'archive',
-      extension: target.includes('windows') ? '.zip' : '.tar.gz',
-    })),
-    ...guiTargets.map(({ target, name }) => ({
-      name: `easytier-gui-${name}`, kind: 'native',
-      extension: target.includes('windows') ? '.exe' : '.dmg',
-    })),
+    ...coreTargets.map(({ target, name }) => {
+      const extension = target.includes('windows') ? '.zip' : '.tar.gz';
+      return { name: `easytier-${name}${extension}`, kind: 'archive', extension };
+    }),
+    ...guiTargets.map(({ target, name }) => {
+      const extension = target.includes('windows') ? '.exe' : '.dmg';
+      return { name: `easytier-gui-${name}${extension}`, kind: 'native', extension };
+    }),
     ...androidArchs.map(arch => ({
-      name: `easytier-mobile-android-${arch}`, kind: 'native', extension: '.apk',
+      name: `easytier-mobile-android-${arch}.apk`, kind: 'native', extension: '.apk',
     })),
-  ];
+  ].map(artifact => ({ ...artifact, filename: artifact.name }));
 }
+
+const validDigest = digest => typeof digest === 'string' && /^sha256:[a-f\d]{64}$/.test(digest);
 
 function sameRepository(repository, repo) {
   return repository?.full_name?.toLowerCase() === `${repo.owner}/${repo.repo}`.toLowerCase();
@@ -53,11 +55,14 @@ async function validate({ github, context, core, now = Date.now(), runId = proce
     const source = artifact.workflow_run;
     if (!Number.isSafeInteger(artifact.id) || artifact.id <= 0 || artifact.expired !== false ||
         !Number.isFinite(Date.parse(artifact.expires_at)) || Date.parse(artifact.expires_at) <= now ||
-        !(artifact.size_in_bytes > 0) || source?.id !== runId ||
+        !Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes <= 0 || source?.id !== runId ||
         (source.repository_id != null && source.repository_id !== run.repository.id) ||
         (source.head_repository_id != null && source.head_repository_id !== run.repository.id) ||
         (source.head_sha != null && source.head_sha !== run.head_sha)) {
       throw new Error(`Build run ${runId}: ${expected.name} is expired, empty, or has invalid provenance.`);
+    }
+    if (!validDigest(artifact.digest)) {
+      throw new Error(`Build run ${runId}: ${expected.name} must have a valid API SHA256 digest.`);
     }
     return artifact;
   });
@@ -65,15 +70,17 @@ async function validate({ github, context, core, now = Date.now(), runId = proce
     throw new Error(`Build run ${runId} has ambiguous artifact IDs.`);
   }
   const artifactIds = selected.map(artifact => artifact.id);
+  const artifactMetadata = selected.map(({ name, digest }) => ({ name, digest }));
   core.setOutput('artifact_ids', artifactIds.join(','));
+  core.setOutput('artifact_metadata', JSON.stringify(artifactMetadata));
   core.setOutput('build_sha', run.head_sha);
   core.info(`Validated ${selected.length} release artifacts from full build ${runId} at ${run.head_sha}.`);
-  return { runId, commit: run.head_sha, artifactIds, artifacts: selected };
+  return { runId, commit: run.head_sha, artifactIds, artifacts: selected, artifactMetadata };
 }
 
-// Copy already-packaged archives byte-for-byte, retaining Unix executable modes inside tarballs.
-// Native installers keep their filenames and get a single combined checksum manifest.
-async function prepareReleaseAssets({ sourceDir, destinationDir, commit }) {
+// Raw artifact digests bind the downloaded file bytes to the validated build's API metadata.
+// Copy packaged products byte-for-byte, retaining Unix executable modes inside tarballs.
+async function prepareReleaseAssets({ sourceDir, destinationDir, commit, artifacts }) {
   const fs = require('node:fs/promises');
   const path = require('node:path');
   const { createHash } = require('node:crypto');
@@ -84,55 +91,32 @@ async function prepareReleaseAssets({ sourceDir, destinationDir, commit }) {
     return digest.digest('hex');
   };
   const expected = expectedArtifacts();
+  if (!Array.isArray(artifacts) || artifacts.length !== expected.length || artifacts.some(artifact =>
+    !artifact || typeof artifact !== 'object' || Array.isArray(artifact) ||
+    Object.keys(artifact).length !== 2 || !Object.hasOwn(artifact, 'name') || !Object.hasOwn(artifact, 'digest') ||
+    !expected.some(product => product.name === artifact.name) || !validDigest(artifact.digest)) ||
+    new Set(artifacts.map(artifact => artifact.name)).size !== expected.length) {
+    throw new Error('Validated artifact metadata must contain exactly one name and API SHA256 digest for every release product.');
+  }
+  const metadata = new Map(artifacts.map(artifact => [artifact.name, artifact.digest]));
   const directories = await fs.readdir(sourceDir, { withFileTypes: true });
   if (directories.length !== expected.length || directories.some(entry => !entry.isDirectory() ||
       !expected.some(artifact => artifact.name === entry.name))) {
     throw new Error('Downloaded artifacts do not match the validated release allowlist.');
   }
   const assets = [];
-  const names = new Set(['COMMIT.txt', 'SHA256SUMS']);
   for (const artifact of expected) {
     const dir = path.join(sourceDir, artifact.name);
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    if (entries.some(entry => !entry.isFile() || /[\r\n\\]/.test(entry.name))) {
-      throw new Error(`${artifact.name} contains an unsupported file or directory.`);
+    if (entries.length !== 1 || !entries[0].isFile() || entries[0].name !== artifact.filename) {
+      throw new Error(`${artifact.name} must contain only its same-named product file.`);
     }
-    let files;
-    if (artifact.kind === 'archive') {
-      files = [`${artifact.name}${artifact.extension}`];
-      if (entries.length !== 1 || entries[0].name !== files[0]) {
-        throw new Error(`${artifact.name} must contain only its ready-made ${artifact.extension} archive.`);
-      }
-    } else {
-      files = entries.map(entry => entry.name).filter(name => name.endsWith(artifact.extension));
-      if (!files.length || entries.length !== files.length + 2 ||
-          !entries.some(entry => entry.name === 'COMMIT.txt') ||
-          !entries.some(entry => entry.name === 'SHA256SUMS')) {
-        throw new Error(`${artifact.name} must contain native installers, COMMIT.txt, and SHA256SUMS.`);
-      }
-      if ((await fs.readFile(path.join(dir, 'COMMIT.txt'), 'utf8')).trim() !== commit) {
-        throw new Error(`${artifact.name} was built from a different commit.`);
-      }
-      const manifest = (await fs.readFile(path.join(dir, 'SHA256SUMS'), 'utf8')).trim().split(/\r?\n/);
-      const checksums = new Map();
-      for (const line of manifest) {
-        const match = /^([a-f\d]{64}) [ *](.+)$/i.exec(line);
-        if (!match || checksums.has(match[2]) || ![...files, 'COMMIT.txt'].includes(match[2])) {
-          throw new Error(`${artifact.name} has an invalid checksum manifest.`);
-        }
-        checksums.set(match[2], match[1].toLowerCase());
-      }
-      for (const name of [...files, 'COMMIT.txt']) {
-        if (checksums.get(name) !== await hash(path.join(dir, name))) {
-          throw new Error(`${artifact.name}: checksum mismatch for ${name}.`);
-        }
-      }
+    const file = path.join(dir, artifact.filename);
+    if ((await fs.stat(file)).size <= 0) throw new Error(`${artifact.name} is empty.`);
+    if (`sha256:${await hash(file)}` !== metadata.get(artifact.name)) {
+      throw new Error(`${artifact.name}: checksum mismatch with the validated API artifact digest.`);
     }
-    for (const name of files) {
-      if (names.has(name)) throw new Error(`Release assets have a duplicate filename: ${name}.`);
-      names.add(name);
-      assets.push({ name, file: path.join(dir, name) });
-    }
+    assets.push({ name: artifact.filename, file });
   }
   // Validate every input before creating output, and refuse to overwrite a previous preparation.
   await fs.mkdir(destinationDir);
@@ -149,3 +133,4 @@ async function prepareReleaseAssets({ sourceDir, destinationDir, commit }) {
 module.exports = validate;
 module.exports.expectedArtifacts = expectedArtifacts;
 module.exports.prepareReleaseAssets = prepareReleaseAssets;
+module.exports.validDigest = validDigest;
