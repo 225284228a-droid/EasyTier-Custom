@@ -13,12 +13,6 @@ initial_nodes_help: |
 initial_node_placeholder: 例如：node.example.com
 virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
-dhcp_ipv4_cidr: DHCP IPv4 引导网段
-dhcp_ipv4_cidr_placeholder: 例如 10.10.0.0/24
-dhcp_ipv4_cidr_help: DHCP 尚未从对等节点获知网段时使用。
-dhcpv6: 启用 DHCPv6
-dhcp_ipv6_cidr: DHCPv6 网段
-dhcp_ipv6_cidr_placeholder: 例如 fd12::/64
 network_name: 网络名称
 network_secret: 网络密码
 secure_mode: 安全模式

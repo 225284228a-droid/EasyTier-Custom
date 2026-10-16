@@ -90,28 +90,6 @@ const secureModeEnabled = computed({
 
 const { t } = useI18n()
 
-const dhcpIpv4CidrInput = computed<string>({
-  get: () => curNetwork.value.dhcp_ipv4_cidr ?? '',
-  set: (value) => {
-    curNetwork.value.dhcp_ipv4_cidr = value.trim() || undefined
-  },
-})
-
-const dhcpv6Enabled = computed({
-  get: () => curNetwork.value.dhcpv6
-    ?? (curNetwork.value.dhcp_ipv6_cidr?.trim().length ?? 0) > 0,
-  set: (enabled: boolean) => {
-    curNetwork.value.dhcpv6 = enabled
-  },
-})
-
-const dhcpIpv6CidrInput = computed<string>({
-  get: () => curNetwork.value.dhcp_ipv6_cidr ?? '',
-  set: (value) => {
-    curNetwork.value.dhcp_ipv6_cidr = value.trim() || undefined
-  },
-})
-
 const allProtos: { [proto: string]: number } = {
   tcp: 11010,
   udp: 11010,
@@ -411,23 +389,6 @@ function removeVpnPortalClient(index: number) {
                       inputId="horizontal-buttons" showButtons :step="1" mode="decimal" :min="1" :max="32" fluid
                       class="max-w-20" />
                   </InputGroup>
-                  <div v-if="curNetwork.dhcp" class="flex flex-col gap-2">
-                    <label for="dhcp_ipv4_cidr">{{ t('dhcp_ipv4_cidr') }}</label>
-                    <InputText id="dhcp_ipv4_cidr" v-model="dhcpIpv4CidrInput"
-                      :placeholder="t('dhcp_ipv4_cidr_placeholder')" />
-                    <small class="text-xs">{{ t('dhcp_ipv4_cidr_help') }}</small>
-                  </div>
-                </div>
-                <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <div class="flex items-center">
-                    <Checkbox v-model="dhcpv6Enabled" input-id="dhcpv6" :binary="true" />
-                    <label for="dhcpv6" class="ml-2">{{ t('dhcpv6') }}</label>
-                  </div>
-                  <div v-if="dhcpv6Enabled" class="flex flex-col gap-2">
-                    <label for="dhcp_ipv6_cidr">{{ t('dhcp_ipv6_cidr') }}</label>
-                    <InputText id="dhcp_ipv6_cidr" v-model="dhcpIpv6CidrInput"
-                      :placeholder="t('dhcp_ipv6_cidr_placeholder')" />
-                  </div>
                 </div>
               </div>
 

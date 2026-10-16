@@ -40,7 +40,6 @@ const CONFIG_FLAG_FIELDS = [
 
 const CONFIG_CHECKBOX_FIELDS = [
   ['dhcp', '#virtual_ip_auto'],
-  ['dhcpv6', '#dhcpv6'],
   ...CONFIG_FLAG_FIELDS.map((field) => [field, `#${field}`] as const),
 ] as const satisfies readonly (readonly [keyof NetworkConfig, string])[]
 
@@ -662,71 +661,51 @@ describe('Config.vue network config projection', () => {
     wrapper.unmount()
   })
 
-  it('edits DHCP bootstrap subnets while keeping unset values out of the backend config', async () => {
-    const config = DEFAULT_NETWORK_CONFIG()
-    const { curNetwork, wrapper } = mountConfig(config)
-    await nextTick()
+  it('preserves saved DHCP subnet settings when editing the upstream IPv4 controls', async () => {
+    for (const dhcpv6 of [undefined, false, true]) {
+      const config = {
+        ...DEFAULT_NETWORK_CONFIG(),
+        virtual_ipv4: '10.10.0.2',
+        dhcp_ipv4_cidr: '10.10.0.0/24',
+        dhcpv6,
+        dhcp_ipv6_cidr: 'fd12::/64',
+      }
+      const { curNetwork, wrapper } = mountConfig(config)
+      await nextTick()
 
-    expect(input(wrapper, '#virtual_ip_auto').checked).toBe(true)
-    expect(wrapper.find('#dhcp_ipv4_cidr').exists()).toBe(true)
-    expect(input(wrapper, '#dhcpv6').checked).toBe(false)
-    expect(wrapper.find('#dhcp_ipv6_cidr').exists()).toBe(false)
-    const initialBackend = toBackendNetworkConfig(curNetwork)
-    expect(initialBackend).not.toHaveProperty('dhcp_ipv4_cidr')
-    expect(initialBackend).not.toHaveProperty('dhcpv6')
-    expect(initialBackend).not.toHaveProperty('dhcp_ipv6_cidr')
+      expect(input(wrapper, '#virtual_ip_auto').checked).toBe(true)
+      expect(input(wrapper, '#virtual_ip').disabled).toBe(true)
+      expect(wrapper.find('#dhcp_ipv4_cidr').exists()).toBe(false)
+      expect(wrapper.find('#dhcpv6').exists()).toBe(false)
+      expect(wrapper.find('#dhcp_ipv6_cidr').exists()).toBe(false)
 
-    await setInput(wrapper, '#dhcp_ipv4_cidr', ' 10.10.0.0/24 ')
-    expect(curNetwork.dhcp_ipv4_cidr).toBe('10.10.0.0/24')
-    await wrapper.find('#dhcpv6').setValue(true)
-    expect(wrapper.find('#dhcp_ipv6_cidr').exists()).toBe(true)
-    await setInput(wrapper, '#dhcp_ipv6_cidr', ' fd12::/64 ')
-    expect(curNetwork.dhcpv6).toBe(true)
-    expect(curNetwork.dhcp_ipv6_cidr).toBe('fd12::/64')
+      await wrapper.find('#virtual_ip_auto').setValue(false)
+      expect(input(wrapper, '#virtual_ip').disabled).toBe(false)
+      await setInput(wrapper, '#virtual_ip', '10.10.0.3')
 
-    const backend = toBackendNetworkConfig(curNetwork)
-    expect(backend).toMatchObject({
-      dhcp: true,
-      dhcp_ipv4_cidr: '10.10.0.0/24',
-      dhcpv6: true,
-      dhcp_ipv6_cidr: 'fd12::/64',
-    })
+      const backend = toBackendNetworkConfig(curNetwork)
+      expect(backend).toMatchObject({
+        dhcp: false,
+        virtual_ipv4: '10.10.0.3',
+        dhcp_ipv4_cidr: '10.10.0.0/24',
+        dhcp_ipv6_cidr: 'fd12::/64',
+      })
+      if (dhcpv6 === undefined) {
+        expect(backend).not.toHaveProperty('dhcpv6')
+      } else {
+        expect(backend.dhcpv6).toBe(dhcpv6)
+      }
 
-    await wrapper.find('#dhcpv6').setValue(false)
-    expect(wrapper.find('#dhcp_ipv6_cidr').exists()).toBe(false)
-    expect(curNetwork.dhcp_ipv6_cidr).toBe('fd12::/64')
-    expect(toBackendNetworkConfig(curNetwork)).toMatchObject({ dhcpv6: false, dhcp_ipv6_cidr: 'fd12::/64' })
-
-    await wrapper.find('#virtual_ip_auto').setValue(false)
-    expect(wrapper.find('#dhcp_ipv4_cidr').exists()).toBe(false)
-    expect(curNetwork.dhcp_ipv4_cidr).toBe('10.10.0.0/24')
-
-    await wrapper.find('#virtual_ip_auto').setValue(true)
-    await setInput(wrapper, '#dhcp_ipv4_cidr', '   ')
-    expect(curNetwork.dhcp_ipv4_cidr).toBeUndefined()
-    await wrapper.find('#dhcpv6').setValue(true)
-    await setInput(wrapper, '#dhcp_ipv6_cidr', '')
-    expect(curNetwork.dhcp_ipv6_cidr).toBeUndefined()
-    expect(toBackendNetworkConfig(curNetwork)).not.toHaveProperty('dhcp_ipv4_cidr')
-    expect(toBackendNetworkConfig(curNetwork)).not.toHaveProperty('dhcp_ipv6_cidr')
-    wrapper.unmount()
-  })
-
-  it('infers enabled DHCPv6 from a configured subnet when its optional switch is absent', async () => {
-    const config = {
-      ...DEFAULT_NETWORK_CONFIG(),
-      dhcpv6: undefined,
-      dhcp_ipv6_cidr: 'fd12::/64',
+      await wrapper.find('#virtual_ip_auto').setValue(true)
+      expect(input(wrapper, '#virtual_ip').disabled).toBe(true)
+      expect(curNetwork.virtual_ipv4).toBe('10.10.0.3')
+      expect(toBackendNetworkConfig(curNetwork)).toMatchObject({
+        dhcp: true,
+        dhcp_ipv4_cidr: '10.10.0.0/24',
+        dhcp_ipv6_cidr: 'fd12::/64',
+      })
+      wrapper.unmount()
     }
-    const { curNetwork, wrapper } = mountConfig(config)
-    await nextTick()
-
-    expect(input(wrapper, '#dhcpv6').checked).toBe(true)
-    expect(input(wrapper, '#dhcp_ipv6_cidr').value).toBe('fd12::/64')
-    expect(curNetwork.dhcpv6).toBeUndefined()
-    expect(toBackendNetworkConfig(curNetwork)).not.toHaveProperty('dhcpv6')
-    expect(toBackendNetworkConfig(curNetwork).dhcp_ipv6_cidr).toBe('fd12::/64')
-    wrapper.unmount()
   })
 
   it('projects config values into the visible form controls', async () => {
