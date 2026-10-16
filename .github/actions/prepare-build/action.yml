@@ -6,23 +6,27 @@ inputs:
     description: 'The target to build for'
     required: false
   pnpm:
-    description: 'Whether to run pnpm build'
-    required: true
-    default: 'true'
-  pnpm-build-filter:
-    description: 'The filter argument for pnpm build (e.g. ./easytier-web/*)'
+    description: 'Whether to install Node, pnpm and frontend dependencies (without building)'
     required: false
-    default: './easytier-web/*'
+    default: 'false'
+  components:
+    description: 'Additional Rust components'
+    required: false
+    default: ''
   gui:
     description: 'Whether to prepare the GUI build environment'
     required: true
-    default: 'true'
+    default: 'false'
   token:
     description: 'GitHub token, used by setup-protoc action'
     required: false
 runs:
   using: 'composite'
   steps:
+    - name: Record source revision
+      run: echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> "$GITHUB_ENV"
+      shell: bash
+
     - run: mkdir -p easytier-gui/dist
       shell: bash
 
@@ -49,9 +53,6 @@ runs:
     - name: Setup Frontend Environment
       if: ${{ inputs.pnpm == 'true' }}
       uses: ./.github/actions/prepare-pnpm
-      with:
-        token: ${{ inputs.token }}
-        build-filter: ${{ inputs.pnpm-build-filter }}
 
     - name: Install GUI dependencies (Linux)
       if: ${{ inputs.gui == 'true' && runner.os == 'Linux' }}
@@ -68,13 +69,14 @@ runs:
       with:
         toolchain: 1.95
         target: ${{ !contains(inputs.target, 'mips') && inputs.target || '' }}
-        components: ${{ contains(inputs.target, 'mips') && 'rust-src' || '' }}
+        components: ${{ inputs.components }}
         cache: false
         rustflags: ''
 
     - name: Install Rust (MIPS)
       if: ${{ contains(inputs.target, 'mips') }}
       run: |
+        rustup component add rust-src
         MUSL_TARGET=${{ inputs.target }}sf
         mkdir -p ./musl_gcc
         wget --inet4-only -c https://github.com/cross-tools/musl-cross/releases/download/20250520/${MUSL_TARGET}.tar.xz -P ./musl_gcc/

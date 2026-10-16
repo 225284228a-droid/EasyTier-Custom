@@ -3,25 +3,17 @@ name: EasyTier Release
 on:
   workflow_dispatch:
     inputs:
-      core_run_id:
-        description: 'The run id of the EasyTier Core workflow in this repository'
-        type: number
-        required: true
-      gui_run_id:
-        description: 'The run id of the EasyTier GUI workflow in this repository'
-        type: number
-        required: true
-      mobile_run_id:
-        description: 'The run id of the EasyTier Mobile workflow in this repository'
+      build_run_id:
+        description: 'Successful full EasyTier Build run ID from this repository'
         type: number
         required: true
       version:
-        description: 'Version for this release'
+        description: 'Version tag for this draft release'
         type: string
         default: 'v2.7.0'
         required: true
       make_latest:
-        description: 'Mark this release as latest'
+        description: 'Mark this release as latest when published'
         type: boolean
         default: true
         required: true
@@ -34,74 +26,50 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Validate complete builds
+      - name: Validate complete full build
+        id: build
         uses: actions/github-script@v8
         env:
-          CORE_RUN_ID: ${{ inputs.core_run_id }}
-          GUI_RUN_ID: ${{ inputs.gui_run_id }}
-          MOBILE_RUN_ID: ${{ inputs.mobile_run_id }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
         with:
           script: |
             const validate = require('./.github/scripts/validate-release-builds.js');
             await validate({ github, context, core });
 
-      - name: Download Core Artifact
-        uses: dawidd6/action-download-artifact@v11
+      - name: Download validated release artifacts
+        uses: actions/download-artifact@v5
         with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
-          run_id: ${{ inputs.core_run_id }}
-          repo: ${{ github.repository }}
-          path: release_assets
+          artifact-ids: ${{ steps.build.outputs.artifact_ids }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.build_run_id }}
+          path: release_artifacts
+          merge-multiple: false
 
-      - name: Download GUI Artifact
-        uses: dawidd6/action-download-artifact@v11
-        with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
-          run_id: ${{ inputs.gui_run_id }}
-          repo: ${{ github.repository }}
-          path: release_assets_nozip
-
-      - name: Download Mobile Artifact
-        uses: dawidd6/action-download-artifact@v11
-        with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
-          run_id: ${{ inputs.mobile_run_id }}
-          repo: ${{ github.repository }}
-          path: release_assets_nozip
-
-      - name: Zip release assets
+      - name: Prepare release assets and checksums
+        uses: actions/github-script@v8
         env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          mkdir zipped_assets
+          BUILD_SHA: ${{ steps.build.outputs.build_sha }}
+        with:
+          script: |
+            const { prepareReleaseAssets } = require('./.github/scripts/validate-release-builds.js');
+            await prepareReleaseAssets({
+              sourceDir: 'release_artifacts',
+              destinationDir: 'release_assets',
+              commit: process.env.BUILD_SHA,
+            });
 
-          find release_assets_nozip -type f -exec mv {} zipped_assets \;
-          ls -l -R ./zipped_assets
-
-          cd release_assets
-          ls -l -R ./
-          chmod -R 755 .
-          for x in `ls`; do
-            if [ "$x" = "Easytier-Magisk" ]; then
-              # for Easytier-Magisk, make sure files are in the root of the zip
-              cd $x;
-              zip -r ../../zipped_assets/$x-${VERSION}.zip .;
-              cd ..;
-            else
-              zip -r ../zipped_assets/$x-${VERSION}.zip $x;
-            fi
-          done
-
-      - name: Release
+      - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ inputs.version }}
-          draft: true
-          files: |
-            ./zipped_assets/*
-          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ inputs.version }}
+          target_commitish: ${{ steps.build.outputs.build_sha }}
+          draft: true
+          make_latest: ${{ inputs.make_latest && 'true' || 'false' }}
+          fail_on_unmatched_files: true
+          files: release_assets/*
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "pnpm --dir ../easytier-web/frontend-lib build && vite",
     "build": "pnpm --dir ../easytier-web/frontend-lib build && vue-tsc --noEmit && vite build",
+    "build:ci": "vue-tsc --noEmit && vite build",
+    "test:ci": "vitest run --config vitest.config.ts",
     "preview": "vite preview",
     "test": "pnpm test:unit",
     "test:unit": "pnpm --dir ../easytier-web/frontend-lib build && vitest run --config vitest.config.ts",

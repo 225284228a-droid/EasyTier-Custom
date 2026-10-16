@@ -16,6 +16,8 @@
     "codegen:proto": "node scripts/codegen-proto.mjs",
     "dev": "pnpm codegen:proto && vite",
     "build": "pnpm codegen:proto && vue-tsc -b && vite build",
+    "build:ci": "vue-tsc -b && vite build",
+    "test:ci": "vitest run --config vitest.config.ts",
     "test": "pnpm test:config-ui && pnpm test:network-config",
     "test:config-ui": "pnpm codegen:proto && vitest run --config vitest.config.ts",
     "test:network-config": "pnpm build && node scripts/test-network-config.mjs",

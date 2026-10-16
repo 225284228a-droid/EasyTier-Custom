@@ -3,8 +3,10 @@
   "private": true,
   "scripts": {
     "test": "pnpm test:unit",
-    "test:unit": "pnpm --dir easytier-web/frontend-lib test:config-ui && pnpm --dir easytier-web/frontend test:unit && pnpm --dir easytier-gui test:unit && pnpm test:ci-scripts",
-    "test:ci-scripts": "node --test .github/scripts/prune-build-artifacts.test.cjs .github/scripts/builds.test.js .github/scripts/nightly-release.test.js"
+    "test:unit": "pnpm --dir easytier-web/frontend-lib codegen:proto && pnpm --dir easytier-web/frontend-lib build:ci && pnpm test:frontend:ci && pnpm test:ci-scripts",
+    "build:frontend:ci": "pnpm --dir easytier-web/frontend-lib codegen:proto && pnpm --dir easytier-web/frontend-lib build:ci && pnpm --dir tauri-plugin-vpnservice build && pnpm --dir easytier-web/frontend build:ci && pnpm --dir easytier-gui build:ci && pnpm --dir easytier-web/config-generator build:config-wasm && pnpm --dir easytier-web/config-generator build:ci",
+    "test:frontend:ci": "pnpm --dir easytier-web/frontend-lib test:ci && pnpm --dir easytier-web/frontend test:ci && pnpm --dir easytier-gui test:ci",
+    "test:ci-scripts": "node --test .github/scripts/*.test.js .github/scripts/*.test.cjs"
   },
   "pnpm": {
     "overrides": {

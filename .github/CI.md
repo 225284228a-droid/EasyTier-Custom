@@ -2,82 +2,93 @@
 
 [中文](CI.zh-CN.md)
 
-| Trigger | Core | GUI | Mobile |
-| --- | --- | --- | --- |
-| PR targeting `main`/`develop`, or push to either branch | Core/Web `cargo check`: Linux x64, Windows x64, macOS ARM64 | Linux frontend build and Rust check | Android ARM64 frontend build and Rust check |
-| Push to `releases/**`, or manual dispatch | 16 targets and Magisk artifacts | Installers for 7 targets | APKs for 4 architectures |
+## Entry points
 
-Test runs CI script and frontend unit tests, protobuf schema/field-number and
-wire tests, Web/GUI backend tests, fmt, clippy, WASI, Cargo.lock validation,
-and Linux tests for `easytier`/`easytier-core`, including `three_node`. Full
-mode also checks each `easytier` feature except `macos-ne`.
+There are three workflows: **EasyTier Build**, **EasyTier Release**, and
+**EasyTier Docker**. Build is the only automatic entry point.
 
-Linux tests run on one runner with 32 concurrent nextest processes. Network
-integration tests use separate namespaces and bridges for each test. Subnet
-proxy cases run at most eight at a time. Tests that use host-wide network state,
-measure bandwidth, or make time-sensitive connectivity assertions run first,
-exclusively, before the parallel tests.
+| Trigger | Behavior |
+| --- | --- |
+| Push to `main` | Full platform builds, checks, and downloadable Actions artifacts |
+| Push to `develop`, or PR targeting `main`/`develop` | Relevant checks; no release binaries or installers |
+| Manual EasyTier Build on any branch | Full platform builds and all checks |
+| Draft PR | Skip builds/tests; retain the aggregate result |
 
-These four workflows skip build/test jobs for draft PRs. Path and duplicate
-content checks can skip ordinary builds and Rust jobs. The result jobs are
-`core-result`, `gui-result`, `mobile-result`, and `test`.
+Preparation calculates path filters and matrices once. New runs cancel older
+runs for the same branch/PR and mode; checks do not cancel full builds. Go,
+JavaScript Hosts, and Nix retain independent path filters. The single aggregate
+check is **Build result** (`build-result`): required jobs must succeed, including
+jobs that would otherwise be unexpectedly skipped.
 
-PR dashboard builds run only for frontend, Core configuration, schema, or
-build configuration changes. Ordinary branch pushes build the dashboard.
-Core checks run independently; Web embedding is compiled only in full mode.
-Test skips the frontend build in ordinary mode; its test archive builds
-only Rust packages.
+Scheduled builds, automatic releases, HarmonyOS/Magisk build jobs, and Linux
+GUI installers have been removed. Their source directories remain available.
 
-PR runs can upload the test archive for reuse within CI. The dashboard is
-uploaded only in full mode.
-Core binaries, GUI installers, APKs, and Magisk artifacts require full mode.
-Compilation outputs are cached. Ordinary pushes do not cancel full builds.
+## Platforms and shared work
 
-## Nightly
+| Product | Targets |
+| --- | --- |
+| Core/CLI/Web | 16: Linux x64, ARM64, RISC-V, LoongArch, ARMv7 hard/soft float, ARM hard/soft float, MIPS/MIPSEL; FreeBSD x64; macOS Intel/ARM64; Windows x64/x86/ARM64 |
+| Desktop GUI | 5: macOS Intel/ARM64 and Windows x64/x86/ARM64 |
+| Android APK | 4: aarch64, armv7, i686, x86_64 |
 
-Scheduled at 03:17 Asia/Shanghai, or started manually on `main`. Check Core,
-GUI, Mobile, and Test separately. Compare main HEAD with that workflow's latest
-successful `workflow_dispatch` run: skip matching commits; dispatch otherwise.
-Core's `sign_windows` is set to `false` for nightly builds.
+Windows CLI and GUI have separate jobs and artifacts. MIPS retains its existing
+Core/CLI-only payload. Linux x64 also includes mini and validates static linking
+and executable startup. Windows validates runtime dependencies and packages its
+network drivers. Linux/Windows x64 run the network-creation browser smoke test
+against the shipped Core and embedded Web binaries.
 
-Nightly waits for the dispatched runs, retrying failed jobs once. A second
-failure or a cancelled run fails Nightly and prevents publication. The build
-and wait job has a three-hour timeout. Once all four components succeed at the
-same commit, Nightly updates the rolling `nightly` prerelease using that commit,
-even if main advances while builds are running. If main changes between the
-dispatch requests and the builds target different commits, Nightly fails and
-must be started again.
+One frontend job generates proto bindings, builds the shared library and VPN
+plugin API, builds Web/config-generator/GUI assets, and runs frontend unit tests.
+Other jobs download those resources. CI-only Tauri configuration disables its
+frontend build hook; local development commands retain their normal behavior.
+Setup actions install tools/dependencies without rebuilding frontend packages.
 
-Builds dispatched with `GITHUB_TOKEN` do not trigger downstream `workflow_run`
-jobs, so scheduled publication and retries run directly in Nightly. Completion
-events still handle full main builds dispatched manually by a maintainer.
-Nightly Release can also be started manually to publish existing main HEAD
-builds without rebuilding them.
+CI script tests run once. Rust checks retain fmt, Clippy, individual feature
+combinations in full mode, WASI, locked dependencies, protocol/Web/GUI backend
+tests, and Linux network integration tests. Equivalent platform pre-checks run
+only in check mode. The GUI backend still has headless Linux tests. Network tests
+compile once and retain their three disjoint nextest groups and existing
+exclusive/concurrent scheduling. Go tests and generated-proto validation share
+one tool installation. Nix builds without a duplicate preliminary cargo check.
 
-Nightly uses the same asset names and archive layout as version releases.
-Core, Web, and Magisk ZIP names include the built commit's version (for example,
-`easytier-linux-x86_64-v2.7.0.zip`). GUI installers and Android APKs retain their
-original filenames without an extra ZIP wrapper. `SHA256SUMS` covers every
-download. Asset URLs can change when the project version changes; use the
-fixed `nightly` release page to find the current files.
+Desktop/command-line builds are unsigned/unnotarized by default. Manual `sign_windows` enables
+SignPath test signing for command-line binaries; `sign_macos` enables signed,
+notarized GUI DMGs. These opt-ins require their corresponding repository secrets.
 
-## Manual builds and releases
+## Downloads, cleanup, and manual releases
 
-Repository Write access is required. In Actions, run Core, GUI, and Mobile
-separately on the PR branch to obtain full artifacts. The branch must contain
-these workflow definitions. Fork PRs need a temporary branch in this repository.
+Product artifacts expire after seven days. Core artifacts are named
+`easytier-<platform>` and contain a ready-made `.tar.gz` on Unix or `.zip` on
+Windows. Tarballs retain executable modes. GUI artifacts are
+`easytier-gui-<platform>`; APKs use `easytier-mobile-android-<arch>`. Native
+installers retain their filenames. Binary/native payloads include `COMMIT.txt`
+and `SHA256SUMS`, including shipped drivers. `easytier-web-dashboard` contains a
+ready-made frontend tarball. Internal `frontend-assets` and `tests` expire after
+one day and are excluded from releases.
 
-Manual Core builds default to SignPath test signing (`sign_windows: true`).
-Full macOS GUI builds are signed and notarized.
+Only after all planned full-build jobs and checks succeed on `main`, cleanup
+deletes artifacts from older, completed main builds. It also migrates artifacts
+from the retired Core/GUI/Mobile/Custom Static/OHOS workflows. Running, newer,
+PR, develop, unrelated, or unidentified runs are preserved; failed new builds
+preserve the previous usable outputs. GitHub Release assets are not deleted.
+Normally only the latest successful main build remains downloadable, subject to
+the seven-day expiration.
 
-Release is a separate manual workflow. Its Core/GUI/Mobile run IDs must refer
-to successful full builds from their respective workflows at the same commit.
-It downloads their artifacts and creates a draft release.
+For a version release, run **EasyTier Release** with one `build_run_id`, `version`,
+and `make_latest`. The run must be a successful full EasyTier Build in this
+repository. All 26 expected product artifacts must exist and be unexpired.
+Release downloads only these artifacts, preserves ready-made archives/native
+installers, adds combined commit/checksum files, and creates a draft at the
+validated build commit. It performs no compilation or automatic publication.
+Choose a retained build before cleanup or expiration removes its artifacts.
 
-## Other workflows
+Docker remains a manual upstream-image workflow: its run ID still refers to
+Core artifacts in `EasyTier/EasyTier`; existing actor and registry settings are
+retained.
 
-- OHOS runs independently. Relevant PRs run bridge tests and check the bindings
-  for the host and ARM64 OHOS. Non-PR runs build and upload HAR artifacts;
-  publishing and downstream builds retain their existing main/manual conditions.
-- Go, JavaScript Hosts, and Nix use their own path filters.
-- Docker is manual; it downloads a specified Core run's artifacts and pushes images.
+## Local verification
+
+Run `actionlint -no-color`, `pnpm test:ci-scripts`, and `pnpm test:unit`.
+`pnpm build:frontend:ci` also verifies shared production frontend compilation
+and requires the Rust WASM target and wasm-pack. Full platform compilation and
+privileged Linux network tests are validated on GitHub runners.

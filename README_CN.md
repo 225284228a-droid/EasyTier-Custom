@@ -1,5 +1,7 @@
 # EasyTier Custom
 
+[![GitHub Build Actions](https://github.com/225284228a-droid/EasyTier-Custom/actions/workflows/build.yml/badge.svg)](https://github.com/225284228a-droid/EasyTier-Custom/actions/workflows/build.yml)
+
 **本项目基于 [EasyTier（ET）](https://github.com/EasyTier/EasyTier) 二次开发，是独立维护的魔改版本，并非 EasyTier 官方发行版。**
 
 本仓库独立演进传输协议、NAT 打洞和本地配置管理功能，保留 EasyTier 上游 Git 历史、作者归属，以及与上游相同的 **GNU LGPL v3.0** [开源许可证](LICENSE)。第三方代码原有的许可证声明继续保留。
@@ -19,9 +21,6 @@
 [![GitHub](https://img.shields.io/github/license/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/blob/main/LICENSE)
 [![GitHub last commit](https://img.shields.io/github/last-commit/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/commits/main)
 [![GitHub issues](https://img.shields.io/github/issues/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/issues)
-[![GitHub Core Actions](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml)
-[![GitHub GUI Actions](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml)
-[![GitHub Test Actions](https://github.com/EasyTier/EasyTier/actions/workflows/test.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/test.yml)
 [<img src="https://devin.ai/assets/askdeepwiki.png" alt="Ask DeepWiki" height="20"/>](https://deepwiki.com/EasyTier/EasyTier)
 
 [简体中文](/README_CN.md) | [English](/README.md)

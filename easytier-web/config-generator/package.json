@@ -7,6 +7,7 @@
     "build:config-wasm": "wasm-pack build ../../easytier-core --target web --out-dir ../easytier-web/config-generator/src/generated/config-wasm --out-name easytier_config --release --no-pack -- --no-default-features --features browser-config",
     "dev": "pnpm build:config-wasm && pnpm --dir ../frontend-lib build && vite",
     "build": "pnpm build:config-wasm && pnpm --dir ../frontend-lib build && vue-tsc --noEmit && vite build",
+    "build:ci": "vue-tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

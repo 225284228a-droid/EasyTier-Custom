@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "pnpm --dir ../frontend-lib build && vite",
     "build": "pnpm --dir ../frontend-lib build && vue-tsc -b && vite build",
+    "build:ci": "vue-tsc -b && vite build",
+    "test:ci": "vitest run --config vitest.config.ts",
     "test": "pnpm test:unit",
     "test:unit": "pnpm --dir ../frontend-lib build && vitest run --config vitest.config.ts",
     "test:vpn-config-responsive": "node --test tests/vpn-config-responsive.test.mjs",

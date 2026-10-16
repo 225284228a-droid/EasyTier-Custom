@@ -1,0 +1,609 @@
+name: EasyTier Build
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      sign_windows:
+        description: Submit Windows command-line binaries for SignPath test signing
+        type: boolean
+        default: false
+      sign_macos:
+        description: Sign and notarize macOS GUI (requires Apple secrets)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: easytier-build-${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  prepare:
+    name: Plan builds and checks
+    runs-on: ubuntu-latest
+    outputs:
+      active: ${{ steps.plan.outputs.active }}
+      full: ${{ steps.plan.outputs.full }}
+      rust: ${{ steps.plan.outputs.rust }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+      ci: ${{ steps.plan.outputs.ci }}
+      go: ${{ steps.plan.outputs.go }}
+      js: ${{ steps.plan.outputs.js }}
+      nix: ${{ steps.plan.outputs.nix }}
+      core_matrix: ${{ steps.plan.outputs.core_matrix }}
+      gui_matrix: ${{ steps.plan.outputs.gui_matrix }}
+      android_matrix: ${{ steps.plan.outputs.android_matrix }}
+      check_matrix: ${{ steps.plan.outputs.check_matrix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/github-script@v8
+        id: plan
+        with:
+          script: |
+            const prepare = require('./.github/scripts/prepare-build.js');
+            await prepare({ github, context, core });
+
+  ci-scripts:
+    name: CI script tests
+    needs: prepare
+    if: needs.prepare.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node --test .github/scripts/*.test.js .github/scripts/*.test.cjs
+
+  frontend:
+    name: Shared frontend build and tests
+    needs: prepare
+    if: needs.prepare.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: wasm32-unknown-unknown
+          pnpm: true
+          token: ${{ github.token }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: frontend-wasm
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - run: pnpm build:frontend:ci
+      - run: pnpm test:frontend:ci
+      - name: Package shared resources
+        run: |
+          mkdir -p easytier-web/frontend/dist/config-generator
+          cp -R easytier-web/config-generator/dist/. easytier-web/frontend/dist/config-generator/
+          test -s easytier-web/frontend/dist/index.html
+          test -s easytier-web/frontend/dist/config-generator/index.html
+          test -s easytier-gui/dist/index.html
+          tar -czf frontend-assets.tar.gz easytier-web/frontend/dist easytier-web/frontend-lib/dist easytier-gui/dist
+      - uses: actions/upload-artifact@v5
+        with:
+          name: frontend-assets
+          path: frontend-assets.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+      - name: Package downloadable Web frontend
+        if: needs.prepare.outputs.full == 'true'
+        run: |
+          tar -czf easytier-web-dashboard.tar.gz -C easytier-web/frontend/dist .
+      - uses: actions/upload-artifact@v5
+        if: needs.prepare.outputs.full == 'true'
+        with:
+          name: easytier-web-dashboard
+          path: easytier-web-dashboard.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  check:
+    name: Check (${{ matrix.name }})
+    needs: [prepare, frontend]
+    if: needs.prepare.outputs.rust == 'true' && needs.prepare.outputs.full != 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.check_matrix) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      FEATURES: ${{ matrix.features }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.target }}
+          token: ${{ github.token }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: frontend-assets
+      - run: tar -xzf frontend-assets.tar.gz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check-${{ matrix.target }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - run: cargo check --locked --all-targets --target "$TARGET" --features "$FEATURES"
+      - name: Check Windows GUI with the same toolchain
+        if: runner.os == 'Windows'
+        run: |
+          bash .github/scripts/copy-windows-drivers.sh "$TARGET" easytier-gui/src-tauri
+          cargo check --locked --all-targets --target "$TARGET" -p easytier-gui --features custom-protocol
+
+  lint:
+    name: Rust lint, features and WASI
+    needs: [prepare, frontend]
+    if: needs.prepare.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: wasm32-wasip1
+          components: rustfmt,clippy
+          gui: true
+          token: ${{ github.token }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: frontend-assets
+      - run: tar -xzf frontend-assets.tar.gz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-lint
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --features full --all -- -D warnings
+      - uses: taiki-e/install-action@v2
+        if: needs.prepare.outputs.full == 'true'
+        with:
+          tool: cargo-hack
+      - name: Check individual feature combinations
+        if: needs.prepare.outputs.full == 'true'
+        run: cargo hack check --locked -p easytier --each-feature --exclude-features macos-ne --verbose
+      - name: Check WASI feature combination
+        run: >-
+          cargo check --locked -p easytier-core --lib --target wasm32-wasip1
+          --features management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload
+      - run: cargo metadata --format-version 1 --locked > /dev/null
+
+  unit:
+    name: Rust unit tests and network test archive
+    needs: [prepare, frontend]
+    if: needs.prepare.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          gui: true
+          token: ${{ github.token }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: frontend-assets
+      - run: tar -xzf frontend-assets.tar.gz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-unit
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Protocol, Web and GUI backend tests
+        run: >-
+          cargo nextest run --locked -p easytier-proto -p easytier-web -p easytier-gui
+          --test-threads 1 --no-fail-fast
+      - name: Compile network tests once
+        run: >-
+          cargo nextest archive --locked --archive-file tests.tar.zst
+          -p easytier -p easytier-core --features full
+      - uses: actions/upload-artifact@v5
+        with:
+          name: tests
+          path: tests.tar.zst
+          retention-days: 1
+          if-no-files-found: error
+
+  network:
+    name: Network tests (${{ matrix.name }})
+    needs: [prepare, unit]
+    if: needs.prepare.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: easytier
+            filter: not test(tests::three_node)
+          - name: three_node
+            filter: test(tests::three_node) and not test(subnet_proxy_three_node_test)
+          - name: subnet_proxy_three_node_test
+            filter: test(subnet_proxy_three_node_test)
+    env:
+      TEST_FILTER: ${{ matrix.filter }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install network test dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qqy bridge-utils miniupnpd miniupnpd-iptables iptables
+          sudo modprobe br_netfilter
+          sudo modprobe tun
+          if [ ! -e /dev/net/tun ]; then
+            sudo mkdir -p /dev/net
+            sudo mknod /dev/net/tun c 10 200
+          fi
+          sudo sysctl net.bridge.bridge-nf-call-iptables=0
+          sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
+          sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
+          sudo ip addr add 2001:db8::2/64 dev lo
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: actions/download-artifact@v5
+        with:
+          name: tests
+      - run: |
+          sudo prlimit --pid $$ --nofile=1048576:1048576
+          sudo -E env "PATH=$PATH" EASYTIER_LINUX_BPF_INTEGRATION=required \
+            cargo nextest run --archive-file tests.tar.zst -E "$TEST_FILTER" \
+            --profile ci --test-threads 1 --no-fail-fast
+
+  core:
+    name: CLI (${{ matrix.name }})
+    needs: [prepare, frontend]
+    if: needs.prepare.outputs.full == 'true'
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.core_matrix) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      FEATURES: ${{ matrix.features }}
+      ARTIFACT_NAME: easytier-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.target }}
+          token: ${{ github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v5
+        with:
+          name: frontend-assets
+      - run: tar -xzf frontend-assets.tar.gz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core-release-${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+        if: runner.os == 'Linux' && !contains(matrix.target, 'mips')
+        with:
+          version: 0.16.0
+          use-cache: true
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Linux' && !contains(matrix.target, 'mips')
+        with:
+          tool: cargo-zigbuild@0.23.2
+      - name: Build command-line programs
+        run: bash .github/scripts/build-core.sh
+      - name: Verify Windows runtime dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./.github/scripts/verify-windows-runtime.ps1 -Binary (Get-ChildItem artifacts/*.exe).FullName
+      - name: Prepare optional Windows signing
+        if: runner.os == 'Windows' && inputs.sign_windows
+        run: |
+          mkdir -p signpath-artifacts
+          cp artifacts/*.exe signpath-artifacts/
+      - uses: actions/upload-artifact@v5
+        if: runner.os == 'Windows' && inputs.sign_windows
+        id: signpath
+        with:
+          name: signpath-unsigned-${{ matrix.name }}
+          path: signpath-artifacts/*.exe
+          retention-days: 1
+          if-no-files-found: error
+      - uses: signpath/github-action-submit-signing-request@v2
+        if: runner.os == 'Windows' && inputs.sign_windows
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 368cf38d-86d5-4bfe-a1fa-82a50dce7e9f
+          project-slug: EasyTier
+          signing-policy-slug: test-signing
+          artifact-configuration-slug: initial
+          github-artifact-id: ${{ steps.signpath.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signpath-signed-artifacts
+      - name: Use signed Windows binaries
+        if: runner.os == 'Windows' && inputs.sign_windows
+        run: cp signpath-signed-artifacts/*.exe artifacts/
+      - name: Install browser smoke-test dependencies
+        if: matrix.name == 'linux-x86_64' || matrix.name == 'windows-x86_64'
+        uses: ./.github/actions/prepare-pnpm
+      - name: Verify network creation with shipped Core and embedded Web
+        if: matrix.name == 'linux-x86_64' || matrix.name == 'windows-x86_64'
+        run: |
+          pnpm --dir easytier-web/frontend exec playwright install --with-deps chromium
+          EASYTIER_SMOKE_BIN_DIR="$PWD/artifacts" pnpm --dir easytier-web/frontend exec node --test tests/local-config-creation.test.mjs
+      - name: Package binaries with checksums and Unix executable permissions
+        run: node .github/scripts/package-build.js "$ARTIFACT_NAME" artifacts dist "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: easytier-${{ matrix.name }}
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+  gui:
+    name: GUI (${{ matrix.name }})
+    needs: [prepare, frontend]
+    if: needs.prepare.outputs.full == 'true'
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.gui_matrix) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ matrix.target }}
+          pnpm: true
+          token: ${{ github.token }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: frontend-assets
+      - run: tar -xzf frontend-assets.tar.gz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gui-release-${{ matrix.target }}
+      - name: Include Windows network drivers
+        if: runner.os == 'Windows'
+        run: bash .github/scripts/copy-windows-drivers.sh "$TARGET" easytier-gui/src-tauri
+      - name: Build Windows GUI installer
+        if: runner.os == 'Windows'
+        run: >-
+          pnpm --dir easytier-gui tauri build --ci --target "$TARGET" --bundles nsis
+          --config ../.github/tauri-ci.json -- --locked
+      - name: Verify Windows GUI runtime dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./.github/scripts/verify-windows-runtime.ps1 -Binary "target/$env:TARGET/release/easytier-gui.exe"
+      - name: Validate requested Apple signing configuration
+        if: runner.os == 'macOS' && inputs.sign_macos
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then echo "::error::Missing $name"; exit 1; fi
+          done
+      - name: Build unsigned macOS GUI
+        if: runner.os == 'macOS' && !inputs.sign_macos
+        run: >-
+          pnpm --dir easytier-gui tauri build --ci --target "$TARGET" --bundles dmg
+          --config ../.github/tauri-ci.json -- --locked
+      - name: Build signed macOS GUI
+        if: runner.os == 'macOS' && inputs.sign_macos
+        uses: tauri-apps/tauri-action@v0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: easytier-gui
+          args: --ci --target ${{ matrix.target }} --bundles dmg --config ../.github/tauri-ci.json -- --locked
+      - name: Notarize and staple signed macOS DMG
+        if: runner.os == 'macOS' && inputs.sign_macos
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for dmg in target/"$TARGET"/release/bundle/dmg/*.dmg; do
+            codesign --verify --verbose=4 "$dmg"
+            xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait --timeout 40m
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+          done
+      - name: Collect native installers and checksums
+        run: |
+          mkdir -p artifacts
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp target/"$TARGET"/release/bundle/nsis/*.exe artifacts/
+          else
+            cp target/"$TARGET"/release/bundle/dmg/*.dmg artifacts/
+          fi
+          node .github/scripts/package-build.js --native artifacts "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: easytier-gui-${{ matrix.name }}
+          path: artifacts/*
+          retention-days: 7
+          if-no-files-found: error
+
+  android:
+    name: Android (${{ matrix.arch }})
+    needs: [prepare, frontend]
+    if: needs.prepare.outputs.rust == 'true'
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.android_matrix) }}
+    runs-on: ubuntu-24.04
+    env:
+      TARGET: ${{ matrix.arch == 'armv7' && 'armv7-linux-androideabi' || format('{0}-linux-android', matrix.arch) }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: oracle
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '12.0'
+          packages: 'build-tools;34.0.0 ndk;26.0.10792818 platform-tools platforms;android-34'
+      - name: Configure Android tools
+        run: |
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/ndk/26.0.10792818/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/26.0.10792818/" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: ${{ env.TARGET }}
+          pnpm: true
+          token: ${{ github.token }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: frontend-assets
+      - run: tar -xzf frontend-assets.tar.gz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-${{ matrix.arch }}-${{ needs.prepare.outputs.full }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Check Android ARM64
+        if: needs.prepare.outputs.full != 'true'
+        run: cargo check --locked --lib --target "$TARGET" -p easytier-gui --features custom-protocol
+      - name: Build APK using the shared GUI frontend
+        if: needs.prepare.outputs.full == 'true'
+        run: >-
+          pnpm --dir easytier-gui tauri android build --ci --apk --target "$ARCH"
+          --split-per-abi --config ../.github/tauri-ci.json
+      - name: Collect APKs and checksums
+        if: needs.prepare.outputs.full == 'true'
+        run: |
+          mkdir -p artifacts
+          cp easytier-gui/src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk artifacts/
+          node .github/scripts/package-build.js --native artifacts "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v5
+        if: needs.prepare.outputs.full == 'true'
+        with:
+          name: easytier-mobile-android-${{ matrix.arch }}
+          path: artifacts/*
+          retention-days: 7
+          if-no-files-found: error
+
+  go:
+    name: Go tests and generated proto consistency
+    needs: prepare
+    if: needs.prepare.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: |
+            easytier-go/go.sum
+            easytier-go/examples/tun/go.sum
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: '35.1'
+          repo-token: ${{ github.token }}
+      - run: go test ./...
+        working-directory: easytier-go
+      - run: go test ./...
+        working-directory: easytier-go/examples/tun
+      - run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+      - run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          ./easytier-go/script/generate-proto.sh
+          git diff --exit-code -- easytier-go/proto
+
+  js:
+    name: JavaScript Hosts build and tests
+    needs: prepare
+    if: needs.prepare.outputs.js == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: wasm32-wasip1
+          token: ${{ github.token }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+          run_install: false
+      - run: pnpm --dir easytier-js install --frozen-lockfile
+      - run: pnpm --dir easytier-js check
+
+  nix:
+    name: Nix environment check
+    needs: prepare
+    if: needs.prepare.outputs.nix == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: DeterminateSystems/magic-nix-cache-action@v6
+      # A build includes the equivalent check; avoid compiling the same set twice.
+      - run: nix develop .#full --command cargo build --locked
+
+  build-result:
+    name: Build result
+    needs: [prepare, ci-scripts, frontend, check, lint, unit, network, core, gui, android, go, js, nix]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify every planned job succeeded
+        env:
+          BUILD_RESULTS: ${{ toJSON(needs) }}
+        run: node .github/scripts/check-build-results.js
+
+  cleanup:
+    name: Remove older main build artifacts
+    needs: [prepare, build-result]
+    if: needs.prepare.outputs.full == 'true' && github.ref == 'refs/heads/main' && needs.build-result.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const prune = require('./.github/scripts/prune-build-artifacts.cjs');
+            await prune({ github, context, core });
