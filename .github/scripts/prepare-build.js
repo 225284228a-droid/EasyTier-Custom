@@ -1,7 +1,7 @@
 const { execFileSync } = require('node:child_process');
 const { coreTargets, guiTargets, androidArchs, checkTargets, buildPlan } = require('./build-config.js');
 
-module.exports = async ({ github, context, core }) => {
+module.exports = async ({ github, context, core, workflowKind = 'build' }) => {
   let changedFiles = [];
   if (context.eventName === 'pull_request' && !context.payload.pull_request.draft) {
     // API pagination is necessary for large/fork PRs; never truncate the list.
@@ -29,7 +29,7 @@ module.exports = async ({ github, context, core }) => {
   }
   const plan = buildPlan({
     eventName: context.eventName, ref: context.ref,
-    draft: context.payload.pull_request?.draft ?? false, changedFiles,
+    draft: context.payload.pull_request?.draft ?? false, changedFiles, workflowKind,
   });
   for (const [key, value] of Object.entries(plan)) core.setOutput(key, String(value));
   for (const [key, value] of Object.entries({ core: coreTargets, gui: guiTargets, android: androidArchs, check: checkTargets })) {

@@ -1,4 +1,5 @@
 const BUILD_PATH = '.github/workflows/build.yml';
+const { expectedArtifacts } = require('./validate-release-builds.js');
 // Bounded migration for artifacts left by the retired split build workflows.
 const LEGACY_BUILD_PATHS = new Set([
   '.github/workflows/core.yml',
@@ -9,7 +10,7 @@ const LEGACY_BUILD_PATHS = new Set([
 ]);
 
 // The workflow calls this only after every required full-build job has succeeded.
-module.exports = async ({ github, context, core }) => {
+module.exports = async ({ github, context, core, now = Date.now() }) => {
   const repo = context.repo;
   const sameRepository = repository => repository?.full_name?.toLowerCase() ===
     `${repo.owner}/${repo.repo}`.toLowerCase();
@@ -24,9 +25,33 @@ module.exports = async ({ github, context, core }) => {
       !sameRepository(current.repository) || !sameRepository(current.head_repository) ||
       !Number.isSafeInteger(current.repository?.id) || current.repository.id <= 0 ||
       current.head_repository?.id !== current.repository.id || !Number.isFinite(currentTime) ||
+      !/^[a-f\d]{40}$/i.test(current.head_sha) ||
       !['in_progress', 'completed'].includes(current.status) ||
       (current.status === 'completed' && current.conclusion !== 'success')) {
     throw new Error('Artifact cleanup requires this repository\'s current main full build.yml run.');
+  }
+  // A failed upload must leave the last usable build available, even if all
+  // compiler jobs succeeded. Check the complete downloadable product set first.
+  const currentArtifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+    ...repo, run_id: current.id, per_page: 100,
+  });
+  const selected = expectedArtifacts().map(({ name }) => {
+    const matches = currentArtifacts.filter(artifact => artifact.name === name);
+    const artifact = matches[0];
+    const source = artifact?.workflow_run;
+    if (matches.length !== 1 || !Number.isSafeInteger(artifact.id) || artifact.id <= 0 ||
+        artifact.expired !== false || !Number.isFinite(Date.parse(artifact.expires_at)) ||
+        Date.parse(artifact.expires_at) <= now || !(artifact.size_in_bytes > 0) ||
+        source?.id !== current.id ||
+        (source.repository_id != null && source.repository_id !== current.repository.id) ||
+        (source.head_repository_id != null && source.head_repository_id !== current.repository.id) ||
+        (source.head_sha != null && source.head_sha !== current.head_sha)) {
+      throw new Error(`Artifact cleanup requires exactly one complete, valid ${name} artifact from the current build.`);
+    }
+    return artifact;
+  });
+  if (new Set(selected.map(artifact => artifact.id)).size !== selected.length) {
+    throw new Error('Artifact cleanup requires distinct current build artifact IDs.');
   }
   // Collect before deleting so pagination cannot skip artifacts as pages shrink.
   const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, { ...repo, per_page: 100 });

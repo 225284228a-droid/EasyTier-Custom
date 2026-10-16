@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const prune = require('./prune-build-artifacts.cjs');
+const { expectedArtifacts } = require('./validate-release-builds.js');
 const eligible = [10, 15, 16, 18, 19, 20, 21, 22];
 
 function fixture() {
@@ -41,6 +42,10 @@ function fixture() {
   artifacts.push({ id: 999, name: 'unassociated' });
   const deleted = [];
   const reads = [];
+  const currentArtifacts = expectedArtifacts().map(({ name }, index) => ({
+    id: 1000 + index, name, expired: false, expires_at: '2026-12-01T00:00:00Z', size_in_bytes: 100,
+    workflow_run: { id: 100, repository_id: 1, head_repository_id: 1, head_sha: current.head_sha },
+  }));
   let listed = false;
   const actions = {
     async getWorkflow({ workflow_id }) {
@@ -48,6 +53,7 @@ function fixture() {
       return { data: workflow };
     },
     listArtifactsForRepo: 'artifacts',
+    listWorkflowRunArtifacts: 'current-artifacts',
     async getWorkflowRun({ run_id }) {
       reads.push(run_id);
       if (!runs[run_id]) throw Object.assign(new Error('missing'), { status: 404 });
@@ -60,10 +66,15 @@ function fixture() {
   };
   const args = {
     context: { repo: { owner: 'owner', repo: 'repo' }, runId: 100 },
+    now: Date.parse('2026-10-16T12:00:00Z'),
     core: { info() {} },
     github: {
       rest: { actions },
       async paginate(method, request) {
+        if (method === 'current-artifacts') {
+          assert.deepEqual(request, { owner: 'owner', repo: 'repo', run_id: 100, per_page: 100 });
+          return currentArtifacts;
+        }
         assert.equal(method, 'artifacts');
         assert.deepEqual(request, { owner: 'owner', repo: 'repo', per_page: 100 });
         listed = true;
@@ -71,7 +82,7 @@ function fixture() {
       },
     },
   };
-  return { args, artifacts, deleted, reads, runs, workflow };
+  return { args, artifacts, currentArtifacts, deleted, reads, runs, workflow };
 }
 
 test('cleanup removes older completed main full builds and the bounded legacy migration allowlist', async () => {
@@ -106,6 +117,7 @@ test('cleanup rejects a non-main, non-full, foreign, or wrong-workflow current r
     { head_branch: 'develop' }, { head_branch: 'feature', event: 'workflow_dispatch' },
     { event: 'pull_request' }, { workflow_id: 8 }, { path: '.github/workflows/core.yml' },
     { created_at: 'invalid' }, { id: 99 }, { status: 'queued' },
+    { head_sha: 'invalid' },
     { status: 'completed', conclusion: 'failure' },
     { repository: { id: 1, full_name: 'foreign/repo' } },
     { head_repository: { id: 2, full_name: 'owner/repo' } },
@@ -179,4 +191,47 @@ test('cleanup stops on API errors other than an unknown run', async () => {
   };
   await assert.rejects(prune(f.args), /rate limited/);
   assert.deepEqual(f.deleted, []);
+});
+
+test('cleanup requires every new product before removing older usable products', async () => {
+  const f = fixture();
+  f.currentArtifacts.pop();
+  await assert.rejects(prune(f.args), /exactly one complete, valid easytier-mobile-android-aarch64/);
+  assert.deepEqual(f.deleted, []);
+  assert.deepEqual(f.reads, [100]);
+});
+
+test('cleanup refuses duplicate, expired, empty, or mismatched current product artifacts', async () => {
+  for (const changes of [
+    { id: 0 }, { expired: true }, { expires_at: 'invalid' },
+    { expires_at: '2026-10-16T12:00:00Z' }, { size_in_bytes: 0 },
+    { workflow_run: undefined }, { workflow_run: { id: 99 } },
+    { workflow_run: { id: 100, repository_id: 2 } },
+    { workflow_run: { id: 100, head_repository_id: 2 } },
+    { workflow_run: { id: 100, head_sha: 'b'.repeat(40) } },
+  ]) {
+    const f = fixture();
+    Object.assign(f.currentArtifacts[0], changes);
+    await assert.rejects(prune(f.args), /exactly one complete, valid/);
+    assert.deepEqual(f.deleted, []);
+  }
+  const duplicate = fixture();
+  duplicate.currentArtifacts.push({ ...duplicate.currentArtifacts[0], id: 9999 });
+  await assert.rejects(prune(duplicate.args), /exactly one complete, valid/);
+  assert.deepEqual(duplicate.deleted, []);
+  const reused = fixture();
+  reused.currentArtifacts[1].id = reused.currentArtifacts[0].id;
+  await assert.rejects(prune(reused.args), /distinct current build artifact IDs/);
+  assert.deepEqual(reused.deleted, []);
+});
+
+test('cleanup retires legacy architectures, Web, Magisk, HarmonyOS and static build archives', async () => {
+  const f = fixture();
+  for (const [id, name] of [[10, 'easytier-linux-aarch64'], [15, 'Easytier-Magisk'],
+    [16, 'easytier-web-dashboard'], [18, 'custom-static-windows-x86_64.zip'], [20, 'easytier-gui-windows-i686'],
+    [21, 'easytier-mobile-android-armv7'], [22, 'easytier-ohrs']]) {
+    f.artifacts.find(artifact => artifact.id === id).name = name;
+  }
+  await prune(f.args);
+  assert.deepEqual(f.deleted, eligible);
 });

@@ -68,33 +68,7 @@ runs:
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: 1.95
-        target: ${{ !contains(inputs.target, 'mips') && inputs.target || '' }}
+        target: ${{ inputs.target }}
         components: ${{ inputs.components }}
         cache: false
         rustflags: ''
-
-    - name: Install Rust (MIPS)
-      if: ${{ contains(inputs.target, 'mips') }}
-      run: |
-        rustup component add rust-src
-        MUSL_TARGET=${{ inputs.target }}sf
-        mkdir -p ./musl_gcc
-        wget --inet4-only -c https://github.com/cross-tools/musl-cross/releases/download/20250520/${MUSL_TARGET}.tar.xz -P ./musl_gcc/
-        tar xf ./musl_gcc/${MUSL_TARGET}.tar.xz -C ./musl_gcc/
-        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/bin/*gcc /usr/bin/
-        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/include/ /usr/include/musl-cross
-        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/${MUSL_TARGET}/sysroot/ ./musl_gcc/sysroot
-        sudo chmod -R a+rwx ./musl_gcc
-
-        if [[ -d "./musl_gcc/sysroot" ]]; then
-          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$(readlink -f ./musl_gcc/sysroot)" >> $GITHUB_ENV
-        fi
-
-        cd "$PWD/musl_gcc/${MUSL_TARGET}/lib/gcc/${MUSL_TARGET}/15.1.0" || exit 255
-        # for panic-abort
-        cp libgcc_eh.a libunwind.a
-        
-        # for mimalloc
-        ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
-        ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
-      shell: bash

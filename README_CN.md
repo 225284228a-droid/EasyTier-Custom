@@ -1,6 +1,7 @@
 # EasyTier Custom
 
 [![GitHub Build Actions](https://github.com/225284228a-droid/EasyTier-Custom/actions/workflows/build.yml/badge.svg)](https://github.com/225284228a-droid/EasyTier-Custom/actions/workflows/build.yml)
+[![GitHub CI Actions](https://github.com/225284228a-droid/EasyTier-Custom/actions/workflows/checks.yml/badge.svg)](https://github.com/225284228a-droid/EasyTier-Custom/actions/workflows/checks.yml)
 
 **本项目基于 [EasyTier（ET）](https://github.com/EasyTier/EasyTier) 二次开发，是独立维护的魔改版本，并非 EasyTier 官方发行版。**
 

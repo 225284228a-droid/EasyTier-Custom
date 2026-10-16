@@ -4,75 +4,77 @@
 
 ## 运行入口
 
-保留三个工作流：**EasyTier Build**、**EasyTier Release**、**EasyTier Docker**。
-Build 是唯一自动运行入口。
+两个自动工作流，测试与编译分开：
 
-| 触发方式 | 执行内容 |
+| 工作流 | 触发与职责 |
 | --- | --- |
-| 推送到 `main` | 全平台编译、检查，上传可下载的 Actions 产物 |
-| 推送到 `develop`，或目标为 `main/develop` 的 PR | 按相关路径检查，不生成发布二进制和安装包 |
-| 任意分支手动运行 EasyTier Build | 全平台编译及全部检查 |
-| 草稿 PR | 跳过构建和测试，保留结果汇总 |
+| **EasyTier CI**（`checks.yml`） | `main/develop` 推送、面向这两个分支的 PR，或手动运行：执行相关检查和测试 |
+| **EasyTier Build**（`build.yml`） | `main` 推送或手动运行：编译 Release、打包、上传及清理旧产物 |
 
-准备任务统一计算路径过滤与构建矩阵。同分支或 PR、同模式的新运行会取消旧运行，
-检查模式与全量模式分别控制并发。Go、JavaScript Hosts、Nix 继续按各自路径运行。
-唯一汇总检查是 **Build result**（`build-result`），必选任务失败、取消或意外跳过
-都会导致汇总失败。
+**EasyTier Release**、**EasyTier Docker** 继续作为手动入口。草稿 PR 跳过昂贵检查；
+PR/develop 按相关路径检查，Go、JavaScript Hosts、Nix 保留独立路径过滤。
+两个自动工作流各自取消同分支或 PR 的旧运行，互不取消。
 
-已移除定时构建、自动发布、HarmonyOS/Magisk 构建及 Linux GUI 安装包。
-对应源码目录继续保留。
+**Build result** 汇总编译结果，**CI result** 汇总检查和测试结果。必选任务失败、
+取消或意外跳过，都会让对应汇总失败。编译产物上传及清理独立于测试结果，测试失败
+继续显示在 EasyTier CI。
+
+移除定时构建、自动发布和重试、HarmonyOS、Magisk、FreeBSD，以及 Linux GUI 安装包。
+对应平台源码保留。
 
 ## 平台和公共流程
 
-| 产物 | 目标 |
+| 产物 | 目标 / 可下载产物数量 |
 | --- | --- |
-| Core/CLI/Web | 16 个：Linux x64、ARM64、RISC-V、LoongArch、ARMv7 硬/软浮点、ARM 硬/软浮点、MIPS/MIPSEL；FreeBSD x64；macOS Intel/ARM64；Windows x64/x86/ARM64 |
-| 桌面 GUI | 5 个：macOS Intel/ARM64，Windows x64/x86/ARM64 |
-| Android APK | 仅 ARM64 手机：aarch64（arm64-v8a） |
+| Core/CLI/Web | Linux、macOS、Windows，仅 x86-64 / 3 |
+| 桌面 GUI | macOS、Windows，仅 x86-64 / 2 |
+| Android APK | 仅 ARM64 手机，aarch64（arm64-v8a）/ 1 |
 
-Windows 命令行与 GUI 使用独立任务、独立产物。MIPS 沿用现有 Core/CLI 内容。
-Linux x64 包含 mini，并检查静态链接和程序启动。Windows 检查运行库依赖并打包
-网络驱动。Linux/Windows x64 使用实际分发的 Core 和内嵌 Web 运行网络创建冒烟测试。
+共 **6 份发布产物**。Windows 命令行与 GUI 使用独立任务、独立产物；macOS 使用
+Intel runner。Linux x64 包含 mini，验证静态链接和启动；Windows 打包网络驱动并
+验证运行库依赖。Linux/Windows 使用实际分发的 Core 和内嵌 Web 做网络创建冒烟测试。
 
-公共前端任务统一生成 proto，构建公共库、VPN 插件 API、Web、配置生成器、GUI，
-并执行前端单元测试。其他任务下载公共资源复用。CI 专用 Tauri 配置关闭重复的
-前端构建钩子，本地开发命令保持原有行为。环境准备只安装工具和依赖。
+分发产物使用 Release 模式。mini 在 Release 基础上优化体积，Tauri 桌面和 Android
+沿用默认 Release，只收集 `release` 目录。默认未签名/未公证；手动 `sign_windows`
+启用命令行程序 SignPath 测试签名，`sign_macos` 启用 macOS GUI 签名、公证，需对应 secrets。
 
-CI 脚本单测只执行一次。Rust 检查保留格式、Clippy、全量模式的 feature 组合、
-WASI、锁定依赖、协议/Web/GUI 后端测试及 Linux 网络集成测试。与正式编译重复
-的平台预检查仅在检查模式运行。GUI 后端继续在 Linux 上进行无界面测试。
-网络测试只编译一次，沿用三个互斥的 nextest 分组和原有独占/并发调度。
-Go 测试和生成代码一致性检查共用一次环境安装；Nix 直接构建，省去重复预检查。
+编译工作流集中生成 proto、公共库、VPN 插件 API、Web、配置生成器 WASM 和 GUI 资源，
+各平台下载复用。Tauri CI 配置关闭打包时重复的前端钩子。CI 工作流只准备测试和 Rust
+后端所需的前端资源。配置生成器或 Rust 接口有变化时，PR/develop 和手动 CI 另行编译
+配置生成器 WASM；main 由生产编译覆盖。每个工作流内公共库只构建一次；前端
+单测、CI 脚本单测只在 EasyTier CI 执行。
 
-桌面/命令行默认生成未签名/未公证产物。手动 `sign_windows` 启用命令行程序的 SignPath
-测试签名，`sign_macos` 启用 macOS GUI 签名和公证，需配置对应仓库 secrets。
+CI 保留格式、Clippy、WASI、锁定依赖、协议/Web/GUI 后端测试和 Linux 网络集成测试。
+main 及手动 CI 检查 feature 组合。PR/develop 和手动 CI 做平台、Android 轻量检查；
+main 推送时由 EasyTier Build 正式编译这些目标，省去重复预检查。Linux GUI 后端测试
+保留，不生成 Linux GUI 安装包。网络测试只编译一次，沿用三个 nextest 分组和既有
+独占/并发调度。Go 测试与 proto 一致性检查共用环境；Nix 省去重复的预检查。
 
-## 下载、旧产物清理及手动发布
+## 下载、旧产物清理和手动发布
 
-发布产物保留七天。命令行产物名为 `easytier-<平台>`，包含 Unix `.tar.gz` 或
-Windows `.zip` 成品包；tar 保留可执行权限。GUI 产物为 `easytier-gui-<平台>`，
-APK 为 `easytier-mobile-android-<架构>`，原生安装包保留原始文件。
-二进制/安装包附带 `COMMIT.txt` 和 `SHA256SUMS`，校验覆盖随包驱动。
-`easytier-web-dashboard` 包含前端 tar 成品包。内部复用的 `frontend-assets` 和
-`tests` 保留一天，不进入版本发布。
+发布产物保留七天。`easytier-<平台>` 包含 Unix `.tar.gz` 或 Windows `.zip` 成品包，
+tar 保留可执行权限。`easytier-gui-<平台>`、`easytier-mobile-android-aarch64` 包含
+原生安装包、`COMMIT.txt` 和 `SHA256SUMS`。Web 面板和配置生成器内嵌在命令行包的
+`easytier-web-embed` 中，不再提供单独 Web 下载包。
+中间产物 `frontend-assets`、`tests` 保留一天，不进入发布。
 
-新的主线全量编译及所有必选检查成功后，清理较早且已结束的主线构建产物，
-也清理旧 Core/GUI/Mobile/Custom Static/OHOS 工作流遗留的主线产物。
-保留正在运行、更新、PR、develop、无关工作流及来源不明的产物；新构建失败时
-保留上一份可用产物。不会删除 GitHub Release 附件。通常只保留最新一轮成功
-主线构建的下载内容，仍受七天有效期限制。
+新的主线编译成功后，先验证 **6 份新产物** 全部存在、非空、未过期且来源正确，
+再删除较早且已完成的主线构建产物。也清理已退休 Core/GUI/Mobile/Custom Static/OHOS
+工作流遗留的主线产物，包括旧架构包。保留正在运行、更新、PR、develop、无关及
+来源不明的运行。新编译失败或产物不完整时，保留上一份可用产物。不会删除 GitHub
+Release 附件；最新成功产物仍受七天有效期限制。
 
-版本发布时，手动运行 **EasyTier Release**，填写一个 `build_run_id`、`version`
-和 `make_latest`。构建必须来自本仓库成功的 EasyTier Build 全量运行，23 个预期
-发布产物必须齐全且未过期。Release 只下载通过校验的产物，直接复用压缩包和原生
-安装包，添加统一提交记录与校验和，并在构建提交上创建发布草稿，不重新编译或
-自动发布。需选择尚未被清理或过期的构建。
+版本发布时手动运行 **EasyTier Release**，填写一个成功全量 `build_run_id`、`version`
+和 `make_latest`。校验本仓库的 6 份产物完整有效后，只下载这些文件，添加统一提交
+记录和校验和，并在构建提交上创建发布草稿；不重新编译、不自动发布。需要选择
+尚未清理或过期的构建。
 
-Docker 保留现有手动上游镜像流程：run ID 仍指向 `EasyTier/EasyTier` 的 Core
-构建，执行者和镜像仓库配置沿用现状。
+Docker 保留现有手动上游镜像流程：run ID 指向 `EasyTier/EasyTier` 的 Core 构建，
+执行者与镜像仓库配置沿用现状。
 
 ## 本地验证
 
-执行 `actionlint -no-color`、`pnpm test:ci-scripts`、`pnpm test:unit`。
-`pnpm build:frontend:ci` 额外验证公共生产前端构建，需要 Rust WASM target 和
-wasm-pack。全平台编译及需要特权的 Linux 网络测试在 GitHub runner 上验证。
+执行 `actionlint -no-color` 和 `pnpm test:ci-scripts`。前端 CI 执行
+`pnpm build:frontend:check` 后执行 `pnpm test:frontend:ci`。
+`pnpm build:frontend:ci` 另验证完整生产前端及配置生成器 WASM，需要 Rust WASM target
+和 wasm-pack。全平台编译及需要特权的网络测试以 GitHub runner 实际运行为准。

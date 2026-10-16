@@ -4,91 +4,95 @@
 
 ## Entry points
 
-There are three workflows: **EasyTier Build**, **EasyTier Release**, and
-**EasyTier Docker**. Build is the only automatic entry point.
+Two automatic workflows keep testing separate from product compilation:
 
-| Trigger | Behavior |
+| Workflow | Triggers and responsibility |
 | --- | --- |
-| Push to `main` | Full platform builds, checks, and downloadable Actions artifacts |
-| Push to `develop`, or PR targeting `main`/`develop` | Relevant checks; no release binaries or installers |
-| Manual EasyTier Build on any branch | Full platform builds and all checks |
-| Draft PR | Skip builds/tests; retain the aggregate result |
+| **EasyTier CI** (`checks.yml`) | Push to `main`/`develop`, PR targeting either branch, or manual: relevant checks and tests |
+| **EasyTier Build** (`build.yml`) | Push to `main` or manual: Release binaries, installers, Web assets and artifact cleanup |
 
-Preparation calculates path filters and matrices once. New runs cancel older
-runs for the same branch/PR and mode; checks do not cancel full builds. Go,
-JavaScript Hosts, and Nix retain independent path filters. The single aggregate
-check is **Build result** (`build-result`): required jobs must succeed, including
-jobs that would otherwise be unexpectedly skipped.
+**EasyTier Release** and **EasyTier Docker** remain manual entry points. Draft
+PRs skip expensive checks. Unrelated PR/develop changes skip unrelated checks;
+Go, JavaScript Hosts and Nix retain their own path filters. Each automatic
+workflow cancels its older runs for the same branch/PR independently.
 
-Scheduled builds, automatic releases, HarmonyOS/Magisk build jobs, and Linux
-GUI installers have been removed. Their source directories remain available.
+`Build result` requires every planned compilation job to succeed. `CI result`
+requires every planned test/check job to succeed, including jobs unexpectedly
+skipped. Build uploads and cleanup are independent of the CI test result;
+failed tests remain visible in EasyTier CI.
+
+Scheduled builds, automatic publication/retry chains, HarmonyOS/Magisk builds,
+FreeBSD builds and Linux GUI installers are removed. Platform source remains.
 
 ## Platforms and shared work
 
-| Product | Targets |
+| Product | Targets / downloadable artifact count |
 | --- | --- |
-| Core/CLI/Web | 16: Linux x64, ARM64, RISC-V, LoongArch, ARMv7 hard/soft float, ARM hard/soft float, MIPS/MIPSEL; FreeBSD x64; macOS Intel/ARM64; Windows x64/x86/ARM64 |
-| Desktop GUI | 5: macOS Intel/ARM64 and Windows x64/x86/ARM64 |
-| Android APK | ARM64 phones only: aarch64 (arm64-v8a) |
+| Core/CLI/Web | Linux, macOS and Windows, x86-64 only / 3 |
+| Desktop GUI | macOS and Windows, x86-64 only / 2 |
+| Android APK | ARM64 phones only: aarch64 (arm64-v8a) / 1 |
 
-Windows CLI and GUI have separate jobs and artifacts. MIPS retains its existing
-Core/CLI-only payload. Linux x64 also includes mini and validates static linking
-and executable startup. Windows validates runtime dependencies and packages its
-network drivers. Linux/Windows x64 run the network-creation browser smoke test
+There are **6 product artifacts**. Windows CLI and GUI remain separate jobs and
+artifacts. macOS uses an Intel runner. Linux x64 includes mini, verifies static
+linking and executable startup. Windows packages network drivers and verifies
+runtime dependencies. Linux/Windows run the network-creation browser smoke test
 against the shipped Core and embedded Web binaries.
 
-One frontend job generates proto bindings, builds the shared library and VPN
-plugin API, builds Web/config-generator/GUI assets, and runs frontend unit tests.
-Other jobs download those resources. CI-only Tauri configuration disables its
-frontend build hook; local development commands retain their normal behavior.
-Setup actions install tools/dependencies without rebuilding frontend packages.
+Product builds use Release mode. Mini inherits Release with size optimizations;
+Tauri desktop/Android builds use their default Release mode and collect only
+`release` outputs. Signing/notarization is optional: manual `sign_windows`
+enables SignPath test signing for command-line binaries, and `sign_macos`
+enables signed, notarized GUI DMGs. Corresponding repository secrets are needed.
 
-CI script tests run once. Rust checks retain fmt, Clippy, individual feature
-combinations in full mode, WASI, locked dependencies, protocol/Web/GUI backend
-tests, and Linux network integration tests. Equivalent platform pre-checks run
-only in check mode. The GUI backend still has headless Linux tests. Network tests
-compile once and retain their three disjoint nextest groups and existing
-exclusive/concurrent scheduling. Go tests and generated-proto validation share
-one tool installation. Nix builds without a duplicate preliminary cargo check.
+The build workflow generates proto, shared library, VPN plugin API, Web,
+configuration-generator WASM and GUI assets once. Platform jobs download these
+resources. The Tauri CI configuration disables repeated frontend build hooks.
+The CI workflow builds only the frontend resources needed for tests and Rust
+backend checks. PR/develop and manual CI additionally compile configuration-generator
+WASM when its frontend or Rust interface changes; main uses the production build
+for this coverage. Shared frontend
+libraries are built once within each workflow; frontend unit tests and CI script
+tests run only in EasyTier CI.
 
-Desktop/command-line builds are unsigned/unnotarized by default. Manual `sign_windows` enables
-SignPath test signing for command-line binaries; `sign_macos` enables signed,
-notarized GUI DMGs. These opt-ins require their corresponding repository secrets.
+CI retains fmt, Clippy, WASI, locked dependencies, protocol/Web/GUI backend tests
+and Linux network integration tests. Feature combinations run on main and manual
+CI. Platform and Android pre-checks run on PR/develop and manual CI; a main push
+already compiles those products in EasyTier Build. Linux GUI backend tests remain,
+with no Linux GUI installer. Network tests compile once and preserve the three
+nextest groups and existing exclusive/concurrent scheduling. Go tests and
+proto consistency share tool setup; Nix skips its redundant preliminary check.
 
-## Downloads, cleanup, and manual releases
+## Downloads, cleanup and release
 
-Product artifacts expire after seven days. Core artifacts are named
-`easytier-<platform>` and contain a ready-made `.tar.gz` on Unix or `.zip` on
-Windows. Tarballs retain executable modes. GUI artifacts are
-`easytier-gui-<platform>`; APKs use `easytier-mobile-android-<arch>`. Native
-installers retain their filenames. Binary/native payloads include `COMMIT.txt`
-and `SHA256SUMS`, including shipped drivers. `easytier-web-dashboard` contains a
-ready-made frontend tarball. Internal `frontend-assets` and `tests` expire after
-one day and are excluded from releases.
+Product artifacts expire after seven days. `easytier-<platform>` contains a
+ready-made Unix `.tar.gz` or Windows `.zip`; tarballs preserve executable modes.
+`easytier-gui-<platform>` and `easytier-mobile-android-aarch64` contain native
+installers plus `COMMIT.txt` and `SHA256SUMS`. The dashboard and configuration
+generator ship inside `easytier-web-embed` in each command-line package, with
+no separate Web download. Intermediate `frontend-assets` and `tests` expire
+after one day and are excluded from release downloads.
 
-Only after all planned full-build jobs and checks succeed on `main`, cleanup
-deletes artifacts from older, completed main builds. It also migrates artifacts
-from the retired Core/GUI/Mobile/Custom Static/OHOS workflows. Running, newer,
-PR, develop, unrelated, or unidentified runs are preserved; failed new builds
-preserve the previous usable outputs. GitHub Release assets are not deleted.
-Normally only the latest successful main build remains downloadable, subject to
-the seven-day expiration.
+After a main build succeeds, cleanup first validates all **6 new product
+artifacts** are present, nonempty, unexpired and from this run. Only then does it
+delete artifacts from older completed main builds, including retired
+Core/GUI/Mobile/Custom Static/OHOS workflows and their old architecture outputs.
+Running, newer, PR, develop, unrelated and unidentified runs are preserved.
+Failed or incomplete builds keep the previous usable artifacts. GitHub Release
+assets are untouched; the latest successful build still expires after seven days.
 
-For a version release, run **EasyTier Release** with one `build_run_id`, `version`,
-and `make_latest`. The run must be a successful full EasyTier Build in this
-repository. All 23 expected product artifacts must exist and be unexpired.
-Release downloads only these artifacts, preserves ready-made archives/native
-installers, adds combined commit/checksum files, and creates a draft at the
-validated build commit. It performs no compilation or automatic publication.
-Choose a retained build before cleanup or expiration removes its artifacts.
+Run **EasyTier Release** with one successful full `build_run_id`, a `version`
+and `make_latest`. It validates the 6 expected artifacts in this repository,
+downloads only those files, adds combined commit/checksums and creates a draft
+at the build commit. It does no compilation or automatic publication. Choose a
+build whose artifacts have not been cleaned up or expired.
 
-Docker remains a manual upstream-image workflow: its run ID still refers to
-Core artifacts in `EasyTier/EasyTier`; existing actor and registry settings are
-retained.
+Docker retains the existing manual upstream-image flow: its run ID refers to
+Core artifacts in `EasyTier/EasyTier`, with the existing actor/registry settings.
 
 ## Local verification
 
-Run `actionlint -no-color`, `pnpm test:ci-scripts`, and `pnpm test:unit`.
-`pnpm build:frontend:ci` also verifies shared production frontend compilation
-and requires the Rust WASM target and wasm-pack. Full platform compilation and
-privileged Linux network tests are validated on GitHub runners.
+Run `actionlint -no-color` and `pnpm test:ci-scripts`. Run
+`pnpm build:frontend:check` then `pnpm test:frontend:ci` for frontend CI.
+`pnpm build:frontend:ci` also verifies production configuration-generator WASM
+and needs its Rust target and wasm-pack. Full platform compilation and privileged
+network tests are validated on GitHub runners.

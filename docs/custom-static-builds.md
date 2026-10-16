@@ -1,55 +1,29 @@
-# Custom static builds
+# Static builds
 
-`Custom Static Builds` runs on every push to `main`, including merged updates,
-and supports manual runs from the Actions page. It does not synchronize upstream
-source automatically.
+The former `Custom Static Builds` workflow is retired. Static builds now belong
+to **EasyTier Build**, separate from **EasyTier CI** testing. See the current
+[CI guide](../.github/CI.md) / [中文说明](../.github/CI.zh-CN.md) for triggers,
+platforms, downloads and cleanup. The audit below records the historical workflow.
 
-Builds on the same branch are serialized without cancelling an active build, so
-new commits do not discard an almost-finished Windows installer. GitHub keeps
-only the latest pending run when several updates arrive during a build.
+Linux, Windows and macOS products target x86-64 only. Android targets ARM64;
+FreeBSD, HarmonyOS, Magisk and Linux GUI installers are excluded. Product builds
+use Release mode, with mini's size-optimized profile inheriting Release.
 
-| Artifact | Contents |
-| --- | --- |
-| `custom-static-linux-x86_64.tar.gz` | core, cli, web-embed, mini (musl) |
-| `custom-static-windows-x86_64.zip` | gui NSIS installer, core, cli, web-embed, network DLLs/drivers |
+Linux x64 archives include Core, CLI, Web, embedded Web and mini. They preserve
+executable permissions and include the source commit and SHA-256 checksums.
+CI rejects dynamic interpreter/shared-library dependencies and smoke-tests
+startup. Mini uses native Clang/LLD for its linker options.
 
-The Actions artifact download is the archive itself, with no additional ZIP
-wrapper. Extract it once to access the programs, installer, and drivers.
-The upload uses `actions/upload-artifact@v7` with `archive: false` and the exact
-single-file path produced by the packaging step; the filename becomes the
-artifact name.
+Windows CLI archives include the network drivers and stay separate from GUI
+NSIS installers. CI rejects external VC++/UCRT runtime imports while allowing the
+existing Windows-provided `msvcrt.dll` compatibility layer. The GUI still needs
+WebView2. Frontend workspace packages, including the VPN plugin API, build in
+dependency order; platform bundling reuses their output.
 
-Linux programs are packaged with mode `0744` (`rwxr--r--`), preserved by the tar
-archive. Each archive contains the source
-commit and SHA-256 checksums. The embedded web server includes the dashboard and
-config generator. Mini uses its own size-optimized Cargo profile and a separate
-invocation to avoid feature unification with the full binaries.
-
-Linux binaries are checked for ELF interpreter/shared-library dependencies and
-smoke-tested with `--help`. Windows uses the repository's `+crt-static` setting;
-CI rejects external VC++/UCRT runtime imports. The existing VC-LTL compatibility
-layer uses the Windows-provided `msvcrt.dll`, which is allowed. Windows still needs system DLLs, the supplied
-network drivers, and WebView2 for the GUI. The NSIS installer includes the WebView2
-bootstrapper, which may download the runtime. These are not completely standalone
-Windows executables, and the installer is unsigned.
-
-After both builds succeed on main, cleanup keeps the current run's artifacts
-and deletes older completed main-branch build artifacts from this workflow and the
-legacy Core, GUI, Mobile and OHOS workflows. PRs, other branches, running/newer
-builds, test artifacts, releases and Git history are untouched. A failed build
-does not delete the previous good build. All new artifacts expire after seven
-days, including partial failed/cancelled runs and the latest successful build.
-Artifacts consume Actions storage, not Git repository history.
-
-In EasyTier-Custom, the legacy Core, GUI, Mobile and OHOS workflows are disabled
-in Actions settings to avoid duplicate/unrequested platform builds. Their source
-is retained; they can be explicitly re-enabled if needed. Test workflows remain
-enabled. No Rust target cache is uploaded by the custom workflow.
-
-Mini uses native Clang/LLD because Zig 0.16 does not accept its RELR/ICF linker
-options. It builds before the full Linux executables so linker failures surface
-early. On Windows, all frontend workspace packages build in dependency order,
-including `tauri-plugin-vpnservice-api`, before the Rust builds start.
+A successful main build validates all six new product artifacts before deleting
+older completed main build artifacts, including retired workflows and removed
+architectures. Failed or incomplete new builds keep the previous usable outputs.
+Products expire after seven days; Release assets and Git history are untouched.
 
 ## Warning audit (2026-09-26)
 

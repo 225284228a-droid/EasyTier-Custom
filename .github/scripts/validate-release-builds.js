@@ -15,7 +15,6 @@ function expectedArtifacts() {
     ...androidArchs.map(arch => ({
       name: `easytier-mobile-android-${arch}`, kind: 'native', extension: '.apk',
     })),
-    { name: 'easytier-web-dashboard', kind: 'archive', extension: '.tar.gz' },
   ];
 }
 

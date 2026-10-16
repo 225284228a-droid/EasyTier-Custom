@@ -4,23 +4,16 @@ mkdir -p artifacts
 SUFFIX=
 [[ "$TARGET" != *windows* ]] || SUFFIX=.exe
 
-if [[ "$TARGET" == *mips* ]]; then
-  # MIPS has no prebuilt Rust standard library, and historically ships Core/CLI.
-  RUSTC_BOOTSTRAP=1 cargo build --locked --release --target "$TARGET" \
-    -Z build-std=std,panic_abort -p easytier --features "$FEATURES" \
-    --bin easytier-core --bin easytier-cli
-else
-  BUILD=build
-  [[ "$TARGET" != *linux-musl* && "$TARGET" != *freebsd* ]] || BUILD=zigbuild
-  test -s easytier-web/frontend/dist/index.html
-  test -s easytier-web/frontend/dist/config-generator/index.html
-  cargo "$BUILD" --locked --release --target "$TARGET" -p easytier \
-    --features "$FEATURES" --bin easytier-core --bin easytier-cli
-  cargo "$BUILD" --locked --release --target "$TARGET" -p easytier-web
-  cp "target/$TARGET/release/easytier-web$SUFFIX" artifacts/
-  cargo "$BUILD" --locked --release --target "$TARGET" -p easytier-web --features embed
-  cp "target/$TARGET/release/easytier-web$SUFFIX" "artifacts/easytier-web-embed$SUFFIX"
-fi
+BUILD=build
+[[ "$TARGET" != *linux-musl* ]] || BUILD=zigbuild
+test -s easytier-web/frontend/dist/index.html
+test -s easytier-web/frontend/dist/config-generator/index.html
+cargo "$BUILD" --locked --release --target "$TARGET" -p easytier \
+  --features "$FEATURES" --bin easytier-core --bin easytier-cli
+cargo "$BUILD" --locked --release --target "$TARGET" -p easytier-web
+cp "target/$TARGET/release/easytier-web$SUFFIX" artifacts/
+cargo "$BUILD" --locked --release --target "$TARGET" -p easytier-web --features embed
+cp "target/$TARGET/release/easytier-web$SUFFIX" "artifacts/easytier-web-embed$SUFFIX"
 cp "target/$TARGET/release/easytier-core$SUFFIX" "target/$TARGET/release/easytier-cli$SUFFIX" artifacts/
 
 if [[ "$TARGET" == x86_64-unknown-linux-musl ]]; then

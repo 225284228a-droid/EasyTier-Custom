@@ -50,25 +50,28 @@ function fixture() {
   return { args, run, artifacts, workflow, outputs };
 }
 
-test('release allowlist has exactly 16 Core, five desktop GUI, Android ARM64, and Web artifacts', () => {
+test('release allowlist has three x86-64 Core, two desktop GUI, and Android ARM64 artifacts', () => {
   const expected = expectedArtifacts();
-  assert.equal(expected.length, 23);
-  assert.equal(expected.filter(a => a.name.startsWith('easytier-gui-')).length, 5);
+  assert.equal(expected.length, 6);
+  assert.deepEqual(expected.filter(a => a.kind === 'archive').map(a => a.name),
+    ['easytier-linux-x86_64', 'easytier-macos-x86_64', 'easytier-windows-x86_64']);
+  assert.deepEqual(expected.filter(a => a.name.startsWith('easytier-gui-')).map(a => a.name),
+    ['easytier-gui-macos-x86_64', 'easytier-gui-windows-x86_64']);
   assert.deepEqual(expected.filter(a => a.name.startsWith('easytier-mobile-android-')).map(a => a.name),
     ['easytier-mobile-android-aarch64']);
-  assert.equal(expected.filter(a => a.extension === '.zip').length, 3);
+  assert.equal(expected.filter(a => a.extension === '.zip').length, 1);
   assert.equal(new Set(expected.map(a => a.name)).size, expected.length);
-  assert.ok(expected.every(a => !/ohos|magisk|gui-linux/i.test(a.name)));
+  assert.ok(expected.every(a => !/ohos|magisk|freebsd|gui-linux|web-dashboard/i.test(a.name)));
 });
 
 test('release accepts completed full main pushes and selects only required artifact IDs', async () => {
   const f = fixture();
   for (const name of ['frontend-assets', 'tests', 'signpath-unsigned-windows-x86_64',
-    'signpath-signed-windows-x86_64', 'unknown-extra']) {
+    'signpath-signed-windows-x86_64', 'easytier-web-dashboard', 'unknown-extra']) {
     f.artifacts.push({ id: f.artifacts.length + 1, name });
   }
   const result = await validate(f.args);
-  assert.deepEqual(result.artifactIds, Array.from({ length: 23 }, (_, i) => i + 1));
+  assert.deepEqual(result.artifactIds, Array.from({ length: 6 }, (_, i) => i + 1));
   assert.equal(f.outputs.artifact_ids, result.artifactIds.join(','));
   assert.equal(f.outputs.build_sha, commit);
 });
@@ -128,7 +131,7 @@ test('release rejects invalid run inputs before making API calls', async () => {
 test('release requires every artifact and rejects duplicate ambiguity even if one copy expired', async () => {
   const missing = fixture();
   missing.artifacts.pop();
-  await assert.rejects(validate(missing.args), /exactly one easytier-web-dashboard artifact, found 0/);
+  await assert.rejects(validate(missing.args), /exactly one easytier-mobile-android-aarch64 artifact, found 0/);
   const duplicate = fixture();
   duplicate.artifacts.push({ ...duplicate.artifacts[0], id: 999, expired: true });
   await assert.rejects(validate(duplicate.args), /exactly one easytier-linux-x86_64 artifact, found 2/);
@@ -178,6 +181,7 @@ test('release preserves archive/installer bytes and creates combined commit/chec
   const args = await downloaded(t);
   const names = await prepareReleaseAssets(args);
   assert.equal(names.length, expectedArtifacts().length + 2);
+  assert.ok(names.every(name => !name.startsWith('easytier-web-dashboard')));
   for (const artifact of expectedArtifacts()) {
     const name = `${artifact.name}${artifact.extension}`;
     assert.deepEqual(await fs.readFile(path.join(args.destinationDir, name)),
@@ -192,11 +196,13 @@ test('release preserves archive/installer bytes and creates combined commit/chec
   }
 });
 
-test('release preparation refuses extra internal artifacts and creates no partial output', async t => {
-  const args = await downloaded(t);
-  await fs.mkdir(path.join(args.sourceDir, 'frontend-assets'));
-  await assert.rejects(prepareReleaseAssets(args), /allowlist/);
-  await assert.rejects(fs.stat(args.destinationDir), { code: 'ENOENT' });
+test('release preparation refuses internal or retired Web artifacts and creates no partial output', async t => {
+  for (const name of ['frontend-assets', 'easytier-web-dashboard']) {
+    const args = await downloaded(t);
+    await fs.mkdir(path.join(args.sourceDir, name));
+    await assert.rejects(prepareReleaseAssets(args), /allowlist/);
+    await assert.rejects(fs.stat(args.destinationDir), { code: 'ENOENT' });
+  }
 });
 
 test('release preparation refuses raw binaries in place of ready-made archives', async t => {
@@ -228,18 +234,17 @@ test('release preparation rejects missing or ambiguous checksums', async t => {
   }
 });
 
-test('release preparation refuses conflicting native asset filenames', async t => {
+test('release preparation preserves all installers within a native product artifact', async t => {
   const args = await downloaded(t);
-  const native = expectedArtifacts().filter(a => a.extension === '.exe');
-  const filename = 'same-installer.exe';
-  for (const artifact of native) {
-    const dir = path.join(args.sourceDir, artifact.name);
-    const content = await fs.readFile(path.join(dir, artifact.name + artifact.extension));
-    await fs.rename(path.join(dir, artifact.name + artifact.extension), path.join(dir, filename));
-    await fs.writeFile(path.join(dir, 'SHA256SUMS'),
-      `${sha256(content)}  ${filename}\n${sha256(`${commit}\n`)}  COMMIT.txt\n`);
-  }
-  await assert.rejects(prepareReleaseAssets(args), /duplicate filename/);
+  const artifact = expectedArtifacts().find(a => a.extension === '.apk');
+  const dir = path.join(args.sourceDir, artifact.name);
+  const filename = 'second-installer.apk';
+  const content = Buffer.from('second APK');
+  await fs.writeFile(path.join(dir, filename), content);
+  await fs.appendFile(path.join(dir, 'SHA256SUMS'), `${sha256(content)}  ${filename}\n`);
+  const names = await prepareReleaseAssets(args);
+  assert.ok(names.includes(filename));
+  assert.deepEqual(await fs.readFile(path.join(args.destinationDir, filename)), content);
 });
 
 test('release preparation refuses to overwrite a prior destination', async t => {

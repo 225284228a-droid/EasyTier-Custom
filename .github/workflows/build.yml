@@ -2,10 +2,7 @@ name: EasyTier Build
 
 on:
   push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
   workflow_dispatch:
     inputs:
       sign_windows:
@@ -22,7 +19,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: easytier-build-${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && 'full' || 'check' }}-${{ github.event.pull_request.number || github.ref }}
+  group: easytier-build-full-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -34,7 +31,7 @@ defaults:
 
 jobs:
   prepare:
-    name: Plan builds and checks
+    name: Plan release builds
     runs-on: ubuntu-latest
     outputs:
       active: ${{ steps.plan.outputs.active }}
@@ -60,20 +57,8 @@ jobs:
             const prepare = require('./.github/scripts/prepare-build.js');
             await prepare({ github, context, core });
 
-  ci-scripts:
-    name: CI script tests
-    needs: prepare
-    if: needs.prepare.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-      - run: node --test .github/scripts/*.test.js .github/scripts/*.test.cjs
-
   frontend:
-    name: Shared frontend build and tests
+    name: Shared production frontend assets
     needs: prepare
     if: needs.prepare.outputs.frontend == 'true'
     runs-on: ubuntu-24.04
@@ -92,7 +77,6 @@ jobs:
           shared-key: frontend-wasm
           save-if: ${{ github.event_name != 'pull_request' }}
       - run: pnpm build:frontend:ci
-      - run: pnpm test:frontend:ci
       - name: Package shared resources
         run: |
           mkdir -p easytier-web/frontend/dist/config-generator
@@ -107,167 +91,6 @@ jobs:
           path: frontend-assets.tar.gz
           retention-days: 1
           if-no-files-found: error
-      - name: Package downloadable Web frontend
-        if: needs.prepare.outputs.full == 'true'
-        run: |
-          tar -czf easytier-web-dashboard.tar.gz -C easytier-web/frontend/dist .
-      - uses: actions/upload-artifact@v5
-        if: needs.prepare.outputs.full == 'true'
-        with:
-          name: easytier-web-dashboard
-          path: easytier-web-dashboard.tar.gz
-          retention-days: 7
-          if-no-files-found: error
-
-  check:
-    name: Check (${{ matrix.name }})
-    needs: [prepare, frontend]
-    if: needs.prepare.outputs.rust == 'true' && needs.prepare.outputs.full != 'true'
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare.outputs.check_matrix) }}
-    runs-on: ${{ matrix.os }}
-    env:
-      TARGET: ${{ matrix.target }}
-      FEATURES: ${{ matrix.features }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/prepare-build
-        with:
-          target: ${{ matrix.target }}
-          token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
-        with:
-          name: frontend-assets
-      - run: tar -xzf frontend-assets.tar.gz
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: check-${{ matrix.target }}
-          save-if: ${{ github.event_name != 'pull_request' }}
-      - run: cargo check --locked --all-targets --target "$TARGET" --features "$FEATURES"
-      - name: Check Windows GUI with the same toolchain
-        if: runner.os == 'Windows'
-        run: |
-          bash .github/scripts/copy-windows-drivers.sh "$TARGET" easytier-gui/src-tauri
-          cargo check --locked --all-targets --target "$TARGET" -p easytier-gui --features custom-protocol
-
-  lint:
-    name: Rust lint, features and WASI
-    needs: [prepare, frontend]
-    if: needs.prepare.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/prepare-build
-        with:
-          target: wasm32-wasip1
-          components: rustfmt,clippy
-          gui: true
-          token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
-        with:
-          name: frontend-assets
-      - run: tar -xzf frontend-assets.tar.gz
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-lint
-          save-if: ${{ github.event_name != 'pull_request' }}
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --locked --all-targets --features full --all -- -D warnings
-      - uses: taiki-e/install-action@v2
-        if: needs.prepare.outputs.full == 'true'
-        with:
-          tool: cargo-hack
-      - name: Check individual feature combinations
-        if: needs.prepare.outputs.full == 'true'
-        run: cargo hack check --locked -p easytier --each-feature --exclude-features macos-ne --verbose
-      - name: Check WASI feature combination
-        run: >-
-          cargo check --locked -p easytier-core --lib --target wasm32-wasip1
-          --features management-rpc,proxy-smoltcp-stack,ring-crypto,wasi-crypto-offload
-      - run: cargo metadata --format-version 1 --locked > /dev/null
-
-  unit:
-    name: Rust unit tests and network test archive
-    needs: [prepare, frontend]
-    if: needs.prepare.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/prepare-build
-        with:
-          gui: true
-          token: ${{ github.token }}
-      - uses: actions/download-artifact@v5
-        with:
-          name: frontend-assets
-      - run: tar -xzf frontend-assets.tar.gz
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-unit
-          save-if: ${{ github.event_name != 'pull_request' }}
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-      - name: Protocol, Web and GUI backend tests
-        run: >-
-          cargo nextest run --locked -p easytier-proto -p easytier-web -p easytier-gui
-          --test-threads 1 --no-fail-fast
-      - name: Compile network tests once
-        run: >-
-          cargo nextest archive --locked --archive-file tests.tar.zst
-          -p easytier -p easytier-core --features full
-      - uses: actions/upload-artifact@v5
-        with:
-          name: tests
-          path: tests.tar.zst
-          retention-days: 1
-          if-no-files-found: error
-
-  network:
-    name: Network tests (${{ matrix.name }})
-    needs: [prepare, unit]
-    if: needs.prepare.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: easytier
-            filter: not test(tests::three_node)
-          - name: three_node
-            filter: test(tests::three_node) and not test(subnet_proxy_three_node_test)
-          - name: subnet_proxy_three_node_test
-            filter: test(subnet_proxy_three_node_test)
-    env:
-      TEST_FILTER: ${{ matrix.filter }}
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install network test dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qqy bridge-utils miniupnpd miniupnpd-iptables iptables
-          sudo modprobe br_netfilter
-          sudo modprobe tun
-          if [ ! -e /dev/net/tun ]; then
-            sudo mkdir -p /dev/net
-            sudo mknod /dev/net/tun c 10 200
-          fi
-          sudo sysctl net.bridge.bridge-nf-call-iptables=0
-          sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
-          sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
-          sudo ip addr add 2001:db8::2/64 dev lo
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-      - uses: actions/download-artifact@v5
-        with:
-          name: tests
-      - run: |
-          sudo prlimit --pid $$ --nofile=1048576:1048576
-          sudo -E env "PATH=$PATH" EASYTIER_LINUX_BPF_INTEGRATION=required \
-            cargo nextest run --archive-file tests.tar.zst -E "$TEST_FILTER" \
-            --profile ci --test-threads 1 --no-fail-fast
 
   core:
     name: CLI (${{ matrix.name }})
@@ -299,12 +122,12 @@ jobs:
         with:
           shared-key: core-release-${{ matrix.target }}
       - uses: mlugg/setup-zig@v2
-        if: runner.os == 'Linux' && !contains(matrix.target, 'mips')
+        if: runner.os == 'Linux'
         with:
           version: 0.16.0
           use-cache: true
       - uses: taiki-e/install-action@v2
-        if: runner.os == 'Linux' && !contains(matrix.target, 'mips')
+        if: runner.os == 'Linux'
         with:
           tool: cargo-zigbuild@0.23.2
       - name: Build command-line programs
@@ -459,7 +282,7 @@ jobs:
   android:
     name: Android (${{ matrix.arch }})
     needs: [prepare, frontend]
-    if: needs.prepare.outputs.rust == 'true'
+    if: needs.prepare.outputs.full == 'true'
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -496,9 +319,6 @@ jobs:
         with:
           shared-key: android-${{ matrix.arch }}-${{ needs.prepare.outputs.full }}
           save-if: ${{ github.event_name != 'pull_request' }}
-      - name: Check Android ARM64
-        if: needs.prepare.outputs.full != 'true'
-        run: cargo check --locked --lib --target "$TARGET" -p easytier-gui --features custom-protocol
       - name: Build APK using the shared GUI frontend
         if: needs.prepare.outputs.full == 'true'
         run: >-
@@ -518,71 +338,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  go:
-    name: Go tests and generated proto consistency
-    needs: prepare
-    if: needs.prepare.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.25.x'
-          cache-dependency-path: |
-            easytier-go/go.sum
-            easytier-go/examples/tun/go.sum
-      - uses: arduino/setup-protoc@v3
-        with:
-          version: '35.1'
-          repo-token: ${{ github.token }}
-      - run: go test ./...
-        working-directory: easytier-go
-      - run: go test ./...
-        working-directory: easytier-go/examples/tun
-      - run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
-      - run: |
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          ./easytier-go/script/generate-proto.sh
-          git diff --exit-code -- easytier-go/proto
-
-  js:
-    name: JavaScript Hosts build and tests
-    needs: prepare
-    if: needs.prepare.outputs.js == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/prepare-build
-        with:
-          target: wasm32-wasip1
-          token: ${{ github.token }}
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-      - uses: pnpm/action-setup@v5
-        with:
-          version: 10
-          run_install: false
-      - run: pnpm --dir easytier-js install --frozen-lockfile
-      - run: pnpm --dir easytier-js check
-
-  nix:
-    name: Nix environment check
-    needs: prepare
-    if: needs.prepare.outputs.nix == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: cachix/install-nix-action@v27
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-      - uses: DeterminateSystems/magic-nix-cache-action@v6
-      # A build includes the equivalent check; avoid compiling the same set twice.
-      - run: nix develop .#full --command cargo build --locked
-
   build-result:
     name: Build result
-    needs: [prepare, ci-scripts, frontend, check, lint, unit, network, core, gui, android, go, js, nix]
+    needs: [prepare, frontend, core, gui, android]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:

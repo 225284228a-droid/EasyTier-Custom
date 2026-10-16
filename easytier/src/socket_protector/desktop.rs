@@ -4,6 +4,8 @@
 //! registry holds only weak references, so fd reuse cannot protect an unrelated
 //! socket and TCP close is delayed only until its last reader/writer is dropped.
 
+#[cfg(target_os = "macos")]
+use nix::libc;
 use std::{
     collections::BTreeMap,
     io,
