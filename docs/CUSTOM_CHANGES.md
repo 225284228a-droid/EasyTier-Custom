@@ -170,6 +170,7 @@ cargo build --release --locked -p easytier
 - 共享前端 176 项、Web 前端 198 项、GUI 前端 62 项单测通过；配置转换脚本 10 项通过。Web、GUI 和配置生成器类型检查、生产构建通过，配置生成器 WASM 与 VPN service JS 插件构建通过；审查修复后再次通过 GUI 类型检查和共享配置 defaults/UI 29 项定向测试。
 - JS 浏览器和 Cloudflare WASI profile 构建、优化及 ABI 检查通过，运行时 28 项、浏览器 2 项、Cloudflare 2 项测试通过；示例类型检查、构建及 Wrangler 部署 dry-run 通过。
 - actionlint 检查全部 14 个 workflow 通过。本机 CI 脚本测试 31 项通过，9 项因缺少 Unix `zip` 命令失败；这些打包测试交由 Linux CI 验证。
+- 首轮远端 Go、JS 与 Linux CI 脚本测试通过。Linux 编译发现网卡配置的 trait 实现在合并后被拆成重复的两段，已合并为单一实现，并删除 Linux 共享网卡测试中的未使用导入；路由方法逻辑保持不变。WSL 下 `linux-netlink,ring-crypto` 最小特性库编译通过，完整 Linux 检查继续由 CI 执行。
 - Windows 本机不能验证 Linux TUN/netns、真实跨网络共享 TUN、内核转发和 Android 系统 VPN 生命周期；Linux 集成测试及 Android 完整构建由相应 CI 执行。移动端单元测试验证 generation、candidate 确认、过期停止和失败重试，不能替代真机 VPN 验收。
 
 ### 官方主线合入验证（2026-10-11）

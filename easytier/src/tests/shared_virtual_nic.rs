@@ -1,4 +1,4 @@
-use std::{net::Ipv4Addr, process::Command, sync::Arc, time::Duration};
+use std::{process::Command, sync::Arc, time::Duration};
 
 use easytier_core::{config::PeerId, process_runtime::CoreProcessRuntime};
 

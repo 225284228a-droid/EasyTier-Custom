@@ -304,6 +304,27 @@ impl NetlinkIfConfiger {
             Some(name.to_string_lossy().into_owned())
         }
     }
+
+    fn ipv4_route_message(
+        ifindex: u32,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+        source_hint: Option<Ipv4Addr>,
+    ) -> RouteMessage {
+        let mut builder = RouteMessageBuilder::new(libc::AF_INET as u8)
+            .destination(IpAddr::V4(address), cidr_prefix)
+            .oif(ifindex)
+            .priority(cost.unwrap_or(65535) as u32)
+            .table(libc::RT_TABLE_MAIN.into())
+            .static_protocol()
+            .universe_scope()
+            .route_type(RouteType::Unicast);
+        if let Some(source_hint) = source_hint {
+            builder = builder.preferred_source(IpAddr::V4(source_hint));
+        }
+        builder.build()
+    }
 }
 
 #[async_trait]
@@ -412,33 +433,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         }
         Ok(best.map(|(_, info)| info))
     }
-}
 
-impl NetlinkIfConfiger {
-    fn ipv4_route_message(
-        ifindex: u32,
-        address: Ipv4Addr,
-        cidr_prefix: u8,
-        cost: Option<i32>,
-        source_hint: Option<Ipv4Addr>,
-    ) -> RouteMessage {
-        let mut builder = RouteMessageBuilder::new(libc::AF_INET as u8)
-            .destination(IpAddr::V4(address), cidr_prefix)
-            .oif(ifindex)
-            .priority(cost.unwrap_or(65535) as u32)
-            .table(libc::RT_TABLE_MAIN.into())
-            .static_protocol()
-            .universe_scope()
-            .route_type(RouteType::Unicast);
-        if let Some(source_hint) = source_hint {
-            builder = builder.preferred_source(IpAddr::V4(source_hint));
-        }
-        builder.build()
-    }
-}
-
-#[async_trait]
-impl IfConfiguerTrait for NetlinkIfConfiger {
     async fn add_ipv4_route(
         &self,
         name: &str,
