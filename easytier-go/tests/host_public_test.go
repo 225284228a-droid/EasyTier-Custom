@@ -651,9 +651,13 @@ func (factory *recordingSocketFactory) ListenTCP(
 	if err != nil {
 		return nil, err
 	}
-	factory.mu.Lock()
-	factory.port = listener.Addr().(*net.TCPAddr).Port
-	factory.mu.Unlock()
+	// Exit proxy and port-forward services also create TCP listeners. Only
+	// publish the transport listener that another EasyTier instance can dial.
+	if options.Purpose == platform.TCPListenDirect {
+		factory.mu.Lock()
+		factory.port = listener.Addr().(*net.TCPAddr).Port
+		factory.mu.Unlock()
+	}
 	return listener, nil
 }
 

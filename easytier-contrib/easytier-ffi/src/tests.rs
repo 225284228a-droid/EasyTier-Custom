@@ -43,6 +43,42 @@ fn test_run_network_instance() {
 }
 
 #[test]
+fn run_network_instance_rejects_invalid_config_before_starting() {
+    for (input, expected) in [
+        ("[", "FFI instance config"),
+        ("[vpn]\ndns_protect = true", "dns_protect"),
+        (
+            "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.2'\n[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.3'",
+            "duplicate VPN rule CIDR",
+        ),
+        (
+            "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '127.0.0.1'",
+            "invalid exit address",
+        ),
+    ] {
+        let name = CString::new(format!("rejected-{}", Uuid::new_v4())).unwrap();
+        // Keep a regressed implementation from touching a native interface or
+        // opening listeners while checking that execution agrees with parsing.
+        let config = CString::new(format!(
+            "instance_name = '{}'\nlisteners = []\n{input}\n[flags]\nno_tun = true\n",
+            name.to_str().unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(unsafe { parse_config(config.as_ptr()) }, -1);
+        let status = unsafe { run_network_instance(config.as_ptr()) };
+        let error = take_last_error();
+        if status == 0 {
+            let names = [name.as_ptr()];
+            unsafe { delete_network_instance(names.as_ptr(), names.len()) };
+        }
+        assert_eq!(status, -1, "invalid input was started: {input}");
+        let error = error.expect("rejected config must expose an error");
+        assert!(error.contains("failed to parse config"), "{error}");
+        assert!(error.contains(expected), "{input}: {error}");
+    }
+}
+
+#[test]
 fn get_error_msg_returns_config_server_callback_error() {
     let hooks = ManagedConfigServerClientHooks::new(None, std::ptr::null_mut());
     let callback_error = format!("callback delivery failed {}", Uuid::new_v4());

@@ -183,16 +183,7 @@ impl Command {
     ///
     /// Return `true` if the program is running as root, otherwise false
     ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    ///
-    /// fn main() {
-    ///     let is_elevated = Command::is_elevated();
-    ///
-    /// }
-    /// ```
+    /// GUI callers use this internal helper to check whether elevation is needed.
     pub fn is_elevated() -> bool {
         let uid = unsafe { libc::getuid() };
         let euid = unsafe { libc::geteuid() };
@@ -207,18 +198,8 @@ impl Command {
     /// Prompting the user with a graphical OS dialog for the root password,
     /// excuting the command with escalated privileges, and return the output
     ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     let output = elevated_cmd.output().unwrap();
-    /// }
-    /// ```
+    /// Construct this internal wrapper with [`Command::new`] from a
+    /// [`std::process::Command`], then handle the returned process status.
     pub fn output(&self) -> Result<Output> {
         let status = runas_root_gui(self)?;
         Ok(Output {

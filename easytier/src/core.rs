@@ -5,8 +5,8 @@ use crate::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
             LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
             VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_config,
-            load_config_from_file, load_toml_config_from_path,
-            load_toml_config_from_str_with_source, parse_mapped_listener_urls,
+            load_config_from_file, parse_mapped_listener_urls,
+            validate_toml_config_from_str_with_source,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -1630,9 +1630,14 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
                 .read_to_string(&mut stdin)
                 .await
                 .context("failed to read config from stdin")?;
-            load_toml_config_from_str_with_source("stdin", stdin.as_str())?;
+            validate_toml_config_from_str_with_source("stdin", stdin.as_str())?;
         } else {
-            load_toml_config_from_path(config_file)?;
+            let config = tokio::fs::read_to_string(config_file)
+                .await
+                .with_context(|| {
+                    format!("failed to read config file: {}", config_file.display())
+                })?;
+            validate_toml_config_from_str_with_source(&config_file.display().to_string(), &config)?;
         };
     }
 

@@ -22,16 +22,7 @@ impl Command {
     ///
     /// Return `true` if the program is running as root, otherwise false
     ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    ///
-    /// fn main() {
-    ///     let is_elevated = Command::is_elevated();
-    ///
-    /// }
-    /// ```
+    /// GUI callers use this internal helper to check whether elevation is needed.
     pub fn is_elevated() -> bool {
         // Thanks to https://stackoverflow.com/a/8196291
         unsafe {
@@ -67,18 +58,8 @@ impl Command {
     ///
     /// On Windows, Output.stdout and Output.stderr will always be empty as of now
     ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     let output = elevated_cmd.output().unwrap();
-    /// }
-    /// ```
+    /// Construct this internal wrapper with [`Command::new`] from a
+    /// [`std::process::Command`], then handle the returned process status.
     pub fn output(&self) -> Result<Output> {
         let args = self
             .cmd

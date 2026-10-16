@@ -42,19 +42,34 @@ pub fn load_toml_config_from_str_with_source(
 ) -> Result<TomlConfigLoader, anyhow::Error> {
     let config = TomlConfigLoader::new_from_str_tolerant_with_source(source_name, config_str)?;
     #[cfg(feature = "logging")]
-    {
-        let ignored_sections = ignored_logging_sections(config_str);
-        if !ignored_sections.is_empty() {
-            log::warn!(
-                config_source = source_name,
-                ?ignored_sections,
-                "Logging configuration in TOML is ignored because logging is process-wide. \
-                 Use command-line options (e.g. --console-log-level, --file-log-level, --file-log-dir) \
-                 or ET_* logging environment variables instead."
-            );
-        }
-    }
+    warn_ignored_logging_sections(source_name, config_str);
     Ok(config)
+}
+
+/// Explicit validation must reject invalid values even though startup may
+/// recover the remaining valid fields from the same file.
+pub fn validate_toml_config_from_str_with_source(
+    source_name: &str,
+    config_str: &str,
+) -> Result<(), anyhow::Error> {
+    TomlConfigLoader::new_from_str_with_source(source_name, config_str)?;
+    #[cfg(feature = "logging")]
+    warn_ignored_logging_sections(source_name, config_str);
+    Ok(())
+}
+
+#[cfg(feature = "logging")]
+fn warn_ignored_logging_sections(source_name: &str, config_str: &str) {
+    let ignored_sections = ignored_logging_sections(config_str);
+    if !ignored_sections.is_empty() {
+        log::warn!(
+            config_source = source_name,
+            ?ignored_sections,
+            "Logging configuration in TOML is ignored because logging is process-wide. \
+             Use command-line options (e.g. --console-log-level, --file-log-level, --file-log-dir) \
+             or ET_* logging environment variables instead."
+        );
+    }
 }
 
 #[cfg(any(feature = "logging", test))]

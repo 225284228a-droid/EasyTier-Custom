@@ -27,6 +27,69 @@ fn stderr_on_success(output: Output) -> String {
 }
 
 #[test]
+fn check_config_rejects_invalid_documents_from_files_and_stdin() {
+    for (input, expected) in [
+        ("[", "Config validation failed"),
+        ("[vpn]\ndns_protect = true", "dns_protect"),
+        (
+            "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '127.0.0.1'",
+            "invalid exit address",
+        ),
+    ] {
+        let mut config = NamedTempFile::new().unwrap();
+        write!(config, "{input}").unwrap();
+        let file_output = check_config_command()
+            .arg("--config-file")
+            .arg(config.path())
+            .output()
+            .unwrap();
+        let mut child = check_config_command()
+            .args(["--config-file", "-"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let stdin_output = child.wait_with_output().unwrap();
+        for output in [file_output, stdin_output] {
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(!output.status.success(), "{input}: {stderr}");
+            assert!(stderr.contains(expected), "{input}: {stderr}");
+        }
+    }
+}
+
+#[test]
+fn check_config_accepts_valid_vpn_documents_from_files_and_stdin() {
+    let input = "listeners = []\n[flags]\nno_tun = true\n[vpn]\nexit_enabled = false\n[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.2'\n";
+    let mut config = NamedTempFile::new().unwrap();
+    write!(config, "{input}").unwrap();
+    stderr_on_success(
+        check_config_command()
+            .arg("--config-file")
+            .arg(config.path())
+            .output()
+            .unwrap(),
+    );
+    let mut child = check_config_command()
+        .args(["--config-file", "-"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    stderr_on_success(child.wait_with_output().unwrap());
+}
+
+#[test]
 fn check_config_warns_for_each_file_with_ignored_logging() {
     let mut console_config = NamedTempFile::new().unwrap();
     writeln!(console_config, "[console_logger]\nlevel = 'off'").unwrap();
