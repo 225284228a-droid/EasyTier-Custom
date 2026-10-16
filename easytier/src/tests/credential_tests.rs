@@ -379,6 +379,11 @@ fn create_shared_config(
         "".to_string(),
     ));
     config.set_secure_mode(Some(generate_secure_mode_config()));
+    // This relay serves foreign networks with different secrets. Custom's
+    // private-by-default policy requires an explicit public relay opt-in.
+    let mut flags = config.get_flags();
+    flags.private_mode = false;
+    config.set_flags(flags);
     config
 }
 

@@ -736,6 +736,10 @@ pub async fn subnet_proxy_three_node_test(
                     "public".to_string(),
                     "public".to_string(),
                 ));
+                // Public-relay cases must opt out of Custom's private default.
+                let mut flags = cfg.get_flags();
+                flags.private_mode = false;
+                cfg.set_flags(flags);
             }
 
             if cfg.get_inst_name() == "inst1" {
@@ -1145,6 +1149,10 @@ pub async fn foreign_network_forward_nic_data() {
     );
     center_node_config
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+    // This center relays a foreign network with a different secret.
+    let mut flags = center_node_config.get_flags();
+    flags.private_mode = false;
+    center_node_config.set_flags(flags);
     let mut center_inst =
         Instance::new_with_process_runtime(center_node_config, process_runtime.clone());
 
@@ -1977,6 +1985,10 @@ pub async fn foreign_network_functional_cluster() {
     );
     center_node_config1
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+    // Both centers publicly relay the foreign network below.
+    let mut flags = center_node_config1.get_flags();
+    flags.private_mode = false;
+    center_node_config1.set_flags(flags);
     let mut center_inst1 =
         Instance::new_with_process_runtime(center_node_config1, process_runtime.clone());
 
@@ -1988,6 +2000,9 @@ pub async fn foreign_network_functional_cluster() {
     );
     center_node_config2
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+    let mut flags = center_node_config2.get_flags();
+    flags.private_mode = false;
+    center_node_config2.set_flags(flags);
     let mut center_inst2 =
         Instance::new_with_process_runtime(center_node_config2, process_runtime.clone());
 
@@ -2064,6 +2079,10 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     if is_foreign {
         center_node_config
             .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+        // A reconnect to this foreign center requires public relay admission.
+        let mut flags = center_node_config.get_flags();
+        flags.private_mode = false;
+        center_node_config.set_flags(flags);
     }
     let mut center_inst =
         Instance::new_with_process_runtime(center_node_config, process_runtime.clone());
@@ -2409,6 +2428,8 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
                     "public".to_string(),
                 ));
                 let mut f = cfg.get_flags();
+                // Measure forwarding through an explicitly public relay.
+                f.private_mode = false;
                 f.foreign_relay_bps_limit = bps_limit * 1024;
                 cfg.set_flags(f);
             }
@@ -4595,12 +4616,47 @@ pub async fn dhcpv6_three_node_connectivity(#[case] dhcp_ipv4: bool, #[case] sta
     }
     wait_for_condition(
         || async {
-            insts[0]
-                .get_core_instance()
-                .route_snapshots()
-                .await
+            let leases = insts
                 .iter()
-                .all(|route| route.ipv6_addr.is_some())
+                .map(|inst| {
+                    (
+                        inst.peer_id(),
+                        inst.get_global_ctx().get_ipv4(),
+                        inst.get_global_ctx().get_ipv6(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            // A local lease can still collide during DHCP bootstrap. Wait for
+            // distinct IPv4 leases and both families to reach every peer before
+            // testing TCP; an IPv6-only snapshot cannot establish IPv4 readiness.
+            if (dhcp_ipv4 || static_ipv4)
+                && leases
+                    .iter()
+                    .filter_map(|(_, ipv4, _)| ipv4.map(|ip| ip.address()))
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != insts.len()
+            {
+                return false;
+            }
+            for inst in &insts {
+                let routes = inst.get_core_instance().route_snapshots().await;
+                for (peer_id, ipv4, ipv6) in &leases {
+                    if *peer_id == inst.peer_id() {
+                        continue;
+                    }
+                    let Some(route) = routes.iter().find(|route| route.peer_id == *peer_id) else {
+                        return false;
+                    };
+                    if route.ipv6_addr.map(cidr::Ipv6Inet::from) != *ipv6
+                        || ((dhcp_ipv4 || static_ipv4)
+                            && route.ipv4_addr.map(cidr::Ipv4Inet::from) != *ipv4)
+                    {
+                        return false;
+                    }
+                }
+            }
+            true
         },
         Duration::from_secs(15),
     )

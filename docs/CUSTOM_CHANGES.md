@@ -172,6 +172,8 @@ cargo build --release --locked -p easytier
 - actionlint 检查全部 14 个 workflow 通过。本机 CI 脚本测试 31 项通过，9 项因缺少 Unix `zip` 命令失败；这些打包测试交由 Linux CI 验证。
 - 首轮远端 Go、JS 与 Linux CI 脚本测试通过。Linux 编译发现网卡配置的 trait 实现在合并后被拆成重复的两段，已合并为单一实现，并删除 Linux 共享网卡测试中的未使用导入；路由方法逻辑保持不变。WSL 下 `linux-netlink,ring-crypto` 最小特性库编译通过，完整 Linux 检查继续由 CI 执行。
 - 后续 Linux Clippy 发现两个随 Magic DNS 移除后已无调用方的共享网卡测试辅助函数，已删除这些函数及其专用导入；现有测试和断言保持不变。WSL 原生包 `cargo clippy --locked -p easytier --all-targets --features full -- -D warnings` 复验通过。
+- Linux 网络 CI 的公开中继场景仍依赖上游 `private_mode=false` 的默认值，与 Custom 默认私有中继不符；现仅在这些测试节点上显式允许公开中继，保留生产准入策略和凭据拒绝、撤销、唯一归属、重连及限速断言。使用原 CI 二进制复现共享凭据和跨网络连接失败后，修复源码在 WSL 下的 159 项回归全部通过，包括 128 个公开中继子网代理组合。
+- DHCP 双栈测试补齐 IPv4 租约唯一性及所有节点的双栈路由传播检查，沿用原 15 秒准备期限和 TCP 数据断言。CI 曾出现一次 IPv4 TCP 连接拒绝，原二进制在本机三场景和双栈 10 次重复均通过，故不将具体竞态原因记为已完全复现；修复后的三场景随上述 159 项通过，双栈另行重复 10/10 通过，WSL 临时调整的 bridge netfilter 参数已恢复。
 - Android 四架构（aarch64、armv7、i686、x86_64）完整 APK 构建和后续 ARM64 编译检查均通过，临时启用的 Mobile 工作流已恢复为 `disabled_manually`。完整构建来源为 `a9c342ee`，后续变更仅涉及 Linux 代码、测试辅助函数和文档，Android 生产构建输入未变。
 - Windows 本机不能验证 Linux TUN/netns、真实跨网络共享 TUN、内核转发和 Android 系统 VPN 生命周期；Linux 集成测试及 Android 完整构建由相应 CI 执行。移动端单元测试验证 generation、candidate 确认、过期停止和失败重试，不能替代真机 VPN 验收。
 
