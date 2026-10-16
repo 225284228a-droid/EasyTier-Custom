@@ -11,8 +11,7 @@ use crate::{
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::{
-        shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedIpv4Route},
-        test_instance::TestInstance as Instance,
+        shared_virtual_nic::ArcSharedVirtualNicRegistry, test_instance::TestInstance as Instance,
     },
     tunnel::common::tests::wait_for_condition,
 };
@@ -213,21 +212,6 @@ async fn patch_proxy_cidr(
         })
         .await
         .unwrap();
-}
-
-async fn shared_route_owner_count(
-    registry: &ArcSharedVirtualNicRegistry,
-    dev_name: &str,
-    route: &SharedIpv4Route,
-) -> usize {
-    let nic = {
-        let registry = registry.lock().await;
-        registry.get_by_dev_name_for_test(dev_name)
-    };
-    let Some(nic) = nic else {
-        return 0;
-    };
-    nic.lock().await.ifcfg().owners_of_ipv4_route(route).len()
 }
 
 #[tokio::test]

@@ -75,11 +75,6 @@ impl SharedVirtualNic {
         self.valid.load(Ordering::Acquire)
     }
 
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn ifcfg(&self) -> &SharedIfConfig {
-        &self.ifcfg
-    }
-
     pub fn nic(&self) -> Arc<Mutex<VirtualNic>> {
         self.nic.clone()
     }
