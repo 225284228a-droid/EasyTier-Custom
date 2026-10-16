@@ -29,7 +29,7 @@ GUI installers have been removed. Their source directories remain available.
 | --- | --- |
 | Core/CLI/Web | 16: Linux x64, ARM64, RISC-V, LoongArch, ARMv7 hard/soft float, ARM hard/soft float, MIPS/MIPSEL; FreeBSD x64; macOS Intel/ARM64; Windows x64/x86/ARM64 |
 | Desktop GUI | 5: macOS Intel/ARM64 and Windows x64/x86/ARM64 |
-| Android APK | 4: aarch64, armv7, i686, x86_64 |
+| Android APK | ARM64 phones only: aarch64 (arm64-v8a) |
 
 Windows CLI and GUI have separate jobs and artifacts. MIPS retains its existing
 Core/CLI-only payload. Linux x64 also includes mini and validates static linking
@@ -76,7 +76,7 @@ the seven-day expiration.
 
 For a version release, run **EasyTier Release** with one `build_run_id`, `version`,
 and `make_latest`. The run must be a successful full EasyTier Build in this
-repository. All 26 expected product artifacts must exist and be unexpired.
+repository. All 23 expected product artifacts must exist and be unexpired.
 Release downloads only these artifacts, preserves ready-made archives/native
 installers, adds combined commit/checksum files, and creates a draft at the
 validated build commit. It performs no compilation or automatic publication.

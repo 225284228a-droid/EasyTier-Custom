@@ -32,7 +32,7 @@ module.exports = async ({ github, context, core }) => {
     draft: context.payload.pull_request?.draft ?? false, changedFiles,
   });
   for (const [key, value] of Object.entries(plan)) core.setOutput(key, String(value));
-  for (const [key, value] of Object.entries({ core: coreTargets, gui: guiTargets, android: plan.full ? androidArchs : ['aarch64'], check: checkTargets })) {
+  for (const [key, value] of Object.entries({ core: coreTargets, gui: guiTargets, android: androidArchs, check: checkTargets })) {
     core.setOutput(`${key}_matrix`, JSON.stringify(key === 'android' ? { arch: value } : { include: value }));
   }
   core.info(`Build plan: ${JSON.stringify(plan)}`);

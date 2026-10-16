@@ -24,7 +24,7 @@ const coreTargets = [
 const guiTargets = coreTargets
   .filter(({ target }) => /windows|darwin/.test(target))
   .map(({ target, os, name }) => ({ target, os, name }));
-const androidArchs = ['aarch64', 'armv7', 'i686', 'x86_64'];
+const androidArchs = ['aarch64'];
 const checkTargets = coreTargets.filter(({ name }) =>
   ['linux-x86_64', 'macos-aarch64', 'windows-x86_64'].includes(name));
 

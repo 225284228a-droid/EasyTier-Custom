@@ -50,11 +50,12 @@ function fixture() {
   return { args, run, artifacts, workflow, outputs };
 }
 
-test('release allowlist has exactly 16 Core, five desktop GUI, four Android, and Web artifacts', () => {
+test('release allowlist has exactly 16 Core, five desktop GUI, Android ARM64, and Web artifacts', () => {
   const expected = expectedArtifacts();
-  assert.equal(expected.length, 26);
+  assert.equal(expected.length, 23);
   assert.equal(expected.filter(a => a.name.startsWith('easytier-gui-')).length, 5);
-  assert.equal(expected.filter(a => a.name.startsWith('easytier-mobile-android-')).length, 4);
+  assert.deepEqual(expected.filter(a => a.name.startsWith('easytier-mobile-android-')).map(a => a.name),
+    ['easytier-mobile-android-aarch64']);
   assert.equal(expected.filter(a => a.extension === '.zip').length, 3);
   assert.equal(new Set(expected.map(a => a.name)).size, expected.length);
   assert.ok(expected.every(a => !/ohos|magisk|gui-linux/i.test(a.name)));
@@ -67,7 +68,7 @@ test('release accepts completed full main pushes and selects only required artif
     f.artifacts.push({ id: f.artifacts.length + 1, name });
   }
   const result = await validate(f.args);
-  assert.deepEqual(result.artifactIds, Array.from({ length: 26 }, (_, i) => i + 1));
+  assert.deepEqual(result.artifactIds, Array.from({ length: 23 }, (_, i) => i + 1));
   assert.equal(f.outputs.artifact_ids, result.artifactIds.join(','));
   assert.equal(f.outputs.build_sha, commit);
 });
@@ -176,7 +177,7 @@ async function downloaded(t) {
 test('release preserves archive/installer bytes and creates combined commit/checksum files', async t => {
   const args = await downloaded(t);
   const names = await prepareReleaseAssets(args);
-  assert.equal(names.length, 28);
+  assert.equal(names.length, expectedArtifacts().length + 2);
   for (const artifact of expectedArtifacts()) {
     const name = `${artifact.name}${artifact.extension}`;
     assert.deepEqual(await fs.readFile(path.join(args.destinationDir, name)),
@@ -184,7 +185,7 @@ test('release preserves archive/installer bytes and creates combined commit/chec
   }
   assert.equal(await fs.readFile(path.join(args.destinationDir, 'COMMIT.txt'), 'utf8'), `${commit}\n`);
   const checksums = await fs.readFile(path.join(args.destinationDir, 'SHA256SUMS'), 'utf8');
-  assert.equal(checksums.trim().split('\n').length, 27);
+  assert.equal(checksums.trim().split('\n').length, expectedArtifacts().length + 1);
   for (const line of checksums.trim().split('\n')) {
     const [digest, name] = line.split('  ');
     assert.equal(digest, sha256(await fs.readFile(path.join(args.destinationDir, name))));

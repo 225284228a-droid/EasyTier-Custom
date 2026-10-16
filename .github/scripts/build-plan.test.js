@@ -4,12 +4,12 @@ const { coreTargets, guiTargets, androidArchs, buildPlan } = require('./build-co
 const prepare = require('./prepare-build.js');
 const { expectedJobs, checkResults } = require('./check-build-results.js');
 
-test('the public build matrix retains all CPU architectures without Linux GUI, OHOS or Magisk', () => {
+test('the public build matrix retains desktop targets and builds Android ARM64 only', () => {
   assert.equal(coreTargets.length, 16);
   assert.equal(guiTargets.length, 5);
   assert.equal(new Set(coreTargets.map(t => t.target)).size, 16);
   assert.equal(new Set(guiTargets.map(t => t.target)).size, 5);
-  assert.deepEqual(androidArchs, ['aarch64', 'armv7', 'i686', 'x86_64']);
+  assert.deepEqual(androidArchs, ['aarch64']);
   assert.deepEqual(guiTargets.map(t => t.name).sort(), [
     'macos-aarch64', 'macos-x86_64', 'windows-arm64', 'windows-i686', 'windows-x86_64',
   ]);

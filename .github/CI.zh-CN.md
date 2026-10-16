@@ -28,7 +28,7 @@ Build 是唯一自动运行入口。
 | --- | --- |
 | Core/CLI/Web | 16 个：Linux x64、ARM64、RISC-V、LoongArch、ARMv7 硬/软浮点、ARM 硬/软浮点、MIPS/MIPSEL；FreeBSD x64；macOS Intel/ARM64；Windows x64/x86/ARM64 |
 | 桌面 GUI | 5 个：macOS Intel/ARM64，Windows x64/x86/ARM64 |
-| Android APK | 4 个：aarch64、armv7、i686、x86_64 |
+| Android APK | 仅 ARM64 手机：aarch64（arm64-v8a） |
 
 Windows 命令行与 GUI 使用独立任务、独立产物。MIPS 沿用现有 Core/CLI 内容。
 Linux x64 包含 mini，并检查静态链接和程序启动。Windows 检查运行库依赖并打包
@@ -63,7 +63,7 @@ APK 为 `easytier-mobile-android-<架构>`，原生安装包保留原始文件�
 主线构建的下载内容，仍受七天有效期限制。
 
 版本发布时，手动运行 **EasyTier Release**，填写一个 `build_run_id`、`version`
-和 `make_latest`。构建必须来自本仓库成功的 EasyTier Build 全量运行，26 个预期
+和 `make_latest`。构建必须来自本仓库成功的 EasyTier Build 全量运行，23 个预期
 发布产物必须齐全且未过期。Release 只下载通过校验的产物，直接复用压缩包和原生
 安装包，添加统一提交记录与校验和，并在构建提交上创建发布草稿，不重新编译或
 自动发布。需选择尚未被清理或过期的构建。

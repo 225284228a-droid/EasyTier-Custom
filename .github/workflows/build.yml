@@ -466,7 +466,7 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.android_matrix) }}
     runs-on: ubuntu-24.04
     env:
-      TARGET: ${{ matrix.arch == 'armv7' && 'armv7-linux-androideabi' || format('{0}-linux-android', matrix.arch) }}
+      TARGET: ${{ format('{0}-linux-android', matrix.arch) }}
       ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v5
