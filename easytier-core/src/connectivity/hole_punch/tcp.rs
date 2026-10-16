@@ -1182,19 +1182,18 @@ where
             .await
             .into_iter()
             .find(|candidate| candidate.peer_id == dst_peer_id)
-            .map(|candidate| candidate.peer_disguise_flags)
-            .unwrap_or_default();
-        let use_wss =
-            policy.use_wss_http3_with_peer(&peer_policy) && self.supports_wss_hole_punching;
-        let allow_raw = policy.allow_raw_with_peer(&peer_policy);
-        let mut requested_scheme = if use_wss { "wss" } else { "tcp" };
-        if !use_wss && !allow_raw {
+            .map(|candidate| candidate.peer_disguise_flags);
+        let transport_policy = policy.transport_policy(peer_policy.as_ref());
+        let Some(use_wss) = transport_policy.select_disguised(self.supports_wss_hole_punching)
+        else {
             tracing::debug!(
                 dst_peer_id,
                 "tcp hole punch skipped by WSS/HTTP3 P2P policy"
             );
             return Ok(());
-        }
+        };
+        let allow_raw = transport_policy.allow_raw();
+        let mut requested_scheme = if use_wss { "wss" } else { "tcp" };
         let local_nat_type = normalize_local_tcp_nat_type(self.stun.as_ref());
         tracing::debug!(?local_nat_type, "tcp hole punch initiator start");
         if !initiator_eligible(local_nat_type) {
@@ -1425,8 +1424,12 @@ where
         let local_peer_id = self.peer_source.local_peer_id();
         let mut peers_to_connect = Vec::new();
         for candidate in self.peer_source.candidates().await {
-            let use_wss_engine = policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
-                && self.supports_wss_hole_punching;
+            let transport_policy = policy.transport_policy(Some(&candidate.peer_disguise_flags));
+            let Some(use_wss_engine) =
+                transport_policy.select_disguised(self.supports_wss_hole_punching)
+            else {
+                continue;
+            };
             let already_connected = if use_wss_engine {
                 candidate.wss_satisfied
             } else {
@@ -1440,11 +1443,6 @@ where
                 candidate.has_direct_connection,
                 already_connected,
             ) {
-                continue;
-            }
-
-            let allow_raw = policy.allow_raw_with_peer(&candidate.peer_disguise_flags);
-            if !use_wss_engine && !allow_raw {
                 continue;
             }
 

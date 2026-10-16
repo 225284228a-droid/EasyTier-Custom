@@ -387,11 +387,11 @@ where
         peer_id: PeerId,
         peer: Option<&PeerDisguiseP2pFlags>,
     ) -> bool {
-        let use_disguise = peer.map(|peer| {
-            self.peer_manager
-                .p2p_policy_flags()
-                .use_wss_http3_with_peer(peer)
-        });
+        let use_disguise = self
+            .peer_manager
+            .p2p_policy_flags()
+            .transport_policy(peer)
+            .negotiated_disguise();
         // Without route metadata keep today's dialing behavior: do not start
         // new disguised attempts. The `Option` handed to the query keeps the
         // negotiated preference untouched.
@@ -479,23 +479,15 @@ where
     ) -> anyhow::Result<()> {
         let p2p_policy = self.peer_manager.p2p_policy_flags();
         let peer_policy_opt = self.peer_disguise_flags_opt(dst_peer_id).await;
-        let peer_policy = peer_policy_opt.unwrap_or_default();
+        let transport_policy = p2p_policy.transport_policy(peer_policy_opt.as_ref());
         // Negotiated disguise preference for this dial round, frozen from one
         // route scan: `Some` when route metadata is present, `None` otherwise.
         // Per-URL tasks and punch decisions reuse this value instead of
         // re-scanning routes on every attempt; the group-level policy check
         // below still refreshes it between scheme groups.
-        let use_disguise_opt = peer_policy_opt
-            .as_ref()
-            .map(|peer| p2p_policy.use_wss_http3_with_peer(peer));
-        // Derive the listener filter from the same policy predicates the
-        // tunnel upgrade path uses, so a disable flag vetoes disguised
-        // listeners here exactly as it does during protocol negotiation
-        // (`use_wss_http3_with_peer` / `allow_raw_with_peer`).
-        let use_disguise_protocols = p2p_policy.use_wss_http3_with_peer(&peer_policy);
-        let allow_raw_protocols = p2p_policy.allow_raw_with_peer(&peer_policy);
-        let only_disguised_protocols = use_disguise_protocols && !allow_raw_protocols;
-        if !use_disguise_protocols && !allow_raw_protocols {
+        let use_disguise_opt = transport_policy.negotiated_disguise();
+        let use_disguise_protocols = transport_policy.use_disguise();
+        if !transport_policy.is_compatible() {
             tracing::debug!(
                 dst_peer_id,
                 "direct connect skipped: WSS/HTTP3 policies leave no permitted protocol"
@@ -520,15 +512,7 @@ where
             .map(Into::<Url>::into)
             .filter(|listener| listener.scheme() != "ring")
             .filter(|listener| self.protocol.supports_scheme(listener.scheme()))
-            .filter(|listener| {
-                if only_disguised_protocols {
-                    matches!(listener.scheme(), "wss" | "http3")
-                } else if !use_disguise_protocols {
-                    !matches!(listener.scheme(), "wss" | "http3")
-                } else {
-                    true
-                }
-            })
+            .filter(|listener| transport_policy.allows_scheme(listener.scheme()))
             .filter(|listener| {
                 mapped_listener_port(listener).is_some() && listener.host().is_some()
             })

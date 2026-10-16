@@ -1,6 +1,7 @@
 import type { NetworkConfig } from '../types/network'
+import { CONFIG_FIELD_CAPABILITIES } from '../generated/proto/configCapabilities'
 
-export const P2P_DISGUISE_MODE_CAPABILITY = 'config:p2p_disguise_mode'
+export const P2P_DISGUISE_MODE_CAPABILITY = CONFIG_FIELD_CAPABILITIES.p2p_disguise_mode
 export const LEGACY_P2P_DISGUISE_FIELDS = [
   'prefer_wss_http3_for_p2p',
   'disable_wss_http3_for_p2p',
@@ -19,7 +20,7 @@ function parsedP2pDisguiseMode(value: unknown): P2pDisguiseMode | undefined {
 }
 
 export function legacyP2pDisguiseSupported(capabilities: readonly string[]): boolean {
-  return LEGACY_P2P_DISGUISE_FIELDS.every(field => capabilities.includes(`config:${field}`))
+  return LEGACY_P2P_DISGUISE_FIELDS.every(field => capabilities.includes(CONFIG_FIELD_CAPABILITIES[field]))
 }
 
 /** Missing settings use the custom kernel default; explicit legacy false stays off. */

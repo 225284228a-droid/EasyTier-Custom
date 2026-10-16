@@ -127,6 +127,18 @@ try {
     if (!networkConfig) throw new Error('The schema has no api.manage.NetworkConfig')
     const active = networkConfig.field.filter(field => !field.options?.deprecated).map(field => field.name)
     const deprecated = networkConfig.field.filter(field => field.options?.deprecated).map(field => field.name)
+    const capabilityMetadata = JSON.parse(readFileSync(resolve(protoRoot, '../config-capabilities.json'), 'utf8'))
+    const fieldCapabilities = {}
+    for (const [field, entry] of Object.entries(capabilityMetadata)) {
+      if (!active.includes(field)) throw new Error(`Configuration capability refers to unknown or deprecated field ${field}`)
+      if (!entry || typeof entry !== 'object' || Object.keys(entry).length !== 2
+        || typeof entry.capability !== 'string' || !entry.capability.startsWith('config:')
+        || typeof entry.support !== 'string') throw new Error(`Invalid capability metadata for ${field}`)
+      fieldCapabilities[field] = entry.capability
+    }
+    writeFileSync(resolve(tmpDir, 'configCapabilities.ts'),
+      '// Generated from easytier-proto/config-capabilities.json. Do not edit.\n'
+      + `export const CONFIG_FIELD_CAPABILITIES = ${JSON.stringify(fieldCapabilities, null, 2)} as const\n`)
     writeFileSync(resolve(tmpDir, 'networkConfigFields.ts'),
       '// Generated from standard Protobuf field descriptors. Do not edit.\n'
       + `export const NETWORK_CONFIG_FIELDS = ${JSON.stringify(active, null, 2)} as const\n`

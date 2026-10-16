@@ -47,13 +47,11 @@ where
         .filter_map(|candidate| {
             // Either endpoint may require disguise. Missing capability fields
             // on official peers still select raw UDP in non-strict modes.
-            let require_http3 = !policy.allow_raw_with_peer(&candidate.peer_disguise_flags);
-            let wants_http3 = policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
-                && (require_http3 || policy.prefer_http3_for_p2p);
-            let use_http3 = wants_http3 && http3_supported;
-            if require_http3 && !use_http3 {
-                return None;
-            }
+            let transport_policy = policy.transport_policy(Some(&candidate.peer_disguise_flags));
+            let require_http3 = transport_policy.require_disguise();
+            let use_http3 = transport_policy.select_disguised(
+                http3_supported && (require_http3 || policy.prefer_http3_for_p2p),
+            )?;
             let already_connected = if use_http3 {
                 candidate.http3_satisfied
             } else {

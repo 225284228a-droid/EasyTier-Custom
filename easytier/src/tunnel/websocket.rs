@@ -1,25 +1,20 @@
 use super::FromUrl;
-use super::insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config, sni_from_url};
+use super::insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config};
 use crate::proto::common::TunnelInfo;
 #[cfg(test)]
 use crate::socket::tcp::RuntimeTcpSocket;
 use anyhow::Context as _;
-use bytes::BytesMut;
 use cidr::IpCidr;
 use easytier_core::socket::tcp::VirtualTcpListener;
 use easytier_core::{
-    packet::{ZCPacket, ZCPacketType},
     socket::tcp::VirtualTcpSocket,
     tunnel::{IpVersion, Tunnel, TunnelError, wrapper::TunnelWrapper},
 };
 use forwarded_header_value::ForwardedHeaderValue;
-use futures::{Sink, StreamExt};
+use futures::StreamExt;
 use std::{
-    collections::VecDeque,
     net::{IpAddr, SocketAddr},
-    pin::Pin,
     sync::{Arc, LazyLock},
-    task::{Context, Poll, ready},
     time::Duration,
 };
 #[cfg(test)]
@@ -27,14 +22,21 @@ use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::either::Either;
-use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
-use zerocopy::AsBytes as _;
+use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, ServerBuilder};
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const SERVER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
+mod codec;
+mod disguise;
 #[cfg(test)]
 mod official_interop;
+
+use codec::{
+    TRANSPORT_FEATURES_HEADER, WS_TEXT_PADDING_V1, WebSocketPacketSink, map_from_ws_message,
+    supports_text_padding,
+};
+pub use disguise::WssDisguise;
 
 static TRUSTED_PROXIES: LazyLock<Vec<IpCidr>> = LazyLock::new(|| {
     [
@@ -68,365 +70,6 @@ fn is_wss(url: &url::Url) -> Result<bool, TunnelError> {
         "wss" => Ok(true),
         scheme => Err(TunnelError::InvalidProtocol(scheme.to_owned())),
     }
-}
-
-const DEFAULT_BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-const DEFAULT_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
-const TRANSPORT_FEATURES_HEADER: &str = "x-easytier-transport-features";
-const WS_TEXT_PADDING_V1: &str = "ws-text-padding-v1";
-
-fn supports_text_padding(headers: &http::HeaderMap) -> bool {
-    headers
-        .get_all(TRANSPORT_FEATURES_HEADER)
-        .iter()
-        .any(|value| {
-            value.to_str().is_ok_and(|value| {
-                value
-                    .split(',')
-                    .any(|feature| feature.trim() == WS_TEXT_PADDING_V1)
-            })
-        })
-}
-
-/// Padding frames are carried as WebSocket **text** messages so they can never
-/// collide with real ZCPacket payloads, which are always binary. A real
-/// ZCPacket over a ws/wss tunnel starts with its `PeerManagerHeader`, whose
-/// first byte is the low byte of `from_peer_id` (little-endian) and can legally
-/// be `0x00`, so no in-band binary marker could disambiguate padding from real
-/// traffic. Text frames are out-of-band at the WebSocket layer and are simply
-/// dropped on receive.
-const DISGUISE_QUERY_KEYS: [&str; 6] = ["sni", "host", "path", "ua", "accept_language", "padding"];
-
-/// Hard bounds for the `padding=<interval_ms>,<size>` query parameter. The
-/// URL is attacker-controllable (it can originate from a peer-broadcast
-/// listener), so both values must be clamped before use: an unbounded size
-/// would drive periodic oversized allocations and base64 encodings, and a
-/// near-zero interval would flood the link with padding frames.
-const MIN_PADDING_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_PADDING_INTERVAL: Duration = Duration::from_secs(60);
-const MAX_PADDING_SIZE: usize = 4096;
-const DEFAULT_PADDING_SIZE: usize = 128;
-
-/// Obfuscation parameters for ws/wss tunnels, parsed from URL query params:
-/// - `sni`: TLS SNI (and usually the Host header) presented to middleboxes
-/// - `host`: Host header value, defaults to the SNI or the URL host
-/// - `path`: request path, e.g. `/api/v1/query` to mimic an API endpoint
-/// - `ua`: User-Agent header, defaults to a Chrome UA
-/// - `accept_language`: Accept-Language header
-/// - `padding=<interval_ms>[,<size>]`: send negotiated WebSocket text padding so
-///   the flow looks like an interactive HTTPS session instead of a steady pipe
-#[derive(Debug, Clone, Default)]
-pub struct WssDisguise {
-    enabled: bool,
-    pub sni: Option<String>,
-    pub host: Option<String>,
-    pub path: Option<String>,
-    pub user_agent: Option<String>,
-    pub accept_language: Option<String>,
-    pub padding_interval: Option<Duration>,
-    pub padding_size: usize,
-}
-
-impl WssDisguise {
-    pub fn from_url(url: &url::Url) -> Self {
-        let mut disguise = WssDisguise {
-            padding_size: DEFAULT_PADDING_SIZE,
-            ..Default::default()
-        };
-        for (key, value) in url.query_pairs() {
-            match key.as_ref() {
-                // An empty `sni`/`host` value means "not set": using it
-                // verbatim would break the TLS SNI and the Host header.
-                "sni" if !value.is_empty() => {
-                    disguise.enabled = true;
-                    disguise.sni = Some(value.into_owned());
-                }
-                "host" if !value.is_empty() => {
-                    disguise.enabled = true;
-                    disguise.host = Some(value.into_owned());
-                }
-                "path" => {
-                    disguise.enabled = true;
-                    disguise.path = Some(value.into_owned());
-                }
-                "ua" => {
-                    disguise.enabled = true;
-                    disguise.user_agent = Some(value.into_owned());
-                }
-                "accept_language" => {
-                    disguise.enabled = true;
-                    disguise.accept_language = Some(value.into_owned());
-                }
-                "padding" => {
-                    disguise.enabled = true;
-                    let mut parts = value.split(',');
-                    let interval_ms = parts.next().unwrap_or_default().parse::<u64>().ok();
-                    if let Some(interval) = interval_ms
-                        .filter(|ms| *ms > 0)
-                        .map(Duration::from_millis)
-                        .map(|interval| interval.clamp(MIN_PADDING_INTERVAL, MAX_PADDING_INTERVAL))
-                    {
-                        disguise.padding_interval = Some(interval);
-                    } else if !value.is_empty() {
-                        // Values like `padding=true` silently disable padding
-                        // otherwise; the parameter is `<interval_ms>[,<size>]`.
-                        tracing::warn!(%value, "ignoring malformed ws padding parameter; expected <interval_ms>[,<size>]");
-                    }
-                    if let Some(size) = parts.next().and_then(|size| size.parse::<usize>().ok())
-                        && size > 0
-                    {
-                        disguise.padding_size = size.min(MAX_PADDING_SIZE);
-                    }
-                }
-                _ => {}
-            }
-        }
-        disguise
-    }
-
-    pub fn user_agent(&self) -> String {
-        self.user_agent
-            .clone()
-            .unwrap_or_else(|| DEFAULT_BROWSER_UA.to_owned())
-    }
-
-    pub fn accept_language(&self) -> String {
-        self.accept_language
-            .clone()
-            .unwrap_or_else(|| DEFAULT_ACCEPT_LANGUAGE.to_owned())
-    }
-
-    /// SNI presented to the TLS layer. Defaults to the URL host, which keeps
-    /// the official behavior when no `sni` param is configured. IP-literal
-    /// hosts are stringified explicitly: `url.domain()` returns None for
-    /// them, which used to degrade the SNI (and the Host header built from
-    /// it) to "localhost". An explicitly configured but empty `sni` param is
-    /// ignored, matching the http3 side.
-    pub fn sni(&self, url: &url::Url) -> String {
-        sni_from_url(url, self.sni.as_deref())
-    }
-
-    /// Builds the HTTP request target (scheme/host/path/query) for the
-    /// WebSocket upgrade while stripping the disguise parameters themselves.
-    pub fn request_uri(&self, url: &url::Url) -> anyhow::Result<String> {
-        let mut host = self.host.clone().unwrap_or_else(|| self.sni(url));
-        // `Url::set_host` rejects a bare IPv6 literal whose first colon is at
-        // index 0 and silently truncates one like `2001:db8::1` at the first
-        // colon, so bracket IPv6 literals explicitly. `sni()` stringifies
-        // them without brackets (for rustls `ServerName`), and a `host=`
-        // parameter may also carry a bare address.
-        if !host.starts_with('[') && host.parse::<std::net::Ipv6Addr>().is_ok() {
-            host = format!("[{host}]");
-        }
-        let path = self.path.clone().unwrap_or_else(|| {
-            if url.path().is_empty() {
-                "/".to_owned()
-            } else {
-                url.path().to_owned()
-            }
-        });
-        let query: Vec<(String, String)> = url
-            .query_pairs()
-            .filter(|(key, _)| !DISGUISE_QUERY_KEYS.contains(&key.as_ref()))
-            .map(|(key, value)| (key.into_owned(), value.into_owned()))
-            .collect();
-        let mut request_url = url.clone();
-        request_url
-            .set_host(Some(host.as_str()))
-            .map_err(|_| anyhow::anyhow!("invalid disguise host {host:?}"))?;
-        request_url.set_path(&path);
-        request_url.query_pairs_mut().clear();
-        if !query.is_empty() {
-            request_url.query_pairs_mut().extend_pairs(query);
-        }
-        Ok(request_url.to_string())
-    }
-
-    pub fn padding_enabled(&self) -> bool {
-        self.padding_interval.is_some()
-    }
-
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-}
-
-struct WebSocketPacketSink<S> {
-    inner: S,
-    padding: Option<WebSocketPadding>,
-    /// Frames already accepted via `start_send` (real packets and any due
-    /// padding) but not yet handed to `inner`. `poll_ready` / `poll_flush` /
-    /// `poll_close` only drain this buffer; they never produce new frames, so
-    /// the `Sink` contract (poll_ready is side-effect-free beyond readiness)
-    /// is honored. Padding is generated in `start_send` instead.
-    pending: VecDeque<Message>,
-}
-
-struct WebSocketPadding {
-    interval: Duration,
-    size: usize,
-    next_at: std::time::Instant,
-}
-
-impl<S> WebSocketPacketSink<S> {
-    fn new(inner: S) -> Self {
-        Self {
-            inner,
-            padding: None,
-            pending: VecDeque::new(),
-        }
-    }
-
-    fn with_padding(inner: S, interval: Duration, size: usize) -> Self {
-        Self {
-            inner,
-            padding: Some(WebSocketPadding {
-                interval,
-                size,
-                next_at: std::time::Instant::now(),
-            }),
-            pending: VecDeque::new(),
-        }
-    }
-
-    fn pending_padding(&self) -> bool {
-        self.padding
-            .as_ref()
-            .is_some_and(|padding| std::time::Instant::now() >= padding.next_at)
-    }
-
-    fn take_padding_frame(&mut self) -> Message {
-        let padding = self.padding.as_mut().expect("padding checked before");
-        let mut payload = vec![0u8; padding.size.max(2)];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut payload);
-        padding.next_at = std::time::Instant::now() + padding.interval;
-        // Base64 keeps the random payload valid UTF-8 so it can be sent as a
-        // WebSocket text frame; text frames are out-of-band from the binary
-        // wire format of real ZCPackets, so padding can never collide with
-        // legitimate traffic.
-        use base64::{Engine as _, prelude::BASE64_STANDARD};
-        Message::text(BASE64_STANDARD.encode(payload))
-    }
-
-    /// Drain previously-accepted frames from `pending` into `inner`. This is
-    /// the only side effect `poll_ready` / `poll_flush` / `poll_close` perform:
-    /// pushing already-accepted items downstream, exactly like
-    /// `futures::sink::Buffer`. No new frames are produced here.
-    fn drain_pending<E>(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), TunnelError>>
-    where
-        S: Sink<Message, Error = E> + Unpin,
-        E: std::fmt::Display,
-    {
-        loop {
-            if self.pending.is_empty() {
-                return Poll::Ready(Ok(()));
-            }
-            ready!(
-                Pin::new(&mut self.inner)
-                    .poll_ready(cx)
-                    .map_err(websocket_error)
-            )?;
-            let frame = self.pending.pop_front().expect("pending was non-empty");
-            Pin::new(&mut self.inner)
-                .start_send(frame)
-                .map_err(websocket_error)?;
-        }
-    }
-}
-
-impl<S, E> Sink<ZCPacket> for WebSocketPacketSink<S>
-where
-    S: Sink<Message, Error = E> + Unpin,
-    E: std::fmt::Display,
-{
-    type Error = TunnelError;
-
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // Drain previously-accepted frames first. No new frames are generated
-        // here, so `poll_ready` is free of the side effect that previously
-        // violated the `Sink` contract.
-        ready!(self.drain_pending(cx))?;
-        Pin::new(&mut self.inner)
-            .poll_ready(cx)
-            .map(|result| result.map_err(websocket_error))
-    }
-
-    fn start_send(mut self: Pin<&mut Self>, packet: ZCPacket) -> Result<(), Self::Error> {
-        // Keep the official zero-copy fast path when padding is disabled. The
-        // queue is only needed when an optional disguise frame must precede
-        // the packet and the inner sink may accept one frame per readiness
-        // notification.
-        if self.padding.is_none() && self.pending.is_empty() {
-            return Pin::new(&mut self.inner)
-                .start_send(Message::binary(packet.tunnel_payload_bytes().freeze()))
-                .map_err(websocket_error);
-        }
-        // Padding is generated here, in `start_send` - a method explicitly
-        // allowed to begin sending. The padding frame is enqueued ahead of the
-        // real packet so the next `poll_ready` drains them in wire order
-        // (padding, then packet), matching the pre-bug behavior. Both items go
-        // through `pending` so we never rely on `inner` being ready for two
-        // `start_send` calls (the trait only guarantees one slot per
-        // `poll_ready`).
-        if self.pending_padding() {
-            let frame = self.take_padding_frame();
-            self.pending.push_back(frame);
-        }
-        self.pending
-            .push_back(Message::binary(packet.tunnel_payload_bytes().freeze()));
-        Ok(())
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.drain_pending(cx))?;
-        Pin::new(&mut self.inner)
-            .poll_flush(cx)
-            .map(|result| result.map_err(websocket_error))
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        ready!(self.drain_pending(cx))?;
-        Pin::new(&mut self.inner)
-            .poll_close(cx)
-            .map(|result| result.map_err(websocket_error))
-    }
-}
-
-async fn map_from_ws_message(
-    message: Result<Message, tokio_websockets::Error>,
-    padding_expected: bool,
-) -> Option<Result<ZCPacket, TunnelError>> {
-    let message = match message {
-        Ok(message) => message,
-        Err(error) => {
-            tracing::error!(?error, "recv from websocket error");
-            return Some(Err(websocket_error(error)));
-        }
-    };
-    if message.is_close() {
-        tracing::warn!("recv close message from websocket");
-        return None;
-    }
-    if message.is_text() {
-        if padding_expected {
-            tracing::trace!("dropping websocket text padding frame");
-            return None;
-        } else {
-            return Some(Err(TunnelError::InvalidPacket(
-                "unnegotiated websocket text frame".to_owned(),
-            )));
-        }
-    }
-    if !message.is_binary() {
-        let message = format!("{message:?}");
-        tracing::error!(?message, "Invalid packet");
-        return Some(Err(TunnelError::InvalidPacket(message)));
-    }
-    let payload = message.into_payload();
-    Some(Ok(ZCPacket::new_from_buf(
-        BytesMut::from(payload.as_bytes()),
-        ZCPacketType::DummyTunnel,
-    )))
 }
 
 pub(crate) async fn upgrade_accepted<S>(
@@ -719,36 +362,91 @@ where
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use easytier_core::socket::SocketListener;
+    use easytier_core::{packet::ZCPacket, socket::SocketListener};
     use futures::SinkExt;
-    use std::io;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpSocket,
     };
+    use tokio_websockets::Message;
 
-    #[test]
-    fn text_padding_feature_requires_an_exact_versioned_token() {
-        for (value, expected) in [
-            ("", false),
-            ("ws-text-padding-v2", false),
-            ("prefix-ws-text-padding-v1", false),
-            ("WS-TEXT-PADDING-V1", false),
-            ("ws-text-padding-v1", true),
-            ("other-v2, ws-text-padding-v1, future-v1", true),
-        ] {
-            let mut headers = http::HeaderMap::new();
-            headers.insert(TRANSPORT_FEATURES_HEADER, value.parse().unwrap());
-            assert_eq!(supports_text_padding(&headers), expected, "{value}");
-        }
-        assert!(!supports_text_padding(&http::HeaderMap::new()));
-        let mut headers = http::HeaderMap::new();
-        headers.append(TRANSPORT_FEATURES_HEADER, "other-v1".parse().unwrap());
-        headers.append(
-            TRANSPORT_FEATURES_HEADER,
-            WS_TEXT_PADDING_V1.parse().unwrap(),
-        );
-        assert!(supports_text_padding(&headers));
+    #[tokio::test]
+    async fn host_authority_reaches_real_upgrade_without_changing_dial_or_sni() {
+        timeout(Duration::from_secs(15), async {
+            for scheme in ["ws", "wss"] {
+                for host in [
+                    "front.example",
+                    "front.example:443",
+                    "192.0.2.2:9443",
+                    "[2001:db8::2]:443",
+                ] {
+                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let address = listener.local_addr().unwrap();
+                    let expected_host = if host == "front.example" {
+                        format!("front.example:{}", address.port())
+                    } else {
+                        host.to_owned()
+                    };
+                    let server = tokio::spawn(async move {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        let stream = if scheme == "wss" {
+                            let (certificates, private_key) = get_insecure_tls_cert();
+                            let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+                                rustls::crypto::ring::default_provider(),
+                            ))
+                            .with_safe_default_protocol_versions()
+                            .unwrap()
+                            .with_no_client_auth()
+                            .with_single_cert(certificates, private_key)
+                            .unwrap();
+                            let tls = TlsAcceptor::from(Arc::new(config))
+                                .accept(stream)
+                                .await
+                                .unwrap();
+                            assert_eq!(tls.get_ref().1.server_name(), Some("tls.example"));
+                            Either::Left(tls)
+                        } else {
+                            Either::Right(stream)
+                        };
+                        let (request, mut websocket) =
+                            ServerBuilder::new().accept(stream).await.unwrap();
+                        assert_eq!(request.headers()[http::header::HOST], expected_host);
+                        assert_eq!(
+                            request.uri().path_and_query().unwrap().as_str(),
+                            "/upgrade?keep=1"
+                        );
+                        let packet = websocket.next().await.unwrap().unwrap();
+                        assert!(packet.is_binary());
+                        websocket.send(packet).await.unwrap();
+                    });
+                    let mut url: url::Url = format!("{scheme}://{address}/original?keep=1")
+                        .parse()
+                        .unwrap();
+                    url.query_pairs_mut()
+                        .append_pair("host", host)
+                        .append_pair("sni", "tls.example")
+                        .append_pair("path", "/upgrade");
+                    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+                    let tunnel = upgrade_connected(RuntimeTcpSocket::new(stream), url.clone())
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        tunnel.info().unwrap().remote_addr.unwrap().url,
+                        url.as_str()
+                    );
+                    let (mut read, mut write) = tunnel.split();
+                    write
+                        .send(ZCPacket::new_with_payload(b"host authority probe"))
+                        .await
+                        .unwrap();
+                    let packet = read.next().await.unwrap().unwrap();
+                    assert_eq!(packet.payload(), b"host authority probe");
+                    server.await.unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
     }
 
     async fn padding_upgrade_roundtrip(scheme: &str, response_feature: Option<&'static str>) {
@@ -962,242 +660,6 @@ pub mod tests {
         server.await.unwrap();
     }
 
-    #[test]
-    fn wss_disguise_sni_handles_ip_literal_hosts() {
-        // url.domain() is None for IP literals; the SNI (and the Host header
-        // built from it) must not degrade to "localhost" for direct-IP peers.
-        let ipv4: url::Url = "wss://192.0.2.1:443/ws".parse().unwrap();
-        assert_eq!(WssDisguise::from_url(&ipv4).sni(&ipv4), "192.0.2.1");
-
-        let ipv6: url::Url = "wss://[2001:db8::1]:443/ws".parse().unwrap();
-        assert_eq!(WssDisguise::from_url(&ipv6).sni(&ipv6), "2001:db8::1");
-    }
-
-    #[test]
-    fn wss_disguise_empty_sni_param_falls_back_to_host() {
-        let url: url::Url = "wss://www.example.com:443?sni=".parse().unwrap();
-        let sni = WssDisguise::from_url(&url).sni(&url);
-        assert_eq!(sni, "www.example.com");
-        assert!(rustls::pki_types::ServerName::try_from(sni).is_ok());
-    }
-
-    #[test]
-    fn wss_disguise_sni_param_overrides_host() {
-        let url: url::Url = "wss://origin.example.com:443?sni=www.example.com"
-            .parse()
-            .unwrap();
-        assert_eq!(WssDisguise::from_url(&url).sni(&url), "www.example.com");
-    }
-
-    #[test]
-    fn wss_disguise_empty_host_param_is_ignored() {
-        let url: url::Url = "wss://www.example.com:443?host=".parse().unwrap();
-        let disguise = WssDisguise::from_url(&url);
-        assert!(disguise.host.is_none());
-        assert_eq!(disguise.sni(&url), "www.example.com");
-    }
-
-    #[test]
-    fn wss_disguise_request_uri_keeps_ip_literal_host() {
-        let url: url::Url = "wss://192.0.2.1:443/ws?sni=".parse().unwrap();
-        let uri = WssDisguise::from_url(&url).request_uri(&url).unwrap();
-        // The disguise params must be stripped and the IP host preserved
-        // (Url serialization may omit the wss default port).
-        let parsed: url::Url = uri.parse().unwrap();
-        assert_eq!(parsed.scheme(), "wss");
-        assert_eq!(parsed.host_str(), Some("192.0.2.1"));
-        assert_eq!(parsed.path(), "/ws");
-        assert!(parsed.query().unwrap_or("").is_empty());
-    }
-
-    #[test]
-    fn wss_disguise_request_uri_keeps_ipv6_literal_host() {
-        // `Url::set_host` rejects a bare IPv6 literal when the first colon is
-        // at index 0 and truncates one at the first colon otherwise, so both
-        // loopback-style and global addresses must stay intact.
-        for raw in [
-            "wss://[::1]:443/ws?ua=x",
-            "wss://[2001:db8::1]:8443/ws?padding=100,64",
-        ] {
-            let url: url::Url = raw.parse().unwrap();
-            let uri = WssDisguise::from_url(&url).request_uri(&url).unwrap();
-            let parsed: url::Url = uri.parse().unwrap();
-            assert_eq!(parsed.scheme(), "wss", "{raw}");
-            assert_eq!(
-                parsed.host(),
-                url.host(),
-                "IPv6 literal host must round-trip unchanged: {raw}"
-            );
-            assert_eq!(parsed.path(), "/ws", "{raw}");
-            assert!(parsed.query().unwrap_or("").is_empty(), "{raw}");
-        }
-    }
-
-    #[test]
-    fn wss_disguise_request_uri_brackets_bare_ipv6_host_param() {
-        let url: url::Url = "wss://www.example.com:443/ws?host=fe80::1&ua=x"
-            .parse()
-            .unwrap();
-        let uri = WssDisguise::from_url(&url).request_uri(&url).unwrap();
-        let parsed: url::Url = uri.parse().unwrap();
-        assert_eq!(parsed.host_str(), Some("[fe80::1]"));
-    }
-
-    struct FailingWebSocketSink {
-        close_called: bool,
-    }
-
-    #[derive(Default)]
-    struct RecordingWebSocketSink {
-        messages: Vec<Message>,
-    }
-
-    impl Sink<Message> for RecordingWebSocketSink {
-        type Error = io::Error;
-
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-            self.messages.push(item);
-            Ok(())
-        }
-
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_close(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    impl Sink<Message> for FailingWebSocketSink {
-        type Error = io::Error;
-
-        fn poll_ready(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "send failed",
-            )))
-        }
-
-        fn poll_close(
-            mut self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            self.close_called = true;
-            Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "close failed",
-            )))
-        }
-    }
-
-    #[tokio::test]
-    async fn packet_sink_maps_send_and_close_errors_independently() {
-        let mut sink = WebSocketPacketSink::new(FailingWebSocketSink {
-            close_called: false,
-        });
-
-        sink.send(ZCPacket::new_with_payload(b"packet"))
-            .await
-            .expect_err("send should fail");
-        sink.close().await.expect_err("close should fail");
-        assert!(sink.inner.close_called);
-    }
-
-    #[tokio::test]
-    async fn packet_sink_without_padding_uses_direct_send_path() {
-        let mut sink = WebSocketPacketSink::new(RecordingWebSocketSink::default());
-        sink.send(ZCPacket::new_with_payload(b"direct packet"))
-            .await
-            .unwrap();
-
-        assert!(sink.pending.is_empty());
-        assert_eq!(sink.inner.messages.len(), 1);
-        assert!(sink.inner.messages[0].is_binary());
-    }
-
-    #[tokio::test]
-    async fn packet_sink_padding_skips_missed_intervals_after_idle() {
-        let interval = Duration::from_secs(60);
-        let mut sink =
-            WebSocketPacketSink::with_padding(RecordingWebSocketSink::default(), interval, 64);
-        sink.padding.as_mut().unwrap().next_at = std::time::Instant::now() - interval * 100;
-
-        for _ in 0..3 {
-            sink.send(ZCPacket::new_with_payload(b"packet"))
-                .await
-                .unwrap();
-        }
-        assert_eq!(sink.inner.messages.len(), 4);
-        assert!(sink.inner.messages[0].is_text());
-        assert!(sink.inner.messages[1..].iter().all(Message::is_binary));
-        assert!(sink.padding.as_ref().unwrap().next_at > std::time::Instant::now());
-
-        sink.padding.as_mut().unwrap().next_at = std::time::Instant::now() - interval;
-        sink.send(ZCPacket::new_with_payload(b"next packet"))
-            .await
-            .unwrap();
-        assert_eq!(sink.inner.messages.len(), 6);
-        assert!(sink.inner.messages[4].is_text());
-        assert!(sink.inner.messages[5].is_binary());
-    }
-
-    #[tokio::test]
-    async fn map_from_ws_message_keeps_real_packet_with_zero_first_byte() {
-        // A real ZCPacket over a ws/wss tunnel starts with its
-        // `PeerManagerHeader`; the first byte is the low byte of
-        // `from_peer_id` (little-endian) and can legitimately be 0x00 (e.g.
-        // web-secure / foreign-network packets use from_peer_id = 0). Such a
-        // binary frame must not be mistaken for padding.
-        let packet_bytes = vec![0x00u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let result = map_from_ws_message(Ok(Message::binary(packet_bytes.clone())), true)
-            .await
-            .expect("real packet must not be dropped");
-        let packet = result.expect("real packet must decode");
-        assert_eq!(packet.tunnel_payload_bytes().as_ref(), &packet_bytes[..]);
-    }
-
-    #[tokio::test]
-    async fn map_from_ws_message_drops_text_padding_frame() {
-        // Padding is carried as a WebSocket text frame; it must be silently
-        // dropped without touching the (encrypted or not) payload.
-        let result = map_from_ws_message(Ok(Message::text("cGFkZGluZw==".to_owned())), true).await;
-        assert!(result.is_none(), "text padding frame must be dropped");
-    }
-
-    #[tokio::test]
-    async fn map_from_ws_message_reports_unexpected_text_frame() {
-        let result = map_from_ws_message(Ok(Message::text("cGFkZGluZw==".to_owned())), false).await;
-        assert!(matches!(result, Some(Err(TunnelError::InvalidPacket(_)))));
-    }
-
     #[tokio::test]
     async fn ws_forwarded() {
         let mut listener = WsTunnelListener::new("ws://127.0.0.1:25559".parse().unwrap());
@@ -1251,79 +713,6 @@ pub mod tests {
         assert!(response.contains("101 Switching Protocols"));
 
         let _tunnel = server_task.await.unwrap();
-    }
-
-    #[test]
-    fn wss_disguise_request_uri_applies_path_host_and_strips_params() {
-        let url: url::Url =
-            "wss://real.example.com:8443/token?sni=www.cloudflare.com&host=api.cloudflare.com&path=/api/v1/query&ua=Mozilla/5.0&padding=2000,256&keep=1"
-                .parse()
-                .unwrap();
-        let disguise = WssDisguise::from_url(&url);
-        assert!(disguise.enabled());
-        assert_eq!(disguise.sni(&url), "www.cloudflare.com");
-        assert_eq!(disguise.user_agent(), "Mozilla/5.0");
-        assert_eq!(
-            disguise.padding_interval,
-            Some(std::time::Duration::from_millis(2000))
-        );
-        assert_eq!(disguise.padding_size, 256);
-
-        let request_uri = disguise.request_uri(&url).unwrap();
-        let parsed: url::Url = request_uri.parse().unwrap();
-        assert_eq!(parsed.scheme(), "wss");
-        assert_eq!(parsed.host_str(), Some("api.cloudflare.com"));
-        assert_eq!(parsed.path(), "/api/v1/query");
-        let params: Vec<(String, String)> = parsed
-            .query_pairs()
-            .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
-        assert_eq!(params, vec![("keep".to_string(), "1".to_string())]);
-        assert!(!request_uri.contains("sni="));
-        assert!(!request_uri.contains("ua="));
-        assert!(!request_uri.contains("padding="));
-    }
-
-    #[test]
-    fn wss_disguise_defaults_preserve_official_behavior() {
-        let url: url::Url = "wss://host.example.com:443".parse().unwrap();
-        let disguise = WssDisguise::from_url(&url);
-        assert!(!disguise.enabled());
-        assert_eq!(disguise.sni(&url), "host.example.com");
-        assert!(!disguise.padding_enabled());
-        let request_uri = disguise.request_uri(&url).unwrap();
-        let parsed: url::Url = request_uri.parse().unwrap();
-        assert_eq!(parsed.path(), "/");
-        assert_eq!(parsed.host_str(), Some("host.example.com"));
-    }
-
-    #[test]
-    fn wss_disguise_padding_params_are_clamped_to_safe_bounds() {
-        // Padding URLs can come from peer-broadcast listener info, so a
-        // malicious peer could advertise padding=1,4000000000 to make this
-        // node allocate huge buffers every millisecond. Both values must be
-        // clamped to sane bounds.
-        let url: url::Url = "wss://h/?padding=1,4000000000".parse().unwrap();
-        let disguise = WssDisguise::from_url(&url);
-        assert_eq!(disguise.padding_interval, Some(MIN_PADDING_INTERVAL));
-        assert_eq!(disguise.padding_size, MAX_PADDING_SIZE);
-
-        // An absurdly large interval is harmless but still clamped.
-        let url: url::Url = "wss://h/?padding=86400000".parse().unwrap();
-        let disguise = WssDisguise::from_url(&url);
-        assert_eq!(disguise.padding_interval, Some(MAX_PADDING_INTERVAL));
-        assert_eq!(disguise.padding_size, DEFAULT_PADDING_SIZE);
-
-        // Values inside the bounds pass through unchanged.
-        let url: url::Url = "wss://h/?padding=250,512".parse().unwrap();
-        let disguise = WssDisguise::from_url(&url);
-        assert_eq!(disguise.padding_interval, Some(Duration::from_millis(250)));
-        assert_eq!(disguise.padding_size, 512);
-
-        // Zero interval still disables padding entirely.
-        let url: url::Url = "wss://h/?padding=0,512".parse().unwrap();
-        let disguise = WssDisguise::from_url(&url);
-        assert!(!disguise.padding_enabled());
     }
 
     #[tokio::test]

@@ -34,7 +34,6 @@ const RTA_DST: u16 = 1;
 #[cfg(test)]
 const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
-const RTA_GATEWAY: u16 = 5;
 pub(crate) const RTA_PRIORITY: u16 = 6;
 const RTA_PREFSRC: u16 = 7;
 const RTA_TABLE: u16 = 15;
@@ -298,31 +297,6 @@ impl NetlinkEncode for AddressMessage {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RouteType {
-    Unicast,
-    Blackhole,
-    Other(u8),
-}
-
-impl RouteType {
-    fn from_raw(value: u8) -> Self {
-        match value {
-            1 => Self::Unicast,
-            6 => Self::Blackhole,
-            value => Self::Other(value),
-        }
-    }
-
-    fn raw(self) -> u8 {
-        match self {
-            Self::Unicast => 1,
-            Self::Blackhole => 6,
-            Self::Other(value) => value,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct RouteMessage {
     family: u8,
@@ -338,7 +312,6 @@ pub(crate) struct RouteMessage {
     destination: Option<IpAddr>,
     #[cfg(test)]
     source: Option<IpAddr>,
-    gateway: Option<IpAddr>,
     oif: Option<u32>,
 }
 
@@ -356,8 +329,9 @@ impl RouteMessage {
         self.src_len
     }
 
-    pub(crate) fn route_type(&self) -> RouteType {
-        RouteType::from_raw(self.route_type)
+    #[cfg(test)]
+    pub(crate) fn route_type(&self) -> u8 {
+        self.route_type
     }
 
     pub(crate) fn destination(&self) -> Option<&IpAddr> {
@@ -369,10 +343,7 @@ impl RouteMessage {
         self.source.as_ref()
     }
 
-    pub(crate) fn gateway(&self) -> Option<&IpAddr> {
-        self.gateway.as_ref()
-    }
-
+    #[cfg(test)]
     pub(crate) fn priority(&self) -> Option<u32> {
         self.attributes
             .iter()
@@ -410,10 +381,6 @@ impl NetlinkDecode for RouteMessage {
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_SRC)
             .and_then(|attribute| parse_ip(family, &attribute.value));
-        let gateway = attributes
-            .iter()
-            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_GATEWAY)
-            .and_then(|attribute| parse_ip(family, &attribute.value));
         let oif = attributes
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_OIF)
@@ -433,7 +400,6 @@ impl NetlinkDecode for RouteMessage {
             destination,
             #[cfg(test)]
             source,
-            gateway,
             oif,
         })
     }
@@ -478,7 +444,6 @@ impl RouteMessageBuilder {
                 destination: None,
                 #[cfg(test)]
                 source: None,
-                gateway: None,
                 oif: None,
             },
         }
@@ -490,14 +455,6 @@ impl RouteMessageBuilder {
         self.message
             .attributes
             .push(Attribute::new(RTA_DST, ip_bytes(address)));
-        self
-    }
-
-    pub(crate) fn gateway(mut self, gateway: IpAddr) -> Self {
-        self.message.gateway = Some(gateway);
-        self.message
-            .attributes
-            .push(Attribute::new(RTA_GATEWAY, ip_bytes(gateway)));
         self
     }
 
@@ -545,8 +502,8 @@ impl RouteMessageBuilder {
         self
     }
 
-    pub(crate) fn route_type(mut self, route_type: RouteType) -> Self {
-        self.message.route_type = route_type.raw();
+    pub(crate) fn unicast(mut self) -> Self {
+        self.message.route_type = libc::RTN_UNICAST;
         self
     }
 
@@ -574,18 +531,24 @@ mod tests {
             .table(libc::RT_TABLE_MAIN.into())
             .static_protocol()
             .universe_scope()
-            .route_type(RouteType::Unicast)
+            .unicast()
             .build();
         message
             .attributes
             .push(Attribute::new(0x4321, vec![1, 2, 3, 4, 5]));
+        // Gateway attributes stay opaque but must survive route readback and
+        // deletion just like any other attribute the caller does not inspect.
+        message.attributes.push(Attribute::new(
+            5, // RTA_GATEWAY
+            ip_bytes("2001:db8::1".parse().unwrap()),
+        ));
 
         let bytes = encode(&message);
         let decoded = RouteMessage::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.destination(), message.destination());
         assert_eq!(decoded.oif(), Some(7));
         assert_eq!(decoded.priority(), Some(42));
-        assert_eq!(decoded.route_type(), RouteType::Unicast);
+        assert_eq!(decoded.route_type(), libc::RTN_UNICAST);
         assert_eq!(encode(&decoded), bytes);
     }
 
@@ -615,7 +578,7 @@ mod tests {
             libc::RT_TABLE_MAIN,
             libc::RTPROT_STATIC,
             libc::RT_SCOPE_UNIVERSE,
-            RouteType::Unicast.raw(),
+            libc::RTN_UNICAST,
         ];
         bytes.extend_from_slice(&0_u32.to_ne_bytes());
         Attribute::new(

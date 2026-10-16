@@ -159,6 +159,13 @@ Foundation must not depend on a domain layer.
 - peer, encryption, gateway, and API input models;
 - normalized runtime snapshots and the live runtime configuration store.
 
+`easytier-proto` generates defaults, form ownership and direct API-to-TOML
+flag paths from the existing `common.Flags` annotations. Compound document
+edits stay explicit in the persisted-config merge. Extension field capabilities
+and Host prerequisites live in `easytier-proto/config-capabilities.json`; Rust
+advertisement/patch validation and frontend capability filtering consume
+generated views of that same metadata.
+
 The Host supplies platform facts through `CoreInstanceHostConfig`. Core applies
 the policy that combines those facts with TOML input. This is especially
 important for a WASI build: the compile-time guest target cannot be used as a
@@ -283,7 +290,7 @@ domains, not permission for lower socket or Host layers to depend on peers.
 - OSPF route calculation and graph algorithms;
 - peer and credential RPC registration;
 - foreign-network admission, identity, relay, and lifecycle;
-- peer-center state and the multi-exit VPN policy engine;
+- peer-center state and the subnet exit VPN policy engine;
 - traffic metrics and peer snapshots.
 
 Submodules progress from kernel types and utilities, through ACL/context,
@@ -424,7 +431,7 @@ The native composition owns `SharedVirtualNicRegistry`. Named desktop TUNs
 are shared within a network namespace; mobile instances attach to one supplied
 TUN descriptor. Members own address, route, and MTU claims, not the physical
 device. Bootstrap route cleanup runs only when that device is created. Mobile
-IPv6 claims are initialized before forwarding and follow public IPv6 updates.
+IPv6 claims are initialized before forwarding and follow virtual address updates.
 Mobile VPN configuration is projected from admitted members' native claims.
 Admission keeps unchanged attached members ahead of conflicting newcomers or
 reconfigured members. Rejected members are reported individually, while the
@@ -455,10 +462,6 @@ polls member streams in rotation and writes directly to their sinks, with no
 per-member forwarding tasks or intermediate packet queues. Desktop and mobile
 use one dispatch loop; mobile descriptor replacement is a control message.
 The loop consumes Tokio's cooperative budget even when packets are dropped.
-
-Only the member running the Magic DNS resolver claims its shared fake-IP
-route. The claim is removed before resolver shutdown and acquired by the next
-serving member after takeover. Client-only runners do not claim that route.
 
 The dispatcher preserves desktop kernel-forwarded subnet sources. It corrects
 wrong-member local sources and, on mobile, synthetic sources. Native local

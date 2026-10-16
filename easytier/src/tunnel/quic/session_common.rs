@@ -34,6 +34,10 @@ use super::session_socket::QuicUdpSessionSocket;
 
 const QUIC_ACCEPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Maximum framed tunnel body, including the peer-manager header. Keep both
+/// directions of QUIC and HTTP3 at the former client-side receive limit.
+pub(crate) const MAX_TUNNEL_BODY_SIZE: usize = 4500;
+
 /// Keeps the endpoint alive for as long as any clone of the connection is
 /// in use, and closes the QUIC connection when the last tunnel side drops.
 pub(crate) struct ConnWrapper {
@@ -137,7 +141,11 @@ async fn finish_session_tunnel(
     };
     Ok(Box::new(
         TunnelWrapper::new(
-            FramedReader::new_with_associate_data(read, 2000, Some(Box::new(connection.clone()))),
+            FramedReader::new_with_associate_data(
+                read,
+                MAX_TUNNEL_BODY_SIZE,
+                Some(Box::new(connection.clone())),
+            ),
             FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
             Some(info),
         )

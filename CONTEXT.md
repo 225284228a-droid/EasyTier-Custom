@@ -131,38 +131,30 @@ Device deletion uses the upstream disconnect semantics: an already in-flight
 validation may register the device again. A persisted ban rejects subsequent
 validations. Deletion does not introduce device generations or session fences.
 
-## Multi-exit policy VPN
+## Subnet exit VPN
 
-The multi-exit policy VPN replaces the legacy exit-node list and the legacy
-public-IPv6 provider lease protocol. One `[vpn]` TOML section (mirrored by
-`NetworkConfig.vpn`) owns named exits and per-destination CIDR rules whose
-actions are exit, direct, or block. Matching is longest-prefix first, with
-rule priority then rule order breaking ties; a rule's fallback exits are
-tried in order when its primary exit has no usable route, and the configured
-fail mode decides what remains-unreachable traffic does.
+One `[vpn]` TOML section (mirrored by `NetworkConfig.vpn`) contains
+`exit_enabled` (default true) and `rules`. Each rule assigns one IPv4 or IPv6
+destination CIDR to one exit node's virtual address. Nonempty rules enable
+client capture. Matching uses the longest prefix; duplicate CIDRs are rejected.
+The legacy exit-node list, public-IPv6 provider and Magic DNS remain removed.
 
-The client-side `VpnPolicyEngine` (`easytier-core/src/peers/vpn_policy.rs`)
-owns the compiled rule set, per-rule and per-exit counters, and the exit
-liveness view refreshed by the peer manager from route snapshots. The
-per-packet decision point is `get_msg_dst_peer_ipv4/ipv6`; an Exit decision
-marks the packet with the VPN-exit header flag so the receiving exit accepts
-and NATs it. Block and Direct destinations never enter the overlay.
+`VpnPolicyEngine` (`easytier-core/src/peers/vpn_policy.rs`) owns the compiled
+rules and exit liveness refreshed from peer route snapshots. An unreachable
+exit drops matching captured traffic while its capture routes remain installed.
+A more specific rule never falls back to a broader rule. Mesh destinations,
+known remote proxy subnets, manual mesh routes and local proxy subnets retain
+their existing paths. Exit forwarding uses Linux forwarding/NAT management
+and the existing proxy engines on other platforms.
 
-Exit forwarding stays in the existing proxy NAT engines for IPv4. IPv6 exit
-traffic is written into the exit node's TUN and forwarded by the kernel:
-Linux exit nodes enable IPv6 forwarding and install a MASQUERADE rule for the
-mesh prefix; platforms without kernel NAT66 reject v6 exit traffic with a
-startup warning.
+The host-side route manager (`easytier/src/instance/vpn_route_manager.rs`)
+captures only configured destinations. Linux uses an instance-specific policy
+table and socket bypass marks; Windows/macOS retain native interface bypass.
+Android projects positive `capture_routes` with `policy_generation`. DNS
+matches ordinary destination rules, and IPv4 rules neither capture nor block
+IPv6 automatically. These guarantees cover traffic entering EasyTier; there
+is no system-wide kill switch. See `docs/vpn-policy.md` for platform and
+migration details.
 
-The host-side route manager (`easytier/src/instance/vpn_routes.rs`) owns the
-client's system routing table while the VPN is enabled. Global exit rules are
-installed as the 0.0.0.0/1 + 128.0.0.0/1 split (and ::/1 + 8000::/1 for
-IPv6), so the physical default route is never replaced. Direct rules and
-EasyTier's own underlay endpoint addresses are pinned through the captured
-pre-VPN physical gateway. DNS servers are pinned into the tunnel while a
-global IPv4 exit is active, and non-mesh IPv6 is blackholed when no global
-IPv6 exit exists. Every installed route is removed on disable and shutdown.
-
-Official unmodified kernels do not advertise `config:vpn-exits-v1`; the web
-and GUI forms then hide the VPN section and show only the official
-configuration surface.
+The management capability is `config:vpn-subnet-exit-v1`; Web/GUI hide the
+VPN section on nodes that do not advertise it.

@@ -41,66 +41,6 @@ async fn run_delete_shell_cmd(cmd: &str) -> Result<(), Error> {
 
 #[async_trait]
 impl IfConfiguerTrait for MacIfConfiger {
-    // Kernel NAT66 via pf was reverted: the anchor executor shipped in
-    // b9ad4cff never compiled (missing methods). macOS keeps the trait
-    // default (`sync_ipv6_exit_forwarding` -> unsupported); IPv4 exit
-    // forwarding is unaffected.
-
-    async fn add_route_via_gateway(
-        &self,
-        gateway: std::net::IpAddr,
-        destination: std::net::IpAddr,
-        cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        match gateway {
-            std::net::IpAddr::V4(gw) => {
-                run_shell_cmd(
-                    format!(
-                        "route -n add -net {} -netmask {} {}",
-                        destination,
-                        cidr_to_subnet_mask(cidr_prefix),
-                        gw
-                    )
-                    .as_str(),
-                )
-                .await
-            }
-            std::net::IpAddr::V6(gw) => {
-                run_shell_cmd(
-                    format!("route -n add -inet6 {}/{} {}", destination, cidr_prefix, gw).as_str(),
-                )
-                .await
-            }
-        }
-    }
-
-    async fn remove_route_via_gateway(
-        &self,
-        gateway: std::net::IpAddr,
-        destination: std::net::IpAddr,
-        cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        match gateway {
-            std::net::IpAddr::V4(_gw) => {
-                run_shell_cmd(
-                    format!(
-                        "route -n delete -net {} -netmask {}",
-                        destination,
-                        cidr_to_subnet_mask(cidr_prefix)
-                    )
-                    .as_str(),
-                )
-                .await
-            }
-            std::net::IpAddr::V6(_gw) => {
-                run_shell_cmd(
-                    format!("route -n delete -inet6 {}/{}", destination, cidr_prefix).as_str(),
-                )
-                .await
-            }
-        }
-    }
-
     async fn default_route(
         &self,
         ipv6: bool,

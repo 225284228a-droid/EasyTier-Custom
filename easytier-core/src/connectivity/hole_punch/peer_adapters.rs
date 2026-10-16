@@ -59,14 +59,12 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                 // checks then rank with the last negotiated preference and
                 // leave the negotiated state untouched instead of flipping
                 // it to "no disguise".
-                let (peer_disguise_flags, use_disguise) = match route.feature_flag.as_ref() {
-                    Some(feature_flag) => {
-                        let flags: PeerDisguiseP2pFlags = feature_flag.into();
-                        let use_disguise = self.p2p_policy_flags().use_wss_http3_with_peer(&flags);
-                        (flags, Some(use_disguise))
-                    }
-                    None => (PeerDisguiseP2pFlags::default(), None),
-                };
+                let peer_disguise_flags: Option<PeerDisguiseP2pFlags> =
+                    route.feature_flag.as_ref().map(Into::into);
+                let use_disguise = self
+                    .p2p_policy_flags()
+                    .transport_policy(peer_disguise_flags.as_ref())
+                    .negotiated_disguise();
                 Some(UdpPunchCandidate {
                     peer_id: route.peer_id,
                     udp_nat_type,
@@ -83,7 +81,7 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                         use_disguise,
                     ),
                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
-                    peer_disguise_flags,
+                    peer_disguise_flags: peer_disguise_flags.unwrap_or_default(),
                 })
             })
             .collect()
@@ -173,14 +171,12 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
             .map(|route| {
                 // Single conversion; `use_disguise` stays `None` while the
                 // route metadata is missing (see the UDP builder above).
-                let (peer_disguise_flags, use_disguise) = match route.feature_flag.as_ref() {
-                    Some(feature_flag) => {
-                        let flags: PeerDisguiseP2pFlags = feature_flag.into();
-                        let use_disguise = self.p2p_policy_flags().use_wss_http3_with_peer(&flags);
-                        (flags, Some(use_disguise))
-                    }
-                    None => (PeerDisguiseP2pFlags::default(), None),
-                };
+                let peer_disguise_flags: Option<PeerDisguiseP2pFlags> =
+                    route.feature_flag.as_ref().map(Into::into);
+                let use_disguise = self
+                    .p2p_policy_flags()
+                    .transport_policy(peer_disguise_flags.as_ref())
+                    .negotiated_disguise();
                 TcpPunchCandidate {
                     tcp_satisfied: self.has_connection_at_least_as_preferred(
                         route.peer_id,
@@ -202,7 +198,7 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
                     feature_flag: route.feature_flag,
                     has_direct_connection: peer_map.has_peer(route.peer_id),
                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
-                    peer_disguise_flags,
+                    peer_disguise_flags: peer_disguise_flags.unwrap_or_default(),
                 }
             })
             .collect()

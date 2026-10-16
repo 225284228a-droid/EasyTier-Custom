@@ -7,6 +7,7 @@
 //! presence are the schema's, and an unannotated field fails the build.
 
 use std::{
+    collections::HashSet,
     fmt::Write as _,
     path::{Path, PathBuf},
 };
@@ -31,6 +32,8 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
 
     let mut defaults: Vec<String> = Vec::new();
     let mut form = String::new();
+    let mut api_paths = String::new();
+    let mut mapped_api_names = HashSet::new();
 
     for field in message.fields() {
         let name = field.name();
@@ -104,6 +107,12 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<PathBuf> {
             && (matches!(field.kind(), Kind::Bool) || is_set(&meta, "form"))
         {
             writeln!(form, "    {name:?},")?;
+            ensure!(
+                mapped_api_names.insert(api_name.to_owned()),
+                "management API field {api_name} maps to more than one common.Flags field"
+            );
+            let path = format!("flags.{name}");
+            writeln!(api_paths, "        {api_name:?} => Some({path:?}),")?;
         }
     }
 
@@ -121,6 +130,14 @@ pub const DEFAULTS: &str = r##\"{{
 /// The schema field names of flags managed by the config form.
 pub const FORM: &[&str] = &[
 {form}];
+
+/// A management API field's direct flag location. Compound form fields may
+/// own additional document locations and are handled by the caller first.
+pub fn api_document_path(field: &str) -> Option<&'static str> {{
+    match field {{
+{api_paths}        _ => None,
+    }}
+}}
 "
     );
 

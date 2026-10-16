@@ -1,3 +1,6 @@
+mod config_capabilities;
+pub use config_capabilities::{ConfigFieldCapability, ConfigFieldSupport};
+
 pub mod config {
     include!(concat!(env!("OUT_DIR"), "/api.config.rs"));
     #[cfg(feature = "json-rpc")]

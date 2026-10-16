@@ -264,100 +264,10 @@ impl WindowsIfConfiger {
         }
         Ok(best.map(|(_, info)| info))
     }
-
-    fn parse_interface_index(name: &str) -> Option<u32> {
-        name.strip_prefix("if").and_then(|rest| rest.parse().ok())
-    }
-
-    fn list_candidate_interface_indexes() -> Vec<u32> {
-        // The default route's owning index first, plus common physical
-        // indexes 1..64 as a removal fallback.
-        let mut indexes = Vec::new();
-        if let Ok(Some(route)) = Self::query_default_route(false, None)
-            && let Some(index) = Self::parse_interface_index(&route.interface_name)
-        {
-            indexes.push(index);
-        }
-        for index in 1..64u32 {
-            if !indexes.contains(&index) {
-                indexes.push(index);
-            }
-        }
-        indexes
-    }
 }
 
 #[async_trait]
 impl IfConfiguerTrait for WindowsIfConfiger {
-    async fn add_route_via_gateway(
-        &self,
-        gateway: std::net::IpAddr,
-        destination: std::net::IpAddr,
-        cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        let (ipv6, gw_v6, gw_v4) = match gateway {
-            std::net::IpAddr::V4(gw) => (false, None, Some(gw)),
-            std::net::IpAddr::V6(gw) => (true, Some(gw), None),
-        };
-        let Some(route) = Self::query_default_route(ipv6, None)? else {
-            return Err(Error::NotFound);
-        };
-        let Some(if_index) = Self::parse_interface_index(&route.interface_name) else {
-            return Err(Error::NotFound);
-        };
-        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
-            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
-        })?;
-        let result = match (gateway, destination) {
-            (std::net::IpAddr::V4(_), std::net::IpAddr::V4(dest)) => luid.add_route_ipv4(
-                &Ipv4Inet::new(dest, cidr_prefix).unwrap(),
-                &gw_v4.unwrap(),
-                1,
-            ),
-            (std::net::IpAddr::V6(_), std::net::IpAddr::V6(dest)) => luid.add_route_ipv6(
-                &Ipv6Inet::new(dest, cidr_prefix).unwrap(),
-                &gw_v6.unwrap(),
-                1,
-            ),
-            _ => {
-                return Err(Error::AnyhowError(anyhow::anyhow!(
-                    "gateway and destination family mismatch"
-                )));
-            }
-        };
-        match result {
-            Ok(()) => Ok(()),
-            Err(status) if status != 0 => Err(Error::AnyhowError(anyhow::anyhow!(
-                "add route via gateway failed: {}",
-                format_win_error(status)
-            ))),
-            Err(_) => Ok(()),
-        }
-    }
-
-    async fn remove_route_via_gateway(
-        &self,
-        gateway: std::net::IpAddr,
-        destination: std::net::IpAddr,
-        cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        for if_index in Self::list_candidate_interface_indexes() {
-            let Ok(luid) = InterfaceLuid::luid_from_index(if_index) else {
-                continue;
-            };
-            match (gateway, destination) {
-                (std::net::IpAddr::V4(gw), std::net::IpAddr::V4(dest)) => {
-                    let _ = luid.delete_route_ipv4(&Ipv4Inet::new(dest, cidr_prefix).unwrap(), &gw);
-                }
-                (std::net::IpAddr::V6(gw), std::net::IpAddr::V6(dest)) => {
-                    let _ = luid.delete_route_ipv6(&Ipv6Inet::new(dest, cidr_prefix).unwrap(), &gw);
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
     async fn default_route(
         &self,
         ipv6: bool,

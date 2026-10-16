@@ -1,3 +1,4 @@
+mod config_capabilities;
 mod flags;
 mod rpc;
 
@@ -104,6 +105,7 @@ fn main() -> anyhow::Result<()> {
     for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
         println!("cargo:rerun-if-changed={proto_file}");
     }
+    println!("cargo:rerun-if-changed=config-capabilities.json");
 
     let out = PathBuf::from(env::var("OUT_DIR")?);
 
@@ -230,6 +232,7 @@ fn main() -> anyhow::Result<()> {
     }
     config.compile_fds(descriptor_set)?;
     flags::write(&annotated, &out)?;
+    config_capabilities::write(&annotated, &out)?;
 
     pbjson_build::Builder::new()
         .register_descriptors(&descriptors)?

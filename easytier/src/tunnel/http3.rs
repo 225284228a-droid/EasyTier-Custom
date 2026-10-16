@@ -139,7 +139,11 @@ pub(crate) async fn upgrade_connected(
     };
     Ok(Box::new(
         TunnelWrapper::new(
-            FramedReader::new_with_associate_data(read, 4500, Some(Box::new(connection.clone()))),
+            FramedReader::new_with_associate_data(
+                read,
+                session_common::MAX_TUNNEL_BODY_SIZE,
+                Some(Box::new(connection.clone())),
+            ),
             FramedWriter::new_with_associate_data(write, Some(Box::new(connection))),
             Some(info),
         )
@@ -213,8 +217,8 @@ mod tests {
     use crate::host_runtime::native_host_runtime;
 
     use super::super::quic::session_tests::{
-        accept_two_connections_on_same_session, assert_second_connection_survives_first_close,
-        connected_udp_session_fixture,
+        accept_two_connections_on_same_session, assert_bidirectional_frame_boundaries,
+        assert_second_connection_survives_first_close, connected_udp_session_fixture,
     };
 
     use super::*;
@@ -257,6 +261,28 @@ mod tests {
             server_config().unwrap(),
         )
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http3_tunnel_enforces_bidirectional_frame_boundary() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (mut listener, connected, _) = connected_udp_session_fixture("http3").await;
+            let local_url = listener.local_url();
+            let remote_url = local_url.clone();
+            let server_task = tokio::spawn(async move {
+                let session = listener.accept().await.unwrap();
+                let admission = ServerProtocolAdmissionController::quic()
+                    .try_admit()
+                    .unwrap();
+                let mut accepted =
+                    Http3AcceptedSession::new(session, local_url, admission).unwrap();
+                accepted.accept().await.unwrap()
+            });
+            let client = upgrade_connected(connected, remote_url).await.unwrap();
+            assert_bidirectional_frame_boundaries(client, server_task).await;
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

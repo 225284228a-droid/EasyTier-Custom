@@ -5,7 +5,7 @@ use easytier_core::{
         protocol::ServerTunnelAcceptor,
         transport::{ConnectedUdpSession, UdpSessionMode, connect_udp},
     },
-    packet::ZCPacket,
+    packet::{PEER_MANAGER_HEADER_SIZE, ZCPacket},
     socket::{
         SocketListener,
         udp::{
@@ -14,7 +14,7 @@ use easytier_core::{
         },
     },
     tunnel::{
-        Tunnel,
+        Tunnel, TunnelError,
         framed::{FramedReader, FramedWriter},
     },
 };
@@ -28,6 +28,8 @@ use crate::{
     socket::udp::{RuntimeUdpSessionSocketListener, new_runtime_udp_session_listener},
     tunnel::common::tests::_tunnel_echo_server,
 };
+
+use super::session_common::MAX_TUNNEL_BODY_SIZE;
 
 pub(crate) async fn connected_udp_session_fixture(
     scheme: &str,
@@ -117,7 +119,7 @@ pub(crate) async fn assert_second_connection_survives_first_close(
     first_connection.close(0u32.into(), b"first connection done");
 
     let echo_task = tokio::spawn(_tunnel_echo_server(second_server, false));
-    let mut recv = FramedReader::new(second_read, 4500);
+    let mut recv = FramedReader::new(second_read, MAX_TUNNEL_BODY_SIZE);
     let ready = recv.next().await.unwrap().unwrap();
     assert_eq!(ready.payload(), ready_payload.as_bytes());
     let after_close_payload = format!("second {protocol_name} connection after first closed");
@@ -131,4 +133,64 @@ pub(crate) async fn assert_second_connection_survives_first_close(
     echo_task.await.unwrap();
     second_connection.close(0u32.into(), b"second connection done");
     endpoint.close(0u32.into(), b"test done");
+}
+
+pub(crate) async fn assert_bidirectional_frame_boundaries(
+    client: Box<dyn Tunnel>,
+    server_task: JoinHandle<Box<dyn Tunnel>>,
+) {
+    let (mut client_read, mut client_write) = client.split();
+    // QUIC does not expose an opened stream to the server until its first write.
+    client_write
+        .send(ZCPacket::new_with_payload(b"open framed stream"))
+        .await
+        .unwrap();
+    let server = server_task.await.unwrap();
+    let (mut server_read, mut server_write) = server.split();
+    let opening = server_read.next().await.unwrap().unwrap();
+    assert_eq!(opening.payload(), b"open framed stream");
+
+    for body_size in [2001, MAX_TUNNEL_BODY_SIZE - 1, MAX_TUNNEL_BODY_SIZE] {
+        let client_payload = vec![0x41; body_size - PEER_MANAGER_HEADER_SIZE];
+        client_write
+            .send(ZCPacket::new_with_payload(&client_payload))
+            .await
+            .unwrap();
+        let received = server_read.next().await.unwrap().unwrap();
+        assert_eq!(
+            received.payload(),
+            client_payload,
+            "client body={body_size}"
+        );
+
+        let server_payload = vec![0x52; body_size - PEER_MANAGER_HEADER_SIZE];
+        server_write
+            .send(ZCPacket::new_with_payload(&server_payload))
+            .await
+            .unwrap();
+        let received = client_read.next().await.unwrap().unwrap();
+        assert_eq!(
+            received.payload(),
+            server_payload,
+            "server body={body_size}"
+        );
+    }
+
+    let oversized = vec![0x63; MAX_TUNNEL_BODY_SIZE + 1 - PEER_MANAGER_HEADER_SIZE];
+    client_write
+        .send(ZCPacket::new_with_payload(&oversized))
+        .await
+        .unwrap();
+    server_write
+        .send(ZCPacket::new_with_payload(&oversized))
+        .await
+        .unwrap();
+    for received in [server_read.next().await, client_read.next().await] {
+        assert!(matches!(
+            received,
+            Some(Err(TunnelError::InvalidPacket(message))) if message == "body too long"
+        ));
+    }
+    assert!(server_read.next().await.is_none());
+    assert!(client_read.next().await.is_none());
 }

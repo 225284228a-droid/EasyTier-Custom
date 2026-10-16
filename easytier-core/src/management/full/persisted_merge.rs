@@ -118,71 +118,22 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "managed_credentials" => vec!["managed_credentials"],
         "vpn_portal_config" => vec!["vpn_portal_config"],
         "advanced_settings" => vec![],
-        "disable_ipv6" => vec!["flags.enable_ipv6"],
-        "disable_encryption" => vec!["flags.enable_encryption"],
-        "enable_private_mode" => vec!["flags.private_mode"],
         "enable_relay_network_whitelist" | "relay_network_whitelist" => {
             vec!["flags.relay_network_whitelist"]
         }
-        "p2p_prefer_protocol" => vec!["flags.default_protocol"],
         "p2p_disguise_mode" => vec![
             "flags.p2p_disguise_mode",
             "flags.prefer_wss_http3_for_p2p",
             "flags.disable_wss_http3_for_p2p",
             "flags.only_use_wss_http3_for_hole_punching",
         ],
-        "latency_first" => vec!["flags.latency_first"],
-        "dev_name" => vec!["flags.dev_name"],
-        "use_smoltcp" => vec!["flags.use_smoltcp"],
-        "enable_kcp_proxy" => vec!["flags.enable_kcp_proxy"],
-        "disable_kcp_input" => vec!["flags.disable_kcp_input"],
-        "disable_p2p" => vec!["flags.disable_p2p"],
-        "bind_device" => vec!["flags.bind_device"],
-        "no_tun" => vec!["flags.no_tun"],
-        "relay_all_peer_rpc" => vec!["flags.relay_all_peer_rpc"],
-        "multi_thread" => vec!["flags.multi_thread"],
-        "proxy_forward_by_system" => vec!["flags.proxy_forward_by_system"],
-        "disable_udp_hole_punching" => vec!["flags.disable_udp_hole_punching"],
-        "mtu" => vec!["flags.mtu"],
-        "enable_quic_proxy" => vec!["flags.enable_quic_proxy"],
-        "disable_quic_input" => vec!["flags.disable_quic_input"],
-        "disable_sym_hole_punching" => vec!["flags.disable_sym_hole_punching"],
-        "p2p_only" => vec!["flags.p2p_only"],
-        "data_compress_algo" => vec!["flags.data_compress_algo"],
-        "encryption_algorithm" => vec!["flags.encryption_algorithm"],
-        "disable_tcp_hole_punching" => vec!["flags.disable_tcp_hole_punching"],
-        "lazy_p2p" => vec!["flags.lazy_p2p"],
-        "need_p2p" => vec!["flags.need_p2p"],
-        "instance_recv_bps_limit" => vec!["flags.instance_recv_bps_limit"],
-        "disable_upnp" => vec!["flags.disable_upnp"],
-        "disable_relay_data" => vec!["flags.disable_relay_data"],
-        "enable_udp_broadcast_relay" => vec!["flags.enable_udp_broadcast_relay"],
-        "socket_mark" => vec!["flags.socket_mark"],
-        "prefer_peer_relay" => vec!["flags.prefer_peer_relay"],
-        "only_use_wss_http3_for_hole_punching" => {
-            vec!["flags.only_use_wss_http3_for_hole_punching"]
-        }
-        "prefer_wss_http3_for_p2p" => vec!["flags.prefer_wss_http3_for_p2p"],
-        "disable_wss_http3_for_p2p" => vec!["flags.disable_wss_http3_for_p2p"],
-        "close_redundant_conns_when_disguised" => {
-            vec!["flags.close_redundant_conns_when_disguised"]
-        }
-        _ => return None,
+        _ => return easytier_proto::common::Flags::api_document_path(field).map(|path| vec![path]),
     };
     Some(paths)
 }
 
 pub(super) fn required_capability(field: &str) -> Option<String> {
-    match field.split('.').next().unwrap_or_default() {
-        field @ ("sni"
-        | "p2p_prefer_protocol"
-        | "p2p_disguise_mode"
-        | "only_use_wss_http3_for_hole_punching"
-        | "prefer_wss_http3_for_p2p"
-        | "disable_wss_http3_for_p2p"
-        | "close_redundant_conns_when_disguised") => Some(format!("config:{field}")),
-        _ => None,
-    }
+    NetworkConfig::required_capability(field).map(ToOwned::to_owned)
 }
 
 fn update_json(target: &mut Value, source: &Value, path: &[&str]) -> anyhow::Result<()> {
@@ -606,6 +557,114 @@ mod tests {
     const ORIGINAL: &str = "# retained comment\ninstance_id = '11111111-1111-1111-1111-111111111111'\nhostname = 'old'\nnetns = 'keep'\nstun_servers = ['udp://stun.example:3478']\n[network_identity]\nnetwork_name = 'home'\nnetwork_secret = 'secret'\n[flags]\ndefault_protocol = 'udp'\nmtu = 1200\n";
 
     #[test]
+    fn generated_flag_paths_keep_compound_document_ownership() {
+        assert_eq!(
+            document_paths("p2p_disguise_mode").unwrap(),
+            vec![
+                "flags.p2p_disguise_mode",
+                "flags.prefer_wss_http3_for_p2p",
+                "flags.disable_wss_http3_for_p2p",
+                "flags.only_use_wss_http3_for_hole_punching",
+            ]
+        );
+        for (fields, path) in [
+            (
+                ["enable_relay_network_whitelist", "relay_network_whitelist"],
+                "flags.relay_network_whitelist",
+            ),
+            (["enable_manual_routes", "routes"], "routes"),
+            (["enable_socks5", "socks5_port"], "socks5_proxy"),
+        ] {
+            for field in fields {
+                assert_eq!(document_paths(field).unwrap(), vec![path], "{field}");
+            }
+        }
+    }
+
+    #[test]
+    fn generated_flag_paths_preserve_alias_negation_and_explicit_false_or_unset() {
+        let original = format!(
+            "{ORIGINAL}enable_ipv6 = false\nenable_encryption = false\nprivate_mode = false\nmulti_thread_count = 7\nclose_redundant_conns_when_disguised = false\n"
+        );
+        for value in [Some(true), Some(false), None] {
+            let merged = merge_persisted_config(
+                &original,
+                &NetworkConfig {
+                    p2p_prefer_protocol: Some("tcp".into()),
+                    disable_ipv6: value,
+                    disable_encryption: value,
+                    enable_private_mode: value,
+                    ..Default::default()
+                },
+                &[
+                    "p2p_prefer_protocol".into(),
+                    "disable_ipv6".into(),
+                    "disable_encryption".into(),
+                    "enable_private_mode".into(),
+                ],
+            )
+            .unwrap();
+            let loaded = TomlConfig::new_from_str(&merged).unwrap();
+            let flags = loaded.get_flags();
+            assert_eq!(flags.default_protocol, "tcp");
+            assert_eq!(flags.enable_ipv6, !value.unwrap_or(false));
+            assert_eq!(flags.enable_encryption, !value.unwrap_or(false));
+            assert_eq!(flags.private_mode, value.unwrap_or(true));
+            assert!(!flags.close_redundant_conns_when_disguised);
+            let patch = loaded.get_flags_patch();
+            assert_eq!(patch.enable_ipv6, (value == Some(true)).then_some(false));
+            assert_eq!(
+                patch.enable_encryption,
+                (value == Some(true)).then_some(false)
+            );
+            assert_eq!(patch.private_mode, (value == Some(false)).then_some(false));
+            assert!(merged.contains("multi_thread_count = 7"));
+            assert!(merged.contains("mtu = 1200"));
+            assert!(merged.contains("# retained comment"));
+        }
+    }
+
+    #[test]
+    fn generated_flag_paths_preserve_whitelist_enable_and_list_edits() {
+        let original = format!("{ORIGINAL}relay_network_whitelist = 'home work'\n");
+        let list_edit = merge_persisted_config(
+            &original,
+            &NetworkConfig {
+                relay_network_whitelist: vec!["new".into()],
+                ..Default::default()
+            },
+            &["relay_network_whitelist".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            TomlConfig::new_from_str(&list_edit)
+                .unwrap()
+                .get_flags()
+                .relay_network_whitelist,
+            "new"
+        );
+        let disabled = merge_persisted_config(
+            &original,
+            &NetworkConfig {
+                enable_relay_network_whitelist: Some(false),
+                ..Default::default()
+            },
+            &["enable_relay_network_whitelist".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            TomlConfig::new_from_str(&disabled)
+                .unwrap()
+                .get_flags()
+                .relay_network_whitelist,
+            "*"
+        );
+        assert!(!disabled.contains("relay_network_whitelist ="));
+        assert!(disabled.contains("mtu = 1200"));
+        assert!(disabled.contains("# retained comment"));
+    }
+
+    #[test]
     fn dhcp_cidr_patches_preserve_unselected_toml_and_custom_policy() {
         let original = format!(
             "dhcp = '10.50.0.0/24'\ndhcpv6 = 'fd50::/64'\nipv4 = '10.99.0.2/24'\nipv6 = 'fd99::2/64'\n{ORIGINAL}p2p_disguise_mode = 'only'\n"
@@ -992,6 +1051,50 @@ mod tests {
             unsupported_capability(&values, &["sni".into()], &[]).as_deref(),
             Some("config:sni")
         );
+    }
+
+    #[test]
+    fn capability_checks_follow_shared_metadata_for_nested_and_reset_values() {
+        let explicit_resets = NetworkConfig {
+            sni: Some(String::new()),
+            p2p_prefer_protocol: Some(String::new()),
+            p2p_disguise_mode: Some(String::new()),
+            only_use_wss_http3_for_hole_punching: Some(false),
+            prefer_wss_http3_for_p2p: Some(false),
+            disable_wss_http3_for_p2p: Some(false),
+            close_redundant_conns_when_disguised: Some(false),
+            ..Default::default()
+        };
+        let unset = NetworkConfig::default();
+        for entry in NetworkConfig::field_capabilities() {
+            assert_eq!(
+                required_capability(entry.field).as_deref(),
+                Some(entry.capability),
+            );
+            assert_eq!(
+                required_capability(&format!("{}.nested", entry.field)).as_deref(),
+                Some(entry.capability),
+            );
+            // A selected false/empty value or omitted value can remove a
+            // setting, so neither may bypass the field's capability gate.
+            for values in [&explicit_resets, &unset] {
+                assert_eq!(
+                    unsupported_capability(values, &[entry.field.into()], &[]).as_deref(),
+                    Some(entry.capability),
+                );
+                assert!(
+                    unsupported_capability(
+                        values,
+                        &[entry.field.into()],
+                        &[entry.capability.into()],
+                    )
+                    .is_none(),
+                    "{}",
+                    entry.field,
+                );
+            }
+        }
+        assert_eq!(required_capability("hostname"), None);
     }
 
     #[test]

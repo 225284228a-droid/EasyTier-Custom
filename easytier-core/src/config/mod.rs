@@ -357,6 +357,74 @@ impl P2pPolicyFlags {
     pub fn allow_raw_with_peer(&self, peer: &PeerDisguiseP2pFlags) -> bool {
         !self.only_use_wss_http3_for_hole_punching && !peer.only_use_wss_http3_for_p2p
     }
+
+    pub(crate) fn transport_policy(
+        &self,
+        peer: Option<&PeerDisguiseP2pFlags>,
+    ) -> P2pTransportPolicy {
+        let peer_flags = peer.copied().unwrap_or_default();
+        let use_disguise = self.use_wss_http3_with_peer(&peer_flags);
+        P2pTransportPolicy {
+            use_disguise,
+            allow_raw: self.allow_raw_with_peer(&peer_flags),
+            negotiated_disguise: peer.map(|_| use_disguise),
+        }
+    }
+}
+
+/// The shared transport permissions for one automatic P2P attempt.
+///
+/// Missing route metadata still uses the legacy peer defaults for dialing,
+/// but must not overwrite a connection's last negotiated preference. Host
+/// capabilities affect selection, never the reported negotiation result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct P2pTransportPolicy {
+    use_disguise: bool,
+    allow_raw: bool,
+    negotiated_disguise: Option<bool>,
+}
+
+impl P2pTransportPolicy {
+    pub(crate) fn use_disguise(self) -> bool {
+        self.use_disguise
+    }
+
+    pub(crate) fn allow_raw(self) -> bool {
+        self.allow_raw
+    }
+
+    pub(crate) fn require_disguise(self) -> bool {
+        !self.allow_raw()
+    }
+
+    pub(crate) fn negotiated_disguise(self) -> Option<bool> {
+        self.negotiated_disguise
+    }
+
+    pub(crate) fn is_compatible(self) -> bool {
+        self.use_disguise || self.allow_raw
+    }
+
+    pub(crate) fn allows_scheme(self, scheme: &str) -> bool {
+        if matches!(scheme, "wss" | "http3") {
+            self.use_disguise
+        } else {
+            self.allow_raw
+        }
+    }
+
+    /// Select the disguised engine when it is requested and available, or
+    /// its raw counterpart when permitted. Strict or conflicting policies
+    /// never silently fall back when the disguised engine is unavailable.
+    pub(crate) fn select_disguised(self, available: bool) -> Option<bool> {
+        if self.use_disguise && available {
+            Some(true)
+        } else if self.allow_raw {
+            Some(false)
+        } else {
+            None
+        }
+    }
 }
 
 /// The P2P disguise policy is contradictory when both flags are set:
@@ -795,6 +863,103 @@ mod tests {
         assert!(!disable.use_wss_http3_with_peer(&peer(false, false, true)));
         assert!(standard.allow_raw_with_peer(&peer(false, false, false)));
         assert!(!only.allow_raw_with_peer(&peer(false, false, false)));
+    }
+
+    #[test]
+    fn p2p_transport_policy_four_mode_matrix() {
+        let modes = [
+            (
+                "prefer",
+                flags(true, false, false),
+                peer(true, false, false),
+            ),
+            ("off", flags(false, false, false), peer(false, false, false)),
+            (
+                "disabled",
+                flags(false, true, false),
+                peer(false, true, false),
+            ),
+            ("only", flags(false, false, true), peer(false, false, true)),
+        ];
+        // Rows are local modes, columns are remote modes. Each entry is
+        // (disguised permitted, raw permitted), including incompatible pairs.
+        let expected = [
+            [(true, true), (false, true), (false, true), (true, false)],
+            [(false, true), (false, true), (false, true), (true, false)],
+            [(false, true), (false, true), (false, true), (false, false)],
+            [(true, false), (true, false), (false, false), (true, false)],
+        ];
+        for (local_index, (local_name, local, _)) in modes.iter().enumerate() {
+            for (remote_index, (remote_name, _, remote)) in modes.iter().enumerate() {
+                let policy = local.transport_policy(Some(remote));
+                let (disguised, raw) = expected[local_index][remote_index];
+                let label = format!("{local_name} -> {remote_name}");
+                assert_eq!(policy.use_disguise(), disguised, "{label}");
+                assert_eq!(policy.allow_raw(), raw, "{label}");
+                assert_eq!(policy.require_disguise(), !raw, "{label}");
+                assert_eq!(policy.negotiated_disguise(), Some(disguised), "{label}");
+                assert_eq!(policy.is_compatible(), disguised || raw, "{label}");
+                for scheme in ["wss", "http3"] {
+                    assert_eq!(policy.allows_scheme(scheme), disguised, "{label}: {scheme}");
+                }
+                for scheme in ["tcp", "udp", "ws", "quic"] {
+                    assert_eq!(policy.allows_scheme(scheme), raw, "{label}: {scheme}");
+                }
+                assert_eq!(
+                    policy.select_disguised(false),
+                    raw.then_some(false),
+                    "{label}"
+                );
+                assert_eq!(
+                    policy.select_disguised(true),
+                    disguised.then_some(true).or(raw.then_some(false)),
+                    "{label}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn p2p_transport_policy_preserves_unknown_peer_metadata() {
+        for local in [
+            flags(true, false, false),
+            flags(false, false, false),
+            flags(false, true, false),
+            flags(false, false, true),
+        ] {
+            let unknown = local.transport_policy(None);
+            let legacy = local.transport_policy(Some(&PeerDisguiseP2pFlags::default()));
+            assert_eq!(unknown.negotiated_disguise(), None);
+            assert_eq!(legacy.negotiated_disguise(), Some(legacy.use_disguise()));
+            // Unknown peers keep legacy dialing compatibility without
+            // reporting a new negotiated preference to existing connections.
+            assert_eq!(unknown.use_disguise(), legacy.use_disguise());
+            assert_eq!(unknown.allow_raw(), legacy.allow_raw());
+            assert_eq!(
+                unknown.select_disguised(true),
+                legacy.select_disguised(true)
+            );
+            assert_eq!(
+                unknown.select_disguised(false),
+                legacy.select_disguised(false)
+            );
+        }
+        let prefer = flags(true, false, false);
+        let rejected = prefer.transport_policy(Some(&peer(false, true, false)));
+        assert_eq!(rejected.negotiated_disguise(), Some(false));
+    }
+
+    #[test]
+    fn p2p_transport_policy_capability_fallback_keeps_negotiation() {
+        let remote = peer(true, false, false);
+        let prefer = flags(true, false, false).transport_policy(Some(&remote));
+        let only = flags(false, false, true).transport_policy(Some(&remote));
+        assert_eq!(prefer.select_disguised(false), Some(false));
+        assert_eq!(only.select_disguised(false), None);
+        assert_eq!(prefer.negotiated_disguise(), Some(true));
+        assert_eq!(only.negotiated_disguise(), Some(true));
+        assert_eq!(prefer.select_disguised(true), Some(true));
+        assert_eq!(only.select_disguised(true), Some(true));
     }
 
     fn digest(network_name: &str, network_secret: &str) -> NetworkSecretDigest {

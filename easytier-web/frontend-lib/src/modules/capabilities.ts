@@ -1,5 +1,6 @@
 import type { NetworkConfig } from '../types/network'
-import { adaptP2pDisguisePayload, legacyP2pDisguiseSupported, P2P_DISGUISE_MODE_CAPABILITY } from './p2pDisguise'
+import { CONFIG_FIELD_CAPABILITIES as SCHEMA_CONFIG_FIELD_CAPABILITIES } from '../generated/proto/configCapabilities'
+import { adaptP2pDisguisePayload, legacyP2pDisguiseSupported } from './p2pDisguise'
 
 export const LOCAL_CONFIG_REVISION_CAPABILITY = 'management:persisted-config-revision-v1'
 export const LOCAL_CONFIG_APPLY_CAPABILITY = 'management:persisted-config-apply-v1'
@@ -12,16 +13,7 @@ export function assertLocalConfigApplyCapability(capabilities: readonly string[]
   }
 }
 
-export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = {
-  p2p_disguise_mode: P2P_DISGUISE_MODE_CAPABILITY,
-  sni: 'config:sni',
-  p2p_prefer_protocol: 'config:p2p_prefer_protocol',
-  only_use_wss_http3_for_hole_punching: 'config:only_use_wss_http3_for_hole_punching',
-  prefer_wss_http3_for_p2p: 'config:prefer_wss_http3_for_p2p',
-  disable_wss_http3_for_p2p: 'config:disable_wss_http3_for_p2p',
-  close_redundant_conns_when_disguised: 'config:close_redundant_conns_when_disguised',
-  vpn: 'config:vpn-subnet-exit-v1',
-}
+export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = SCHEMA_CONFIG_FIELD_CAPABILITIES
 
 export function configFieldSupported(field: string, capabilities: readonly string[] = []): boolean {
   if (field.split('.')[0] === 'p2p_disguise_mode' && legacyP2pDisguiseSupported(capabilities)) return true

@@ -36,44 +36,6 @@ pub struct DefaultRouteInfo {
 
 #[async_trait]
 pub trait IfConfiguerTrait: Send + Sync {
-    /// Adds a route to `destination` through `gateway` (the pre-VPN default
-    /// gateway). Used for VPN "direct" exclusion rules and for protecting
-    /// EasyTier's own underlay connections from the tunneled default route.
-    async fn add_route_via_gateway(
-        &self,
-        _gateway: std::net::IpAddr,
-        _destination: std::net::IpAddr,
-        _cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        Err(Error::AnyhowError(anyhow::anyhow!(
-            "route via gateway is unsupported on this platform"
-        )))
-    }
-    async fn remove_route_via_gateway(
-        &self,
-        _gateway: std::net::IpAddr,
-        _destination: std::net::IpAddr,
-        _cidr_prefix: u8,
-    ) -> Result<(), Error> {
-        Err(Error::AnyhowError(anyhow::anyhow!(
-            "route via gateway is unsupported on this platform"
-        )))
-    }
-    /// Turns kernel IPv6 exit forwarding (NAT66) for the multi-exit VPN on
-    /// or off: mesh traffic from `mesh_prefix` leaving through any interface
-    /// except the TUN gets masqueraded. Platforms without kernel NAT66 keep
-    /// the default error; their exits relay v6 in the userspace proxy
-    /// engines instead.
-    async fn sync_ipv6_exit_forwarding(
-        &self,
-        _tun_ifname: &str,
-        _mesh_prefix: Option<&str>,
-        _enabled: bool,
-    ) -> Result<(), Error> {
-        Err(Error::AnyhowError(anyhow::anyhow!(
-            "kernel NAT66 is unsupported on this platform"
-        )))
-    }
     /// Discovers the current default route. `None` when no default route of
     /// that family exists.
     async fn default_route(
