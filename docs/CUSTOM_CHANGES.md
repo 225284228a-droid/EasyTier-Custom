@@ -158,8 +158,12 @@ cargo build --release --locked -p easytier
 
 - 审查后的源码合并提交为 `5ff6fefb7f0a40fe431b206e7e2f3de472e58048`。Go 内嵌 WASM 从包含后续修复的干净源码提交重新生成并单独提交产物，实际来源以两份 `provenance.go` 为准；来源提交表示此次构建的实际输入，未来重新生成时随源码更新，不是永久固定的版本。
 - 首次使用新 WASM 的 Go 集成测试发现 WASI 创建 ABI 使用容错加载器，导致非法配置被丢弃后仍返回成功。已恢复该 API 的严格解析，保留 Host 运行能力过滤和桌面配置文件的容错恢复策略；回归覆盖非法 TOML、DHCP、VPN 字段、重复子网和非法出口地址，以及合法但 Host 不支持的配置只在运行时过滤。
+- 新增 WASI schema 两项回归通过。Go WASM 从干净源码提交 `55ed334dbe1eefd3851b88e114b3cc43b26e3c3c` 重新生成，使用 protoc 35.1、protoc-gen-go v1.36.11 和 Binaryen 131。产物为 7,337,384 字节，SHA-256 为 `163ecfb7e1c262dcb4d05d12ee009eb16dec194ab3927dab11c2b9df87243f84`；schema 输入 SHA-256 为 `02a55bf66f39f791a14971428bb3b104a7d0afa58493af0f2d7538d86dceec3e`。两份 provenance、实际文件摘要和生成的 protobuf 无漂移检查均通过。
+- Go 主模块完整测试和独立 TUN 示例模块测试通过，覆盖新 WASM 的 ABI、引擎、管理配置校验和公开 API 网络通信。网络测试辅助代码改为仅记录 `TCPListenDirect` 端口，避免 VPN 出口的 NAT 监听覆盖正式节点端口；固定同一失败产物进行前后对照后，四项网络测试均通过，保留路由、双向收发及最大 UDP 载荷断言。
+- 相邻入口的 C ABI `run_network_instance` 和 CLI `--check-config` 同样恢复严格校验，普通启动及 `config.d` 的容错恢复保持不变。C ABI 拒绝非法输入的回归 1 项通过，CLI 文件/标准输入及日志配置测试 6 项通过；这两组检查不会启动真实网卡。
+- GUI 私有提权模块的旧示例错误引用不存在的外部 `elevated_command` 包，已改为说明内部调用方式；没有为文档扩大公开 API 或关闭 doctest。串行 `cargo test -p easytier-gui --doc` 通过，目前该包没有可执行文档示例。
 - Core 完整库测试 1230 项通过；Web 后端 355 项通过、1 项默认忽略；GUI 后端 28 项通过。手动连接竞争测试修复了对已被合法清理连接的 RTT 等待，保留共同胜出连接、双向通信和关闭断言，连续重复 20 次通过。
-- `cargo fmt --all -- --check` 和选定包（Core、原生、proto、Web、GUI）的 all-targets Clippy `-D warnings` 通过；该 Windows 检查不等于 Linux 全 workspace/full 特性验证。
+- `cargo fmt --all -- --check` 和选定包（Core、原生、proto、Web、GUI、FFI）的 all-targets Clippy `-D warnings` 通过；该 Windows 检查不等于 Linux 全 workspace/full 特性验证。
 - protobuf 库测试 39 项通过、2 项默认忽略；descriptor 检查 4 项通过，覆盖全部 109 个定制字段的所有权、编号、类型、presence 和高位编解码，以及官方 DHCP 字段和定制策略同时往返。
 - 原生组合专项 17 项通过，覆盖 IPv4/IPv6 上通过 TCP/WSS 中继发现 HTTP3、手动初始连接优先级、UDP/HTTP3 共端口和 KCP/TCP/WSS 通信。与自报版本 `2.7.0-99db92a3` 的官方 Windows CLI 真实进程互通 6 项通过，包括 WS/WSS 双向 peer、Noise、管理反向 RPC 及未协商 padding 拒绝。
 - 原生共享网卡、移动 TUN、VPN 路由和配置持久化定向测试 99 项通过、3 项忽略；另有 1 项真实 TUN 测试因 Windows 无法创建 Wintun adapter 失败。新增回归覆盖 VPN 捕获规则的归属冲突、IPv4/IPv6 dispatcher 选择、清理失败时保留归属、无效网卡仍执行清理，以及清理耗尽后先隔离共享 dispatcher 再释放成员。
