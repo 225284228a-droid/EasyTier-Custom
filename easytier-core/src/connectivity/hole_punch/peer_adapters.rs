@@ -31,6 +31,22 @@ use super::{
 
 #[async_trait]
 impl UdpHolePunchPeerSource for PeerManagerCore {
+    fn reserve_parallel_slot_for_protocol(
+        &self,
+        peer_id: PeerId,
+        protocol: &str,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        PeerManagerCore::reserve_parallel_slot_for_protocol(self, peer_id, protocol)
+    }
+    fn reserve_parallel_slot(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        PeerManagerCore::reserve_parallel_slot(self, peer_id)
+    }
+    fn parallel_connection_target(&self, peer_id: PeerId) -> u32 {
+        PeerManagerCore::parallel_connection_target(self, peer_id)
+    }
     fn local_peer_id(&self) -> PeerId {
         PeerManagerCore::my_peer_id(self)
     }
@@ -146,6 +162,22 @@ impl HolePunchTunnelSink for PeerManagerCore {
 
 #[async_trait]
 impl TcpHolePunchPeerSource for PeerManagerCore {
+    fn reserve_parallel_slot_for_protocol(
+        &self,
+        peer_id: PeerId,
+        protocol: &str,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        PeerManagerCore::reserve_parallel_slot_for_protocol(self, peer_id, protocol)
+    }
+    fn reserve_parallel_slot(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        PeerManagerCore::reserve_parallel_slot(self, peer_id)
+    }
+    fn parallel_connection_target(&self, peer_id: PeerId) -> u32 {
+        PeerManagerCore::parallel_connection_target(self, peer_id)
+    }
     fn local_peer_id(&self) -> PeerId {
         PeerManagerCore::my_peer_id(self)
     }

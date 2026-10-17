@@ -20,6 +20,15 @@
 - 连接 URL 的显式 `traffic_disguise=speedtest` / `traffic_disguise=video` 优先于全局风格；现有 SNI 覆盖及 Host、请求路径、User-Agent、语言和 padding 参数继续有效。WSS 根据风格选择默认请求路径、Accept 和 Cache-Control，显式 URL 参数优先；保持每条 binary 消息一个原报文，文本 padding 仍要求双方通过 Upgrade 声明支持。
 - HTTP3 body 有界背压、请求头与帧长检查以及可取消的连接任务；关闭最后一个隧道端会释放 HTTP/3 驱动、QUIC 连接和 endpoint。
 
+### 多连接并行传输（2026-10-18）
+
+- 顶层 `parallel_connections` 取值 1–16，默认 1；`disable_parallel_connections` 默认 `false`，任意一端禁用即保持单连接；`traffic_disguise` 可选 `speedtest`（默认）和 `video`。默认值由后端统一省略，禁用并发不会清除已填写的数量。TOML、CLI、管理 API 和 GUI/Web 使用同一组配置，官方内核隐藏并过滤不支持的字段。
+- 普通和 Noise 握手通过版本化能力声明期望数量、禁用状态及资源上限。双方支持时，目标为两端数量平均值四舍五入，再受双方跨网络配额限制；例如 1 与 5 得到 3。缺少能力时使用官方原有报文和单通路，不发送并发外壳。
+- 手动 URL 决定锚点及扩容协议；自动连接按双方伪装策略和协议偏好选取共同协议，偏好冲突由较小 Peer ID 的顺序裁决。物理成员使用独立连接或 UDP 会话与源端口；ring、attached 和虚拟 relay 会话不复制，中继业务可使用物理下一跳的连接池。
+- 每节点同时最多补建两条连接，槽位预留、池 ID 和代次防止重复扩容，失败后有限退避。不同槽位允许共存，同槽重连替换；往返验证通过的成员才参与发送。控制消息使用稳定默认连接，业务报文在加密、压缩后按字节公平分配，保留可丢弃语义和队列背压。
+- 接收端在每连接解密后共享重排，再把完整原报文交回原转发流程。每方向上限 8192 包、16MiB，全局上限 128MiB；缺口等待为最大成员 RTT 的三倍，限制在 20–250ms，超时和容量耗尽会跳过缺包，重复与迟到报文丢弃。连接断开后剩余成员继续工作并补连。
+- 协商后的配置更新通过默认连接同步确认；禁用时停止分流，短暂排空后关闭多余成员并保留锚点。状态显示目标数、实际成员、协议和回退原因，协议仅在多条活动连接时显示如 `http3[×4]`。
+
 ### 定制 protobuf 字段编号与版本兼容
 
 - 本次合并中，所有原先使用低位编号的 Custom protobuf 字段均迁移到高位：新编号为原 tag 加 `50000`；若该编号已被占用，则每次再加 `1000`，直到找到空闲编号。已有高位编号保持不变。
@@ -88,7 +97,7 @@
 - 全局 SNI 为空时保留 URL 中显式配置的 SNI；HTTP3 使用 IPv6 地址作为默认服务器名时移除 URL 方括号，避免 TLS 服务器名校验失败。WSS 伪装参数生效时，请求行中的 IPv6 字面量主机同样保持完整（含方括号），不会被截断或改写。
 - GUI/Web 编辑 URL 时保留路径、查询参数和 fragment。
 
-相关代码：`easytier/src/tunnel/http3.rs`、`websocket.rs`、`protocol/adapters/`。这里的“伪装”描述传输格式与握手参数，不是不可识别或不可封锁的保证。HTTP3 隧道使用 TLS 1.3 和 `h3` ALPN，但应用流仍为自定义隧道帧，并非完整的浏览器 HTTP/3 请求；原生 QUIC 打洞的数据包已去除外层 EasyTier UDP 头部，NAT 控制探测包仍沿用现有 EasyTier 格式。
+相关代码：`easytier/src/tunnel/http3.rs`、`websocket.rs`、`protocol/adapters/`。这里的“伪装”描述传输格式、握手参数和发送节奏，不保证特定浏览器指纹。HTTP3 隧道使用真实 HTTP/3 请求、响应与 DATA body；原生 QUIC 打洞的数据包已去除外层 EasyTier UDP 头部，NAT 控制探测包仍沿用现有 EasyTier 格式。
 
 ### 4. P2P 协议策略与连接管理
 
@@ -103,7 +112,7 @@
 - HTTP3 打洞立即进入首次调度；优先模式下 30 秒后允许并行尝试裸 UDP 回退，已有同级或更优连接时停止重复尝试。严格模式不启动裸 UDP 回退。
 - 多网卡 HTTP3 拨号在协议握手成功后才选定网卡，避免把尚未验证的 UDP 会话当成可用链路；本机回环地址由系统选择回环路径。
 - 可选 `close_redundant_conns_when_disguised`（界面为“首选连接建立后断开多余连接”），开关默认开启，可显式关闭。开启后，已建立且通过往返验证的 WSS/HTTP3 优先于裸 TCP/UDP，即使伪装策略为 `off`（不主动伪装）也如此；显式“禁止伪装”时仍按普通协议排序。此规则仅决定已建连接的保留优先级，不改变主动拨号的伪装策略。自动连接之间仍按 TCP 偏好 WSS、UDP 偏好 HTTP3 的顺序清理较低优先级连接，同级自动连接保留。
-- 手动填写初始节点建立的连接优先级最高，不受伪装策略限制。双方新版握手协商并确认连接可用后，按双方一致的顺序保留一条手动连接，断开同一对等节点的其他连接（包括其他手动连接）。被清理的手动连接 URL 暂停重拨，保留连接失败后恢复重拨。旧版或不支持新协商的节点不强制清理连接。
+- 手动填写初始节点建立的连接优先级最高，不受伪装策略限制。双方新版握手协商并确认连接可用后，按共同顺序保留手动锚点及已协商的并发槽位；未启用并发时保留一条。被清理的其他手动 URL 暂停重拨，保留连接失败后恢复重拨。缺少清理能力的节点不强制清理连接。
 - 冗余清理通过普通和 Noise 握手已有的 `features` 声明 `p2p-cleanup-v2` 策略快照，包含连接来源和双方共享排序，不修改官方线格式。自动连接只有在双方都认定其优先级更低时才清理；未知或非法声明不影响握手，但不触发清理。热修改排序配置后，旧连接暂停清理，直到重新握手取得匹配快照。
 - 新配置与没有旧布尔覆盖的旧配置默认使用 `prefer`、UDP 和开启冗余连接清理，GUI/Web 与内核一致；旧布尔字段仍按原含义读取，GUI/Web 将新策略下拉选择转换为旧字段供兼容内核使用。
 - 省略 `default_protocol` 时优先 UDP；需要优先 TCP 时，在 `[flags]` 显式保存 `default_protocol = "tcp"`。省略清理开关时默认开启；需要禁用时显式保存 `close_redundant_conns_when_disguised = false`。
@@ -141,13 +150,16 @@
 | TOML 选项 | 当前默认值 | 作用 |
 | --- | --- | --- |
 | 顶层 `sni` | 未设置 | 出站 WSS/HTTP3 的全局 SNI |
+| 顶层 `parallel_connections` | `1` | 期望物理隧道数，范围 1–16；双方支持时取平均值四舍五入 |
+| 顶层 `disable_parallel_connections` | `false` | 禁用并行传输，保留已配置数量；任意一端禁用即回退单连接 |
+| 顶层 `traffic_disguise` | `"speedtest"` | HTTP3/WSS 流量风格，可选 `speedtest`、`video` |
 | `[flags] default_protocol` | `"udp"` | 自动P2P优先 UDP，协商伪装时优先 HTTP3 |
 | `[flags] private_mode` | 定制内核 `true`；官方内核保持官方默认 | 网页按能力显示默认值，默认不写入配置；官方节点没有定制能力标记时显示并沿用官方默认 `false` |
 | `[flags] p2p_disguise_mode` | `"prefer"` | 自动 P2P 伪装策略；取值为 `prefer`、`off`、`disabled`、`only`，默认策略可省略 |
 | `[flags] prefer_wss_http3_for_p2p` | `true`（旧字段） | 兼容旧定制内核的策略输入；新内核用 `p2p_disguise_mode` 保存单一策略 |
 | `[flags] disable_wss_http3_for_p2p` | `false`（旧字段） | 兼容旧策略输入；`true` 对应 `disabled` |
 | `[flags] only_use_wss_http3_for_hole_punching` | `false`（旧字段） | 兼容旧策略输入；`true` 对应 `only` |
-| `[flags] close_redundant_conns_when_disguised` | `true` | 双方协商并验证连接可用后，优先保留一条手动初始节点连接；否则优先保留 WSS/HTTP3（显式禁止伪装除外），清理较低优先级自动连接 |
+| `[flags] close_redundant_conns_when_disguised` | `true` | 双方协商并验证连接可用后，优先保留手动锚点及并发槽位；否则优先 WSS/HTTP3（显式禁止伪装除外），清理较低优先级自动连接 |
 | `[vpn].exit_enabled` | `true` | 允许本节点提供出口转发；没有规则时不会启动 VPN 客户端，默认空策略不需要写 `[vpn]` |
 
 这些策略受本机构建能力和对端能力影响。与原版混用时不要假定扩展功能全部可用；强制仅使用 WSS/HTTP3 可能减少可连接路径。启用互相冲突的策略可能使连接无法建立。
@@ -169,6 +181,17 @@ git clone https://github.com/225284228a-droid/EasyTier-Custom.git
 cd EasyTier-Custom
 cargo build --release --locked -p easytier
 ```
+
+### HTTP3 与多连接专项验证（2026-10-18）
+
+- 真实 HTTP/3 专项 6 项通过，包含独立标准 `h3` 客户端的 IPv4/IPv6 GET 与双向 POST、UDP 分类入口、拆合帧和帧长边界；WebSocket 专项 30 项、流量风格 3 项通过。
+- 与官方 Windows CLI `2.7.0-99db92a3` 的独立进程互通 8 项通过，覆盖 TCP/UDP/QUIC/WS/WSS 双向传输、Noise、管理 RPC，以及设置多连接和视频风格后缺少能力时的回退。官方端不接收并发外壳和未协商 padding。
+- 原生组合 34 项通过，覆盖四协议的双栈手动连接池、1 与 5 协商为 3、独立源端口、每成员实际业务流量、断线补连、单端禁用、双边同时拨号、TCP/HTTP3 Noise，以及经 TCP/WSS 中继发现 HTTP3 后自动扩容；TCP/HTTP3 的真实中继业务双向转发确认每条物理下一跳成员均承载数据。
+- Core 与原生联合 feature 配置的完整核心库测试 1269 项通过，包含默认省略、API/TOML 往返、协商矩阵、官方能力缺失、慢队列、动态禁用/恢复、foreign 握手配额及协议迁移（含 16 条上限）、8192 包/16MiB/128MiB 容量与溢出、重复、长缺口、epoch 授权和半断线重建；CLI 配置专项 22 项通过。
+- 共享前端 185 项、Web 前端 198 项、GUI 前端 62 项通过；配置转换脚本 10 项、protobuf 字段所有权与高位编解码检查 4 项通过。共享组件和 GUI 类型检查与生产构建通过。
+- Core、原生、proto 与 Web 的 all-targets 严格 Clippy（`-D warnings`）、Core 无默认功能编译、Rust 格式及 diff 检查通过。
+- 可控的每连接限速夹具向同一个 `Peer::send_msg` 发送一条 192 包业务流：连续三次结果为 3.947、4.010 和 4.006 倍，全部成员承载业务数据。基准应与编译等重负载分开运行；本轮同时编译时曾测得 2.495 倍。该结果验证调度和聚合能力，不代表真实公网测速；实际带宽仍受总出口、拥塞控制、RTT、NAT 和对端限额影响。
+- 本机执行 Windows 回环与内存传输验证；真实公网 NAT、防火墙环境和跨平台发布构建仍需对应环境验证。
 
 ### 官方主线合入验证（2026-10-16）
 

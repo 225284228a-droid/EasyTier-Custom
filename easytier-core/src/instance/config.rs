@@ -240,6 +240,8 @@ impl CoreInstanceConfig {
                 network_identity: identity,
                 stun_info: Default::default(),
                 flags: flags.clone(),
+                parallel_connections: config.get_parallel_connections(),
+                disable_parallel_connections: config.get_disable_parallel_connections(),
                 secure_mode: config.get_secure_mode(),
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),

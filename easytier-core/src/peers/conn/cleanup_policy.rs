@@ -196,6 +196,42 @@ impl CleanupPolicyPair {
         ))
     }
 
+    /// Both ends rank the same transport. Preference conflicts are settled by
+    /// the smaller peer ID after applying both endpoints' disguise policy.
+    pub(crate) fn parallel_transport_rank(
+        &self,
+        tunnel: &str,
+        my_peer: u32,
+        remote_peer: u32,
+    ) -> Option<u8> {
+        let remote = self.remote.as_ref()?;
+        let preferred = if my_peer < remote_peer {
+            &self.local.policy
+        } else {
+            &remote.policy
+        };
+        let disguise = !self.local.policy.disabled
+            && !remote.policy.disabled
+            && (self.local.policy.prefer
+                || self.local.policy.only
+                || remote.policy.prefer
+                || remote.policy.only);
+        Some(p2p_protocol_rank(&preferred.protocol, disguise, tunnel))
+    }
+
+    pub(crate) fn parallel_default_protocol(
+        &self,
+        my_peer: u32,
+        remote_peer: u32,
+    ) -> Option<String> {
+        let remote = self.remote.as_ref()?;
+        Some(if my_peer < remote_peer {
+            self.local.policy.protocol.clone()
+        } else {
+            remote.policy.protocol.clone()
+        })
+    }
+
     pub(crate) fn can_retire_automatic(&self) -> bool {
         let Some(remote) = self.remote.as_ref() else {
             return false;
@@ -401,6 +437,41 @@ mod tests {
         another.set_remote_features(&[b.feature().unwrap()]);
         assert!(a.same_ordering_as(&another));
         assert_ne!(a, another);
+    }
+
+    #[test]
+    fn parallel_protocol_conflicts_follow_the_smaller_peer_at_both_ends() {
+        let tcp_flags = Flags {
+            default_protocol: "tcp".into(),
+            prefer_wss_http3_for_p2p: true,
+            ..Default::default()
+        };
+        let udp_flags = Flags {
+            default_protocol: "udp".into(),
+            ..tcp_flags.clone()
+        };
+        let mut tcp = policy(&tcp_flags);
+        let mut udp = policy(&udp_flags);
+        tcp.set_remote_features(&[udp.feature().unwrap()]);
+        udp.set_remote_features(&[tcp.feature().unwrap()]);
+        for (tcp_id, udp_id, preferred) in [(1, 2, "wss"), (7, 3, "http3")] {
+            for scheme in ["tcp", "udp", "wss", "http3", "quic"] {
+                assert_eq!(
+                    tcp.parallel_transport_rank(scheme, tcp_id, udp_id),
+                    udp.parallel_transport_rank(scheme, udp_id, tcp_id),
+                    "both endpoints must agree on {scheme}"
+                );
+            }
+            let other = if preferred == "wss" { "http3" } else { "wss" };
+            assert!(
+                tcp.parallel_transport_rank(preferred, tcp_id, udp_id)
+                    < tcp.parallel_transport_rank(other, tcp_id, udp_id)
+            );
+            assert_eq!(
+                tcp.parallel_default_protocol(tcp_id, udp_id),
+                udp.parallel_default_protocol(udp_id, tcp_id)
+            );
+        }
     }
 
     #[test]

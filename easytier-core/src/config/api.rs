@@ -31,6 +31,15 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     if config.get_sni() != default_config.get_sni() {
         result.sni = Some(config.get_sni());
     }
+    if config.get_parallel_connections() != 1 {
+        result.parallel_connections = Some(config.get_parallel_connections());
+    }
+    if config.get_disable_parallel_connections() {
+        result.disable_parallel_connections = Some(true);
+    }
+    if config.get_traffic_disguise() != "speedtest" {
+        result.traffic_disguise = Some(config.get_traffic_disguise());
+    }
 
     let network_identity = config.get_network_identity();
     result.network_name = Some(network_identity.network_name);

@@ -73,6 +73,8 @@ pub struct PeerRuntimeSnapshotInput {
     pub network_identity: NetworkIdentity,
     pub stun_info: StunInfo,
     pub flags: Flags,
+    pub parallel_connections: u32,
+    pub disable_parallel_connections: bool,
     pub secure_mode: Option<SecureModeConfig>,
     pub acl: Option<Acl>,
     pub easytier_version: String,
@@ -121,6 +123,8 @@ impl PeerRuntimeSnapshot {
             network_identity,
             stun_info,
             flags,
+            parallel_connections,
+            disable_parallel_connections,
             secure_mode,
             acl,
             easytier_version,
@@ -182,6 +186,8 @@ impl PeerRuntimeSnapshot {
             easytier_version,
             avoid_relay_data_preference,
             flags,
+            parallel_connections,
+            disable_parallel_connections,
             pinned_peers,
             peer_group_memberships,
             acl_group_declarations,
@@ -245,6 +251,9 @@ pub(crate) struct CorePeerContextAdapters {
 /// runtime resources.
 pub(crate) struct CorePeerContext {
     config: CoreRuntimeConfigStore,
+    is_foreign_context: bool,
+    parallel_dials: Arc<tokio::sync::Semaphore>,
+    parallel_parent_config: Option<CoreRuntimeConfigStore>,
     avoid_relay_data_preference: AtomicBool,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
     limiter_state: Mutex<CoreLimiterState>,
@@ -268,7 +277,11 @@ impl CorePeerContext {
         adapters: CorePeerContextAdapters,
         parent: &CorePeerContext,
     ) -> Self {
-        Self::new_with_stats_manager(config, adapters, parent.stats_manager())
+        let mut context = Self::new_with_stats_manager(config, adapters, parent.stats_manager());
+        context.is_foreign_context = true;
+        context.parallel_dials = parent.parallel_dials.clone();
+        context.parallel_parent_config = Some(parent.config.clone());
+        context
     }
 
     fn new_with_stats_manager(
@@ -285,6 +298,9 @@ impl CorePeerContext {
         );
         Self {
             config,
+            is_foreign_context: false,
+            parallel_dials: Arc::new(tokio::sync::Semaphore::new(2)),
+            parallel_parent_config: None,
             avoid_relay_data_preference,
             stun_info_source: adapters.stun_info_source,
             limiter_state: Mutex::new(CoreLimiterState::default()),
@@ -298,6 +314,15 @@ impl CorePeerContext {
 
     fn snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
         self.config.snapshot().peer.clone()
+    }
+
+    fn parallel_snapshot(&self) -> Arc<PeerRuntimeSnapshot> {
+        self.parallel_parent_config
+            .as_ref()
+            .unwrap_or(&self.config)
+            .snapshot()
+            .peer
+            .clone()
     }
 
     pub(crate) fn runtime_config_store(&self) -> CoreRuntimeConfigStore {
@@ -513,6 +538,21 @@ impl PeerPacketPolicy {
 pub(crate) trait PeerContext: Send + Sync {
     fn network_identity(&self) -> NetworkIdentity;
 
+    fn parallel_connections(&self) -> u32 {
+        1
+    }
+    fn disable_parallel_connections(&self) -> bool {
+        false
+    }
+
+    fn parallel_connection_limit(&self) -> u32 {
+        16
+    }
+
+    fn parallel_dial_semaphore(&self) -> Option<Arc<tokio::sync::Semaphore>> {
+        None
+    }
+
     fn network_name(&self) -> String {
         self.network_identity().network_name
     }
@@ -703,8 +743,28 @@ pub(crate) fn secret_proof_from_secret(secret: &str, challenge: &[u8]) -> Option
 }
 
 impl PeerContext for CorePeerContext {
+    fn parallel_dial_semaphore(&self) -> Option<Arc<tokio::sync::Semaphore>> {
+        Some(self.parallel_dials.clone())
+    }
+    fn parallel_connection_limit(&self) -> u32 {
+        if self.is_foreign_context {
+            self.parallel_snapshot()
+                .max_direct_conns_per_peer_in_foreign_network
+                .min(16) as u32
+        } else {
+            16
+        }
+    }
+    fn parallel_connections(&self) -> u32 {
+        self.parallel_snapshot().parallel_connections
+    }
+
+    fn disable_parallel_connections(&self) -> bool {
+        self.parallel_snapshot().disable_parallel_connections
+    }
     fn max_direct_conns_per_peer_in_foreign_network(&self) -> usize {
-        self.snapshot().max_direct_conns_per_peer_in_foreign_network
+        self.parallel_snapshot()
+            .max_direct_conns_per_peer_in_foreign_network
     }
 
     fn network_identity(&self) -> NetworkIdentity {
@@ -1091,6 +1151,8 @@ pub(crate) mod tests {
             network_identity: NetworkIdentity::new("host-network".to_owned(), "secret".to_owned()),
             stun_info: StunInfo::default(),
             flags,
+            parallel_connections: 1,
+            disable_parallel_connections: false,
             secure_mode: None,
             acl,
             easytier_version: "host-version".to_owned(),
@@ -1290,6 +1352,44 @@ pub(crate) mod tests {
 
     fn submitted_config(snapshot: PeerRuntimeSnapshot) -> CoreRuntimeConfigStore {
         CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot))
+    }
+
+    #[test]
+    fn parallel_dial_budget_is_shared_with_foreign_networks_and_preserves_desired_count() {
+        let mut snapshot = submitted_snapshot("parallel-budget", false);
+        snapshot.parallel_connections = 16;
+        snapshot.max_direct_conns_per_peer_in_foreign_network = 3;
+        let config = submitted_config(snapshot);
+        let context =
+            CorePeerContext::new(config.clone(), test_core_context_adapters(Arc::new(())));
+        let foreign = CorePeerContext::new_foreign(
+            submitted_config(submitted_snapshot("foreign-identity", false)),
+            test_core_context_adapters(Arc::new(())),
+            &context,
+        );
+        assert_eq!(context.parallel_connections(), 16);
+        assert_eq!(foreign.parallel_connections(), 16);
+        assert_eq!(context.parallel_connection_limit(), 16);
+        assert_eq!(foreign.parallel_connection_limit(), 3);
+        let mut updated = submitted_snapshot("updated-parent", false);
+        updated.parallel_connections = 7;
+        updated.disable_parallel_connections = true;
+        updated.max_direct_conns_per_peer_in_foreign_network = 2;
+        config.update_peer(Arc::new(updated));
+        assert_eq!(foreign.parallel_connections(), 7);
+        assert!(foreign.disable_parallel_connections());
+        assert_eq!(foreign.parallel_connection_limit(), 2);
+        assert_eq!(foreign.max_direct_conns_per_peer_in_foreign_network(), 2);
+        assert_eq!(foreign.hostname(), "foreign-identity");
+        let local_budget = context.parallel_dial_semaphore().unwrap();
+        let foreign_budget = foreign.parallel_dial_semaphore().unwrap();
+        assert!(Arc::ptr_eq(&local_budget, &foreign_budget));
+        let first = local_budget.clone().try_acquire_owned().unwrap();
+        let second = foreign_budget.clone().try_acquire_owned().unwrap();
+        assert!(local_budget.clone().try_acquire_owned().is_err());
+        drop(first);
+        assert!(foreign_budget.try_acquire_owned().is_ok());
+        drop(second);
     }
 
     #[test]

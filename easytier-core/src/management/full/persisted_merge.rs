@@ -95,6 +95,9 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
     let paths = match field {
         "hostname" => vec!["hostname"],
         "sni" => vec!["sni"],
+        "parallel_connections" => vec!["parallel_connections"],
+        "disable_parallel_connections" => vec!["disable_parallel_connections"],
+        "traffic_disguise" => vec!["traffic_disguise"],
         "dhcp" => vec!["dhcp", "ipv4"],
         "dhcp_ipv4_cidr" => vec!["dhcp"],
         "dhcpv6" | "dhcp_ipv6_cidr" => vec!["dhcpv6"],
@@ -538,6 +541,9 @@ pub(super) fn merge_legacy_form_changes(
     for path in [
         "hostname",
         "sni",
+        "parallel_connections",
+        "disable_parallel_connections",
+        "traffic_disguise",
         "dhcp",
         "dhcpv6",
         "vpn",
@@ -555,6 +561,48 @@ pub(super) fn merge_legacy_form_changes(
 mod tests {
     use super::*;
     const ORIGINAL: &str = "# retained comment\ninstance_id = '11111111-1111-1111-1111-111111111111'\nhostname = 'old'\nnetns = 'keep'\nstun_servers = ['udp://stun.example:3478']\n[network_identity]\nnetwork_name = 'home'\nnetwork_secret = 'secret'\n[flags]\ndefault_protocol = 'udp'\nmtu = 1200\n";
+
+    #[test]
+    fn parallel_patch_keeps_count_on_disable_and_removes_explicit_defaults() {
+        let original = format!(
+            "parallel_connections = 5\ndisable_parallel_connections = true\ntraffic_disguise = 'video'\n{ORIGINAL}"
+        );
+        let merged = merge_persisted_config(
+            &original,
+            &NetworkConfig {
+                disable_parallel_connections: Some(false),
+                ..Default::default()
+            },
+            &["disable_parallel_connections".into()],
+        )
+        .unwrap();
+        let config = TomlConfig::new_from_str(&merged).unwrap();
+        assert_eq!(config.get_parallel_connections(), 5);
+        assert!(!config.get_disable_parallel_connections());
+        assert_eq!(config.get_traffic_disguise(), "video");
+        assert!(merged.contains("# retained comment"));
+        let merged = merge_persisted_config(
+            &merged,
+            &NetworkConfig {
+                parallel_connections: Some(1),
+                traffic_disguise: Some("speedtest".into()),
+                ..Default::default()
+            },
+            &["parallel_connections".into(), "traffic_disguise".into()],
+        )
+        .unwrap();
+        for key in [
+            "parallel_connections",
+            "disable_parallel_connections",
+            "traffic_disguise",
+        ] {
+            assert!(!merged.contains(key));
+        }
+        assert_eq!(
+            TomlConfig::new_from_str(&merged).unwrap().get_flags().mtu,
+            1200
+        );
+    }
 
     #[test]
     fn generated_flag_paths_keep_compound_document_ownership() {

@@ -113,6 +113,7 @@ pub mod instance {
                 conns: value.conns.into_iter().map(Into::into).collect(),
                 default_conn_id: value.default_conn_id,
                 directly_connected_conns: value.directly_connected_conns,
+                parallel_connections: value.parallel_connections,
             }
         }
     }

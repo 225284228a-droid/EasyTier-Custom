@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 async function render(localStun: unknown, peerStun: unknown, lossRate?: number, vpnStatus?: unknown,
-  apiOverrides: Record<string, unknown> = {}) {
+  apiOverrides: Record<string, unknown> = {}, peerData: Record<string, unknown> = {}) {
   const instance = {
     instance_id: '12345678-9abc-def0-fedc-ba9876543210',
     running: true,
@@ -36,10 +36,8 @@ async function render(localStun: unknown, peerStun: unknown, lossRate?: number, 
           stun_info: peerStun,
         },
         peer: {
-          conns: [{
-            conn_id: 'connection',
-            ...(lossRate === undefined ? {} : { loss_rate: lossRate }),
-          }],
+          conns: [{ conn_id: 'connection', ...(lossRate === undefined ? {} : { loss_rate: lossRate }) }],
+          ...peerData,
         },
       }],
     },
@@ -104,6 +102,77 @@ describe('status protobuf JSON rendering', () => {
     expect(rows[0].text()).toContain('Open Internet')
     expect(rows[1].text()).toContain('Symmetric')
     expect(rows[1].text()).toContain('50%')
+  })
+
+  it('renders active protocol counts, IPv6 labels and expanded negotiated pool details', async () => {
+    const tunnel = (tunnel_type: string, url: string) => ({
+      tunnel_type,
+      local_addr: { url },
+      remote_addr: { url },
+    })
+    const wrapper = await render(undefined, undefined, undefined, undefined, {}, {
+      conns: [
+        { conn_id: 'active-a', tunnel: tunnel('http3', 'https://[2001:db8::1]:443') },
+        { conn_id: 'active-b', tunnel: tunnel('http3', 'https://[2001:db8::2]:443') },
+        { conn_id: 'backup', tunnel: tunnel('wss', 'https://relay.example:443') },
+      ],
+      parallel_connections: {
+        target: 4,
+        active_conn_ids: ['active-a', 'active-b'],
+        protocol: 'http3',
+        fallback_reason: 'capacity limit',
+      },
+    })
+
+    const headers = wrapper.findAll('th').map(header => header.text())
+    const peerRow = wrapper.findAll('tbody tr')[1]
+    const cells = peerRow.findAll('td')
+    expect(cells[headers.indexOf('tunnel_proto')].text()).toBe('http36[×2],wss')
+    expect(headers).toContain('parallel_status')
+
+    const details = cells[headers.indexOf('parallel_status')].find('details')
+    expect(details.exists()).toBe(true)
+    expect(details.find('summary').text()).toContain('parallel_actual: 2')
+    expect(details.find('summary').text()).toContain('parallel_target: 4')
+    expect(details.find('dl').text()).toContain('http3')
+    expect(details.find('dl').text()).toContain('capacity limit')
+    expect(details.findAll('dt').map(label => label.text())).toEqual([
+      'parallel_target', 'parallel_actual', 'parallel_protocol', 'parallel_fallback_reason',
+    ])
+  })
+
+  it('keeps legacy protocol names without a parallel status column when the backend omits pool state', async () => {
+    const wrapper = await render(undefined, undefined, undefined, undefined, {}, {
+      conns: [
+        { conn_id: 'old-a', tunnel: { tunnel_type: 'http3', local_addr: { url: 'https://relay.example:443' } } },
+        { conn_id: 'old-b', tunnel: { tunnel_type: 'http3', local_addr: { url: 'https://relay.example:443' } } },
+      ],
+    })
+
+    const headers = wrapper.findAll('th').map(header => header.text())
+    expect(headers).not.toContain('parallel_status')
+    expect(wrapper.findAll('tbody tr')[1].findAll('td')[headers.indexOf('tunnel_proto')].text()).toBe('http3')
+    expect(wrapper.text()).not.toContain('×')
+  })
+
+  it('does not add a multiplier when exactly one pool member is active', async () => {
+    const wrapper = await render(undefined, undefined, undefined, undefined, {}, {
+      conns: [
+        { conn_id: 'active', tunnel: { tunnel_type: 'http3', local_addr: { url: 'https://relay.example:443' } } },
+        { conn_id: 'old', tunnel: { tunnel_type: 'http3', local_addr: { url: 'https://relay.example:443' } } },
+      ],
+      parallel_connections: {
+        target: 4,
+        active_conn_ids: ['active'],
+        protocol: 'http3',
+        fallback_reason: '',
+      },
+    })
+
+    const headers = wrapper.findAll('th').map(header => header.text())
+    const peerRow = wrapper.findAll('tbody tr')[1]
+    expect(peerRow.findAll('td')[headers.indexOf('tunnel_proto')].text()).toBe('http3')
+    expect(peerRow.text()).not.toContain('×1')
   })
 
   it('shows compact VPN status and each single exit only inside expanded node details', async () => {

@@ -5,6 +5,13 @@ import "error.proto";
 
 package common;
 
+message ParallelConnectionStatus {
+  uint32 target = 50001;
+  repeated string active_conn_ids = 50002;
+  string protocol = 50003;
+  string fallback_reason = 50004;
+}
+
 message Flags {
   reserved 22, 31;
   reserved "accept_dns", "tld_dns_zone";

@@ -123,6 +123,8 @@ fn build_foreign_peer_context(
     snapshot.max_direct_conns_per_peer_in_foreign_network =
         parent_context_dyn.max_direct_conns_per_peer_in_foreign_network();
     snapshot.hmac_secret_digest = parent_context_dyn.hmac_secret_digest();
+    snapshot.parallel_connections = parent_context_dyn.parallel_connections();
+    snapshot.disable_parallel_connections = parent_context_dyn.disable_parallel_connections();
 
     Arc::new(CorePeerContext::new_foreign(
         CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot)),

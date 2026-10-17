@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { estimatedBandwidth, estimatedConnectionBandwidth, totalTraffic, latencyMs, lossRate, udpNatTypeName } from '../src/modules/statusDisplay'
+import { estimatedBandwidth, estimatedConnectionBandwidth, totalTraffic, latencyMs, lossRate, parallelConnectionDetails, tunnelProtocols, udpNatTypeName } from '../src/modules/statusDisplay'
 import { ipv4ToString, ipv6ToString } from '../src/modules/utils'
 
 function peerRoutePair(conns: any[]) {
@@ -162,6 +162,69 @@ describe('status display helpers', () => {
       upload: '--',
       download: '--',
     })
+  })
+
+  it('formats protocol groups using active connection IDs and reports negotiated pool state', () => {
+    const info = peerRoutePair([
+      { conn_id: 'active-a', protocol: 'http3', ipv6: true },
+      { conn_id: 'active-b', protocol: 'http3', ipv6: true },
+      { conn_id: 'standby', protocol: 'wss', ipv6: false },
+    ])
+    info.peer.parallel_connections = {
+      target: 4,
+      active_conn_ids: ['active-a', 'active-b'],
+      protocol: 'http3',
+      fallback_reason: 'capacity limit',
+    }
+
+    expect(tunnelProtocols(info, conn => `${conn.protocol}${conn.ipv6 ? '6' : ''}`)).toBe('http36[×2],wss')
+    expect(parallelConnectionDetails(info)).toEqual({
+      target: 4,
+      actual: 2,
+      protocol: 'http3',
+      fallbackReason: 'capacity limit',
+    })
+  })
+
+  it('keeps legacy protocol labels without multipliers when the backend omits pool state', () => {
+    const info = peerRoutePair([
+      { conn_id: 'old-a', protocol: 'http3' },
+      { conn_id: 'old-b', protocol: 'http3' },
+      { conn_id: 'old-c', protocol: 'wss' },
+    ])
+
+    expect(tunnelProtocols(info, conn => conn.protocol)).toBe('http3,wss')
+    expect(parallelConnectionDetails(info)).toBeUndefined()
+  })
+
+  it('sums only active pool estimates and makes a direction unknown if any active member lacks it', () => {
+    const activeA = { conn_id: 'active-a', stats: {
+      bandwidth_estimate_version: 1, estimated_tx_bps: 2_000_000, estimated_rx_bps: 3_000_000,
+    } }
+    const activeB = { conn_id: 'active-b', stats: {
+      bandwidth_estimate_version: 1, estimated_tx_bps: 3_000_000, estimated_rx_bps: 4_000_000,
+    } }
+    const backup = { conn_id: 'backup', stats: {
+      bandwidth_estimate_version: 1, estimated_tx_bps: 90_000_000, estimated_rx_bps: 80_000_000,
+    } }
+    const info = peerRoutePair([activeA, activeB, backup])
+    info.peer.parallel_connections = { target: 4, active_conn_ids: ['active-a', 'active-b'], protocol: 'http3' }
+
+    expect(estimatedBandwidth(info)).toEqual({ upload: '5.00 Mbit/s', download: '7.00 Mbit/s' })
+
+    info.peer.conns[1].stats = { bandwidth_estimate_version: 1, estimated_tx_bps: 3_000_000 }
+    expect(estimatedBandwidth(info)).toEqual({ upload: '5.00 Mbit/s', download: '--' })
+  })
+
+  it('uses existing default-connection estimates when a pool has no active members', () => {
+    const defaultConnId = '00000001-0002-0003-0004-000000000005'
+    const info = peerRoutePairWithDefaultConn([
+      { conn_id: defaultConnId, stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 6_000_000, estimated_rx_bps: 7_000_000 } },
+      { conn_id: 'backup', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 90_000_000, estimated_rx_bps: 80_000_000 } },
+    ], defaultConnId)
+    info.peer.parallel_connections = { target: 4, active_conn_ids: [], protocol: 'http3' }
+
+    expect(estimatedBandwidth(info)).toEqual({ upload: '6.00 Mbit/s', download: '7.00 Mbit/s' })
   })
 
   it('keeps an omitted zero loss on the default connection', () => {

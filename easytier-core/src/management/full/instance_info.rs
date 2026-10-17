@@ -40,6 +40,7 @@ where
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            parallel_connections: Some(snapshot.parallel_connections),
             conns: snapshot.conns.into_iter().map(Into::into).collect(),
         })
         .collect::<Vec<_>>();

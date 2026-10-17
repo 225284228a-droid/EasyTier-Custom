@@ -1245,6 +1245,7 @@ fn upstream_format_request() -> TcpHolePunchRequest {
         connector_mapped_addr: Some("203.0.113.99:55779".parse::<SocketAddr>().unwrap().into()),
         scheme: String::new(),
         supports_port_prediction: false,
+        parallel_member: String::new(),
     }
 }
 

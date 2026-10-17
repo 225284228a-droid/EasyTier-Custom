@@ -17,6 +17,19 @@ use crate::{
 pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
+    pub async fn reserve_owned(
+        &self,
+    ) -> Result<tokio::sync::mpsc::OwnedPermit<ZCPacket>, TunnelError> {
+        self.0
+            .clone()
+            .reserve_owned()
+            .await
+            .map_err(|_| TunnelError::Shutdown)
+    }
+    /// Keep ownership on congestion so a striped packet can try another path.
+    pub fn try_send_owned(&self, item: ZCPacket) -> Result<(), TrySendError<ZCPacket>> {
+        self.0.try_send(item)
+    }
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
         match self.0.try_send(item) {
             Ok(()) => Ok(()),
@@ -85,12 +98,17 @@ impl<T: Tunnel> MpscTunnel<T> {
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
         initial_item: ZCPacket,
     ) -> Result<(), TunnelError> {
-        sink.feed(initial_item).await?;
+        match sink.feed(initial_item).await {
+            Ok(()) | Err(TunnelError::BufferFull) => {}
+            Err(error) => return Err(error),
+        }
 
         while let Ok(item) = rx.try_recv() {
             if let Err(e) = sink.feed(item).await {
                 tracing::error!(?e, "feed error");
-                return Err(e);
+                if !matches!(e, TunnelError::BufferFull) {
+                    return Err(e);
+                }
             }
         }
 
@@ -147,6 +165,100 @@ impl<T> Drop for MpscTunnel<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{StreamExt, stream::FuturesUnordered};
+
+    #[test]
+    fn try_send_owned_returns_full_packet_for_another_channel() {
+        let (full_tx, _full_rx) = channel(1);
+        let full_sender = MpscTunnelSender(full_tx);
+        full_sender
+            .try_send_owned(ZCPacket::new_with_payload(b"occupy"))
+            .unwrap();
+
+        let returned = match full_sender.try_send_owned(ZCPacket::new_with_payload(b"retry")) {
+            Err(TrySendError::Full(packet)) => packet,
+            Err(TrySendError::Closed(_)) => panic!("channel unexpectedly closed"),
+            Ok(()) => panic!("full channel unexpectedly accepted packet"),
+        };
+        assert_eq!(returned.payload(), b"retry");
+
+        let (retry_tx, mut retry_rx) = channel(1);
+        MpscTunnelSender(retry_tx).try_send_owned(returned).unwrap();
+        assert_eq!(retry_rx.try_recv().unwrap().payload(), b"retry");
+    }
+
+    #[test]
+    fn try_send_owned_returns_packet_when_channel_is_closed() {
+        let (tx, rx) = channel(1);
+        drop(rx);
+        let sender = MpscTunnelSender(tx);
+
+        let returned = match sender.try_send_owned(ZCPacket::new_with_payload(b"closed")) {
+            Err(TrySendError::Closed(packet)) => packet,
+            Err(TrySendError::Full(_)) => panic!("closed channel reported full"),
+            Ok(()) => panic!("closed channel unexpectedly accepted packet"),
+        };
+        assert_eq!(returned.payload(), b"closed");
+    }
+
+    #[tokio::test]
+    async fn any_ready_owned_permit_does_not_wait_for_stalled_first_member() {
+        type ReserveFuture = Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = (
+                            usize,
+                            Result<
+                                tokio::sync::mpsc::OwnedPermit<ZCPacket>,
+                                tokio::sync::mpsc::error::SendError<()>,
+                            >,
+                        ),
+                    > + Send,
+            >,
+        >;
+
+        let (first_tx, mut first_rx) = channel(1);
+        let (second_tx, second_rx) = channel(1);
+        first_tx
+            .send(ZCPacket::new_with_payload(b"first-original"))
+            .await
+            .unwrap();
+        second_tx
+            .send(ZCPacket::new_with_payload(b"second-original"))
+            .await
+            .unwrap();
+
+        let release_second = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let mut second_rx = second_rx;
+            let original = second_rx.recv().await.unwrap();
+            (original, second_rx)
+        });
+
+        let mut reserves: FuturesUnordered<ReserveFuture> = FuturesUnordered::new();
+        reserves.push(Box::pin(async move { (0, first_tx.reserve_owned().await) }));
+        reserves.push(Box::pin(
+            async move { (1, second_tx.reserve_owned().await) },
+        ));
+
+        let (winner, permit) = tokio::time::timeout(Duration::from_secs(1), async {
+            match reserves.next().await {
+                Some((index, Ok(permit))) => (index, permit),
+                Some((_, Err(error))) => panic!("reserve unexpectedly failed: {error}"),
+                None => panic!("all reserve futures ended without a permit"),
+            }
+        })
+        .await
+        .expect("a permit should become ready after releasing the second channel");
+        assert_eq!(winner, 1);
+
+        let (released_packet, mut second_rx) = release_second.await.unwrap();
+        assert_eq!(released_packet.payload(), b"second-original");
+        permit.send(ZCPacket::new_with_payload(b"second-retry"));
+
+        assert_eq!(first_rx.try_recv().unwrap().payload(), b"first-original");
+        assert_eq!(second_rx.try_recv().unwrap().payload(), b"second-retry");
+    }
 
     #[tokio::test]
     async fn sender_falls_back_to_waiting_when_channel_is_full() {

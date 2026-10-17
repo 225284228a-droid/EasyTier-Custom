@@ -136,6 +136,9 @@ pub trait NetworkConfigExt {
 const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "hostname",
     "sni",
+    "parallel_connections",
+    "disable_parallel_connections",
+    "traffic_disguise",
     "instance_id",
     "ipv4",
     "vpn",
@@ -269,6 +272,13 @@ impl NetworkConfigExt for NetworkConfig {
         );
         cfg.set_hostname(self.hostname.clone());
         cfg.set_sni(self.sni.clone());
+        super::toml::validate_transport_tuning(
+            self.parallel_connections,
+            self.traffic_disguise.as_deref(),
+        )?;
+        cfg.set_parallel_connections(self.parallel_connections);
+        cfg.set_disable_parallel_connections(self.disable_parallel_connections);
+        cfg.set_traffic_disguise(self.traffic_disguise.clone());
         cfg.set_dhcp(self.dhcp.unwrap_or(self.dhcp_ipv4_cidr.is_some()));
         if cfg.get_dhcp()
             && let Some(cidr) = &self.dhcp_ipv4_cidr
@@ -594,6 +604,15 @@ impl NetworkConfigExt for NetworkConfig {
         }
         if config.get_sni() != default_config.get_sni() {
             result.sni = Some(config.get_sni());
+        }
+        if config.get_parallel_connections() != 1 {
+            result.parallel_connections = Some(config.get_parallel_connections());
+        }
+        if config.get_disable_parallel_connections() {
+            result.disable_parallel_connections = Some(true);
+        }
+        if config.get_traffic_disguise() != "speedtest" {
+            result.traffic_disguise = Some(config.get_traffic_disguise());
         }
 
         result.dhcp = Some(config.get_dhcp());
@@ -1297,6 +1316,41 @@ mod tests {
 
         let output = NetworkConfig::new_from_config(&config).unwrap();
         assert_eq!(output.sni.as_deref(), Some("www.cloudflare.com"));
+    }
+
+    #[test]
+    fn parallel_transport_settings_round_trip_and_reset_to_implicit_defaults() {
+        let mut input = NetworkConfig {
+            parallel_connections: Some(5),
+            disable_parallel_connections: Some(true),
+            traffic_disguise: Some("video".into()),
+            ..standalone_config()
+        };
+        let config = input.gen_config().unwrap();
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.parallel_connections, Some(5));
+        assert_eq!(output.disable_parallel_connections, Some(true));
+        assert_eq!(output.traffic_disguise.as_deref(), Some("video"));
+        input.parallel_connections = Some(1);
+        input.disable_parallel_connections = Some(false);
+        input.traffic_disguise = Some("speedtest".into());
+        let config = input.gen_config().unwrap();
+        let output = NetworkConfig::new_from_config(&config).unwrap();
+        assert_eq!(output.parallel_connections, None);
+        assert_eq!(output.disable_parallel_connections, None);
+        assert_eq!(output.traffic_disguise, None);
+        for key in [
+            "parallel_connections",
+            "disable_parallel_connections",
+            "traffic_disguise",
+        ] {
+            assert!(!config.dump().contains(key));
+        }
+        input.parallel_connections = Some(17);
+        assert!(input.gen_config().is_err());
+        input.parallel_connections = Some(1);
+        input.traffic_disguise = Some("invalid".into());
+        assert!(input.gen_config().is_err());
     }
 
     #[test]

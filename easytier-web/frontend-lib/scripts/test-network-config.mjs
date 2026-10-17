@@ -122,6 +122,9 @@ function allFieldFixture() {
     virtual_ipv4: '10.9.8.7',
     network_length: 25,
     hostname: 'frontend-e2e',
+    parallel_connections: 5,
+    disable_parallel_connections: true,
+    traffic_disguise: 'video',
     network_name: 'full-field-network',
     network_secret: 'full-field-secret',
     networking_method: NetworkingMethod.Manual,
@@ -290,10 +293,16 @@ function assertFullFieldRoundTrip() {
   assert.equal(normalized.peer_urls.join(','), 'tcp://peer-a:11010,udp://peer-b:11010')
   assert.equal(normalized.instance_recv_bps_limit, '9007199254740993')
   assert.equal(normalized.data_compress_algo, CompressionAlgoPb.Zstd)
+  assert.equal(normalized.parallel_connections, 5)
+  assert.equal(normalized.disable_parallel_connections, true)
+  assert.equal(normalized.traffic_disguise, 'video')
   assert.equal(normalized.acl.acl_v1.chains[0].chain_type, AclChainType.Forward)
   assert.equal(normalized.acl.acl_v1.chains[0].rules[0].protocol, AclProtocol.TCP)
 
   const backend = toBackendNetworkConfig(normalized)
+  assert.equal(backend.parallel_connections, 5)
+  assert.equal(backend.disable_parallel_connections, true)
+  assert.equal(backend.traffic_disguise, 'video')
   expectNoCamelCaseKeys(backend)
 
   for (const field of readGeneratedNetworkConfigFields()

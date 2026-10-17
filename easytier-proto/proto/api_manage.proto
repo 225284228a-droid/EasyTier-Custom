@@ -138,6 +138,12 @@ message NetworkConfig {
   // automatic disguised P2P; only: require disguise. Manual peers are unaffected.
   // A nonempty mode overrides legacy TOML disguise booleans (fields 50074-50076).
   optional string p2p_disguise_mode = 50081;
+
+  // Fork extensions. Omitted values mean one connection, concurrency allowed,
+  // and the throughput-oriented speedtest disguise respectively.
+  optional uint32 parallel_connections = 50082;
+  optional bool disable_parallel_connections = 50083;
+  optional string traffic_disguise = 50084;
 }
 
 // One destination subnet mapped to exactly one virtual node address.

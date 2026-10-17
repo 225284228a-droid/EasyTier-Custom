@@ -442,6 +442,22 @@ where
 pub trait UdpHolePunchPeerSource: Send + Sync {
     fn local_peer_id(&self) -> crate::config::PeerId;
     fn p2p_policy_flags(&self) -> P2pPolicyFlags;
+    fn reserve_parallel_slot_for_protocol(
+        &self,
+        peer_id: crate::config::PeerId,
+        _protocol: &str,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        self.reserve_parallel_slot(peer_id)
+    }
+    fn reserve_parallel_slot(
+        &self,
+        _peer_id: crate::config::PeerId,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        None
+    }
+    fn parallel_connection_target(&self, _peer_id: crate::config::PeerId) -> u32 {
+        1
+    }
 
     async fn candidates(&self) -> Vec<super::UdpPunchCandidate>;
 

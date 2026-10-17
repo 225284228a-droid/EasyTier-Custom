@@ -276,6 +276,11 @@ pub struct PeerConn {
     conn_id: PeerConnId,
     origin: PeerConnectionOrigin,
     cleanup_policy: CleanupPolicyPair,
+    parallel_receiver: Option<Arc<super::parallel::ParallelReceiver>>,
+    parallel_member: Option<super::parallel::ParallelMemberToken>,
+    parallel_policy: Option<Arc<super::parallel::ParallelPolicy>>,
+    parallel_tx_epoch: uuid::Uuid,
+    parallel_foreign: bool,
     #[cfg(test)]
     handshake_features_override: Option<Vec<String>>,
 
@@ -379,6 +384,11 @@ impl PeerConn {
             conn_id,
             origin,
             cleanup_policy,
+            parallel_receiver: None,
+            parallel_member: super::parallel::DIAL_MEMBER.try_with(Clone::clone).ok(),
+            parallel_policy: None,
+            parallel_tx_epoch: uuid::Uuid::new_v4(),
+            parallel_foreign: false,
             #[cfg(test)]
             handshake_features_override: None,
 
@@ -485,6 +495,11 @@ impl PeerConn {
             return features.clone();
         }
         let mut features = vec![LIVENESS_ECHO_FEATURE.to_owned()];
+        features.push(self.local_parallel_offer().feature());
+        features.push(format!("p2p-tx-v1:{}", self.parallel_tx_epoch));
+        if let Some(member) = &self.parallel_member {
+            features.push(member.feature());
+        }
         if let Some(feature) = self.cleanup_policy.feature() {
             features.push(feature);
         }
@@ -1082,6 +1097,8 @@ impl PeerConn {
             first_msg1,
         )?;
         let remote_network_name = msg1_pb.a_network_name.clone();
+        self.parallel_member =
+            super::parallel::ParallelMemberToken::from_features(&msg1_pb.features);
         self.record_control_rx(&remote_network_name, first_msg1_len);
 
         // this may update my peer id
@@ -1270,6 +1287,9 @@ impl PeerConn {
             tracing::info!("handshake request: {:?}", rsp);
             self.record_control_rx(&rsp.network_name, first_pkt.buf_len() as u64);
             self.info = Some(rsp);
+            self.parallel_member = super::parallel::ParallelMemberToken::from_features(
+                &self.info.as_ref().unwrap().features,
+            );
             self.is_client = Some(false);
 
             let send_digest = self.get_network_identity() == self.context.network_identity();
@@ -1352,6 +1372,12 @@ impl PeerConn {
         };
         let control_network_name = conn_info_for_instrument.network_name.clone();
         let throughput = self.throughput.clone();
+        let parallel_receiver = self.parallel_receiver.clone();
+        let parallel_policy = self.parallel_policy.clone();
+        let parallel_supported =
+            super::parallel::remote_offer(&conn_info_for_instrument.features).is_some();
+        let my_peer_id = self.my_peer_id;
+        let remote_peer_id = self.get_peer_id();
 
         let is_foreign_network =
             conn_info_for_instrument.network_name != self.context.network_identity().network_name;
@@ -1371,11 +1397,57 @@ impl PeerConn {
                     }
 
                     let mut zc_packet = ret.unwrap();
+                    if zc_packet
+                        .peer_manager_header()
+                        .is_some_and(|h| h.packet_type == PacketType::ParallelControl as u8)
+                    {
+                        if parallel_supported
+                            && zc_packet.peer_manager_header().is_some_and(|h| {
+                                h.from_peer_id.get() == remote_peer_id
+                                    && h.to_peer_id.get() == my_peer_id
+                                    && !h.is_encrypted()
+                            })
+                        {
+                            context.record_control_rx(
+                                &control_network_name,
+                                zc_packet.buf_len() as u64,
+                            );
+                            if let Some(policy) = parallel_policy.as_ref() {
+                                policy.receive_control(zc_packet.payload());
+                            }
+                        }
+                        continue;
+                    }
+                    let parallel_sequence = if zc_packet.peer_manager_header().is_some_and(|h| {
+                        h.packet_type == PacketType::ParallelData as u8
+                            || h.packet_type == PacketType::ParallelLossyData as u8
+                    }) {
+                        if !parallel_supported || parallel_receiver.is_none() {
+                            continue;
+                        }
+                        let Some((epoch, seq, inner)) =
+                            super::parallel::unwrap(zc_packet, remote_peer_id, my_peer_id)
+                        else {
+                            continue;
+                        };
+                        zc_packet = inner;
+                        Some((epoch, seq))
+                    } else {
+                        None
+                    };
                     let buf_len = zc_packet.buf_len() as u64;
                     if let Some(payload_len) = data_packet_payload_len(&zc_packet)
                         && let Some(limiter) = recv_limiter.as_ref()
                         && !limiter.try_consume(payload_len)
                     {
+                        continue;
+                    }
+                    if let Some((epoch, seq)) = parallel_sequence {
+                        parallel_receiver
+                            .as_ref()
+                            .unwrap()
+                            .receive(epoch, seq, zc_packet, ingress)
+                            .await;
                         continue;
                     }
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
@@ -1462,6 +1534,108 @@ impl PeerConn {
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         Ok(self.sink.send(msg).await?)
+    }
+
+    pub(crate) fn set_parallel_receiver(
+        &mut self,
+        receiver: Arc<super::parallel::ParallelReceiver>,
+    ) {
+        self.parallel_receiver = Some(receiver);
+    }
+
+    pub(crate) fn set_parallel_policy(&mut self, policy: Arc<super::parallel::ParallelPolicy>) {
+        policy.handshake(super::parallel::remote_offer(
+            &self.info.as_ref().unwrap().features,
+        ));
+        self.parallel_policy = Some(policy);
+    }
+
+    pub(crate) fn parallel_can_trim(&self) -> bool {
+        self.parallel_policy
+            .as_ref()
+            .is_some_and(|policy| policy.can_trim(self.local_parallel_offer()))
+    }
+
+    pub(crate) fn set_parallel_foreign(&mut self) {
+        self.parallel_foreign = true;
+    }
+
+    pub(crate) fn local_parallel_offer(&self) -> super::parallel::ParallelOffer {
+        let mut offer = super::parallel::ParallelOffer::local(self.context.as_ref());
+        if self.parallel_foreign {
+            offer.limit = offer.limit.min(
+                self.context
+                    .max_direct_conns_per_peer_in_foreign_network()
+                    .clamp(1, 16) as u32,
+            );
+        }
+        offer
+    }
+
+    pub(crate) fn parallel_connection_limit(&self) -> u32 {
+        self.local_parallel_offer().limit.min(
+            self.parallel_policy
+                .as_ref()
+                .and_then(|policy| policy.remote())
+                .or_else(|| super::parallel::remote_offer(&self.info.as_ref().unwrap().features))
+                .map_or(16, |offer| offer.limit),
+        )
+    }
+
+    pub(crate) fn parallel_member(&self) -> Option<&super::parallel::ParallelMemberToken> {
+        self.parallel_member.as_ref()
+    }
+
+    pub(crate) fn parallel_tx_epoch(&self) -> uuid::Uuid {
+        self.parallel_tx_epoch
+    }
+
+    pub(crate) fn parallel_target(&self) -> u32 {
+        let features = &self.info.as_ref().unwrap().features;
+        let Some(handshake_offer) = super::parallel::remote_offer(features) else {
+            return 1;
+        };
+        if super::parallel::tx_epoch(features).is_none() {
+            return 1;
+        }
+        if self.is_attached()
+            || self.tunnel_info.as_ref().is_none_or(|t| {
+                matches!(
+                    t.tunnel_type.rsplit('-').next(),
+                    Some("ring" | "virtualrelay")
+                )
+            })
+        {
+            return 1;
+        }
+        if self.parallel_member.is_some()
+            && super::parallel::ParallelMemberToken::from_features(
+                &self.info.as_ref().unwrap().features,
+            )
+            .as_ref()
+                != self.parallel_member.as_ref()
+        {
+            return 1;
+        }
+        let remote = self
+            .parallel_policy
+            .as_ref()
+            .and_then(|policy| policy.remote())
+            .unwrap_or(handshake_offer);
+        self.local_parallel_offer().target(remote)
+    }
+
+    pub(crate) fn try_send_owned(
+        &self,
+        msg: ZCPacket,
+    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<ZCPacket>> {
+        self.sink.try_send_owned(msg)
+    }
+
+    pub(crate) async fn reserve_send(
+        &self,
+    ) -> Result<tokio::sync::mpsc::OwnedPermit<ZCPacket>, TunnelError> {
+        self.sink.reserve_owned().await
     }
 
     pub fn get_peer_id(&self) -> PeerId {
@@ -1624,6 +1798,70 @@ mod tests {
             });
         }
         Arc::new(context)
+    }
+
+    struct ForeignOfferContext(ArcPeerContext);
+    impl PeerContext for ForeignOfferContext {
+        fn network_identity(&self) -> NetworkIdentity {
+            self.0.network_identity()
+        }
+        fn flags(&self) -> Flags {
+            self.0.flags()
+        }
+        fn secure_mode(&self) -> Option<SecureModeConfig> {
+            self.0.secure_mode()
+        }
+        fn secret_proof(&self, challenge: &[u8]) -> Option<hmac::Hmac<sha2::Sha256>> {
+            self.0.secret_proof(challenge)
+        }
+        fn parallel_connections(&self) -> u32 {
+            16
+        }
+    }
+
+    #[tokio::test]
+    async fn foreign_server_ordinary_and_noise_offers_use_quota_cap_without_clamping_desired() {
+        for secure in [false, true] {
+            let client_context: ArcPeerContext = Arc::new(ForeignOfferContext(
+                cleanup_handshake_context(1, secure, Flags::default()),
+            ));
+            let server_context: ArcPeerContext = Arc::new(ForeignOfferContext(
+                cleanup_handshake_context(2, secure, Flags::default()),
+            ));
+            let (client_tunnel, server_tunnel) = create_ring_tunnel_pair();
+            let mut client = PeerConn::new(
+                1,
+                client_context,
+                client_tunnel,
+                Arc::new(PeerSessionStore::new()),
+            );
+            let mut server = PeerConn::new(
+                2,
+                server_context,
+                server_tunnel,
+                Arc::new(PeerSessionStore::new()),
+            );
+            let (a, b) = tokio::join!(
+                client.do_handshake_as_client(),
+                server.do_handshake_as_server_ext(|peer, _| {
+                    peer.set_parallel_foreign();
+                    Ok(())
+                })
+            );
+            a.unwrap();
+            b.unwrap();
+            let offer =
+                super::super::parallel::remote_offer(&client.get_conn_info().features).unwrap();
+            assert_eq!(offer.count, 16);
+            assert_eq!(offer.limit, 3);
+            assert_eq!(client.local_parallel_offer().target(offer), 3);
+            assert_eq!(
+                server.local_parallel_offer().target(
+                    super::super::parallel::remote_offer(&server.get_conn_info().features).unwrap()
+                ),
+                3
+            );
+        }
     }
 
     #[tokio::test]

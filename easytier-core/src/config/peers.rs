@@ -215,6 +215,10 @@ pub struct PeerRuntimeSnapshot {
     pub easytier_version: String,
     pub avoid_relay_data_preference: bool,
     pub flags: Flags,
+    #[serde(default = "default_parallel_connections")]
+    pub parallel_connections: u32,
+    #[serde(default)]
+    pub disable_parallel_connections: bool,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
     pub peer_group_memberships: Vec<PeerGroupIdentity>,
     pub acl_group_declarations: Vec<PeerGroupIdentity>,
@@ -231,6 +235,8 @@ impl PeerRuntimeSnapshot {
             easytier_version: env!("CARGO_PKG_VERSION").to_owned(),
             avoid_relay_data_preference,
             flags,
+            parallel_connections: 1,
+            disable_parallel_connections: false,
             pinned_peers: Vec::new(),
             peer_group_memberships: Vec::new(),
             acl_group_declarations: Vec::new(),
@@ -239,6 +245,10 @@ impl PeerRuntimeSnapshot {
             hmac_secret_digest: false,
         }
     }
+}
+
+fn default_parallel_connections() -> u32 {
+    1
 }
 
 impl Default for PeerRuntimeSnapshot {

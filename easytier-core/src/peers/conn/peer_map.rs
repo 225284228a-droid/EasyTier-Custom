@@ -77,6 +77,7 @@ impl PeerMap {
         let peer_id = peer_conn.get_peer_id();
         let conn_id = peer_conn.get_conn_id();
         let conn_is_hole_punched = peer_conn.is_hole_punched();
+        let parallel = peer_conn.parallel_target() > 1;
         // Register the URL only after the conn is fully added to
         // `Peer::conns`: `close_superseded_client_conns` deregisters first
         // and closes second, so a conn that is visible in the URL registry
@@ -101,7 +102,7 @@ impl PeerMap {
         // and letting the old ones linger leaks one conn per reconnect until the
         // peer resets them all. Manual conns to the same URL are exempt: they
         // are a user promise and must survive automatic reconnects.
-        if let (Some(alive_url), false) = (alive_url, conn_is_hole_punched) {
+        if let (Some(alive_url), false, false) = (alive_url, conn_is_hole_punched, parallel) {
             self.close_superseded_client_conns(&alive_url, conn_id)
                 .await;
         }
@@ -416,6 +417,55 @@ impl PeerMap {
     pub async fn get_peer_default_conn_id(&self, peer_id: PeerId) -> Option<PeerConnId> {
         self.get_peer_by_id(peer_id)
             .map(|p| p.get_default_conn_id())
+    }
+
+    pub(crate) fn parallel_connection_status(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<crate::proto::common::ParallelConnectionStatus> {
+        self.get_peer_by_id(peer_id)
+            .map(|p| p.parallel_connection_status())
+    }
+
+    pub(crate) fn reserve_parallel_slot(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<super::parallel::ParallelDialReservation> {
+        let permit = match self.context.parallel_dial_semaphore() {
+            Some(budget) => Some(budget.try_acquire_owned().ok()?),
+            None => None,
+        };
+        Some(
+            self.get_peer_by_id(peer_id)?
+                .reserve_parallel_slot()?
+                .with_node_permit(permit),
+        )
+    }
+
+    pub(crate) fn parallel_manual_url(&self, peer_id: PeerId) -> Option<url::Url> {
+        self.get_peer_by_id(peer_id)
+            .and_then(|p| p.parallel_manual_url())
+    }
+
+    pub(crate) fn reserve_parallel_slot_for_protocol(
+        &self,
+        peer_id: PeerId,
+        protocol: &str,
+    ) -> Option<super::parallel::ParallelDialReservation> {
+        let permit = match self.context.parallel_dial_semaphore() {
+            Some(budget) => Some(budget.try_acquire_owned().ok()?),
+            None => None,
+        };
+        Some(
+            self.get_peer_by_id(peer_id)?
+                .reserve_parallel_slot_for_protocol(Some(protocol))?
+                .with_node_permit(permit),
+        )
+    }
+
+    pub(crate) fn parallel_default_protocol(&self, peer_id: PeerId) -> Option<String> {
+        self.get_peer_by_id(peer_id)
+            .and_then(|p| p.parallel_default_protocol())
     }
 
     pub fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {

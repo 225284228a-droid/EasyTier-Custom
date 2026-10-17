@@ -809,7 +809,10 @@ impl ZCPacket {
 
     pub fn is_lossy(&self) -> bool {
         self.peer_manager_header()
-            .map(|hdr| hdr.packet_type == PacketType::Data as u8)
+            .map(|hdr| {
+                hdr.packet_type == PacketType::Data as u8
+                    || hdr.packet_type == PacketType::ParallelLossyData as u8
+            })
             .unwrap_or(false)
     }
 

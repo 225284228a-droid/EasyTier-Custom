@@ -96,6 +96,15 @@ core_clap:
   sni:
     en: "TLS SNI camouflage hostname applied to all outgoing WSS and HTTP/3 connections"
     zh-CN: "应用于所有出站 WSS 和 HTTP/3 连接的 TLS SNI 伪装主机名"
+  parallel_connections:
+    en: "preferred parallel tunnel count per peer, 1-16 (default 1); peers negotiate the rounded average"
+    zh-CN: "每个对等节点的并行隧道期望数，1-16（默认1）；双方取平均数四舍五入"
+  disable_parallel_connections:
+    en: "disable parallel tunnels even when the remote peer requests them"
+    zh-CN: "禁用多连接并发，即使对端请求并发也使用单连接"
+  traffic_disguise:
+    en: "WSS/HTTP3 traffic style: speedtest (default) or video"
+    zh-CN: "WSS/HTTP3 流量风格：speedtest 测速（默认）或 video 视频"
   instance_name:
     en: "instance name to identify this vpn node in same machine"
     zh-CN: "实例名称，用于在同一台机器上标识此VPN节点"

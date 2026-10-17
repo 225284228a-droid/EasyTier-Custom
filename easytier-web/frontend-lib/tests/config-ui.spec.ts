@@ -1090,4 +1090,27 @@ describe('Config.vue network config projection', () => {
     expect(wrapper.emitted('runNetwork')?.[0]).toEqual([curNetwork])
     expect((wrapper.emitted('runNetwork')?.[0][0] as NetworkConfig).network_name).toBe('mesh-running')
   })
+
+  it('edits parallel tunnels below SNI and retains the count while disabled', async () => {
+    const { curNetwork, wrapper } = mountConfig(DEFAULT_NETWORK_CONFIG())
+    await setInput(wrapper, '#parallel_connections', '5')
+    await wrapper.find('#disable_parallel_connections').setValue(true)
+    expect(input(wrapper, '#parallel_connections').disabled).toBe(true)
+    expect(curNetwork.parallel_connections).toBe(5)
+    await wrapper.find('#traffic_disguise').setValue('video')
+    const payload = toBackendNetworkConfig(curNetwork, ['config:parallel-connections-v1', 'config:traffic-disguise-v1'])
+    expect(payload.parallel_connections).toBe(5)
+    expect(payload.disable_parallel_connections).toBe(true)
+    expect(payload.traffic_disguise).toBe('video')
+    expect(wrapper.html().indexOf('id="sni"')).toBeLessThan(wrapper.html().indexOf('id="parallel_connections"'))
+    wrapper.unmount()
+  })
+
+  it('hides all new controls for an official kernel', () => {
+    const { wrapper } = mountConfig(DEFAULT_NETWORK_CONFIG(), [])
+    for (const id of ['parallel_connections', 'disable_parallel_connections', 'traffic_disguise']) {
+      expect(wrapper.find(`#${id}`).exists()).toBe(false)
+    }
+    wrapper.unmount()
+  })
 })

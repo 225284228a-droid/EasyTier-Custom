@@ -395,7 +395,11 @@ where
         // Without route metadata keep today's dialing behavior: do not start
         // new disguised attempts. The `Option` handed to the query keeps the
         // negotiated preference untouched.
-        let preferred = preferred_disguised_scheme(&self.options.default_protocol);
+        let parallel_protocol = self.peer_manager.parallel_default_protocol(peer_id);
+        let default_protocol = parallel_protocol
+            .as_deref()
+            .unwrap_or(&self.options.default_protocol);
+        let preferred = preferred_disguised_scheme(default_protocol);
         let target = if use_disguise.unwrap_or(false) {
             preferred
                 .filter(|scheme| self.protocol.supports_scheme(scheme))
@@ -404,9 +408,9 @@ where
                         .into_iter()
                         .find(|scheme| self.protocol.supports_scheme(scheme))
                 })
-                .unwrap_or(&self.options.default_protocol)
+                .unwrap_or(default_protocol)
         } else {
-            &self.options.default_protocol
+            default_protocol
         };
         self.peer_manager
             .has_connection_at_least_as_preferred(peer_id, target, use_disguise)
@@ -525,9 +529,12 @@ where
             anyhow::bail!("peer {dst_peer_id} has no valid listener");
         }
 
+        let parallel_protocol = self.peer_manager.parallel_default_protocol(dst_peer_id);
         let mut available_listeners = ordered_direct_listeners(
             available_listeners,
-            &self.options.default_protocol,
+            parallel_protocol
+                .as_deref()
+                .unwrap_or(&self.options.default_protocol),
             use_disguise_protocols,
         )
         .peekable();
@@ -688,6 +695,36 @@ where
     }
 
     async fn connect_to_url_once(
+        &self,
+        dst_peer_id: PeerId,
+        raw_url: &str,
+        use_disguise_protocols: bool,
+    ) -> anyhow::Result<()> {
+        let target = Url::parse(raw_url)?;
+        let reservation = self
+            .peer_manager
+            .reserve_parallel_slot_for_protocol(dst_peer_id, target.scheme());
+        if self.peer_manager.parallel_connection_target(dst_peer_id) > 1 && reservation.is_none() {
+            return Ok(());
+        }
+        match reservation {
+            Some(reservation) => {
+                reservation
+                    .scope(self.connect_to_url_once_in_slot(
+                        dst_peer_id,
+                        raw_url,
+                        use_disguise_protocols,
+                    ))
+                    .await
+            }
+            None => {
+                self.connect_to_url_once_in_slot(dst_peer_id, raw_url, use_disguise_protocols)
+                    .await
+            }
+        }
+    }
+
+    async fn connect_to_url_once_in_slot(
         &self,
         dst_peer_id: PeerId,
         raw_url: &str,

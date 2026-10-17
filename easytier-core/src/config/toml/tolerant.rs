@@ -196,6 +196,29 @@ fn parse_document(input: &str, warnings: &mut Vec<Warning>) -> anyhow::Result<to
 
 fn sanitize(config: &mut Config, warnings: &mut Vec<Warning>) {
     if config
+        .parallel_connections
+        .is_some_and(|count| !(1..=16).contains(&count))
+    {
+        config.parallel_connections = None;
+        warn(
+            warnings,
+            "parallel_connections",
+            "expected an integer between 1 and 16",
+        );
+    }
+    if config
+        .traffic_disguise
+        .as_deref()
+        .is_some_and(|style| !matches!(style, "speedtest" | "video"))
+    {
+        config.traffic_disguise = None;
+        warn(
+            warnings,
+            "traffic_disguise",
+            "unknown traffic disguise style",
+        );
+    }
+    if config
         .flags
         .encryption_algorithm
         .as_ref()

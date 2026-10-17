@@ -277,6 +277,15 @@ struct NetworkOptions {
     )]
     sni: Option<String>,
 
+    #[arg(long, env = "ET_PARALLEL_CONNECTIONS", value_parser = clap::value_parser!(u32).range(1..=16), help = t!("core_clap.parallel_connections").to_string())]
+    parallel_connections: Option<u32>,
+
+    #[arg(long, env = "ET_DISABLE_PARALLEL_CONNECTIONS", num_args = 0..=1, default_missing_value = "true", help = t!("core_clap.disable_parallel_connections").to_string())]
+    disable_parallel_connections: Option<bool>,
+
+    #[arg(long, env = "ET_TRAFFIC_DISGUISE", value_parser = ["speedtest", "video"], help = t!("core_clap.traffic_disguise").to_string())]
+    traffic_disguise: Option<String>,
+
     #[arg(
         short = 'm',
         long,
@@ -658,6 +667,15 @@ impl NetworkOptions {
         }
         if self.sni.is_some() {
             cfg.set_sni(self.sni.clone());
+        }
+        if self.parallel_connections.is_some() {
+            cfg.set_parallel_connections(self.parallel_connections);
+        }
+        if self.disable_parallel_connections.is_some() {
+            cfg.set_disable_parallel_connections(self.disable_parallel_connections);
+        }
+        if self.traffic_disguise.is_some() {
+            cfg.set_traffic_disguise(self.traffic_disguise.clone());
         }
 
         let old_ns = cfg.get_network_identity();
@@ -2014,6 +2032,36 @@ disable_p2p = true
         assert!(merged.disable_p2p);
         assert!(!merged.multi_thread);
         assert_eq!(merged.multi_thread_count, 7);
+    }
+
+    #[test]
+    fn parallel_transport_cli_validates_and_can_reenable_preserved_count() {
+        let cli = Cli::try_parse_from([
+            "easytier-core",
+            "--parallel-connections",
+            "5",
+            "--disable-parallel-connections",
+            "--traffic-disguise",
+            "video",
+        ])
+        .unwrap();
+        let cfg = TomlConfigLoader::default();
+        cli.network_options.merge_into(&cfg).unwrap();
+        assert_eq!(cfg.get_parallel_connections(), 5);
+        assert!(cfg.get_disable_parallel_connections());
+        assert_eq!(cfg.get_traffic_disguise(), "video");
+        let cli =
+            Cli::try_parse_from(["easytier-core", "--disable-parallel-connections=false"]).unwrap();
+        cli.network_options.merge_into(&cfg).unwrap();
+        assert_eq!(cfg.get_parallel_connections(), 5);
+        assert!(!cfg.get_disable_parallel_connections());
+        for args in [
+            vec!["easytier-core", "--parallel-connections", "0"],
+            vec!["easytier-core", "--parallel-connections", "17"],
+            vec!["easytier-core", "--traffic-disguise", "invalid"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[test]

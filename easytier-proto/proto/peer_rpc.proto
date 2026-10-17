@@ -275,6 +275,8 @@ message TcpHolePunchRequest {
   // Set by nodes that understand `TcpHolePunchPredictedPorts`. When false
   // (e.g. upstream peers) the response must not carry prediction info.
   bool supports_port_prediction = 50003;
+  // Echoed into both possible TCP dial roles for one parallel pool slot.
+  string parallel_member = 50004;
 }
 
 message TcpHolePunchResponse {

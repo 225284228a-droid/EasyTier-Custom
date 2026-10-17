@@ -3,6 +3,15 @@ import { assertLegacyConfigPreservable, assertPatchCapabilities, CONFIG_FIELD_CA
 import { DEFAULT_NETWORK_CONFIG } from '../src/types/network'
 
 describe('configuration capabilities', () => {
+  it('gates parallel controls and protects stored numeric settings', () => {
+    const config = { parallel_connections: 5, disable_parallel_connections: true, traffic_disguise: 'video' }
+    expect(filterConfigPayload(config, [])).toEqual({})
+    expect(filterConfigPayload(config, ['config:parallel-connections-v1'])).toEqual({ parallel_connections: 5, disable_parallel_connections: true })
+    expect(() => assertPatchCapabilities(config, ['parallel_connections'], [])).toThrow('Unsupported')
+    expect(() => assertLegacyConfigPreservable(config, [])).toThrow('parallel_connections')
+    expect(() => assertLegacyConfigPreservable({ parallel_connections: 0 }, [])).toThrow('parallel_connections')
+    expect(() => assertLegacyConfigPreservable({ parallel_connections: 1, disable_parallel_connections: false, traffic_disguise: 'speedtest' }, [])).not.toThrow()
+  })
   it('removes unsupported extension fields including explicit false values', () => {
     const config = DEFAULT_NETWORK_CONFIG()
     config.close_redundant_conns_when_disguised = false

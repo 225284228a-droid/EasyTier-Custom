@@ -27,6 +27,7 @@ pub fn management_capabilities_for_host(host: &CoreInstanceHostConfig) -> Vec<St
     );
     capabilities.push("config:private-mode-default-true-v1".into());
     capabilities.sort();
+    capabilities.dedup();
     capabilities
 }
 
@@ -46,6 +47,7 @@ mod tests {
             management_capabilities_for_host(&host),
             vec![
                 "config:p2p_prefer_protocol",
+                "config:parallel-connections-v1",
                 "config:private-mode-default-true-v1",
                 "config:vpn-subnet-exit-v1"
             ]

@@ -5,7 +5,7 @@ import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref, useId, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { estimatedBandwidth, latencyMs, lossRate, numericValue, peerConns, udpNatTypeName } from '../modules/statusDisplay';
+import { estimatedBandwidth, latencyMs, lossRate, numericValue, parallelConnectionDetails, peerConns, tunnelProtocols, udpNatTypeName } from '../modules/statusDisplay';
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, Message } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 import VpnPortalDialog from './VpnPortalDialog.vue';
@@ -129,8 +129,11 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
 }
 
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(peerConns(info).map(c => oneTunnelProto(c.tunnel)))].join(',')
+  return tunnelProtocols(info, conn => oneTunnelProto(conn.tunnel))
 }
+
+const hasParallelConnectionStatus = computed(() => peerRouteInfos.value.some(info =>
+  'peer' in info && parallelConnectionDetails(info) !== undefined))
 
 const myNodeInfo = computed(() => {
   if (!props.curNetworkInst)
@@ -519,6 +522,22 @@ function showEventLogs() {
             </Column>
             <Column :field="routeCost" :header="t('route_cost')" />
             <Column :field="tunnelProto" :header="t('tunnel_proto')" />
+            <Column v-if="hasParallelConnectionStatus" :header="t('parallel_status')">
+              <template #body="slotProps">
+                <details v-if="parallelConnectionDetails(slotProps.data)" class="parallel-connection-details">
+                  <summary>
+                    {{ t('parallel_actual') }}: {{ parallelConnectionDetails(slotProps.data)?.actual }};
+                    {{ t('parallel_target') }}: {{ parallelConnectionDetails(slotProps.data)?.target ?? '--' }}
+                  </summary>
+                  <dl>
+                    <div><dt>{{ t('parallel_target') }}</dt><dd>{{ parallelConnectionDetails(slotProps.data)?.target ?? '--' }}</dd></div>
+                    <div><dt>{{ t('parallel_actual') }}</dt><dd>{{ parallelConnectionDetails(slotProps.data)?.actual }}</dd></div>
+                    <div><dt>{{ t('parallel_protocol') }}</dt><dd>{{ parallelConnectionDetails(slotProps.data)?.protocol || '--' }}</dd></div>
+                    <div><dt>{{ t('parallel_fallback_reason') }}</dt><dd>{{ parallelConnectionDetails(slotProps.data)?.fallbackReason || '--' }}</dd></div>
+                  </dl>
+                </details>
+              </template>
+            </Column>
             <Column :field="latencyMs" :header="t('latency')" />
             <Column :header="t('total_traffic')">
               <template #body="slotProps">
@@ -644,6 +663,32 @@ function showEventLogs() {
 .vpn-no-rules {
   margin: 0.75rem 0 0;
   color: var(--p-text-muted-color);
+}
+
+.parallel-connection-details {
+  min-width: 10rem;
+}
+
+.parallel-connection-details summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.parallel-connection-details dl {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0;
+}
+
+.parallel-connection-details dl > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.parallel-connection-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 640px) {

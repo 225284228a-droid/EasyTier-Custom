@@ -716,10 +716,63 @@ mod tests {
             Arc<NativeCoreInstance>,
             tokio::sync::mpsc::Receiver<Vec<u8>>,
         ) {
+            build_parallel_instance(network, overlay_ip, listeners, automatic_p2p, 1, false)
+        }
+
+        fn build_parallel_instance(
+            network: &str,
+            overlay_ip: &str,
+            listeners: Vec<url::Url>,
+            automatic_p2p: bool,
+            count: u32,
+            disabled: bool,
+        ) -> (
+            Arc<NativeCoreInstance>,
+            tokio::sync::mpsc::Receiver<Vec<u8>>,
+        ) {
+            build_parallel_instance_with_noise(
+                network,
+                overlay_ip,
+                listeners,
+                automatic_p2p,
+                count,
+                disabled,
+                false,
+            )
+        }
+
+        fn build_parallel_instance_with_noise(
+            network: &str,
+            overlay_ip: &str,
+            listeners: Vec<url::Url>,
+            automatic_p2p: bool,
+            count: u32,
+            disabled: bool,
+            noise: bool,
+        ) -> (
+            Arc<NativeCoreInstance>,
+            tokio::sync::mpsc::Receiver<Vec<u8>>,
+        ) {
             let global = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
                 network.to_owned(),
                 "shared-secret".to_owned(),
             )));
+            global.config.set_parallel_connections(Some(count));
+            global
+                .config
+                .set_disable_parallel_connections(Some(disabled));
+            if noise {
+                use base64::{Engine as _, prelude::BASE64_STANDARD};
+                let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+                let public = x25519_dalek::PublicKey::from(&private);
+                global
+                    .config
+                    .set_secure_mode(Some(crate::proto::common::SecureModeConfig {
+                        enabled: true,
+                        local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+                        local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+                    }));
+            }
             global.set_ipv4(Some(overlay_ip.parse().unwrap()));
             let mut flags = global.get_flags();
             flags.enable_ipv6 = true;
@@ -763,6 +816,425 @@ mod tests {
             }
             adapters.udp_hole_punch_platform = None;
             (NativeCoreInstance::new(config, adapters).unwrap(), packets)
+        }
+
+        async fn wait_parallel_members(
+            instance: &NativeCoreInstance,
+            peer_id: PeerId,
+            target: usize,
+        ) -> easytier_core::peers::peer_manager::PeerSnapshot {
+            let result = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if let Some(peer) = instance
+                        .peer_snapshots()
+                        .await
+                        .into_iter()
+                        .find(|peer| peer.peer_id == peer_id)
+                        && peer.parallel_connections.target as usize == target
+                        && peer.parallel_connections.active_conn_ids.len() == target
+                    {
+                        return peer;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await;
+            match result {
+                Ok(peer) => peer,
+                Err(_) => panic!(
+                    "parallel pool did not reach {target} members for peer {peer_id}: {:#?}",
+                    instance.peer_snapshots().await
+                ),
+            }
+        }
+
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn relayed_single_flow_uses_physical_next_hop_pools(
+            #[values("tcp", "http3")] scheme: &str,
+        ) {
+            let network = format!("parallel-relay-{}", uuid::Uuid::new_v4());
+            let (relay, _) = build_parallel_instance(
+                &network,
+                "10.245.0.1/24",
+                vec![format!("{scheme}://127.0.0.1:0").parse().unwrap()],
+                false,
+                4,
+                false,
+            );
+            let (first, mut first_packets) =
+                build_parallel_instance(&network, "10.245.0.2/24", Vec::new(), false, 4, false);
+            let (second, mut second_packets) =
+                build_parallel_instance(&network, "10.245.0.3/24", Vec::new(), false, 4, false);
+            let (a, b, c) = tokio::join!(relay.start(), first.start(), second.start());
+            a.unwrap();
+            b.unwrap();
+            c.unwrap();
+            let url = relay
+                .running_listeners()
+                .into_iter()
+                .find(|u| u.scheme() == scheme)
+                .unwrap();
+            first.add_connector(url.clone()).unwrap();
+            second.add_connector(url).unwrap();
+            wait_parallel_members(&first, relay.peer_id(), 4).await;
+            wait_parallel_members(&second, relay.peer_id(), 4).await;
+            wait_parallel_members(&relay, first.peer_id(), 4).await;
+            wait_parallel_members(&relay, second.peer_id(), 4).await;
+            let warmup = ip_packet(
+                "10.245.0.2".parse().unwrap(),
+                "10.245.0.3".parse().unwrap(),
+                b"forwarded pool warmup",
+            );
+            deliver_packet(&first, &mut second_packets, &warmup).await;
+            let warmup = ip_packet(
+                "10.245.0.3".parse().unwrap(),
+                "10.245.0.2".parse().unwrap(),
+                b"forwarded pool reply",
+            );
+            deliver_packet(&second, &mut first_packets, &warmup).await;
+            let observations = Mutex::new(WireObservations::default());
+            transfer_burst(
+                &first,
+                &mut second_packets,
+                "10.245.0.2".parse().unwrap(),
+                "10.245.0.3".parse().unwrap(),
+                &observations,
+            )
+            .await;
+            transfer_burst(
+                &second,
+                &mut first_packets,
+                "10.245.0.3".parse().unwrap(),
+                "10.245.0.2".parse().unwrap(),
+                &observations,
+            )
+            .await;
+            assert_eq!(first.connected_peers().await, vec![relay.peer_id()]);
+            assert_eq!(second.connected_peers().await, vec![relay.peer_id()]);
+            for remote in [first.peer_id(), second.peer_id()] {
+                let peer = wait_parallel_members(&relay, remote, 4).await;
+                for conn in peer.conns.iter().filter(|c| {
+                    peer.parallel_connections
+                        .active_conn_ids
+                        .contains(&c.conn_id)
+                }) {
+                    assert!(
+                        conn.stats.as_ref().unwrap().tx_bytes > 4096,
+                        "relay next-hop member carried no business: {conn:#?}"
+                    );
+                }
+            }
+            first.stop().await;
+            second.stop().await;
+            relay.stop().await;
+        }
+
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn native_noise_parallel_pool_transmits_in_both_directions(
+            #[values("tcp", "http3")] scheme: &str,
+        ) {
+            let network = format!("parallel-noise-{}", uuid::Uuid::new_v4());
+            let (server, mut server_packets) = build_parallel_instance_with_noise(
+                &network,
+                "10.246.0.1/24",
+                vec![format!("{scheme}://127.0.0.1:0").parse().unwrap()],
+                false,
+                4,
+                false,
+                true,
+            );
+            let (client, mut client_packets) = build_parallel_instance_with_noise(
+                &network,
+                "10.246.0.2/24",
+                Vec::new(),
+                false,
+                4,
+                false,
+                true,
+            );
+            let (a, b) = tokio::join!(server.start(), client.start());
+            a.unwrap();
+            b.unwrap();
+            client
+                .add_connector(
+                    server
+                        .running_listeners()
+                        .into_iter()
+                        .find(|u| u.scheme() == scheme)
+                        .unwrap(),
+                )
+                .unwrap();
+            wait_parallel_members(&client, server.peer_id(), 4).await;
+            wait_parallel_members(&server, client.peer_id(), 4).await;
+            let warmup = ip_packet(
+                "10.246.0.2".parse().unwrap(),
+                "10.246.0.1".parse().unwrap(),
+                b"noise pool route warmup",
+            );
+            deliver_packet(&client, &mut server_packets, &warmup).await;
+            let warmup = ip_packet(
+                "10.246.0.1".parse().unwrap(),
+                "10.246.0.2".parse().unwrap(),
+                b"noise pool route reply",
+            );
+            deliver_packet(&server, &mut client_packets, &warmup).await;
+            let observations = Mutex::new(WireObservations::default());
+            transfer_burst(
+                &client,
+                &mut server_packets,
+                "10.246.0.2".parse().unwrap(),
+                "10.246.0.1".parse().unwrap(),
+                &observations,
+            )
+            .await;
+            transfer_burst(
+                &server,
+                &mut client_packets,
+                "10.246.0.1".parse().unwrap(),
+                "10.246.0.2".parse().unwrap(),
+                &observations,
+            )
+            .await;
+            client.stop().await;
+            server.stop().await;
+        }
+
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn simultaneous_manual_parallel_dials_converge(
+            #[values("tcp", "http3")] scheme: &str,
+        ) {
+            let network = format!("parallel-simultaneous-{}", uuid::Uuid::new_v4());
+            let (first, mut first_packets) = build_parallel_instance(
+                &network,
+                "10.247.0.1/24",
+                vec![format!("{scheme}://127.0.0.1:0").parse().unwrap()],
+                false,
+                3,
+                false,
+            );
+            let (second, mut second_packets) = build_parallel_instance(
+                &network,
+                "10.247.0.2/24",
+                vec![format!("{scheme}://127.0.0.1:0").parse().unwrap()],
+                false,
+                3,
+                false,
+            );
+            let (a, b) = tokio::join!(first.start(), second.start());
+            a.unwrap();
+            b.unwrap();
+            let first_url = first
+                .running_listeners()
+                .into_iter()
+                .find(|u| u.scheme() == scheme)
+                .unwrap();
+            let second_url = second
+                .running_listeners()
+                .into_iter()
+                .find(|u| u.scheme() == scheme)
+                .unwrap();
+            let (a, b) = tokio::join!(async { first.add_connector(second_url) }, async {
+                second.add_connector(first_url)
+            });
+            a.unwrap();
+            b.unwrap();
+            wait_parallel_members(&first, second.peer_id(), 3).await;
+            wait_parallel_members(&second, first.peer_id(), 3).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            for (instance, remote) in [(&first, second.peer_id()), (&second, first.peer_id())] {
+                let peer = wait_parallel_members(instance, remote, 3).await;
+                assert_eq!(
+                    peer.conns.iter().filter(|c| !c.is_closed).count(),
+                    3,
+                    "simultaneous bootstrap must converge: {peer:#?}"
+                );
+            }
+            let request = ip_packet(
+                "10.247.0.1".parse().unwrap(),
+                "10.247.0.2".parse().unwrap(),
+                b"simultaneous pool request",
+            );
+            let reply = ip_packet(
+                "10.247.0.2".parse().unwrap(),
+                "10.247.0.1".parse().unwrap(),
+                b"simultaneous pool reply",
+            );
+            deliver_packet(&first, &mut second_packets, &request).await;
+            deliver_packet(&second, &mut first_packets, &reply).await;
+            first.stop().await;
+            second.stop().await;
+        }
+
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn native_manual_parallel_pool_stripes_and_replenishes(
+            #[values("tcp", "udp", "wss", "http3")] scheme: &str,
+            #[values("127.0.0.1:0", "[::1]:0")] bind: &str,
+        ) {
+            tokio::time::timeout(Duration::from_secs(75), async {
+                let network = format!("parallel-native-{}", uuid::Uuid::new_v4());
+                let (server, mut server_packets) = build_parallel_instance(
+                    &network,
+                    "10.249.0.1/24",
+                    vec![format!("{scheme}://{bind}").parse().unwrap()],
+                    false,
+                    1,
+                    false,
+                );
+                let (client, mut client_packets) =
+                    build_parallel_instance(&network, "10.249.0.2/24", Vec::new(), false, 5, false);
+                let (a, b) = tokio::join!(server.start(), client.start());
+                a.unwrap();
+                b.unwrap();
+                let url = server
+                    .running_listeners()
+                    .into_iter()
+                    .find(|url| url.scheme() == scheme)
+                    .unwrap();
+                client.add_connector(url).unwrap();
+                wait_parallel_members(&client, server.peer_id(), 3).await;
+                wait_parallel_members(&server, client.peer_id(), 3).await;
+                let request = ip_packet(
+                    "10.249.0.2".parse().unwrap(),
+                    "10.249.0.1".parse().unwrap(),
+                    b"parallel warmup",
+                );
+                let reply = ip_packet(
+                    "10.249.0.1".parse().unwrap(),
+                    "10.249.0.2".parse().unwrap(),
+                    b"parallel reply",
+                );
+                deliver_packet(&client, &mut server_packets, &request).await;
+                deliver_packet(&server, &mut client_packets, &reply).await;
+                let observations = Mutex::new(WireObservations::default());
+                transfer_burst(
+                    &client,
+                    &mut server_packets,
+                    "10.249.0.2".parse().unwrap(),
+                    "10.249.0.1".parse().unwrap(),
+                    &observations,
+                )
+                .await;
+                transfer_burst(
+                    &server,
+                    &mut client_packets,
+                    "10.249.0.1".parse().unwrap(),
+                    "10.249.0.2".parse().unwrap(),
+                    &observations,
+                )
+                .await;
+                let peer = wait_parallel_members(&client, server.peer_id(), 3).await;
+                let sources = peer
+                    .conns
+                    .iter()
+                    .filter(|conn| {
+                        peer.parallel_connections
+                            .active_conn_ids
+                            .contains(&conn.conn_id)
+                    })
+                    .map(|conn| {
+                        conn.tunnel
+                            .as_ref()
+                            .unwrap()
+                            .local_addr
+                            .as_ref()
+                            .unwrap()
+                            .url
+                            .clone()
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(
+                    sources.len(),
+                    3,
+                    "each parallel member needs a distinct source socket"
+                );
+                for conn in &peer.conns {
+                    if peer
+                        .parallel_connections
+                        .active_conn_ids
+                        .contains(&conn.conn_id)
+                    {
+                        assert!(
+                            conn.stats.as_ref().unwrap().tx_bytes > 4096,
+                            "member did not carry business data: {conn:?}"
+                        );
+                    }
+                }
+                let member = peer
+                    .conns
+                    .iter()
+                    .find(|conn| {
+                        conn.features
+                            .iter()
+                            .any(|feature| feature.starts_with("p2p-pool-v1:"))
+                    })
+                    .unwrap();
+                let old_id = member.conn_id.clone();
+                client
+                    .close_peer_conn(server.peer_id(), &old_id.parse().unwrap())
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let replacement = wait_parallel_members(&client, server.peer_id(), 3).await;
+                assert!(
+                    !replacement
+                        .parallel_connections
+                        .active_conn_ids
+                        .contains(&old_id)
+                );
+                wait_parallel_members(&server, client.peer_id(), 3).await;
+                deliver_packet(&client, &mut server_packets, &request).await;
+                deliver_packet(&server, &mut client_packets, &reply).await;
+                client.stop().await;
+                server.stop().await;
+            })
+            .await
+            .expect("native parallel round trip timed out");
+        }
+
+        #[rstest::rstest]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn native_manual_parallel_disable_keeps_one_connection(
+            #[values("tcp", "udp", "wss", "http3")] scheme: &str,
+        ) {
+            let network = format!("parallel-disabled-{}", uuid::Uuid::new_v4());
+            let (server, mut packets) = build_parallel_instance(
+                &network,
+                "10.248.0.1/24",
+                vec![format!("{scheme}://127.0.0.1:0").parse().unwrap()],
+                false,
+                5,
+                true,
+            );
+            let (client, _) =
+                build_parallel_instance(&network, "10.248.0.2/24", Vec::new(), false, 5, false);
+            let (a, b) = tokio::join!(server.start(), client.start());
+            a.unwrap();
+            b.unwrap();
+            client
+                .add_connector(
+                    server
+                        .running_listeners()
+                        .into_iter()
+                        .find(|url| url.scheme() == scheme)
+                        .unwrap(),
+                )
+                .unwrap();
+            wait_parallel_members(&client, server.peer_id(), 1).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let peer = wait_parallel_members(&client, server.peer_id(), 1).await;
+            assert_eq!(peer.conns.iter().filter(|conn| !conn.is_closed).count(), 1);
+            let packet = ip_packet(
+                "10.248.0.2".parse().unwrap(),
+                "10.248.0.1".parse().unwrap(),
+                b"disabled concurrency still transmits",
+            );
+            deliver_packet(&client, &mut packets, &packet).await;
+            client.stop().await;
+            server.stop().await;
         }
 
         async fn wait_for_connection(
@@ -1226,6 +1698,7 @@ mod tests {
         async fn native_core_direct_discovers_http3_companion_through_tcp_or_wss_relay(
             #[values("127.0.0.1:0", "[::1]:0")] bind: &str,
             #[values("tcp", "wss")] bootstrap_scheme: &str,
+            #[values(1, 5)] parallel_connections: u32,
         ) {
             tokio::time::timeout(Duration::from_secs(45), async {
                 let network = "native-auto-http3-upgrade";
@@ -1238,8 +1711,14 @@ mod tests {
                     ],
                     true,
                 );
-                let (client, mut client_packets) =
-                    build_instance(network, "10.253.0.2/24", Vec::new(), true);
+                let (client, mut client_packets) = build_parallel_instance(
+                    network,
+                    "10.253.0.2/24",
+                    Vec::new(),
+                    true,
+                    parallel_connections,
+                    false,
+                );
                 let (relay, _relay_packets) = build_instance(
                     network,
                     "10.253.0.3/24",
@@ -1274,6 +1753,9 @@ mod tests {
                 assert_eq!(remote_url.host(), udp_url.host());
                 assert_eq!(remote_url.port(), udp_url.port());
                 wait_for_connection(&server, client.peer_id(), "http3", true).await;
+                let target = (parallel_connections + 2) as usize / 2;
+                wait_parallel_members(&client, server.peer_id(), target).await;
+                wait_parallel_members(&server, client.peer_id(), target).await;
                 assert_eq!(client.list_connectors().len(), 1);
                 assert_eq!(server.list_connectors().len(), 1);
                 wait_for_connection(&client, relay.peer_id(), bootstrap_scheme, true).await;

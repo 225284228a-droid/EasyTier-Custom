@@ -79,7 +79,8 @@ export function assertLegacyConfigPreservable(
     const value = existing[field as keyof NetworkConfig]
     const present = strictPresence
       ? Object.prototype.hasOwnProperty.call(existing, field)
-      : value === true || (typeof value === 'string' && value.trim() !== '')
+      : value === true || (typeof value === 'number' && (field === 'parallel_connections' ? value !== 1 : value !== 0))
+        || (typeof value === 'string' && value.trim() !== '' && !(field === 'traffic_disguise' && value === 'speedtest'))
     if (!configFieldSupported(field, capabilities) && present) {
       required.push(field)
     }

@@ -173,6 +173,18 @@ route_cost: 路由
 tunnel_proto: 协议
 sni: SNI 伪装主机名
 sni_placeholder: 例如：www.cloudflare.com
+parallel_connections: 并行连接数
+parallel_connections_help: "范围 1–16，默认 1。双方取平均数四舍五入；任意一端禁用或对端不支持时使用单连接。"
+disable_parallel_connections: 禁用多连接并发
+traffic_disguise: WSS / HTTP3 流量风格
+traffic_disguise_speedtest: 测速
+traffic_disguise_video: 视频
+traffic_disguise_help: "测速持续发送以优先保证吞吐；视频使用短暂、变长的突发节奏。"
+parallel_status: 并行连接状态
+parallel_target: 协商目标数
+parallel_actual: 活动连接数
+parallel_protocol: 协议
+parallel_fallback_reason: 回退原因
 latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载

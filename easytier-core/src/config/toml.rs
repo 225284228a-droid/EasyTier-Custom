@@ -24,6 +24,21 @@ pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
 }
 
+pub(crate) fn validate_transport_tuning(
+    count: Option<u32>,
+    style: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        count.is_none_or(|count| (1..=16).contains(&count)),
+        "parallel_connections must be an integer between 1 and 16"
+    );
+    anyhow::ensure!(
+        style.is_none_or(|style| matches!(style, "speedtest" | "video")),
+        "traffic_disguise must be speedtest or video"
+    );
+    Ok(())
+}
+
 #[auto_impl::auto_impl(Box, &)]
 pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;
@@ -35,9 +50,18 @@ pub trait ConfigLoader: Send + Sync {
     fn get_sni(&self) -> String;
     fn set_sni(&self, sni: Option<String>);
 
+    fn get_parallel_connections(&self) -> u32 {
+        1
+    }
+    fn set_parallel_connections(&self, _count: Option<u32>) {}
+    fn get_disable_parallel_connections(&self) -> bool {
+        false
+    }
+    fn set_disable_parallel_connections(&self, _disabled: Option<bool>) {}
     fn get_traffic_disguise(&self) -> String {
         "speedtest".to_owned()
     }
+    fn set_traffic_disguise(&self, _style: Option<String>) {}
 
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
@@ -408,6 +432,9 @@ struct Config {
     netns: Option<String>,
     hostname: Option<String>,
     sni: Option<String>,
+    parallel_connections: Option<u32>,
+    disable_parallel_connections: Option<bool>,
+    traffic_disguise: Option<String>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -586,6 +613,15 @@ impl TomlConfig {
     fn config_for_dump(&self) -> Config {
         let mut config = self.config.lock().unwrap().clone();
         Self::normalize_config_source(&mut config);
+        if config.parallel_connections == Some(1) {
+            config.parallel_connections = None;
+        }
+        if config.disable_parallel_connections == Some(false) {
+            config.disable_parallel_connections = None;
+        }
+        if config.traffic_disguise.as_deref() == Some("speedtest") {
+            config.traffic_disguise = None;
+        }
         if config
             .vpn
             .as_ref()
@@ -689,6 +725,10 @@ impl TomlConfig {
     }
 
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
+        validate_transport_tuning(
+            config.parallel_connections,
+            config.traffic_disguise.as_deref(),
+        )?;
         if let Some(vpn) = &config.vpn {
             vpn.validate()
                 .map_err(|error| anyhow::anyhow!("invalid [vpn] config: {error}"))?;
@@ -791,6 +831,44 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().sni = sni
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
+    }
+
+    fn get_parallel_connections(&self) -> u32 {
+        self.config
+            .lock()
+            .unwrap()
+            .parallel_connections
+            .unwrap_or(1)
+    }
+
+    fn set_parallel_connections(&self, count: Option<u32>) {
+        self.config.lock().unwrap().parallel_connections = count.filter(|count| *count != 1);
+    }
+
+    fn get_disable_parallel_connections(&self) -> bool {
+        self.config
+            .lock()
+            .unwrap()
+            .disable_parallel_connections
+            .unwrap_or(false)
+    }
+
+    fn set_disable_parallel_connections(&self, disabled: Option<bool>) {
+        self.config.lock().unwrap().disable_parallel_connections =
+            disabled.filter(|disabled| *disabled);
+    }
+
+    fn get_traffic_disguise(&self) -> String {
+        self.config
+            .lock()
+            .unwrap()
+            .traffic_disguise
+            .clone()
+            .unwrap_or_else(|| "speedtest".to_owned())
+    }
+
+    fn set_traffic_disguise(&self, style: Option<String>) {
+        self.config.lock().unwrap().traffic_disguise = style.filter(|style| style != "speedtest");
     }
 
     fn get_netns(&self) -> Option<String> {
@@ -1202,6 +1280,47 @@ pub type TomlConfigLoader = TomlConfig;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn parallel_tuning_validates_and_omits_defaults() {
+        let config = TomlConfig::new_from_str("parallel_connections = 1\ndisable_parallel_connections = false\ntraffic_disguise = 'speedtest'\n").unwrap();
+        assert_eq!(config.get_parallel_connections(), 1);
+        assert!(!config.get_disable_parallel_connections());
+        assert_eq!(config.get_traffic_disguise(), "speedtest");
+        for key in [
+            "parallel_connections",
+            "disable_parallel_connections",
+            "traffic_disguise",
+        ] {
+            assert!(!config.dump().contains(key));
+        }
+        let config = TomlConfig::new_from_str("parallel_connections = 16\ndisable_parallel_connections = true\ntraffic_disguise = 'video'\n").unwrap();
+        let restored = TomlConfig::new_from_str(&config.dump()).unwrap();
+        assert_eq!(restored.get_parallel_connections(), 16);
+        assert!(restored.get_disable_parallel_connections());
+        assert_eq!(restored.get_traffic_disguise(), "video");
+        restored.set_disable_parallel_connections(Some(false));
+        assert_eq!(restored.get_parallel_connections(), 16);
+        assert!(!restored.dump().contains("disable_parallel_connections"));
+        for input in [
+            "parallel_connections = 0",
+            "parallel_connections = 17",
+            "parallel_connections = 1.5",
+            "traffic_disguise = 'invalid'",
+        ] {
+            assert!(TomlConfig::new_from_str(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn startup_recovers_invalid_parallel_tuning_independently() {
+        let config = TomlConfig::new_from_str_tolerant_with_source("test", "hostname = 'keep'\nparallel_connections = 17\ntraffic_disguise = 'invalid'\ndisable_parallel_connections = true").unwrap();
+        assert_eq!(config.get_hostname(), "keep");
+        assert_eq!(config.get_parallel_connections(), 1);
+        assert_eq!(config.get_traffic_disguise(), "speedtest");
+        assert!(config.get_disable_parallel_connections());
+    }
 
     #[test]
     fn omitted_or_empty_protocol_uses_udp_and_enables_cleanup() {

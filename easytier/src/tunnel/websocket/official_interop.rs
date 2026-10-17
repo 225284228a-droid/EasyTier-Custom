@@ -20,8 +20,10 @@ use std::{
 use anyhow::{Context, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use easytier_core::{
-    config::toml::TomlConfig, process_runtime::CoreProcessRuntime,
-    rpc::bidirect::BidirectRpcManager, socket::SocketListener,
+    config::toml::{ConfigLoader as _, TomlConfig},
+    process_runtime::CoreProcessRuntime,
+    rpc::bidirect::BidirectRpcManager,
+    socket::SocketListener,
 };
 use futures::{SinkExt, StreamExt};
 use tokio::time::{Instant, sleep, timeout};
@@ -197,12 +199,36 @@ async fn peer_interop(
     padding: &str,
     secure_mode: bool,
 ) -> anyhow::Result<()> {
+    peer_interop_with_options(scheme, official_listens, padding, secure_mode, false).await
+}
+
+async fn peer_interop_with_options(
+    scheme: &str,
+    official_listens: bool,
+    padding: &str,
+    secure_mode: bool,
+    parallel_fallback: bool,
+) -> anyhow::Result<()> {
+    ensure!(
+        !parallel_fallback || matches!(scheme, "ws" | "wss"),
+        "parallel fallback coverage is limited to official WS/WSS"
+    );
     let binary = official_binary()?;
-    let port = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
+    let port = if matches!(scheme, "udp" | "quic") {
+        std::net::UdpSocket::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port()
+    } else {
+        std::net::TcpListener::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port()
+    };
     let plain_url = format!("{scheme}://127.0.0.1:{port}/");
-    let padded_url = format!("{plain_url}?padding={padding}");
+    let padded_url = if padding.is_empty() {
+        plain_url.clone()
+    } else {
+        format!("{plain_url}?padding={padding}")
+    };
     let name = format!("official-interop-{}", uuid::Uuid::new_v4());
     let (mut custom, mut official) = if official_listens {
         (
@@ -228,14 +254,23 @@ async fn peer_interop(
             ));
         }
     }
-    let mut instance = TestInstance::new_with_process_runtime(
-        TomlConfig::new_from_str(&custom)?,
-        CoreProcessRuntime::new(),
-    );
+    let custom_config = TomlConfig::new_from_str(&custom)?;
+    if parallel_fallback {
+        custom_config.set_parallel_connections(Some(4));
+        custom_config.set_traffic_disguise(Some("video".to_owned()));
+        ensure!(
+            custom_config.get_parallel_connections() == 4
+                && !custom_config.get_disable_parallel_connections()
+                && custom_config.get_traffic_disguise() == "video",
+            "custom test configuration must request four parallel connections and video traffic style"
+        );
+    }
+    let mut instance =
+        TestInstance::new_with_process_runtime(custom_config, CoreProcessRuntime::new());
     instance.run().await.context("start custom native peer")?;
     let outcome = async {
         let mut process = OfficialProcess::start(&binary, Some(&official), &[])?;
-        if official_listens {
+        if official_listens && matches!(scheme, "tcp" | "ws" | "wss") {
             process.wait_listener(port).await?;
         }
         let core = instance.get_core_instance();
@@ -266,16 +301,24 @@ async fn peer_interop(
         sleep(Duration::from_secs(2)).await;
         process.ensure_running()?;
         let peers = core.peer_snapshots().await;
-        let conn = peers
+        let peer = peers
             .iter()
-            .flat_map(|peer| &peer.conns)
-            .find(|conn| conn.conn_id == connection && !conn.is_closed)
+            .find(|peer| {
+                peer.conns
+                    .iter()
+                    .any(|conn| conn.conn_id == connection && !conn.is_closed)
+            })
             .with_context(|| {
                 format!(
                     "peer connection did not survive padding intervals:\n{}",
                     process.logs()
                 )
             })?;
+        let conn = peer
+            .conns
+            .iter()
+            .find(|conn| conn.conn_id == connection && !conn.is_closed)
+            .context("connected peer snapshot is missing its live connection")?;
         let stats = conn
             .stats
             .as_ref()
@@ -295,12 +338,45 @@ async fn peer_interop(
             !secure_mode || !conn.noise_remote_static_pubkey.is_empty(),
             "secure interoperability must exercise the Noise handshake"
         );
+        if parallel_fallback {
+            let live_connections = peer
+                .conns
+                .iter()
+                .filter(|conn| !conn.is_closed)
+                .collect::<Vec<_>>();
+            ensure!(
+                live_connections.len() == 1,
+                "official peer without parallel support must keep one live connection: {peer:#?}"
+            );
+            ensure!(
+                peer.parallel_connections.target == 1,
+                "official peer without parallel support must negotiate target 1: {peer:#?}"
+            );
+            ensure!(
+                peer.parallel_connections.active_conn_ids.len() == 1
+                    && peer.parallel_connections.active_conn_ids[0] == connection,
+                "parallel status must list the sole live official connection: {peer:#?}"
+            );
+            ensure!(
+                peer.parallel_connections.fallback_reason
+                    == "peer does not support parallel connections",
+                "fallback must identify the official peer as lacking parallel support: {peer:#?}"
+            );
+            ensure!(
+                conn.features
+                    .iter()
+                    .all(|feature| !feature.starts_with("p2p-parallel-")
+                        && !feature.starts_with("p2p-pool-")),
+                "official peer must not advertise parallel transport or pool features: {:#?}",
+                conn.features
+            );
+        }
         Ok(())
     }
     .await;
     instance.clear_resources().await;
     outcome.with_context(|| {
-        format!("{scheme}, official_listens={official_listens}, padding={padding}, secure_mode={secure_mode}")
+        format!("{scheme}, official_listens={official_listens}, padding={}, secure_mode={secure_mode}, parallel_fallback={parallel_fallback}", if padding.is_empty() { "none" } else { padding })
     })
 }
 
@@ -439,6 +515,30 @@ async fn official_noise_handshake_ignores_cleanup_extension() {
     for scheme in ["ws", "wss"] {
         for official_listens in [true, false] {
             peer_interop(scheme, official_listens, "50,64", true)
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires independently built upstream CLI in OFFICIAL_EASYTIER_BIN"]
+async fn official_ws_parallel_settings_fall_back_without_pool_negotiation() {
+    for scheme in ["ws", "wss"] {
+        for official_listens in [true, false] {
+            peer_interop_with_options(scheme, official_listens, "50,64", false, true)
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires independently built upstream CLI in OFFICIAL_EASYTIER_BIN"]
+async fn official_tcp_udp_quic_peer_both_directions() {
+    for scheme in ["tcp", "udp", "quic"] {
+        for official_listens in [true, false] {
+            peer_interop(scheme, official_listens, "", false)
                 .await
                 .unwrap();
         }

@@ -89,6 +89,7 @@ pub struct PeerSnapshot {
     pub default_conn_id: Option<PeerConnId>,
     pub directly_connected_conns: Vec<PeerConnId>,
     pub conns: Vec<PeerConnInfo>,
+    pub parallel_connections: crate::proto::common::ParallelConnectionStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -1329,6 +1330,11 @@ impl PeerManagerCore {
                     .get_directly_connections_by_peer_id(peer_id)
                     .into_iter()
                     .collect(),
+                parallel_connections: self
+                    .peers
+                    .parallel_connection_status(peer_id)
+                    .or_else(|| foreign_peer_map.parallel_connection_status(peer_id))
+                    .unwrap_or_default(),
                 conns,
             });
         }
@@ -1610,6 +1616,50 @@ impl PeerManagerCore {
                 .foreign_network_client
                 .get_peer_map()
                 .has_connection_at_least_as_preferred(peer_id, target_scheme, use_disguise)
+    }
+
+    pub(crate) fn reserve_parallel_slot(
+        &self,
+        peer_id: PeerId,
+    ) -> Option<super::conn::parallel::ParallelDialReservation> {
+        self.peers.reserve_parallel_slot(peer_id).or_else(|| {
+            self.foreign_network_client
+                .get_peer_map()
+                .reserve_parallel_slot(peer_id)
+        })
+    }
+
+    pub(crate) fn parallel_connection_target(&self, peer_id: PeerId) -> u32 {
+        self.peers
+            .parallel_connection_status(peer_id)
+            .or_else(|| {
+                self.foreign_network_client
+                    .get_peer_map()
+                    .parallel_connection_status(peer_id)
+            })
+            .map_or(1, |s| s.target)
+    }
+
+    pub(crate) fn reserve_parallel_slot_for_protocol(
+        &self,
+        peer_id: PeerId,
+        protocol: &str,
+    ) -> Option<super::conn::parallel::ParallelDialReservation> {
+        self.peers
+            .reserve_parallel_slot_for_protocol(peer_id, protocol)
+            .or_else(|| {
+                self.foreign_network_client
+                    .get_peer_map()
+                    .reserve_parallel_slot_for_protocol(peer_id, protocol)
+            })
+    }
+
+    pub(crate) fn parallel_default_protocol(&self, peer_id: PeerId) -> Option<String> {
+        self.peers.parallel_default_protocol(peer_id).or_else(|| {
+            self.foreign_network_client
+                .get_peer_map()
+                .parallel_default_protocol(peer_id)
+        })
     }
 
     pub async fn add_client_tunnel(
@@ -2162,6 +2212,7 @@ impl PeerConnectionAdmission {
                 if network_name == self.context.network_identity().network_name {
                     return Ok(());
                 }
+                peer.set_parallel_foreign();
 
                 let mut peer_id = self
                     .foreign_network_manager

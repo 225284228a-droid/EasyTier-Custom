@@ -170,6 +170,18 @@ route_cost: Route Cost
 tunnel_proto: Protocol
 sni: SNI Camouflage Hostname
 sni_placeholder: "Example: www.cloudflare.com"
+parallel_connections: Parallel connections
+parallel_connections_help: "1–16, default 1. Peers use the rounded average; either peer disabling concurrency or lacking support keeps one connection."
+disable_parallel_connections: Disable parallel connections
+traffic_disguise: WSS / HTTP3 traffic style
+traffic_disguise_speedtest: Speed test
+traffic_disguise_video: Video
+traffic_disguise_help: "Speed test sends continuously for throughput; video uses short, variable bursts."
+parallel_status: Parallel connection status
+parallel_target: Negotiated target
+parallel_actual: Active connections
+parallel_protocol: Protocol
+parallel_fallback_reason: Fallback reason
 device: Device
 hostname: Hostname
 latency: Latency

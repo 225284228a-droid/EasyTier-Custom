@@ -1,4 +1,5 @@
 pub mod discovery;
+mod parallel;
 
 use std::{
     collections::BTreeSet,
@@ -332,6 +333,7 @@ struct ManualConnectorState {
     reconnecting: DashSet<Url>,
     removed: DashSet<Url>,
     last_connected_peers: DashMap<Url, PeerId>,
+    parallel_retries: DashMap<Url, parallel::RetryState>,
     state_lock: Mutex<()>,
 }
 
@@ -339,6 +341,7 @@ impl ManualConnectorState {
     fn remove_connector(&self, url: &Url) -> bool {
         let _state_guard = self.state_lock.lock().unwrap();
         self.last_connected_peers.remove(url);
+        self.parallel_retries.remove(url);
         if self.connectors.remove(url).is_some() {
             tracing::warn!(%url, "manual connector removed");
             return true;
@@ -354,6 +357,7 @@ impl ManualConnectorState {
         let _state_guard = self.state_lock.lock().unwrap();
         self.connectors.clear();
         self.last_connected_peers.clear();
+        self.parallel_retries.clear();
         for url in self.reconnecting.iter() {
             self.removed.insert(url.key().clone());
         }
@@ -500,6 +504,7 @@ where
         }
         let _state_guard = self.data.state.state_lock.lock().unwrap();
         restore_interrupted_connectors(&self.data.state);
+        self.data.state.parallel_retries.clear();
     }
 
     pub fn add_connector(&self, url: Url) -> anyhow::Result<()> {
@@ -570,6 +575,7 @@ where
                             (url, result)
                         });
                     }
+                    parallel::schedule(&data, &mut reconnect_tasks);
                 }
                 result = reconnect_tasks.join_next(), if !reconnect_tasks.is_empty() => {
                     let Some(result) = result else {
@@ -941,7 +947,11 @@ where
     let (peer_id, conn_id) =
         with_timeout_budget("handshake", started_at, connect_timeout, async move {
             peer_manager
-                .add_client_tunnel_with_peer_id_hint(tunnel, PeerConnectionOrigin::Manual, None)
+                .add_client_tunnel_with_peer_id_hint(
+                    tunnel,
+                    PeerConnectionOrigin::Manual,
+                    parallel::expected_peer_id(),
+                )
                 .await
                 .map_err(anyhow::Error::from)
         })

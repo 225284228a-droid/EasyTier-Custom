@@ -28,6 +28,60 @@ export function peerConns(info: PeerRoutePair) {
   return info.peer?.conns || []
 }
 
+interface ParallelConnectionsState {
+  target?: unknown
+  active_conn_ids?: unknown
+  protocol?: unknown
+  fallback_reason?: unknown
+}
+
+function parallelConnectionsState(info: PeerRoutePair): ParallelConnectionsState | undefined {
+  const peer = info.peer as (NonNullable<PeerRoutePair['peer']> & {
+    parallel_connections?: ParallelConnectionsState
+  }) | undefined
+  const state = peer?.parallel_connections
+  return state && typeof state === 'object' ? state : undefined
+}
+
+export function parallelActiveConnectionIds(info: PeerRoutePair): string[] {
+  const ids = parallelConnectionsState(info)?.active_conn_ids
+  if (!Array.isArray(ids))
+    return []
+
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+}
+
+export function parallelConnectionDetails(info: PeerRoutePair) {
+  const state = parallelConnectionsState(info)
+  if (!state)
+    return undefined
+
+  const protocol = typeof state.protocol === 'string' ? state.protocol : ''
+  const fallbackReason = typeof state.fallback_reason === 'string' ? state.fallback_reason : ''
+  return {
+    target: numericValue(state.target),
+    actual: parallelActiveConnectionIds(info).length,
+    protocol,
+    fallbackReason,
+  }
+}
+
+export function tunnelProtocols(info: PeerRoutePair, protocolForConnection: (conn: ReturnType<typeof peerConns>[number]) => string) {
+  const activeIds = new Set(parallelActiveConnectionIds(info))
+  const groups = new Map<string, Set<string>>()
+
+  for (const conn of peerConns(info)) {
+    const protocol = protocolForConnection(conn)
+    if (!groups.has(protocol))
+      groups.set(protocol, new Set())
+
+    if (protocol && conn.conn_id && !conn.is_closed && activeIds.has(conn.conn_id))
+      groups.get(protocol)!.add(conn.conn_id)
+  }
+
+  return [...groups].map(([protocol, ids]) => ids.size > 1 ? `${protocol}[×${ids.size}]` : protocol).join(',')
+}
+
 function defaultConnId(info: PeerRoutePair) {
   const defaultConn = info.peer?.default_conn_id
   if (!defaultConn)
@@ -120,6 +174,27 @@ function connectionBandwidth(conn: ReturnType<typeof peerConns>[number], directi
 }
 
 export function estimatedBandwidth(info: PeerRoutePair): { upload: string, download: string } {
+  const activeIds = parallelActiveConnectionIds(info)
+  if (activeIds.length) {
+    const activeBandwidth = (direction: 'tx' | 'rx') => {
+      let total = 0
+      for (const connId of activeIds) {
+        const conn = peerConns(info).find(candidate => candidate.conn_id === connId)
+        const value = conn ? connectionBandwidth(conn, direction) : undefined
+        if (value === undefined)
+          return undefined
+        total += value
+      }
+      return total
+    }
+    const upload = activeBandwidth('tx')
+    const download = activeBandwidth('rx')
+    return {
+      upload: upload === undefined ? '--' : formatBitRate(upload),
+      download: download === undefined ? '--' : formatBitRate(download),
+    }
+  }
+
   let upload: number | undefined
   let download: number | undefined
   for (const conn of defaultConnFirst(info)) {

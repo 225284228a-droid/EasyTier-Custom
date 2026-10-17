@@ -108,6 +108,16 @@
     {"message":"web.HeartbeatRequest","field":"support_local_config_revision","number":50002,"type":8,"type_name":"","label":1,"proto3_optional":false,"previous_number":50002},
     {"message":"web.HeartbeatRequest","field":"local_config_catalog_epoch","number":50003,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50003},
     {"message":"web.HeartbeatRequest","field":"local_config_catalog_generation","number":50004,"type":4,"type_name":"","label":1,"proto3_optional":false,"previous_number":50004},
-    {"message":"web.HeartbeatRequest","field":"runtime_capabilities","number":50005,"type":9,"type_name":"","label":3,"proto3_optional":false,"previous_number":50005}
+    {"message":"web.HeartbeatRequest","field":"runtime_capabilities","number":50005,"type":9,"type_name":"","label":3,"proto3_optional":false,"previous_number":50005},
+    {"message":"api.manage.NetworkConfig","field":"parallel_connections","number":50082,"type":13,"type_name":"","label":1,"proto3_optional":true,"previous_number":50082},
+    {"message":"api.manage.NetworkConfig","field":"disable_parallel_connections","number":50083,"type":8,"type_name":"","label":1,"proto3_optional":true,"previous_number":50083},
+    {"message":"api.manage.NetworkConfig","field":"traffic_disguise","number":50084,"type":9,"type_name":"","label":1,"proto3_optional":true,"previous_number":50084},
+    {"message":"core.peer.PeerInfo","field":"parallel_connections","number":50001,"type":11,"type_name":".common.ParallelConnectionStatus","label":1,"proto3_optional":false,"previous_number":50001},
+    {"message":"api.instance.PeerInfo","field":"parallel_connections","number":50001,"type":11,"type_name":".common.ParallelConnectionStatus","label":1,"proto3_optional":false,"previous_number":50001},
+    {"message":"common.ParallelConnectionStatus","field":"target","number":50001,"type":13,"type_name":"","label":1,"proto3_optional":false,"previous_number":50001},
+    {"message":"common.ParallelConnectionStatus","field":"active_conn_ids","number":50002,"type":9,"type_name":"","label":3,"proto3_optional":false,"previous_number":50002},
+    {"message":"common.ParallelConnectionStatus","field":"protocol","number":50003,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50003},
+    {"message":"common.ParallelConnectionStatus","field":"fallback_reason","number":50004,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50004},
+    {"message":"peer_rpc.TcpHolePunchRequest","field":"parallel_member","number":50004,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50004}
   ]
 }

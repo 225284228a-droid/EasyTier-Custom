@@ -80,6 +80,22 @@ pub trait TcpHolePunchPeerSource: Send + Sync + 'static {
     fn local_peer_id(&self) -> PeerId;
 
     fn p2p_policy_flags(&self) -> P2pPolicyFlags;
+    fn reserve_parallel_slot_for_protocol(
+        &self,
+        peer_id: PeerId,
+        _protocol: &str,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        self.reserve_parallel_slot(peer_id)
+    }
+    fn reserve_parallel_slot(
+        &self,
+        _peer_id: PeerId,
+    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
+        None
+    }
+    fn parallel_connection_target(&self, _peer_id: PeerId) -> u32 {
+        1
+    }
 
     fn tcp_hole_punching_disabled(&self) -> bool;
 
@@ -506,7 +522,7 @@ where
         let host = host.clone();
         let transport_sink = transport_sink.clone();
         let requested_url = requested_url.clone();
-        tasks.spawn(async move {
+        tasks.spawn(crate::peers::conn::parallel::inherit_scope(async move {
             complete_punch_within(SYMMETRIC_RESPONDER_HOLD, async {
                 let start = crate::foundation::time::Instant::now();
                 let dialer = TcpPunchDialer {
@@ -537,7 +553,7 @@ where
                 ))
             })
             .await
-        });
+        }));
     }
 
     while let Some(result) = tasks.join_next().await {
@@ -596,7 +612,7 @@ where
         let host = host.clone();
         let transport_sink = transport_sink.clone();
         let requested_url = mapped_addr_url(scheme, target_addr)?;
-        tasks.spawn(async move {
+        tasks.spawn(crate::peers::conn::parallel::inherit_scope(async move {
             complete_punch_within(SPRAY_WINDOW, async {
                 let start = crate::foundation::time::Instant::now();
                 let dialer = TcpPunchDialer {
@@ -625,7 +641,7 @@ where
                 Err(anyhow::anyhow!("tcp hole punch spray timeout"))
             })
             .await
-        });
+        }));
     }
 
     while let Some(result) = tasks.join_next().await {
@@ -1002,6 +1018,9 @@ where
             );
         }
         let requested_scheme = input.scheme.trim().to_owned();
+        let parallel_member = crate::peers::conn::parallel::ParallelMemberToken::from_features(
+            std::slice::from_ref(&input.parallel_member),
+        );
         if requested_scheme.is_empty() && policy.only_use_wss_http3_for_hole_punching {
             return Err(anyhow::anyhow!(
                 "raw TCP hole punching is disabled by WSS/HTTP3-only policy"
@@ -1079,36 +1098,39 @@ where
         if self.stopping.load(Ordering::Acquire) {
             return Err(rpc_types::error::Error::Shutdown);
         }
-        tasks.spawn(async move {
-            // Freed when the punch finishes, bounding concurrent fan-outs.
-            let _permit = permit;
-            if use_multi_socket_responder {
-                let _ = connect_as_symmetric_responder(
-                    host,
-                    transport_sink,
-                    remote_mapped_addr,
-                    local_port,
-                    socket_context,
-                    TcpHolePunchAdmission::Client,
-                    &connect_scheme,
-                )
-                .await;
-            } else {
-                let _ = try_connect_to_remote(
-                    host,
-                    transport_sink,
-                    TcpHolePunchDialOptions {
+        tasks.spawn(crate::peers::conn::parallel::scope_optional(
+            parallel_member,
+            async move {
+                // Freed when the punch finishes, bounding concurrent fan-outs.
+                let _permit = permit;
+                if use_multi_socket_responder {
+                    let _ = connect_as_symmetric_responder(
+                        host,
+                        transport_sink,
                         remote_mapped_addr,
                         local_port,
-                        context: socket_context,
-                        admission: TcpHolePunchAdmission::Client,
-                        max_attempts: 5,
-                        scheme: &connect_scheme,
-                    },
-                )
-                .await;
-            }
-        });
+                        socket_context,
+                        TcpHolePunchAdmission::Client,
+                        &connect_scheme,
+                    )
+                    .await;
+                } else {
+                    let _ = try_connect_to_remote(
+                        host,
+                        transport_sink,
+                        TcpHolePunchDialOptions {
+                            remote_mapped_addr,
+                            local_port,
+                            context: socket_context,
+                            admission: TcpHolePunchAdmission::Client,
+                            max_attempts: 5,
+                            scheme: &connect_scheme,
+                        },
+                    )
+                    .await;
+                }
+            },
+        ));
 
         // Prediction info only for peers that announced support; upstream
         // peers must keep receiving the original response shape.
@@ -1226,6 +1248,9 @@ where
                 requested_scheme.to_owned()
             },
             supports_port_prediction,
+            parallel_member: crate::peers::conn::parallel::DIAL_MEMBER
+                .try_with(|token| token.feature())
+                .unwrap_or_default(),
         };
         let mut response = rpc_stub
             .exchange_mapped_addr(
@@ -1515,7 +1540,42 @@ where
         dst_peer_id: PeerId,
     ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         let data = self.0.clone();
-        tokio::spawn(async move { data.punch_as_initiator(dst_peer_id).await })
+        tokio::spawn(async move {
+            let peer_policy = data
+                .peer_source
+                .candidates()
+                .await
+                .into_iter()
+                .find(|peer| peer.peer_id == dst_peer_id)
+                .map(|peer| peer.peer_disguise_flags);
+            let policy = data
+                .peer_source
+                .p2p_policy_flags()
+                .transport_policy(peer_policy.as_ref());
+            let scheme = if policy
+                .select_disguised(data.supports_wss_hole_punching)
+                .unwrap_or(false)
+            {
+                "wss"
+            } else {
+                "tcp"
+            };
+            let reservation = data
+                .peer_source
+                .reserve_parallel_slot_for_protocol(dst_peer_id, scheme);
+            if data.peer_source.parallel_connection_target(dst_peer_id) > 1 && reservation.is_none()
+            {
+                return Ok(());
+            }
+            match reservation {
+                Some(reservation) => {
+                    reservation
+                        .scope(data.punch_as_initiator(dst_peer_id))
+                        .await
+                }
+                None => data.punch_as_initiator(dst_peer_id).await,
+            }
+        })
     }
 
     fn loop_interval_ms(&self) -> u64 {

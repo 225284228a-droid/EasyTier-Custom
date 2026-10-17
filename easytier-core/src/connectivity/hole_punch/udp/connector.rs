@@ -491,12 +491,31 @@ where
         let punch_method = item
             .my_nat_type
             .get_punch_hole_method(item.dst_nat_type, disable_sym_hole_punching);
-        match punch_method {
-            UdpPunchClientMethod::ConeToCone => tokio::spawn(data.cone_to_cone(item)),
-            UdpPunchClientMethod::SymToCone => tokio::spawn(data.sym_to_cone(item)),
-            UdpPunchClientMethod::EasySymToEasySym => tokio::spawn(data.both_easy_sym(item)),
-            _ => unreachable!(),
-        }
+        tokio::spawn(async move {
+            let reservation = data
+                .peer_source
+                .reserve_parallel_slot_for_protocol(item.dst_peer_id, item.scheme.as_str());
+            if data
+                .peer_source
+                .parallel_connection_target(item.dst_peer_id)
+                > 1
+                && reservation.is_none()
+            {
+                return Ok(());
+            }
+            let work = async move {
+                match punch_method {
+                    UdpPunchClientMethod::ConeToCone => data.cone_to_cone(item).await,
+                    UdpPunchClientMethod::SymToCone => data.sym_to_cone(item).await,
+                    UdpPunchClientMethod::EasySymToEasySym => data.both_easy_sym(item).await,
+                    _ => unreachable!(),
+                }
+            };
+            match reservation {
+                Some(reservation) => reservation.scope(work).await,
+                None => work.await,
+            }
+        })
     }
 
     async fn all_task_done(&self) {
