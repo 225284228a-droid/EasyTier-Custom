@@ -12,6 +12,8 @@ pub mod common;
 #[cfg(any(feature = "quic", feature = "websocket"))]
 pub(crate) mod insecure_tls;
 pub(crate) mod protocol;
+#[cfg(any(feature = "quic", feature = "websocket"))]
+pub(crate) mod traffic_disguise;
 
 #[cfg(feature = "wireguard")]
 pub mod wireguard;

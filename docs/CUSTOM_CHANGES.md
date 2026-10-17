@@ -12,6 +12,14 @@
 
 ## 相对原版的主要改动
 
+### HTTP3/WSS 传输升级（2026-10-18）
+
+- `http3://` 使用真正的 HTTP/3：标准 `h3` ALPN、TLS 1.3、控制流、SETTINGS、QPACK 和 HTTP 请求/响应；EasyTier 报文通过双向流式 POST 的 DATA body 承载。普通 GET 返回 HTTP 状态，原 UDP 共端口监听、SNI、打洞、准入控制和 BBR 继续生效。
+- 不兼容旧定制客户端的自定义 HTTP3 应用流格式；新版定制节点需要一起升级。官方节点通过现有能力协商选择其支持的 TCP/UDP/QUIC/WS/WSS，不接收未协商的定制传输格式。
+- HTTP3/WSS 共用测速和视频流量风格。测速持续发送，视频仅在持续大流中加入不超过 5ms 的短暂突发间隔；控制、探活和低延迟报文不等待，空闲时不持续发送填充。
+- 连接 URL 的显式 `traffic_disguise=speedtest` / `traffic_disguise=video` 优先于全局风格；现有 SNI 覆盖及 Host、请求路径、User-Agent、语言和 padding 参数继续有效。WSS 根据风格选择默认请求路径、Accept 和 Cache-Control，显式 URL 参数优先；保持每条 binary 消息一个原报文，文本 padding 仍要求双方通过 Upgrade 声明支持。
+- HTTP3 body 有界背压、请求头与帧长检查以及可取消的连接任务；关闭最后一个隧道端会释放 HTTP/3 驱动、QUIC 连接和 endpoint。
+
 ### 定制 protobuf 字段编号与版本兼容
 
 - 本次合并中，所有原先使用低位编号的 Custom protobuf 字段均迁移到高位：新编号为原 tag 加 `50000`；若该编号已被占用，则每次再加 `1000`，直到找到空闲编号。已有高位编号保持不变。
@@ -86,8 +94,8 @@
 
 - 增加 `prefer`、`off`、`disabled`、`only` 四种 P2P/打洞伪装策略；直连、TCP 打洞和 UDP 打洞都会参考对端能力。
 - TCP 打洞成功的连接可升级为 WSS；双方支持伪装 P2P 时，UDP 打洞会按次协商 HTTP3。严格模式要求 HTTP3，不能降级；优先模式在远端或本机不支持时回退裸 UDP。
-- 新版双方通过打洞 RPC 的 `native_http3` 能力协商原生 QUIC，去除 HTTP3 数据外层的 EasyTier UDP 头部。旧魔改节点未返回该能力时仍使用原封装，官方节点的空 scheme 仍表示裸 UDP；SNI、TLS 1.3、`h3` ALPN 和 BBR 沿用原 HTTP3 引擎。
-- UDP 打洞监听器按裸 UDP、原生 HTTP3、旧版封装 HTTP3 分池复用，HTTP3 与 WSS 打洞一样使用打洞过程中的自动临时监听端口，不依赖手动公布的 HTTP3/WSS 服务监听器。
+- 新版双方通过打洞 RPC 的 `native_http3` 能力协商原生 HTTP/3，HTTP3 数据不增加 EasyTier UDP 外层。官方节点的空 scheme 仍表示裸 UDP；SNI、TLS 1.3、`h3` ALPN 和 BBR 保持有效。
+- UDP 打洞监听器按传输类型分池复用，HTTP3 与 WSS 打洞一样使用打洞过程中的自动临时监听端口，不依赖手动公布的 HTTP3/WSS 服务监听器。
 - 支持 HTTP3 的节点会在已配置的 UDP 公网监听端口同时接受 HTTP3，并仅公布已就绪的升级端点；自动P2P无需另加 HTTP3 监听或端口。普通 TCP 公网监听不因此变为 WSS。
 - `default_protocol = "udp"` 将 HTTP3 排在 WSS 前，`"tcp"` 则相反；GUI/Web 提供该协议偏好选择。对普通 UDP/TCP 打洞，该选项分别对应 HTTP3/WSS 升级偏好。
 - 打洞 RPC 的 scheme 字段为空表示官方主线裸 UDP/TCP 协议。官方 peer 不返回新字段时，本分支在优先模式下回退裸 UDP；严格模式不会接受降级连接。

@@ -492,7 +492,7 @@ fn validate_capability_mask(
             .as_ref()
             .and_then(|config| config.p2p_prefer_protocol.as_deref())
             == Some("http3")
-        && !caps.iter().any(|cap| cap == "transport:http3-framed-v1")
+        && !caps.iter().any(|cap| cap == "transport:http3-rfc9114-v2")
     {
         return Err(LocalConfigError::Unsupported);
     }
@@ -540,7 +540,7 @@ fn validate_capability_mask(
             let capability = match url.scheme() {
                 "ws" => "transport:ws",
                 "wss" => "transport:wss",
-                "http3" => "transport:http3-framed-v1",
+                "http3" => "transport:http3-rfc9114-v2",
                 _ => continue,
             };
             if !caps.iter().any(|cap| cap == capability) {

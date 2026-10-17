@@ -16,6 +16,7 @@ use easytier_core::{
 use crate::{
     common::global_ctx::ArcGlobalCtx,
     socket::tcp::RuntimeTcpSocket,
+    tunnel::traffic_disguise::apply_default,
     tunnel::websocket::{
         CONNECT_TIMEOUT, SERVER_HANDSHAKE_TIMEOUT, upgrade_accepted, upgrade_connected,
     },
@@ -38,8 +39,10 @@ pub(super) fn client_adapter(global_ctx: &ArcGlobalCtx) -> ClientAdapter {
     })
 }
 
-pub(super) fn server_adapter(_global_ctx: &ArcGlobalCtx) -> ServerAdapter {
-    Arc::new(WebSocketAdapter::default())
+pub(super) fn server_adapter(global_ctx: &ArcGlobalCtx) -> ServerAdapter {
+    Arc::new(WebSocketAdapter {
+        global_ctx: Some(global_ctx.clone()),
+    })
 }
 
 #[async_trait]
@@ -70,6 +73,16 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for WebSocketAdapter {
         } else {
             requested_url
         };
+        let style = self
+            .global_ctx
+            .as_ref()
+            .map(|ctx| ctx.config.get_traffic_disguise())
+            .unwrap_or_else(|| "speedtest".to_owned());
+        let requested_url = if requested_url.scheme() == "wss" {
+            apply_default(requested_url, &style)
+        } else {
+            requested_url
+        };
         Ok(upgrade_connected(socket, requested_url).await?)
     }
 }
@@ -89,6 +102,16 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for WebSocketAdapter {
         socket: RuntimeTcpSocket,
         local_url: url::Url,
     ) -> anyhow::Result<ServerProtocolUpgrade> {
+        let style = self
+            .global_ctx
+            .as_ref()
+            .map(|ctx| ctx.config.get_traffic_disguise())
+            .unwrap_or_else(|| "speedtest".to_owned());
+        let local_url = if local_url.scheme() == "wss" {
+            apply_default(local_url, &style)
+        } else {
+            local_url
+        };
         Ok(ServerProtocolUpgrade::Tunnel(
             tokio::time::timeout(
                 SERVER_HANDSHAKE_TIMEOUT,

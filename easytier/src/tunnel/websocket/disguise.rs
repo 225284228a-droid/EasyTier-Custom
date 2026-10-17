@@ -3,10 +3,21 @@
 use std::{net::Ipv6Addr, time::Duration};
 
 use crate::tunnel::insecure_tls::sni_from_url;
+use crate::tunnel::traffic_disguise::TrafficStyle;
 
 const DEFAULT_BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const DEFAULT_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
-const DISGUISE_QUERY_KEYS: [&str; 6] = ["sni", "host", "path", "ua", "accept_language", "padding"];
+const DISGUISE_QUERY_KEYS: [&str; 9] = [
+    "sni",
+    "host",
+    "path",
+    "ua",
+    "accept_language",
+    "accept",
+    "cache_control",
+    "padding",
+    "traffic_disguise",
+];
 
 /// Hard bounds for the `padding=<interval_ms>,<size>` query parameter. The
 /// URL is attacker-controllable (it can originate from a peer-broadcast
@@ -73,6 +84,8 @@ fn request_authority(value: &str, inherited_port: Option<u16>) -> anyhow::Result
 /// - `path`: request path, e.g. `/api/v1/query` to mimic an API endpoint
 /// - `ua`: User-Agent header, defaults to a Chrome UA
 /// - `accept_language`: Accept-Language header
+/// - `accept` / `cache_control`: override the traffic style's HTTP headers
+/// - `traffic_disguise`: speedtest/video defaults for an otherwise root path
 /// - `padding=<interval_ms>[,<size>]`: send negotiated WebSocket text padding so
 ///   the flow looks like an interactive HTTPS session instead of a steady pipe
 #[derive(Debug, Clone, Default)]
@@ -83,6 +96,9 @@ pub struct WssDisguise {
     pub path: Option<String>,
     pub user_agent: Option<String>,
     pub accept_language: Option<String>,
+    pub accept: Option<String>,
+    pub cache_control: Option<String>,
+    traffic_style: Option<TrafficStyle>,
     pub padding_interval: Option<Duration>,
     pub padding_size: usize,
 }
@@ -95,6 +111,10 @@ impl WssDisguise {
         };
         for (key, value) in url.query_pairs() {
             match key.as_ref() {
+                "traffic_disguise" => {
+                    disguise.enabled = true;
+                    disguise.traffic_style = Some(TrafficStyle::from_url(url));
+                }
                 // An empty `sni`/`host` value means "not set": using it
                 // verbatim would break the TLS SNI and the Host header.
                 "sni" if !value.is_empty() => {
@@ -116,6 +136,14 @@ impl WssDisguise {
                 "accept_language" => {
                     disguise.enabled = true;
                     disguise.accept_language = Some(value.into_owned());
+                }
+                "accept" => {
+                    disguise.enabled = true;
+                    disguise.accept = Some(value.into_owned());
+                }
+                "cache_control" => {
+                    disguise.enabled = true;
+                    disguise.cache_control = Some(value.into_owned());
                 }
                 "padding" => {
                     disguise.enabled = true;
@@ -156,6 +184,22 @@ impl WssDisguise {
             .unwrap_or_else(|| DEFAULT_ACCEPT_LANGUAGE.to_owned())
     }
 
+    pub fn accept(&self) -> &str {
+        self.accept.as_deref().unwrap_or(match self.traffic_style {
+            Some(TrafficStyle::Speedtest) => "application/octet-stream,*/*;q=0.8",
+            Some(TrafficStyle::Video) => "video/*,application/octet-stream;q=0.9,*/*;q=0.8",
+            None => "*/*",
+        })
+    }
+
+    pub fn cache_control(&self) -> Option<&str> {
+        self.cache_control.as_deref().or(match self.traffic_style {
+            Some(TrafficStyle::Speedtest) => Some("no-cache, no-store"),
+            Some(TrafficStyle::Video) => Some("max-age=0"),
+            None => None,
+        })
+    }
+
     /// SNI presented to the TLS layer. Defaults to the URL host, which keeps
     /// the official behavior when no `sni` param is configured. IP-literal
     /// hosts are stringified explicitly: `url.domain()` returns None for
@@ -172,8 +216,12 @@ impl WssDisguise {
         let host = self.host.clone().unwrap_or_else(|| self.sni(url));
         let authority = request_authority(&host, url.port())?;
         let path = self.path.clone().unwrap_or_else(|| {
-            if url.path().is_empty() {
-                "/".to_owned()
+            if url.path().is_empty() || url.path() == "/" {
+                match self.traffic_style {
+                    Some(TrafficStyle::Speedtest) => "/speedtest/download".to_owned(),
+                    Some(TrafficStyle::Video) => "/video/live/stream".to_owned(),
+                    None => "/".to_owned(),
+                }
             } else {
                 url.path().to_owned()
             }
@@ -212,6 +260,58 @@ impl WssDisguise {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traffic_styles_supply_distinct_default_request_templates() {
+        for (style, path, accept, cache_control) in [
+            (
+                "speedtest",
+                "/speedtest/download",
+                "application/octet-stream,*/*;q=0.8",
+                "no-cache, no-store",
+            ),
+            (
+                "video",
+                "/video/live/stream",
+                "video/*,application/octet-stream;q=0.9,*/*;q=0.8",
+                "max-age=0",
+            ),
+        ] {
+            let url: url::Url = format!("wss://host.example/?traffic_disguise={style}&keep=1")
+                .parse()
+                .unwrap();
+            let disguise = WssDisguise::from_url(&url);
+            let uri: http::Uri = disguise.request_uri(&url).unwrap().parse().unwrap();
+            assert_eq!(
+                uri.path_and_query().unwrap().as_str(),
+                format!("{path}?keep=1")
+            );
+            assert_eq!(disguise.accept(), accept);
+            assert_eq!(disguise.cache_control(), Some(cache_control));
+        }
+    }
+
+    #[test]
+    fn explicit_paths_and_headers_override_traffic_style_defaults() {
+        let mut url: url::Url = "wss://host.example/custom?traffic_disguise=video&keep=1"
+            .parse()
+            .unwrap();
+        let disguise = WssDisguise::from_url(&url);
+        let uri: http::Uri = disguise.request_uri(&url).unwrap().parse().unwrap();
+        assert_eq!(uri.path_and_query().unwrap().as_str(), "/custom?keep=1");
+
+        url.query_pairs_mut()
+            .append_pair("path", "/explicit")
+            .append_pair("ua", "custom player")
+            .append_pair("accept", "application/custom")
+            .append_pair("cache_control", "no-cache");
+        let disguise = WssDisguise::from_url(&url);
+        let uri: http::Uri = disguise.request_uri(&url).unwrap().parse().unwrap();
+        assert_eq!(uri.path_and_query().unwrap().as_str(), "/explicit?keep=1");
+        assert_eq!(disguise.user_agent(), "custom player");
+        assert_eq!(disguise.accept(), "application/custom");
+        assert_eq!(disguise.cache_control(), Some("no-cache"));
+    }
 
     #[test]
     fn host_authority_preserves_explicit_or_inherited_port() {

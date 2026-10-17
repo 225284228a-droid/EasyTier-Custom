@@ -196,7 +196,7 @@ pub(super) fn unsupported_capability(
         {
             "ws" => Some("transport:ws"),
             "wss" => Some("transport:wss"),
-            "http3" => Some("transport:http3-framed-v1"),
+            "http3" => Some("transport:http3-rfc9114-v2"),
             _ => None,
         }
     }
@@ -1037,13 +1037,13 @@ mod tests {
         assert!(unsupported_capability(&values, &["hostname".into()], &[]).is_none());
         assert_eq!(
             unsupported_capability(&values, &["peer_urls".into()], &[]).as_deref(),
-            Some("transport:http3-framed-v1")
+            Some("transport:http3-rfc9114-v2")
         );
         assert!(
             unsupported_capability(
                 &values,
                 &["peer_urls".into()],
-                &["transport:http3-framed-v1".into()]
+                &["transport:http3-rfc9114-v2".into()]
             )
             .is_none()
         );

@@ -94,7 +94,7 @@ describe('online local configuration patches', () => {
     expect(localConfigEditable(snapshot, entry())).toBe(true)
     expect(localConfigEditable({ ...snapshot, online: false }, entry())).toBe(false)
     expect(localConfigEditable({ ...snapshot, stale: true }, entry())).toBe(false)
-    expect(localConfigEditable({ ...snapshot, capabilities: ['transport:http3-framed-v1'] }, entry())).toBe(false)
+    expect(localConfigEditable({ ...snapshot, capabilities: ['transport:http3-rfc9114-v2'] }, entry())).toBe(false)
     expect(localConfigEditable(snapshot, { ...entry(), config_permission: 1 })).toBe(false)
     expect(localConfigEditable(snapshot, { ...entry(), status: 'protected', config: undefined })).toBe(false)
   })

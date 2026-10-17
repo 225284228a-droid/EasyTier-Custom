@@ -1,5 +1,6 @@
 use super::FromUrl;
 use super::insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config};
+use super::traffic_disguise::{PacedSink, TrafficStyle};
 use crate::proto::common::TunnelInfo;
 #[cfg(test)]
 use crate::socket::tcp::RuntimeTcpSocket;
@@ -148,6 +149,7 @@ where
     // feature in its upgrade request, mirroring the client-side rule that
     // both sides must declare the feature before padding.
     let listener_disguise = WssDisguise::from_url(&local_url);
+    let traffic_style = TrafficStyle::from_url(&local_url);
     let write = if let Some(interval) = listener_disguise
         .padding_interval
         .filter(|_| padding_expected)
@@ -165,7 +167,7 @@ where
     Ok(Box::new(
         TunnelWrapper::new(
             read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
-            write,
+            PacedSink::new(write, traffic_style),
             Some(info),
         )
         .with_bandwidth_source(bandwidth_source),
@@ -282,6 +284,7 @@ where
     };
 
     let disguise = WssDisguise::from_url(&remote_url);
+    let traffic_style = TrafficStyle::from_url(&remote_url);
     let mut client = if disguise.enabled() {
         let request_uri = disguise
             .request_uri(&remote_url)
@@ -315,11 +318,21 @@ where
         client = client
             .add_header(
                 http::header::ACCEPT,
-                "*/*".parse().map_err(|_| {
+                disguise.accept().parse().map_err(|_| {
                     TunnelError::InvalidProtocol("invalid Accept header".to_owned())
                 })?,
             )
             .map_err(websocket_error)?;
+        if let Some(cache_control) = disguise.cache_control() {
+            client = client
+                .add_header(
+                    http::header::CACHE_CONTROL,
+                    cache_control.parse().map_err(|_| {
+                        TunnelError::InvalidProtocol("invalid Cache-Control header".to_owned())
+                    })?,
+                )
+                .map_err(websocket_error)?;
+        }
     }
     let padding_offered = disguise.padding_enabled();
     if padding_offered {
@@ -352,7 +365,7 @@ where
     Ok(Box::new(
         TunnelWrapper::new(
             read.filter_map(move |message| map_from_ws_message(message, padding_expected)),
-            write,
+            PacedSink::new(write, traffic_style),
             Some(info),
         )
         .with_bandwidth_source(bandwidth_source),
@@ -411,6 +424,12 @@ pub mod tests {
                         let (request, mut websocket) =
                             ServerBuilder::new().accept(stream).await.unwrap();
                         assert_eq!(request.headers()[http::header::HOST], expected_host);
+                        assert_eq!(request.headers()[http::header::USER_AGENT], "custom player");
+                        assert_eq!(
+                            request.headers()[http::header::ACCEPT],
+                            "application/custom"
+                        );
+                        assert_eq!(request.headers()[http::header::CACHE_CONTROL], "no-cache");
                         assert_eq!(
                             request.uri().path_and_query().unwrap().as_str(),
                             "/upgrade?keep=1"
@@ -425,7 +444,11 @@ pub mod tests {
                     url.query_pairs_mut()
                         .append_pair("host", host)
                         .append_pair("sni", "tls.example")
-                        .append_pair("path", "/upgrade");
+                        .append_pair("path", "/upgrade")
+                        .append_pair("traffic_disguise", "video")
+                        .append_pair("ua", "custom player")
+                        .append_pair("accept", "application/custom")
+                        .append_pair("cache_control", "no-cache");
                     let stream = tokio::net::TcpStream::connect(address).await.unwrap();
                     let tunnel = upgrade_connected(RuntimeTcpSocket::new(stream), url.clone())
                         .await

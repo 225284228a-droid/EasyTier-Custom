@@ -68,7 +68,7 @@ impl<R> FramedReader<R> {
 
         let header = TCPTunnelHeader::ref_from_prefix(&buf[..]).unwrap();
         let body_len = header.len.get() as usize;
-        if body_len > max_packet_size {
+        if body_len > max_packet_size + crate::packet::PARALLEL_PACKET_OVERHEAD {
             return Some(Err(TunnelError::InvalidPacket("body too long".to_owned())));
         }
 
@@ -78,6 +78,17 @@ impl<R> FramedReader<R> {
 
         if buf.len() < TCP_TUNNEL_HEADER_SIZE + body_len {
             return None;
+        }
+
+        if body_len > max_packet_size {
+            // The unencrypted hop header remains visible with Noise. Only a
+            // negotiated parallel envelope may consume the additional space.
+            let packet_type = buf[TCP_TUNNEL_HEADER_SIZE + 8];
+            if packet_type != crate::packet::PacketType::ParallelData as u8
+                && packet_type != crate::packet::PacketType::ParallelLossyData as u8
+            {
+                return Some(Err(TunnelError::InvalidPacket("body too long".to_owned())));
+            }
         }
 
         let packet_buf = buf.split_to(TCP_TUNNEL_HEADER_SIZE + body_len);

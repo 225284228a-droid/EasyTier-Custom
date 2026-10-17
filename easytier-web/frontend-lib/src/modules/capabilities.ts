@@ -4,7 +4,7 @@ import { adaptP2pDisguisePayload, legacyP2pDisguiseSupported } from './p2pDisgui
 
 export const LOCAL_CONFIG_REVISION_CAPABILITY = 'management:persisted-config-revision-v1'
 export const LOCAL_CONFIG_APPLY_CAPABILITY = 'management:persisted-config-apply-v1'
-export const HTTP3_CAPABILITY = 'transport:http3-framed-v1'
+export const HTTP3_CAPABILITY = 'transport:http3-rfc9114-v2'
 export const PRIVATE_MODE_DEFAULT_CAPABILITY = 'config:private-mode-default-true-v1'
 
 export function assertLocalConfigApplyCapability(capabilities: readonly string[]): void {

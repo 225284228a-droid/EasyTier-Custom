@@ -17,6 +17,7 @@ use crate::{
     common::global_ctx::ArcGlobalCtx,
     socket::tcp::RuntimeTcpSocket,
     tunnel::http3::{Http3AcceptedSession, upgrade_connected},
+    tunnel::traffic_disguise::apply_default,
 };
 
 use super::{ClientAdapter, ServerAdapter, apply_sni_override};
@@ -32,8 +33,10 @@ pub(super) fn client_adapter(global_ctx: &ArcGlobalCtx) -> ClientAdapter {
     })
 }
 
-pub(super) fn server_adapter(_global_ctx: &ArcGlobalCtx) -> ServerAdapter {
-    Arc::new(Http3Adapter::default())
+pub(super) fn server_adapter(global_ctx: &ArcGlobalCtx) -> ServerAdapter {
+    Arc::new(Http3Adapter {
+        global_ctx: Some(global_ctx.clone()),
+    })
 }
 
 #[async_trait]
@@ -56,6 +59,12 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for Http3Adapter {
             .map(|global_ctx| global_ctx.config.get_sni())
             .unwrap_or_default();
         let requested_url = apply_sni_override(requested_url, &sni);
+        let style = self
+            .global_ctx
+            .as_ref()
+            .map(|ctx| ctx.config.get_traffic_disguise())
+            .unwrap_or_else(|| "speedtest".to_owned());
+        let requested_url = apply_default(requested_url, &style);
         Ok(upgrade_connected(session, requested_url).await?)
     }
 }
@@ -82,6 +91,12 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for Http3Adapter {
     ) -> anyhow::Result<ServerProtocolUpgrade> {
         let admission =
             admission.ok_or_else(|| anyhow::anyhow!("http3 server admission permit is missing"))?;
+        let style = self
+            .global_ctx
+            .as_ref()
+            .map(|ctx| ctx.config.get_traffic_disguise())
+            .unwrap_or_else(|| "speedtest".to_owned());
+        let local_url = apply_default(local_url, &style);
         Ok(ServerProtocolUpgrade::Acceptor(Box::new(
             Http3AcceptedSession::new(session, local_url, admission)?,
         )))

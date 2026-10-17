@@ -35,6 +35,10 @@ pub trait ConfigLoader: Send + Sync {
     fn get_sni(&self) -> String;
     fn set_sni(&self, sni: Option<String>);
 
+    fn get_traffic_disguise(&self) -> String {
+        "speedtest".to_owned()
+    }
+
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
 

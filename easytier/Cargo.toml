@@ -92,6 +92,8 @@ notify = { version = "8.2", optional = true }
 
 quinn = { version = "0.11.12", optional = true, features = ["ring", "rustls-ring"] }
 quinn-proto = { version = "0.11.18", optional = true }
+h3 = { version = "0.0.8", optional = true }
+h3-quinn = { version = "0.0.10", optional = true }
 seahash = { version = "4.1.0", optional = true }
 
 rustls = { workspace = true, features = [
@@ -361,7 +363,7 @@ full = [
 ]
 cli = ["management", "dep:tabled", "dep:humansize", "dep:terminal_size", "dep:unicode-width", "dep:sha2"]
 wireguard = ["vpn-portal", "dep:boringtun", "dep:hkdf", "dep:sha2", "ring-crypto", "easytier-proto/wireguard"]
-quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:seahash", "dep:rustls", "dep:rcgen", "easytier-proto/quic"]
+quic = ["wrapped-transport", "easytier-core/proxy-packet", "dep:quinn", "dep:quinn-proto", "dep:h3", "dep:h3-quinn", "dep:http", "dep:seahash", "dep:rustls", "dep:rcgen", "easytier-proto/quic"]
 kcp = ["wrapped-transport", "easytier-core/proxy-packet", "dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["easytier-core/aes-gcm"]

@@ -17,7 +17,7 @@ pub fn management_capabilities_for_host(host: &CoreInstanceHostConfig) -> Vec<St
         }
     }
     if supports("http3") {
-        capabilities.push("transport:http3-framed-v1".into());
+        capabilities.push("transport:http3-rfc9114-v2".into());
     }
     capabilities.extend(
         NetworkConfig::field_capabilities()
@@ -61,7 +61,7 @@ mod tests {
             ..Default::default()
         };
         let capabilities = management_capabilities_for_host(&host);
-        assert!(capabilities.contains(&"transport:http3-framed-v1".into()));
+        assert!(capabilities.contains(&"transport:http3-rfc9114-v2".into()));
         assert!(!capabilities.contains(&"transport:wss".into()));
         assert!(capabilities.contains(&"config:sni".into()));
     }

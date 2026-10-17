@@ -100,6 +100,10 @@ pub enum PacketType {
     NoiseHandshakeMsg3 = 15,
     RelayHandshake = 20,
     RelayHandshakeAck = 21,
+    /// Hop-local, capability-negotiated packet striping envelope.
+    ParallelData = 22,
+    ParallelLossyData = 23,
+    ParallelControl = 24,
 
     // used internally,
     DataWithKcpSrcModified = 18,
@@ -134,6 +138,7 @@ pub struct PeerManagerHeader {
     pub len: U32<DefaultEndian>,
 }
 pub const PEER_MANAGER_HEADER_SIZE: usize = std::mem::size_of::<PeerManagerHeader>();
+pub const PARALLEL_PACKET_OVERHEAD: usize = PEER_MANAGER_HEADER_SIZE + 24;
 
 impl PeerManagerHeader {
     pub fn is_encrypted(&self) -> bool {

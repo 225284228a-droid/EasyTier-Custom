@@ -597,7 +597,7 @@ describe('Config.vue network config projection', () => {
       'config:only_use_wss_http3_for_hole_punching',
       'config:disable_wss_http3_for_p2p',
       'config:close_redundant_conns_when_disguised',
-      'transport:http3-framed-v1',
+      'transport:http3-rfc9114-v2',
     ] })
     expect(wrapper.find('#p2p_disguise_mode').exists()).toBe(true)
     expect(wrapper.find('#close_redundant_conns_when_disguised').exists()).toBe(true)
