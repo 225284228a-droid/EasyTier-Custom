@@ -149,6 +149,12 @@ impl Throughput {
     /// The live transport's sending-window estimate, in bit/s, with the tunnel's
     /// measured round-trip time as a lower bound on the transport RTT.
     /// No payload counters, socket buffer sizes or traffic-rate fallback are used.
+    ///
+    /// The floor is what keeps forwarded paths honest: behind a relay or a
+    /// CDN-terminated websocket the transport window only describes the first
+    /// hop, while the tunnel round trip spans the whole forwarded path, so the
+    /// first-hop window can never be divided by a first-hop RTT and pose as
+    /// end-to-end capacity.
     pub fn estimated_tx_bps(&self) -> u64 {
         self.window_source
             .lock()
@@ -183,7 +189,7 @@ impl Throughput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::foundation::bandwidth::TransmissionWindow;
+    use crate::foundation::bandwidth::{CongestionControl, TransmissionWindow};
 
     #[derive(Debug)]
     struct TestWindowSource(Mutex<Option<TransmissionWindow>>);
@@ -202,6 +208,7 @@ mod tests {
                 congestion_window_bytes: 1_000_000,
                 peer_receive_window_bytes: Some(250_000),
                 rtt: Duration::from_millis(50),
+                congestion_control: CongestionControl::LossBased,
             },
         ))))));
         assert_eq!(throughput.tx_bytes(), 0);
@@ -231,6 +238,7 @@ mod tests {
             congestion_window_bytes: 125_000,
             peer_receive_window_bytes: None,
             rtt: Duration::from_millis(10),
+            congestion_control: CongestionControl::LossBased,
         };
         let source = Arc::new(TestWindowSource(Mutex::new(Some(window))));
         throughput.set_window_source(Some(source.clone()));
@@ -279,6 +287,7 @@ mod tests {
                 congestion_window_bytes: 1_048_576,
                 peer_receive_window_bytes: None,
                 rtt: Duration::from_micros(50),
+                congestion_control: CongestionControl::LossBased,
             },
         ))))));
         assert_eq!(throughput.estimated_tx_bps(), 8_388_608_000);
@@ -300,10 +309,31 @@ mod tests {
                 congestion_window_bytes: 125_000,
                 peer_receive_window_bytes: None,
                 rtt: Duration::from_millis(20),
+                congestion_control: CongestionControl::LossBased,
             },
         ))))));
         throughput.record_tunnel_rtt(Duration::from_millis(5));
         assert_eq!(throughput.estimated_tx_bps(), 50_000_000);
+    }
+
+    #[test]
+    fn a_relayed_bbr_hops_headroom_is_corrected_before_the_tunnel_floor() {
+        // A BBR first hop behind a relay keeps two BDPs of window over its own
+        // RTT, while the tunnel round trip spans the whole forwarded path. The
+        // gain correction and the floor together read the hop's bottleneck
+        // rate instead of double the first-hop capacity.
+        let throughput = Throughput::new();
+        throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
+            TransmissionWindow {
+                congestion_window_bytes: 5_000_000,
+                peer_receive_window_bytes: None,
+                rtt: Duration::from_millis(20),
+                congestion_control: CongestionControl::Bbr,
+            },
+        ))))));
+        throughput.record_tunnel_rtt(Duration::from_millis(50));
+        // 2.5 MB of effective window over the full 50 ms path: 400 Mbit/s.
+        assert_eq!(throughput.estimated_tx_bps(), 400_000_000);
     }
 
     #[test]

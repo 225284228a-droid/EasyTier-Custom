@@ -6,18 +6,46 @@ use std::{
     time::{Duration, Instant},
 };
 
-use easytier_core::foundation::bandwidth::{TransmissionWindow, TransmissionWindowSource};
+use easytier_core::foundation::bandwidth::{
+    CongestionControl, RecentWindows, TransmissionWindow, TransmissionWindowSource,
+};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
 };
 
+// Keep several seconds of 200 ms-spaced samples so the median absorbs BBR
+// ProbeRTT dips and single AIMD window halvings.
+const WINDOW_MEDIAN_SPAN: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 struct Sample {
     next_at: Instant,
     observed_at: Option<Instant>,
-    window: Option<TransmissionWindow>,
+    windows: RecentWindows,
     stopped: bool,
+}
+
+impl Sample {
+    fn new() -> Self {
+        Self {
+            next_at: Instant::now(),
+            observed_at: None,
+            windows: RecentWindows::new(WINDOW_MEDIAN_SPAN),
+            stopped: false,
+        }
+    }
+
+    fn record_window(&mut self, now: Instant, window: Option<TransmissionWindow>) {
+        // OS telemetry can be temporarily unavailable or uninitialized between
+        // I/O polls. Only valid samples refresh the existing sample's lifetime.
+        if let Some(window) = window
+            && window.estimated_bps().is_some()
+        {
+            self.observed_at = Some(now);
+            self.windows.record(now, window);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -25,12 +53,7 @@ pub(super) struct TcpWindowSampler(Mutex<Sample>);
 
 impl TcpWindowSampler {
     pub(super) fn new() -> Self {
-        Self(Mutex::new(Sample {
-            next_at: Instant::now(),
-            observed_at: None,
-            window: None,
-            stopped: false,
-        }))
+        Self(Mutex::new(Sample::new()))
     }
 
     pub(super) fn sample(&self, stream: &TcpStream) {
@@ -46,20 +69,7 @@ impl TcpWindowSampler {
     pub(super) fn stop(&self) {
         let mut sample = self.0.lock().unwrap();
         sample.stopped = true;
-        sample.window = None;
-    }
-}
-
-impl Sample {
-    fn record_window(&mut self, now: Instant, window: Option<TransmissionWindow>) {
-        // OS telemetry can be temporarily unavailable or uninitialized between
-        // I/O polls. Only valid samples refresh the existing sample's lifetime.
-        if let Some(window) = window
-            && window.estimated_bps().is_some()
-        {
-            self.observed_at = Some(now);
-            self.window = Some(window);
-        }
+        sample.observed_at = None;
     }
 }
 
@@ -73,7 +83,7 @@ impl TransmissionWindowSource for TcpWindowSource {
         if sample.stopped || sample.observed_at?.elapsed() >= Duration::from_secs(60) {
             return None;
         }
-        sample.window
+        sample.windows.median()
     }
 }
 
@@ -94,7 +104,7 @@ impl<T: AsyncRead + AsRef<TcpStream> + Unpin> AsyncRead for TcpWindowIo<T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
+        buf: &mut ReadBuf,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         this.sampler.sample(this.inner.as_ref());
@@ -153,11 +163,49 @@ fn native_window(stream: &TcpStream) -> Option<TransmissionWindow> {
     let peer_receive_window_bytes = ((len as usize)
         >= offset_of!(libc::tcp_info, tcpi_snd_wnd) + size_of::<u32>())
     .then_some(u64::from(info.tcpi_snd_wnd));
+    let congestion_control = linux_congestion_control(stream.as_raw_fd());
+    // BBR sizes its window against the propagation delay, not the smoothed
+    // RTT, so pair its window with tcpi_min_rtt (the kernel's RTprop sample)
+    // whenever the kernel reports one. Loss-based control keeps the smoothed
+    // RTT, which is the denominator its own rate settles at.
+    let min_rtt_reported = (len as usize)
+        >= offset_of!(libc::tcp_info, tcpi_min_rtt) + size_of::<u32>()
+        && info.tcpi_min_rtt > 0;
+    let rtt = if congestion_control == CongestionControl::Bbr && min_rtt_reported {
+        Duration::from_micros(u64::from(info.tcpi_min_rtt))
+    } else {
+        Duration::from_micros(u64::from(info.tcpi_rtt))
+    };
     Some(TransmissionWindow {
         congestion_window_bytes: u64::from(info.tcpi_snd_cwnd) * u64::from(info.tcpi_snd_mss),
         peer_receive_window_bytes,
-        rtt: Duration::from_micros(u64::from(info.tcpi_rtt)),
+        rtt,
+        congestion_control,
     })
+}
+
+/// Reads the socket's congestion-control algorithm name (`TCP_CONGESTION`)
+/// and flags BBR variants, which keep about two BDPs of window regardless of
+/// loss, so their windows need the BBR gain correction before use as a rate.
+#[cfg(target_os = "linux")]
+fn linux_congestion_control(fd: libc::c_int) -> CongestionControl {
+    // TCP_CA_NAME_MAX from <linux/tcp.h>: names fit in 16 bytes.
+    let mut name = [0_u8; 16];
+    let mut len = name.len() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_CONGESTION,
+            name.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    if result == 0 && name.starts_with(b"bbr") {
+        CongestionControl::Bbr
+    } else {
+        CongestionControl::LossBased
+    }
 }
 
 #[cfg(windows)]
@@ -190,6 +238,10 @@ fn native_window(stream: &TcpStream) -> Option<TransmissionWindow> {
         congestion_window_bytes: u64::from(info.Cwnd),
         peer_receive_window_bytes: Some(u64::from(info.SndWnd)),
         rtt: Duration::from_micros(u64::from(info.RttUs)),
+        // Windows ships loss-based control (New Reno/CTCP/CUBIC) by default;
+        // Server 2025's optional BBR2 is not distinguishable through
+        // SIO_TCP_INFO v0, so windows stay uncorrected rather than halved.
+        congestion_control: CongestionControl::LossBased,
     })
 }
 
@@ -245,18 +297,25 @@ mod tests {
         assert!(source.transmission_window().is_none());
     }
 
+    fn window(bytes: u64, receive: Option<u64>, rtt: Duration) -> TransmissionWindow {
+        TransmissionWindow {
+            congestion_window_bytes: bytes,
+            peer_receive_window_bytes: receive,
+            rtt,
+            congestion_control: CongestionControl::LossBased,
+        }
+    }
+
     #[test]
     fn closed_or_expired_samples_are_not_reported() {
         let sampler = Arc::new(TcpWindowSampler::new());
         let source = TcpWindowSource(Arc::downgrade(&sampler));
         {
             let mut sample = sampler.0.lock().unwrap();
-            sample.observed_at = Some(Instant::now());
-            sample.window = Some(TransmissionWindow {
-                congestion_window_bytes: 125_000,
-                peer_receive_window_bytes: Some(250_000),
-                rtt: Duration::from_millis(10),
-            });
+            sample.record_window(
+                Instant::now(),
+                Some(window(125_000, Some(250_000), Duration::from_millis(10))),
+            );
         }
         assert_eq!(
             source.transmission_window().unwrap().estimated_bps(),
@@ -274,47 +333,42 @@ mod tests {
         let sampler = Arc::new(TcpWindowSampler::new());
         let source = TcpWindowSource(Arc::downgrade(&sampler));
         let now = Instant::now();
-        let window = TransmissionWindow {
-            congestion_window_bytes: 125_000,
-            peer_receive_window_bytes: Some(250_000),
-            rtt: Duration::from_millis(10),
-        };
+        let steady = window(125_000, Some(250_000), Duration::from_millis(10));
         {
             let mut sample = sampler.0.lock().unwrap();
-            sample.record_window(now, Some(window));
+            sample.record_window(now, Some(steady));
             sample.record_window(now + Duration::from_secs(1), None);
             sample.record_window(
                 now + Duration::from_secs(2),
                 Some(TransmissionWindow {
                     rtt: Duration::ZERO,
-                    ..window
+                    ..steady
                 }),
             );
             sample.record_window(
                 now + Duration::from_secs(3),
                 Some(TransmissionWindow {
                     peer_receive_window_bytes: Some(0),
-                    ..window
+                    ..steady
                 }),
             );
             assert_eq!(sample.observed_at, Some(now));
         }
-        assert_eq!(source.transmission_window(), Some(window));
+        assert_eq!(source.transmission_window(), Some(steady));
         let recovered = TransmissionWindow {
             rtt: Duration::from_millis(20),
-            ..window
+            ..steady
         };
         sampler
             .0
             .lock()
             .unwrap()
             .record_window(now + Duration::from_secs(4), Some(recovered));
-        assert_eq!(source.transmission_window(), Some(recovered));
         assert_eq!(
             sampler.0.lock().unwrap().observed_at,
             Some(now + Duration::from_secs(4)),
         );
-        sampler.0.lock().unwrap().observed_at = Some(now - Duration::from_secs(61));
+        sampler.0.lock().unwrap().observed_at = Some(Instant::now() - Duration::from_secs(61));
         assert!(source.transmission_window().is_none());
     }
 
@@ -328,5 +382,34 @@ mod tests {
             .unwrap()
             .record_window(Instant::now(), None);
         assert!(source.transmission_window().is_none());
+    }
+
+    #[test]
+    fn one_dipped_sample_does_not_override_a_run_of_steady_windows() {
+        let sampler = Arc::new(TcpWindowSampler::new());
+        let source = TcpWindowSource(Arc::downgrade(&sampler));
+        let mut now = Instant::now();
+        let steady = window(1_000_000, None, Duration::from_millis(20));
+        {
+            let mut sample = sampler.0.lock().unwrap();
+            for _ in 0..9 {
+                sample.record_window(now, Some(steady));
+                now += Duration::from_millis(200);
+            }
+            sample.record_window(
+                now,
+                Some(TransmissionWindow {
+                    congestion_window_bytes: 6_000,
+                    ..steady
+                }),
+            );
+        }
+        assert_eq!(
+            source
+                .transmission_window()
+                .unwrap()
+                .congestion_window_bytes,
+            1_000_000
+        );
     }
 }

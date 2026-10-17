@@ -1596,6 +1596,7 @@ mod tests {
                     congestion_window_bytes: 1_000_000,
                     peer_receive_window_bytes: None,
                     rtt: Duration::from_millis(100),
+                    congestion_control: crate::foundation::bandwidth::CongestionControl::LossBased,
                 })
             }
         }
