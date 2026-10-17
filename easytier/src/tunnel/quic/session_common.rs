@@ -5,17 +5,11 @@
 //! versions and the scheme advertised in tunnel info, which the callers
 //! supply when starting an [`AcceptedSession`].
 
-use std::{
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use easytier_core::{
-    foundation::bandwidth::{
-        CongestionControl, RecentWindows, TransmissionWindow, TransmissionWindowSource,
-    },
+    foundation::bandwidth::{CongestionControl, TransmissionWindow, TransmissionWindowSource},
     tunnel::{
         Tunnel, TunnelError,
         framed::{FramedReader, FramedWriter},
@@ -66,14 +60,10 @@ impl Drop for ConnWrapper {
     }
 }
 
-/// Keep several seconds of polled samples so the median absorbs BBR ProbeRTT
-/// dips and single congestion-window halvings.
-const QUIC_WINDOW_MEDIAN_SPAN: Duration = Duration::from_secs(5);
-
 #[derive(Debug)]
 struct QuicWindowSource {
     connection: Connection,
-    recent: Mutex<RecentWindows>,
+    congestion_control: CongestionControl,
 }
 
 impl TransmissionWindowSource for QuicWindowSource {
@@ -81,46 +71,39 @@ impl TransmissionWindowSource for QuicWindowSource {
         if self.connection.close_reason().is_some() {
             return None;
         }
-        // This fork runs quinn with BBR, whose window keeps about two BDPs of
-        // headroom over the bottleneck rate. Downcasting the controller
-        // detects BBR so the estimate halves the window and pairs it with the
-        // path's min RTT, the same inputs BBR itself uses for its BDP.
-        let congestion_control = if self
-            .connection
-            .congestion_state()
-            .into_any()
-            .is::<quinn::congestion::Bbr>()
-        {
-            CongestionControl::Bbr
-        } else {
-            CongestionControl::LossBased
-        };
         let path = self.connection.stats().path;
-        let rtt = if congestion_control == CongestionControl::Bbr && path.min_rtt > Duration::ZERO {
-            path.min_rtt
-        } else {
-            path.rtt
-        };
-        let window = TransmissionWindow {
+        let rtt =
+            if self.congestion_control == CongestionControl::Bbr && path.min_rtt > Duration::ZERO {
+                path.min_rtt
+            } else {
+                path.rtt
+            };
+        Some(TransmissionWindow {
             congestion_window_bytes: path.cwnd,
             peer_receive_window_bytes: None,
             rtt,
-            congestion_control,
-        };
-        let mut recent = self.recent.lock().unwrap();
-        if window.estimated_bps().is_some() {
-            recent.record(Instant::now(), window);
-        }
-        recent.median()
+            congestion_control: self.congestion_control,
+        })
     }
 }
 
 /// Exposes the live QUIC congestion window as a bandwidth estimate while the
 /// connection is open; returns `None` once it has closed.
 pub(crate) fn window_source(connection: &Connection) -> Arc<dyn TransmissionWindowSource> {
+    // The controller family stays the same for this connection, including
+    // migration. Detect it once instead of cloning the controller on each read.
+    let congestion_control = if connection
+        .congestion_state()
+        .into_any()
+        .is::<quinn::congestion::Bbr>()
+    {
+        CongestionControl::Bbr
+    } else {
+        CongestionControl::LossBased
+    };
     Arc::new(QuicWindowSource {
         connection: connection.clone(),
-        recent: Mutex::new(RecentWindows::new(QUIC_WINDOW_MEDIAN_SPAN)),
+        congestion_control,
     })
 }
 

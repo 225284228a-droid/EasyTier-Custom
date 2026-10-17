@@ -7,12 +7,19 @@ with `bandwidth_estimate_version = 1`. The business-traffic peak estimator,
 sparse-traffic fallback, sampling filter and five-minute peak retention have
 been removed. The UI rejects unversioned/old estimates and closed connections.
 
-The formula is `min(cwnd_bytes, peer_receive_window_bytes) * 8 / effective_RTT_seconds`.
+The formula is `min(cwnd_bytes / gain, peer_receive_window_bytes) * 8 / effective_RTT_seconds`.
+Gain is 2 for detected BBR and 1 for loss-based control. This is a simple
+steady-state BBR correction, not a reconstruction of its startup, recovery or
+ACK aggregation state. Linux TCP detects BBR through `TCP_CONGESTION`; QUIC
+detects the controller once when attaching the source. Windows TCP retains
+loss-based treatment because its current `SIO_TCP_INFO` snapshot has no
+congestion-controller identity.
 If peer flow-control information is not exposed, the formula uses the real
-congestion window alone. Effective RTT is the larger of the transport RTT and
+congestion window alone. Detected BBR uses transport min RTT when available;
+other cases use smoothed transport RTT. Effective RTT is the larger of that RTT and
 an exponentially smoothed successful tunnel Ping/Pong RTT (1/8 new sample),
-with a conservative 1 ms minimum. A local TCP/proxy leg with a tiny RTT therefore
-cannot outweigh a slower measured end-to-end tunnel round trip. Missing/zero
+with a conservative 1 ms minimum. A short local TCP/proxy RTT therefore cannot
+bypass a slower measured tunnel round trip. Missing/zero
 RTT and zero windows cannot establish a new estimate; arithmetic overflow is
 rejected instead of reported as a saturated `u64` value.
 No socket send/receive buffer size is substituted for a congestion window.
@@ -25,8 +32,11 @@ reports cwnd in bytes. Snapshots are sampled at most once every 200 ms during
 socket I/O. A temporarily missing or invalid sample retains the last valid
 snapshot without refreshing its timestamp; the snapshot expires 60 seconds
 after its last valid observation and cannot keep a socket alive.
+Only the latest complete valid snapshot is retained. Window bytes and RTT are
+never combined across observations; there is no history queue or median filter.
 WS/WSS retain their underlying TCP telemetry. QUIC/HTTP3 use Quinn's live path
 congestion window and RTT; its peer flow-control credit is not exposed here.
+QUIC reads the current path directly without retaining polling history.
 Other native TCP platforms and transports without congestion-window telemetry
 (plain UDP, WireGuard, fake TCP, ring/host transports) remain unknown.
 
@@ -46,6 +56,12 @@ unused headroom or an active speed test. Initial/app-limited congestion windows
 can still underestimate a fast link before the transport learns its path.
 TCP terminated by a CDN/proxy still supplies that leg's window, so even a
 tunnel RTT correction cannot establish the capacity of every proxy backhaul.
+These paths continue to display the best-effort numeric estimate whenever valid
+window telemetry is available; forwarding alone never makes it unknown.
+Hyper-V and cloud virtual NICs use the same socket/QUIC telemetry as physical
+NICs. No adapter link-speed value is used as capacity or as an estimate cap.
+The 1 ms RTT floor deliberately remains conservative on very low-latency VM
+links; hypervisor limits and cloud burst allowances are not separately modeled.
 Both nodes need the updated binary for two-sided window reporting; updating only
 the web frontend cannot add window telemetry to an old node.
 Connection reconciliation may replace TCP/QUIC with UDP/WireGuard or another

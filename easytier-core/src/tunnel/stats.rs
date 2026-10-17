@@ -150,11 +150,9 @@ impl Throughput {
     /// measured round-trip time as a lower bound on the transport RTT.
     /// No payload counters, socket buffer sizes or traffic-rate fallback are used.
     ///
-    /// The floor is what keeps forwarded paths honest: behind a relay or a
-    /// CDN-terminated websocket the transport window only describes the first
-    /// hop, while the tunnel round trip spans the whole forwarded path, so the
-    /// first-hop window can never be divided by a first-hop RTT and pose as
-    /// end-to-end capacity.
+    /// The tunnel RTT reduces estimates inflated by a short proxy leg. When a
+    /// CDN terminates the transport, its backhaul window remains unobservable;
+    /// still report this best-effort estimate without claiming a capacity bound.
     pub fn estimated_tx_bps(&self) -> u64 {
         self.window_source
             .lock()
@@ -317,11 +315,10 @@ mod tests {
     }
 
     #[test]
-    fn a_relayed_bbr_hops_headroom_is_corrected_before_the_tunnel_floor() {
-        // A BBR first hop behind a relay keeps two BDPs of window over its own
-        // RTT, while the tunnel round trip spans the whole forwarded path. The
-        // gain correction and the floor together read the hop's bottleneck
-        // rate instead of double the first-hop capacity.
+    fn forwarded_bbr_windows_still_report_an_estimate_with_tunnel_rtt() {
+        // Apply the simple BBR correction and the full tunnel RTT even when
+        // only the first hop's window is available. This remains a reference
+        // estimate; a CDN's unobserved backhaul can have a lower capacity.
         let throughput = Throughput::new();
         throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
             TransmissionWindow {

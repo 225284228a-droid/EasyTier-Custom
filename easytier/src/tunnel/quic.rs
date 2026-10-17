@@ -573,6 +573,10 @@ pub(crate) mod tests {
                 let window = source
                     .transmission_window()
                     .expect("a newly established QUIC path must expose its sending window");
+                assert_eq!(
+                    window.congestion_control,
+                    easytier_core::foundation::bandwidth::CongestionControl::Bbr,
+                );
                 assert!(window.congestion_window_bytes > 0);
                 assert!(window.estimated_bps().is_some());
             }

@@ -7,22 +7,18 @@ use std::{
 };
 
 use easytier_core::foundation::bandwidth::{
-    CongestionControl, RecentWindows, TransmissionWindow, TransmissionWindowSource,
+    CongestionControl, TransmissionWindow, TransmissionWindowSource,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
 };
 
-// Keep several seconds of 200 ms-spaced samples so the median absorbs BBR
-// ProbeRTT dips and single AIMD window halvings.
-const WINDOW_MEDIAN_SPAN: Duration = Duration::from_secs(5);
-
 #[derive(Debug)]
 struct Sample {
     next_at: Instant,
     observed_at: Option<Instant>,
-    windows: RecentWindows,
+    window: Option<TransmissionWindow>,
     stopped: bool,
 }
 
@@ -31,7 +27,7 @@ impl Sample {
         Self {
             next_at: Instant::now(),
             observed_at: None,
-            windows: RecentWindows::new(WINDOW_MEDIAN_SPAN),
+            window: None,
             stopped: false,
         }
     }
@@ -43,7 +39,7 @@ impl Sample {
             && window.estimated_bps().is_some()
         {
             self.observed_at = Some(now);
-            self.windows.record(now, window);
+            self.window = Some(window);
         }
     }
 }
@@ -70,6 +66,7 @@ impl TcpWindowSampler {
         let mut sample = self.0.lock().unwrap();
         sample.stopped = true;
         sample.observed_at = None;
+        sample.window = None;
     }
 }
 
@@ -83,7 +80,7 @@ impl TransmissionWindowSource for TcpWindowSource {
         if sample.stopped || sample.observed_at?.elapsed() >= Duration::from_secs(60) {
             return None;
         }
-        sample.windows.median()
+        sample.window
     }
 }
 
@@ -104,7 +101,7 @@ impl<T: AsyncRead + AsRef<TcpStream> + Unpin> AsyncRead for TcpWindowIo<T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf,
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         this.sampler.sample(this.inner.as_ref());
@@ -185,8 +182,7 @@ fn native_window(stream: &TcpStream) -> Option<TransmissionWindow> {
 }
 
 /// Reads the socket's congestion-control algorithm name (`TCP_CONGESTION`)
-/// and flags BBR variants, which keep about two BDPs of window regardless of
-/// loss, so their windows need the BBR gain correction before use as a rate.
+/// and applies the simple steady-state gain correction to BBR variants.
 #[cfg(target_os = "linux")]
 fn linux_congestion_control(fd: libc::c_int) -> CongestionControl {
     // TCP_CA_NAME_MAX from <linux/tcp.h>: names fit in 16 bytes.
@@ -364,6 +360,7 @@ mod tests {
             .lock()
             .unwrap()
             .record_window(now + Duration::from_secs(4), Some(recovered));
+        assert_eq!(source.transmission_window(), Some(recovered));
         assert_eq!(
             sampler.0.lock().unwrap().observed_at,
             Some(now + Duration::from_secs(4)),
@@ -385,31 +382,41 @@ mod tests {
     }
 
     #[test]
-    fn one_dipped_sample_does_not_override_a_run_of_steady_windows() {
+    fn window_fields_are_never_combined_across_samples() {
         let sampler = Arc::new(TcpWindowSampler::new());
         let source = TcpWindowSource(Arc::downgrade(&sampler));
-        let mut now = Instant::now();
-        let steady = window(1_000_000, None, Duration::from_millis(20));
-        {
-            let mut sample = sampler.0.lock().unwrap();
-            for _ in 0..9 {
-                sample.record_window(now, Some(steady));
-                now += Duration::from_millis(200);
-            }
-            sample.record_window(
-                now,
-                Some(TransmissionWindow {
-                    congestion_window_bytes: 6_000,
-                    ..steady
-                }),
-            );
+        let now = Instant::now();
+        // Each full snapshot describes 100 Mbit/s. Taking medians of the
+        // fields separately would invent a 1 Gbit/s window.
+        for (cwnd, receive, rtt_ms) in [
+            (125_000, 1_250_000, 10),
+            (1_250_000, 125_000, 10),
+            (1_250_000, 1_250_000, 100),
+        ] {
+            let window = window(cwnd, Some(receive), Duration::from_millis(rtt_ms));
+            sampler.0.lock().unwrap().record_window(now, Some(window));
+            assert_eq!(source.transmission_window(), Some(window));
+            assert_eq!(window.estimated_bps(), Some(100_000_000));
+        }
+    }
+
+    #[test]
+    fn a_lower_recent_window_replaces_older_high_windows() {
+        let sampler = Arc::new(TcpWindowSampler::new());
+        let source = TcpWindowSource(Arc::downgrade(&sampler));
+        let now = Instant::now();
+        let high = window(1_250_000, None, Duration::from_millis(10));
+        let low = window(125_000, None, Duration::from_millis(10));
+        for (age_secs, window) in [(8, high), (7, high), (4, low)] {
+            sampler
+                .0
+                .lock()
+                .unwrap()
+                .record_window(now - Duration::from_secs(age_secs), Some(window));
         }
         assert_eq!(
-            source
-                .transmission_window()
-                .unwrap()
-                .congestion_window_bytes,
-            1_000_000
+            source.transmission_window().unwrap().estimated_bps(),
+            Some(100_000_000)
         );
     }
 }
