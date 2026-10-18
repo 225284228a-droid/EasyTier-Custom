@@ -494,6 +494,95 @@ async fn repeated_native_list_refreshes_keep_order_revisions_and_lifecycle_actio
 }
 
 #[tokio::test]
+async fn retiring_file_owner_drains_queued_scans_before_the_next_mode_starts() {
+    use super::config_storage::NativeConfigFileStorage;
+
+    let directory = tempfile::tempdir().unwrap();
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = socket.local_addr().unwrap();
+    drop(socket);
+    let id = uuid::Uuid::new_v4();
+    let path = directory.path().join(format!("{id}.toml"));
+    let raw = live_config(id, "mode-owner").replace(
+        "listeners = []",
+        &format!("listeners = ['tcp://{address}']"),
+    );
+    std::fs::write(&path, &raw).unwrap();
+    let storage = Arc::new(NativeConfigFileStorage::new(true));
+
+    // Alternate independent ordinary/service owners of the same network. The
+    // old RPC/catalog can remain referenced by a UI while its runtime retires.
+    for _ in 0..3 {
+        let manager = Arc::new(native_instance_manager_with_config_dir(Some(
+            directory.path().to_owned(),
+        )));
+        let state = Arc::new(InstanceStateStore::new(Some(directory.path())));
+        let rpc = Arc::new(ProcessManagementRpc::new(
+            manager.clone(),
+            Arc::new(DefaultHooks),
+            storage.clone(),
+            state.clone(),
+        ));
+        wait_for_live_config(&manager, id, Some("mode-owner")).await;
+        assert!(std::net::TcpListener::bind(address).is_err());
+        let revision = observe(&rpc).await.entries[0].revision.clone();
+
+        let lock = manager.mutation_lock();
+        let operation = lock.lock().await;
+        let queued_rpc = rpc.clone();
+        let queued_save = tokio::spawn(async move {
+            PersistedConfigService::patch_config(
+                queued_rpc.as_ref(),
+                BaseController::default(),
+                patch(
+                    id,
+                    revision,
+                    "stale-edit",
+                    PersistedConfigApplyMode::PersistOnly,
+                ),
+            )
+            .await
+        });
+        manager.local_config_catalog().request_refresh();
+        // Let the scan finish its debounce and queue behind this coordinator.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        manager.local_config_catalog().retire();
+        manager.retain_network_instances(&[]).await.unwrap();
+        assert!(
+            state.is_enabled(&id),
+            "switching modes must retain desired state"
+        );
+        drop(operation);
+        assert!(
+            queued_save.await.unwrap().is_err(),
+            "queued old-mode saves must be rejected"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        assert!(
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(&raw).unwrap(),
+                    ConfigFileControl::new(Some(path.clone()), ConfigFilePermission::default()),
+                )
+                .is_err(),
+            "a stale caller must not restart the old mode"
+        );
+        // Queued scans and further filesystem events must not resurrect the
+        // retiring owner, even though its manager and RPC remain alive.
+        std::fs::write(&path, &raw).unwrap();
+        manager.local_config_catalog().request_refresh();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(
+            manager.instance_ids().is_empty(),
+            "retired owner restarted its network"
+        );
+        let released = std::net::TcpListener::bind(address).expect("old listener was retained");
+        drop(released);
+        drop(rpc);
+    }
+}
+
+#[tokio::test]
 async fn live_native_files_add_edit_replace_rename_and_delete_without_polling() {
     use super::config_storage::NativeConfigFileStorage;
     let directory = tempfile::tempdir().unwrap();

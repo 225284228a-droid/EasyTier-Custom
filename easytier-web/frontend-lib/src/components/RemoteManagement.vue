@@ -211,16 +211,18 @@ watch([() => selectedInstanceId.value?.uuid, networkIsDisabled], async ([selecte
     if (selected && !networkMetaCache.value[selected]) await loadNetworkMetas([selected]);
 });
 
-const loadCurrentNetworkConfig = async () => {
+const loadCurrentNetworkConfig = async (refreshPristine = false) => {
     const selected = selectedInstanceId.value?.uuid;
     if (!selected) { clearConfig(); return; }
     // A form and its revision belong to one editing session. Switching between
     // the form and TOML editor must not refresh either half of that baseline.
-    if (showConfigEditDialog.value || (currentNetworkConfig.value?.instance_id === selected
+    if (showConfigEditDialog.value || (refreshPristine && (dirty.value || configSubmitting.value))) return;
+    if (!refreshPristine && (currentNetworkConfig.value?.instance_id === selected
         && configBaseline.value?.instance_id === selected)) return;
     if (pendingConfigLoad?.instanceId === selected && pendingConfigLoad.current()) return pendingConfigLoad.promise;
     const context = requestContext();
     const request = ++configRequest;
+    const baselineAtRead = configBaseline.value;
     const promise = (async () => {
         let config: NetworkTypes.NetworkConfig;
         let entry: LocalConfigEntry | undefined;
@@ -233,6 +235,9 @@ const loadCurrentNetworkConfig = async () => {
             config = await context.api.get_network_config(selected);
         }
         if (!context.current() || request !== configRequest || selectedInstanceId.value?.uuid !== selected) return;
+        if (refreshPristine && (dirty.value || showConfigEditDialog.value || configSubmitting.value
+            || configBaseline.value !== baselineAtRead)) return;
+        if (refreshPristine && entry?.revision === editingEntry.value?.revision) return;
         currentNetworkConfig.value = cloneEditableConfig(config);
         configBaseline.value = cloneEditableConfig(config);
         editingEntry.value = entry ? { ...entry } : undefined;
@@ -246,6 +251,13 @@ const loadCurrentNetworkConfig = async () => {
         if (pendingConfigLoad?.promise === promise) pendingConfigLoad = undefined;
     }
 }
+
+const reloadCurrentNetworkConfig = async () => {
+    if (configSubmitting.value || showConfigEditDialog.value) return;
+    clearConfig();
+    try { await loadCurrentNetworkConfig(); }
+    catch (error) { toast.add({ severity: 'error', summary: t('web.common.error'), detail: formatError(error), life: 5000 }); }
+};
 
 const lifecycleRevision = async (api: Api.RemoteClient, selected: string): Promise<string | undefined> => {
     if (!revisionSupported.value) return undefined;
@@ -262,12 +274,21 @@ const saveEditedConfig = async (config: NetworkTypes.NetworkConfig, mode: LocalC
     }
     if (!configBaseline.value) throw new Error(t('web.local_configs.reopen_editor'));
     const fields = changedConfigFields(configBaseline.value, config);
+    const context = requestContext();
+    const selected = localConfigInstanceId(editingEntry.value);
+    // An unchanged form has no edit to protect. Fence the latest lifecycle
+    // state rather than using the revision cached when the editor opened.
+    if (!fields.length) {
+        const snapshot = await context.api.observe_local_configs!();
+        const entry = snapshot.entries.find(entry => localConfigInstanceId(entry) === selected);
+        if (!context.current() || instanceId.value !== selected) throw new Error('Management connection changed');
+        if (!entry || !localConfigEditable(snapshot, entry)) throw new Error(t('web.local_configs.unavailable'));
+        editingEntry.value = { ...entry };
+    }
     const applyOnly = !fields.length && mode === LocalConfigApplyMode.SaveAndApply
         && editingEntry.value.running && editingEntry.value.pending_apply;
     if (!fields.length && !applyOnly) return editingEntry.value;
     if (applyOnly && !applySupported.value) throw new Error(t('web.local_configs.apply_unsupported'));
-    const context = requestContext();
-    const selected = localConfigInstanceId(editingEntry.value);
     const request = applyOnly ? buildLocalConfigApplyRequest(editingEntry.value, runtimeCapabilities.value)
         : buildLocalConfigPatch(editingEntry.value, config, fields, runtimeCapabilities.value, mode);
     const response = await context.api.patch_local_config!(request);
@@ -408,7 +429,7 @@ const saveNetworkConfig = async () => {
     if (!currentNetworkConfig.value || configSubmitting.value) {
         return;
     }
-    const config = currentNetworkConfig.value;
+    const config = cloneEditableConfig(currentNetworkConfig.value);
     const context = requestContext();
     configSubmitting.value = true;
     try {
@@ -645,6 +666,10 @@ let periodFunc = new Utils.PeriodicTask(async () => {
     }
     try {
         await Promise.all([loadNetworkInstanceIds(), loadCurrentNetworkInfo()]);
+        if (revisionSupported.value && currentNetworkConfig.value && !dirty.value
+            && !showConfigEditDialog.value && !configSubmitting.value) {
+            await loadCurrentNetworkConfig(true);
+        }
     } catch (e) {
         console.debug(e);
     }
@@ -790,6 +815,9 @@ onUnmounted(() => {
                     <Button @click="saveNetworkConfig" :disabled="!currentNetworkConfig || configSubmitting"
                         icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
                         severity="success" />
+                    <Button @click="reloadCurrentNetworkConfig" :disabled="configSubmitting || showConfigEditDialog"
+                        icon="pi pi-refresh" :label="t(dirty ? 'web.local_configs.reload_discard' : 'web.local_configs.reload')"
+                        severity="secondary" />
                 </div>
 
                 <Divider />

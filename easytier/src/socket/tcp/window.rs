@@ -230,6 +230,18 @@ fn native_window(stream: &TcpStream) -> Option<TransmissionWindow> {
     if result != 0 || (len as usize) < offset_of!(TCP_INFO_v0, SndWnd) + size_of::<u32>() {
         return None;
     }
+    // SIO_TCP_INFO reports byte counts (unlike Linux's segment-count cwnd).
+    // Keep the original fields visible at trace level for diagnosing low idle
+    // estimates without replacing congestion telemetry with adapter link speed.
+    tracing::trace!(
+        cwnd_bytes = info.Cwnd,
+        peer_receive_window_bytes = info.SndWnd,
+        mss_bytes = info.Mss,
+        transport_rtt_us = info.RttUs,
+        local_addr = ?stream.local_addr().ok(),
+        remote_addr = ?stream.peer_addr().ok(),
+        "Windows TCP transmission window"
+    );
     Some(TransmissionWindow {
         congestion_window_bytes: u64::from(info.Cwnd),
         peer_receive_window_bytes: Some(u64::from(info.SndWnd)),

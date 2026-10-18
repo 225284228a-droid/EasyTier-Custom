@@ -1,9 +1,5 @@
 use std::{fmt::Debug, time::Duration};
 
-// Very short transport RTTs can measure a local proxy or timer noise instead of
-// the tunnel path. This makes the window estimate conservative on fast LANs.
-const MIN_ESTIMATE_RTT: Duration = Duration::from_millis(1);
-
 /// A simple steady-state correction for congestion-control window headroom.
 /// BBR commonly targets about two BDPs of window; startup, recovery and ACK
 /// aggregation can still make this approximation differ from its bandwidth model.
@@ -37,8 +33,8 @@ impl TransmissionWindow {
     /// Window-limited throughput, not unused link capacity or a speed test.
     /// The window must be paired with the RTT of the same scope: the source
     /// picks the transport's min RTT for BBR and its smoothed RTT for
-    /// loss-based control, and the caller raises it to the tunnel's
-    /// full round trip when a relay or proxy extends the path.
+    /// loss-based control. An application-level Ping RTT includes scheduling
+    /// and tunnel processing and must not replace this transport measurement.
     pub fn estimated_bps(self) -> Option<u64> {
         let congestion_window_bytes =
             self.congestion_window_bytes / self.congestion_control.window_gain();
@@ -50,8 +46,7 @@ impl TransmissionWindow {
         if bytes == 0 || self.rtt.is_zero() {
             return None;
         }
-        let rtt = self.rtt.max(MIN_ESTIMATE_RTT);
-        let rate = u128::from(bytes) * 8 * 1_000_000_000 / rtt.as_nanos();
+        let rate = u128::from(bytes) * 8 * 1_000_000_000 / self.rtt.as_nanos();
         u64::try_from(rate).ok().filter(|rate| *rate > 0)
     }
 }
@@ -122,9 +117,13 @@ mod tests {
     }
 
     #[test]
-    fn conservatively_bounds_near_zero_rtt_and_rejects_overflow() {
+    fn preserves_sub_millisecond_transport_rtt_and_rejects_overflow() {
         let window = loss_based(125_000, None, Duration::from_micros(500));
-        assert_eq!(window.estimated_bps(), Some(1_000_000_000));
+        assert_eq!(window.estimated_bps(), Some(2_000_000_000));
+        assert_eq!(
+            loss_based(25_000, Some(64_000), Duration::from_micros(200)).estimated_bps(),
+            Some(1_000_000_000),
+        );
         assert_eq!(
             TransmissionWindow {
                 congestion_window_bytes: u64::MAX,

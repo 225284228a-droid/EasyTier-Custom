@@ -1382,7 +1382,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     // writes. Also used by the startup scan below.
     let instance_state_store = Arc::new(InstanceStateStore::new(cli.config_dir.as_deref()));
 
-    let _rpc_server = ApiRpcServer::new_with_load_options(
+    let mut rpc_server = ApiRpcServer::new_with_load_options(
         cli.rpc_portal_options.rpc_portal,
         cli.rpc_portal_options.rpc_portal_whitelist,
         manager.clone(),
@@ -1509,6 +1509,15 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             log::warn!("terminate signal received, exiting...");
         }
     }
+    manager.local_config_catalog().retire();
+    if let Some(clients) = _web_clients {
+        for client in clients {
+            client.shutdown().await;
+        }
+    }
+    rpc_server.shutdown().await;
+    let _shutdown = startup_lock.lock().await;
+    manager.retain_network_instances(&[]).await?;
     Ok(())
 }
 

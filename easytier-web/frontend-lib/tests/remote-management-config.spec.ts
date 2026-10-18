@@ -457,7 +457,7 @@ describe('RemoteManagement catalog isolation', () => {
       expect(select.props('options')).toBe(options)
       expect(select.props('modelValue')).toBe(selected)
       expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork')).toBe(config)
-      expect(api.observe_local_configs).toHaveBeenCalledOnce()
+      expect(api.observe_local_configs).toHaveBeenCalledTimes(4)
       expect(wrapper.emitted('update:instanceId')).toBeUndefined()
     } finally { wrapper.unmount(); vi.useRealTimers() }
   })
@@ -634,6 +634,64 @@ describe('legacy RemoteManagement save and run', () => {
 })
 
 describe('revision-aware RemoteManagement forms', () => {
+  it('starts a pristine configuration using its latest revision even before the next poll', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      entry.revision = 'latest-lifecycle-revision'
+      wrapper.findComponent(RevisionConfigForm).vm.$emit('runNetwork')
+      await flushPromises()
+      expect(api.patch_local_config).not.toHaveBeenCalled()
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'latest-lifecycle-revision')
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('refreshes an untouched form and its revision together but preserves edits made during the read', async () => {
+    const { api, entry, snapshot } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      entry.revision = 'fresh-revision'
+      entry.config.hostname = 'fresh-host'
+      await vi.advanceTimersByTimeAsync(1000)
+      const form = wrapper.findComponent(RevisionConfigForm)
+      expect(form.props('curNetwork').hostname).toBe('fresh-host')
+      let finish!: (value: typeof snapshot) => void
+      api.observe_local_configs.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      await vi.advanceTimersByTimeAsync(1000)
+      form.props('curNetwork').hostname = 'typed-during-refresh'
+      entry.revision = 'newer-revision'
+      entry.config.hostname = 'newer-host'
+      finish(snapshot)
+      await flushPromises()
+      expect(form.props('curNetwork').hostname).toBe('typed-during-refresh')
+      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[0][0].expected_revision).toBe('fresh-revision')
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('recovers from a real conflict through an explicit reload without resubmitting stale edits', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await openRevision(api)
+    try {
+      wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname = 'unsaved-host'
+      api.patch_local_config.mockResolvedValueOnce({ status: 1 } as any)
+      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
+      await flushPromises()
+      entry.revision = 'external-revision'
+      entry.config.hostname = 'external-host'
+      await wrapper.find('button[data-label="web.local_configs.reload_discard"]').trigger('click')
+      await flushPromises()
+      const form = wrapper.findComponent(RevisionConfigForm)
+      expect(form.props('curNetwork').hostname).toBe('external-host')
+      expect(wrapper.text()).not.toContain('web.local_configs.dirty_preserved')
+      form.props('curNetwork').hostname = 'new-edit'
+      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
+      await flushPromises()
+      expect(api.patch_local_config.mock.calls[1][0].expected_revision).toBe('external-revision')
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
   it.each([false, true])('opens the file editor from the current form without refreshing its revision with dirty=%s', async dirty => {
     const { api, entry } = revisionApi()
     const wrapper = await openRevision(api)

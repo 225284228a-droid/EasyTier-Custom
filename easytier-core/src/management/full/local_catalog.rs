@@ -38,6 +38,7 @@ pub struct LocalConfigCatalog {
     snapshot: Mutex<ObserveConfigsResponse>,
     observer_started: AtomicBool,
     refresh_requested: tokio::sync::Notify,
+    observer_cancel: tokio_util::sync::CancellationToken,
     runtime_identities: Mutex<(u64, BTreeMap<uuid::Uuid, RuntimeIdentity>)>,
     state_store: OnceLock<Arc<InstanceStateStore>>,
     pub(super) reconciled_files: Mutex<BTreeMap<PathBuf, super::local_reconcile::ReconciledFile>>,
@@ -67,6 +68,7 @@ impl Default for LocalConfigCatalog {
             }),
             observer_started: AtomicBool::new(false),
             refresh_requested: tokio::sync::Notify::new(),
+            observer_cancel: tokio_util::sync::CancellationToken::new(),
             runtime_identities: Mutex::new((0, BTreeMap::new())),
             state_store: OnceLock::new(),
             reconciled_files: Mutex::new(BTreeMap::new()),
@@ -93,6 +95,16 @@ impl LocalConfigCatalog {
 
     pub fn request_refresh(&self) {
         self.refresh_requested.notify_one();
+    }
+
+    /// Retire this manager's file owner before draining its instances. A mode
+    /// switch must not interpret that drain as enabled networks needing restart.
+    pub fn retire(&self) {
+        self.observer_cancel.cancel();
+    }
+
+    pub fn is_retired(&self) -> bool {
+        self.observer_cancel.is_cancelled()
     }
 
     /// A coordinated write already applied its chosen lifecycle semantics.
@@ -602,6 +614,7 @@ pub(super) fn start_observer<F, H>(
         timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
+                _ = catalog.observer_cancel.cancelled() => return,
                 _ = timer.tick() => {},
                 _ = catalog.refresh_requested.notified() => {},
             }
@@ -614,7 +627,15 @@ pub(super) fn start_observer<F, H>(
                 return;
             };
             let lock = manager.mutation_lock();
-            let _operation = lock.lock().await;
+            let _operation = tokio::select! {
+                _ = catalog.observer_cancel.cancelled() => return,
+                operation = lock.lock() => operation,
+            };
+            // Shutdown may have acquired the coordinator while this scan was
+            // debouncing or waiting for a preceding RPC transaction.
+            if catalog.observer_cancel.is_cancelled() {
+                return;
+            }
             if live {
                 let management = ProcessManagement {
                     instances: manager.clone(),

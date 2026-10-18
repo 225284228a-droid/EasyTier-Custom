@@ -72,7 +72,6 @@ pub struct Throughput {
     rx_packets: AtomicU64,
     window_source: Mutex<Option<Arc<dyn TransmissionWindowSource>>>,
     peer_window_report: Mutex<Option<(u64, Instant)>>,
-    tunnel_rtt_us: AtomicU64,
 }
 
 impl Clone for Throughput {
@@ -128,43 +127,19 @@ impl Throughput {
         }
     }
 
-    pub(crate) fn record_tunnel_rtt(&self, rtt: Duration) {
-        let Ok(observed_us) = u64::try_from(rtt.as_micros()) else {
-            return;
-        };
-        if observed_us == 0 {
-            return;
-        }
-        let _ = self
-            .tunnel_rtt_us
-            .fetch_update(Relaxed, Relaxed, |current| {
-                Some(if current == 0 {
-                    observed_us
-                } else {
-                    ((u128::from(current) * 7 + u128::from(observed_us)) / 8) as u64
-                })
-            });
-    }
-
-    /// The live transport's sending-window estimate, in bit/s, with the tunnel's
-    /// measured round-trip time as a lower bound on the transport RTT.
+    /// The live transport's sending-window estimate, in bit/s, paired with
+    /// that same transport's RTT rather than application-level Ping latency.
     /// No payload counters, socket buffer sizes or traffic-rate fallback are used.
     ///
-    /// The tunnel RTT reduces estimates inflated by a short proxy leg. When a
-    /// CDN terminates the transport, its backhaul window remains unobservable;
-    /// still report this best-effort estimate without claiming a capacity bound.
+    /// When a CDN terminates the transport, its backhaul window remains
+    /// unobservable; this estimate only describes the measured transport leg.
     pub fn estimated_tx_bps(&self) -> u64 {
         self.window_source
             .lock()
             .unwrap()
             .as_ref()
             .and_then(|source| source.transmission_window())
-            .and_then(|mut window| {
-                window.rtt = window
-                    .rtt
-                    .max(Duration::from_micros(self.tunnel_rtt_us.load(Relaxed)));
-                window.estimated_bps()
-            })
+            .and_then(|window| window.estimated_bps())
             .unwrap_or_default()
     }
 
@@ -278,29 +253,31 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_round_trips_bound_a_local_transports_tiny_rtt() {
+    fn sub_millisecond_lan_estimate_is_independent_of_application_latency() {
         let throughput = Throughput::new();
         throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
             TransmissionWindow {
-                congestion_window_bytes: 1_048_576,
+                congestion_window_bytes: 25_000,
                 peer_receive_window_bytes: None,
-                rtt: Duration::from_micros(50),
+                rtt: Duration::from_micros(200),
                 congestion_control: CongestionControl::LossBased,
             },
         ))))));
-        assert_eq!(throughput.estimated_tx_bps(), 8_388_608_000);
-        throughput.record_tunnel_rtt(Duration::from_millis(50));
-        assert_eq!(throughput.estimated_tx_bps(), 167_772_160);
-        throughput.record_tunnel_rtt(Duration::from_millis(90));
-        assert_eq!(throughput.tunnel_rtt_us.load(Relaxed), 55_000);
-        throughput.record_tunnel_rtt(Duration::ZERO);
-        assert_eq!(throughput.tunnel_rtt_us.load(Relaxed), 55_000);
+        let latency = WindowLatency::new(10);
+        for ping_us in [4_000, 50_000, 90_000] {
+            latency.record_latency(ping_us);
+            assert_eq!(throughput.estimated_tx_bps(), 1_000_000_000);
+        }
+        // The same transport snapshot works before and during a busy upload.
+        throughput.record_tx_bytes(125_000_000);
+        assert_eq!(throughput.estimated_tx_bps(), 1_000_000_000);
+        assert_eq!(latency.get_latency_us::<u32>(), 48_000);
         throughput.set_window_source(None);
         assert_eq!(throughput.estimated_tx_bps(), 0);
     }
 
     #[test]
-    fn tunnel_rtt_does_not_replace_a_slower_transport_rtt() {
+    fn loss_based_window_uses_the_transport_rtt() {
         let throughput = Throughput::new();
         throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
             TransmissionWindow {
@@ -310,15 +287,11 @@ mod tests {
                 congestion_control: CongestionControl::LossBased,
             },
         ))))));
-        throughput.record_tunnel_rtt(Duration::from_millis(5));
         assert_eq!(throughput.estimated_tx_bps(), 50_000_000);
     }
 
     #[test]
-    fn forwarded_bbr_windows_still_report_an_estimate_with_tunnel_rtt() {
-        // Apply the simple BBR correction and the full tunnel RTT even when
-        // only the first hop's window is available. This remains a reference
-        // estimate; a CDN's unobserved backhaul can have a lower capacity.
+    fn forwarded_bbr_window_describes_only_its_measured_transport_leg() {
         let throughput = Throughput::new();
         throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
             TransmissionWindow {
@@ -328,9 +301,8 @@ mod tests {
                 congestion_control: CongestionControl::Bbr,
             },
         ))))));
-        throughput.record_tunnel_rtt(Duration::from_millis(50));
-        // 2.5 MB of effective window over the full 50 ms path: 400 Mbit/s.
-        assert_eq!(throughput.estimated_tx_bps(), 400_000_000);
+        // 2.5 MB of effective window over this leg's 20 ms RTT: 1 Gbit/s.
+        assert_eq!(throughput.estimated_tx_bps(), 1_000_000_000);
     }
 
     #[test]

@@ -377,6 +377,8 @@ event:
 web:
   local_configs:
     save_apply: Save and apply
+    reload: Reload configuration
+    reload_discard: Discard edits and reload
     apply_saved: Apply saved configuration
     apply_unsupported: This node does not support applying saved configuration without edits. Upgrade it before applying.
     protected: Protected

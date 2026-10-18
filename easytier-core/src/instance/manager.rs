@@ -486,6 +486,11 @@ where
         config: TomlConfig,
         control: ConfigFileControl,
     ) -> anyhow::Result<Uuid> {
+        #[cfg(feature = "management")]
+        anyhow::ensure!(
+            !self.local_config_catalog().is_retired(),
+            "instance manager has retired; cannot start a network in the previous mode"
+        );
         let runtime = self
             .runtime_handle
             .clone()

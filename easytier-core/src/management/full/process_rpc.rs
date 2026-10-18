@@ -282,6 +282,16 @@ where
         self.state_store.clone()
     }
 
+    pub(super) async fn lock_mutation(&self) -> anyhow::Result<tokio::sync::MutexGuard<'_, ()>> {
+        let guard = self.mutation_lock.lock().await;
+        #[cfg(feature = "management")]
+        anyhow::ensure!(
+            !self.instances.local_config_catalog().is_retired(),
+            "instance manager has retired; reconnect to the current mode"
+        );
+        Ok(guard)
+    }
+
     pub(super) fn restore_enabled_state(
         &self,
         instance_id: uuid::Uuid,
@@ -651,7 +661,7 @@ where
             instance_id = requested_id;
             config.set_id(instance_id);
         }
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -946,7 +956,7 @@ where
         &self,
         retained: Vec<uuid::Uuid>,
     ) -> anyhow::Result<InstanceMutationResult> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -960,7 +970,7 @@ where
         &self,
         retained_names: Vec<String>,
     ) -> anyhow::Result<InstanceMutationResult> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1029,7 +1039,7 @@ where
         requested: Vec<uuid::Uuid>,
         expected_revision: Option<String>,
     ) -> anyhow::Result<InstanceMutationResult> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1191,7 +1201,7 @@ where
             instance_id = requested_id;
             config.set_id(instance_id);
         }
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1271,7 +1281,7 @@ where
         enabled: bool,
         expected_revision: Option<String>,
     ) -> anyhow::Result<()> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1359,7 +1369,7 @@ where
         requested: &[uuid::Uuid],
         expected_revision: Option<String>,
     ) -> anyhow::Result<Vec<uuid::Uuid>> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1441,7 +1451,7 @@ where
         &self,
         instance_id: uuid::Uuid,
     ) -> anyhow::Result<Option<(NetworkConfig, ConfigSource)>> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1517,7 +1527,7 @@ where
         config: TomlConfig,
         control: ConfigFileControl,
     ) -> anyhow::Result<uuid::Uuid> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1550,7 +1560,7 @@ where
         &self,
         select: impl FnOnce() -> Vec<uuid::Uuid>,
     ) -> anyhow::Result<InstanceMutationResult> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1565,7 +1575,7 @@ where
         &self,
         requested_names: Vec<String>,
     ) -> anyhow::Result<InstanceMutationResult> {
-        let _mutation = self.mutation_lock.lock().await;
+        let _mutation = self.lock_mutation().await?;
         #[cfg(feature = "management")]
         let _refresh = self
             .instances
@@ -1772,7 +1782,7 @@ where
         let local_disabled = if self.management.storage.supports_live_reconcile()
             && self.management.instances.config_dir().is_some()
         {
-            let _coordinator = self.management.mutation_lock.lock().await;
+            let _coordinator = self.management.lock_mutation().await?;
             let snapshot = self.management.refresh_local_configs_locked().await?;
             Some(
                 snapshot

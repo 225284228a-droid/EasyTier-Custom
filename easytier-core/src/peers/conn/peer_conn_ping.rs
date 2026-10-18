@@ -252,12 +252,7 @@ impl PeerConnPinger {
             ));
         }
 
-        let response = resp.unwrap()?;
-        if let PingResponse::Pong(latency_us) = response {
-            self.throughput_stats
-                .record_tunnel_rtt(Duration::from_micros(latency_us as u64));
-        }
-        Ok(response)
+        resp.unwrap()
     }
 
     pub async fn pingpong(&mut self) {

@@ -7,7 +7,7 @@ with `bandwidth_estimate_version = 1`. The business-traffic peak estimator,
 sparse-traffic fallback, sampling filter and five-minute peak retention have
 been removed. The UI rejects unversioned/old estimates and closed connections.
 
-The formula is `min(cwnd_bytes / gain, peer_receive_window_bytes) * 8 / effective_RTT_seconds`.
+The formula is `min(cwnd_bytes / gain, peer_receive_window_bytes) * 8 / transport_RTT_seconds`.
 Gain is 2 for detected BBR and 1 for loss-based control. This is a simple
 steady-state BBR correction, not a reconstruction of its startup, recovery or
 ACK aggregation state. Linux TCP detects BBR through `TCP_CONGESTION`; QUIC
@@ -16,15 +16,16 @@ loss-based treatment because its current `SIO_TCP_INFO` snapshot has no
 congestion-controller identity.
 If peer flow-control information is not exposed, the formula uses the real
 congestion window alone. Detected BBR uses transport min RTT when available;
-other cases use smoothed transport RTT. Effective RTT is the larger of that RTT and
-an exponentially smoothed successful tunnel Ping/Pong RTT (1/8 new sample),
-with a conservative 1 ms minimum. A short local TCP/proxy RTT therefore cannot
-bypass a slower measured tunnel round trip. Missing/zero
+other cases use smoothed transport RTT. The window and RTT must describe the
+same transport leg. Application Ping/Pong latency includes tunnel processing
+and scheduling, so it is not substituted for the transport RTT. Sub-millisecond
+RTTs are preserved without an artificial 1 ms floor; that floor and the former
+application-RTT lower bound could severely underestimate fast LANs, even under
+load. Missing/zero
 RTT and zero windows cannot establish a new estimate; arithmetic overflow is
 rejected instead of reported as a saturated `u64` value.
 No socket send/receive buffer size is substituted for a congestion window.
-The RTT minimum deliberately underestimates some very fast LANs; it is not a
-10 Gbit/s capacity limit, and a sufficiently large valid window can exceed that.
+There is no fixed capacity limit; a valid window estimate can exceed 10 Gbit/s.
 
 Native TCP uses `TCP_INFO` on Linux and `SIO_TCP_INFO` on Windows. Linux's
 segment-count cwnd is multiplied by the actual sending MSS; Windows already
@@ -54,20 +55,27 @@ than business payloads or added speed-test traffic, maintain idle-link telemetry
 This is a window-limited throughput reference, not measured physical capacity,
 unused headroom or an active speed test. Initial/app-limited congestion windows
 can still underestimate a fast link before the transport learns its path.
-TCP terminated by a CDN/proxy still supplies that leg's window, so even a
-tunnel RTT correction cannot establish the capacity of every proxy backhaul.
+TCP terminated by a CDN/proxy supplies that leg's window and RTT; it cannot
+establish the capacity of an unobserved proxy backhaul.
 These paths continue to display the best-effort numeric estimate whenever valid
 window telemetry is available; forwarding alone never makes it unknown.
 Hyper-V and cloud virtual NICs use the same socket/QUIC telemetry as physical
 NICs. No adapter link-speed value is used as capacity or as an estimate cap.
-The 1 ms RTT floor deliberately remains conservative on very low-latency VM
-links; hypervisor limits and cloud burst allowances are not separately modeled.
+Hypervisor limits and cloud burst allowances are not separately modeled.
 Both nodes need the updated binary for two-sided window reporting; updating only
 the web frontend cannot add window telemetry to an old node.
 Connection reconciliation may replace TCP/QUIC with UDP/WireGuard or another
 transport that has no congestion-window telemetry. That new connection remains
 unknown; estimates are never copied across connections or retained after a
 socket closes.
+
+On Windows, the `Windows TCP transmission window` trace event records the raw
+`SIO_TCP_INFO` cwnd, peer send allowance, MSS, RTT and socket endpoints. Both
+`Cwnd` and `SndWnd` are byte counts; MSS is not multiplied into either field.
+These diagnostics distinguish a genuinely small sender window from a unit or
+RTT error. An idle sender's small congestion window is not evidence that a
+1 Gbit/s Ethernet connection negotiated a lower speed. No adapter speed is
+substituted for an unmeasured end-to-end capacity.
 
 The shared status table combines cumulative upload/download into one Total
 Traffic column, with upload and download on separate lines. Estimated Available

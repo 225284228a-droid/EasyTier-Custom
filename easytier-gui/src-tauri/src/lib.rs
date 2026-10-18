@@ -464,10 +464,12 @@ fn init_service() -> Result<(), String> {
 #[cfg(not(target_os = "android"))]
 #[tauri::command]
 async fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> Result<(), String> {
+    let _lifecycle = BACKEND_LIFECYCLE.lock().await;
     // SCM calls can block for seconds; run them on the blocking pool instead
     // of the async runtime / main thread.
     match opts {
         Some(mut args) => {
+            stop_local_backend_inner().await?;
             args.config_dir = shared_config_dir(&app, Some(&args.config_dir))?
                 .to_string_lossy()
                 .to_string();
@@ -498,6 +500,10 @@ async fn init_service(app: AppHandle, opts: Option<service::ServiceOptions>) -> 
 
 #[tauri::command]
 async fn set_service_status(enable: bool, rpc_portal: Option<String>) -> Result<(), String> {
+    let _lifecycle = BACKEND_LIFECYCLE.lock().await;
+    if enable {
+        stop_local_backend_inner().await?;
+    }
     #[cfg(not(target_os = "android"))]
     {
         // `ensure_rpc_port_free` binds a socket and `set_status` drives the
@@ -736,6 +742,10 @@ mod managed_restore_tests {
 }
 
 async fn stop_local_backend_inner() -> Result<(), String> {
+    let manager = INSTANCE_MANAGER.read().await.clone();
+    if let Some(manager) = &manager {
+        manager.local_config_catalog().retire();
+    }
     let web_clients = std::mem::take(&mut *WEB_CLIENT.write().await);
     for client in web_clients {
         client.shutdown().await;
@@ -748,12 +758,12 @@ async fn stop_local_backend_inner() -> Result<(), String> {
     if let Some(mut server) = server {
         server._server.shutdown().await;
     }
-    let manager = INSTANCE_MANAGER.read().await.clone();
     if let Some(manager) = manager {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            manager.retain_network_instances(&[]),
-        )
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let lock = manager.mutation_lock();
+            let _mutation = lock.lock().await;
+            manager.retain_network_instances(&[]).await
+        })
         .await
         .map_err(|_| "Timed out waiting for local network instances to stop".to_string())?
         .map_err(|error| error.to_string())?;
@@ -853,13 +863,32 @@ async fn init_rpc_connection(
     remote_config_cache: Option<bool>,
 ) -> Result<(), String> {
     let _lifecycle = BACKEND_LIFECYCLE.lock().await;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if is_normal_mode {
+        let status = tokio::task::spawn_blocking(service::status)
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("{error:#}"))?;
+        if status == easytier::service_manager::ServiceStatus::Running {
+            return Err(
+                "The GUI service is running; stop it before starting the local Core".into(),
+            );
+        }
+    }
     let desired_config_dir = if is_normal_mode {
         Some(shared_config_dir(&app, config_dir.as_deref())?)
     } else {
         None
     };
     let current_config_dir = INSTANCE_CONFIG_DIR.read().await.clone();
-    if !is_normal_mode || (current_config_dir.is_some() && current_config_dir != desired_config_dir)
+    let previous_retired = INSTANCE_MANAGER
+        .read()
+        .await
+        .as_ref()
+        .is_some_and(|manager| manager.local_config_catalog().is_retired());
+    if !is_normal_mode
+        || previous_retired
+        || (current_config_dir.is_some() && current_config_dir != desired_config_dir)
     {
         stop_local_backend_inner().await?;
     } else {

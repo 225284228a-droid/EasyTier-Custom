@@ -46,7 +46,7 @@ where
     H: CoreInstanceHost,
 {
     pub async fn observe_persisted_configs(&self) -> anyhow::Result<ObserveConfigsResponse> {
-        let _coordinator = self.mutation_lock.lock().await;
+        let _coordinator = self.lock_mutation().await?;
         self.refresh_local_configs_locked().await
     }
 
@@ -98,7 +98,7 @@ where
             .inst_id
             .ok_or_else(|| anyhow::anyhow!("instance id is required"))?
             .into();
-        let _coordinator = self.mutation_lock.lock().await;
+        let _coordinator = self.lock_mutation().await?;
         if self.instances.config_dir().is_none() || !self.storage.supports_catalog() {
             return Ok(PatchPersistedConfigResponse {
                 status: PersistedConfigMutationStatus::Unsupported as i32,

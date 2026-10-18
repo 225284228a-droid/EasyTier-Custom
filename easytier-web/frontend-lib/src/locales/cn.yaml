@@ -377,6 +377,8 @@ event:
 web:
   local_configs:
     save_apply: 保存并应用
+    reload: 重新加载配置
+    reload_discard: 丢弃修改并重新加载
     apply_saved: 应用已保存配置
     apply_unsupported: 此节点不支持直接应用已保存配置，请升级节点后再应用。
     protected: 受保护
