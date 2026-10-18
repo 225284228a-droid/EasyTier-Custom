@@ -158,3 +158,10 @@ migration details.
 
 The management capability is `config:vpn-subnet-exit-v1`; Web/GUI hide the
 VPN section on nodes that do not advertise it.
+
+Attached portal peers inherit their network's VPN configuration through a
+configuration-only subscription. Each peer owns its compiled exclusions and
+exit reachability; sharing a mutable policy engine would mix independent route
+views. The subscription is established before the initial snapshot and is
+cancelled with the attached manager. This does not expand WireGuard AllowedIPs
+or add IPv6 portal ingress.

@@ -34,12 +34,14 @@ pub struct VpnPolicyEngine {
     state: ArcSwap<VpnCompiledState>,
     exit_states: DashMap<IpAddr, Option<PeerId>>,
     update_lock: Mutex<()>,
+    config_changes: tokio::sync::watch::Sender<VpnConfig>,
 }
 impl VpnPolicyEngine {
     pub fn new(config: VpnConfig) -> anyhow::Result<Self> {
         config.validate()?;
         let exclusions = VpnRouteExclusions::default();
         let plan = compile_vpn_routes(&config, &exclusions);
+        let (config_changes, _) = tokio::sync::watch::channel(config.clone());
         let engine = Self {
             state: ArcSwap::from_pointee(VpnCompiledState {
                 config,
@@ -49,6 +51,7 @@ impl VpnPolicyEngine {
             }),
             exit_states: DashMap::new(),
             update_lock: Mutex::new(()),
+            config_changes,
         };
         engine.sync_exit_state_slots();
         Ok(engine)
@@ -62,13 +65,23 @@ impl VpnPolicyEngine {
         }
         let plan = compile_vpn_routes(&config, &old.exclusions);
         self.state.store(Arc::new(VpnCompiledState {
-            config,
+            config: config.clone(),
             exclusions: old.exclusions.clone(),
             plan,
             generation: old.generation.wrapping_add(1),
         }));
         self.sync_exit_state_slots();
+        self.config_changes.send_replace(config);
         Ok(())
+    }
+    /// Subscribe before reading the initial configuration so concurrent updates
+    /// cannot be lost. Exclusions and reachability belong to each peer.
+    pub(crate) fn subscribe_config_changes(&self) -> tokio::sync::watch::Receiver<VpnConfig> {
+        self.config_changes.subscribe()
+    }
+    #[cfg(test)]
+    pub(crate) fn config_subscriber_count(&self) -> usize {
+        self.config_changes.receiver_count()
     }
     fn sync_exit_state_slots(&self) {
         let addresses = self.state.load().config.exit_addresses();
@@ -248,5 +261,30 @@ mod tests {
         assert!(e.route_plan().0.exit_routes.is_empty());
         assert!(e.status().is_empty());
         assert_eq!(resolve(&e, "198.51.100.1"), VpnDecision::Passthrough);
+    }
+
+    #[tokio::test]
+    async fn config_subscription_retains_latest_update_and_ignores_local_state() {
+        let e = engine(&[("203.0.113.0/24", "10.0.0.2")]);
+        let mut changes = e.subscribe_config_changes();
+        let mut config = e.config();
+        config.rules[0].cidr = "198.51.100.0/24".parse().unwrap();
+        e.install(config.clone()).unwrap();
+        config.rules[0].exit = "10.0.0.3".parse().unwrap();
+        e.install(config.clone()).unwrap();
+        changes.changed().await.unwrap();
+        assert_eq!(*changes.borrow_and_update(), config);
+        e.install(config.clone()).unwrap();
+        e.update_exit_states([("10.0.0.3".parse().unwrap(), Some(3))]);
+        e.update_exclusions(VpnRouteExclusions {
+            physical: vec!["192.168.1.0/24".parse().unwrap()],
+            ..Default::default()
+        });
+        let mut invalid = config.clone();
+        invalid.rules.push(invalid.rules[0].clone());
+        assert!(e.install(invalid).is_err());
+        assert!(!changes.has_changed().unwrap());
+        // Subscribers created after an update still see its latest configuration.
+        assert_eq!(*e.subscribe_config_changes().borrow(), config);
     }
 }

@@ -19,15 +19,18 @@ use crate::{
 };
 use anyhow::Context;
 use cidr::IpCidr;
-use clap::{Arg, ArgMatches, CommandFactory, FromArgMatches, Parser};
+use clap::{
+    Arg, ArgMatches, CommandFactory, FromArgMatches, Parser, builder::TypedValueParser as _,
+};
 use easytier_core::config::{DhcpConfig, EncryptionAlgorithm, normalize_secure_mode_config};
 use easytier_core::management::InstanceStateStore;
 use guarden::defer;
 use prost_types::field_descriptor_proto::Type;
 use rust_i18n::t;
 use serde_json::{Value, json};
-use std::str::{FromStr, ParseBoolError};
+use std::str::FromStr;
 use std::{
+    fmt::Write as _,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
@@ -998,8 +1001,8 @@ fn win_service_event_loop(
 
     let normal_status = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
-        current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
         exit_code: ServiceExitCode::Win32(0),
         checkpoint: 0,
         wait_hint: Duration::default(),
@@ -1086,9 +1089,9 @@ fn cli_command() -> clap::Command {
         value.parse::<T>().map(|value| json!(value))
     }
 
-    fn negated(value: &str) -> Result<Value, ParseBoolError> {
-        value.parse::<bool>().map(|value| json!(!value))
-    }
+    let parser = clap::builder::BoolishValueParser::new();
+    let boolish = parser.map(|v| json!(v));
+    let negated = parser.map(|v| json!(!v));
 
     Cli::command().args(Flags::flags().iter().map(|field| {
         let name = field.name();
@@ -1099,11 +1102,11 @@ fn cli_command() -> clap::Command {
                 .short('u')
                 .num_args(0..=1)
                 .default_missing_value("true")
-                .value_parser(negated),
+                .value_parser(negated.clone()),
             "enable_ipv6" => arg(name, "disable_ipv6")
                 .num_args(0..=1)
                 .default_missing_value("true")
-                .value_parser(negated),
+                .value_parser(negated.clone()),
             // The command line names the algorithm instead of spelling the field.
             // The values are the schema's own, which the patch reads.
             "data_compress_algo" => {
@@ -1128,7 +1131,7 @@ fn cli_command() -> clap::Command {
                     Type::Bool => arg
                         .num_args(0..=1)
                         .default_missing_value("true")
-                        .value_parser(parsed::<bool>),
+                        .value_parser(boolish.clone()),
                     Type::Uint32 => arg.value_parser(parsed::<u32>),
                     Type::Uint64 => arg.value_parser(parsed::<u64>),
                     // An enum flag takes the name the schema spells, and the patch's
@@ -1355,7 +1358,11 @@ fn start_prepared_configs(
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
-    log::init(&cli.logging_options, true)?;
+    log::init_with_default_console_targets(
+        &cli.logging_options,
+        true,
+        &["CORE", "easytier_core::instance::manager"],
+    )?;
 
     if let Some(config_dir) = cli.config_dir.as_ref() {
         std::fs::create_dir_all(config_dir).with_context(|| {
@@ -1495,10 +1502,17 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     tokio::select! {
         _ = manager.wait() => {
             let infos = manager.collect_network_infos().await?;
-            if infos
-                .into_values()
-                .filter_map(|info| info.error_msg).next().is_some() {
-                return Err(anyhow::anyhow!("some instances stopped with errors"));
+            let mut errors = String::new();
+            for (instance_id, info) in infos {
+                if let Some(error) = info.error_msg {
+                    if errors.is_empty() {
+                        errors.push_str("some instances stopped with errors:");
+                    }
+                    write!(errors, "\n{instance_id}: {error}").unwrap();
+                }
+            }
+            if !errors.is_empty() {
+                return Err(anyhow::anyhow!(errors));
             }
         }
         _ = tokio::signal::ctrl_c() => {
@@ -1633,7 +1647,7 @@ pub async fn main() -> ExitCode {
     let mut ret_code = 0;
 
     if let Err(error) = run_main(cli).await {
-        log::error!(%error);
+        log::error!(error = %format_args!("{error:#}"));
         ret_code = 1;
     }
 
@@ -2331,6 +2345,44 @@ enabled = true
         // A negated flag can be given bare, and bare means the value it states.
         let patch = parse_flags(&["easytier", "--disable-ipv6"]).unwrap();
         assert_eq!(patch.enable_ipv6, Some(false));
+
+        // Boolish tests: accepts 1/0, yes/no, on/off, true/false
+        assert_eq!(
+            parse_flags(&["easytier", "--latency-first", "1"])
+                .unwrap()
+                .latency_first,
+            Some(true)
+        );
+        assert_eq!(
+            parse_flags(&["easytier", "--latency-first", "0"])
+                .unwrap()
+                .latency_first,
+            Some(false)
+        );
+        assert_eq!(
+            parse_flags(&["easytier", "--latency-first", "yes"])
+                .unwrap()
+                .latency_first,
+            Some(true)
+        );
+        assert_eq!(
+            parse_flags(&["easytier", "--latency-first", "no"])
+                .unwrap()
+                .latency_first,
+            Some(false)
+        );
+        assert_eq!(
+            parse_flags(&["easytier", "--disable-encryption", "1"])
+                .unwrap()
+                .enable_encryption,
+            Some(false)
+        );
+        assert_eq!(
+            parse_flags(&["easytier", "--disable-encryption", "0"])
+                .unwrap()
+                .enable_encryption,
+            Some(true)
+        );
 
         // Compression tests: case-insensitive, accepts None/none/zstd/Zstd/ZSTD, rejects invalid
         let patch = parse_flags(&["easytier", "--compression", "none"]).unwrap();

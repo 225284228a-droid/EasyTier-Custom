@@ -163,7 +163,7 @@ pub(super) async fn observe(
 pub(super) async fn worker(
     data: Weak<RwLock<SessionData>>,
     client: PersistedClient,
-    mut heartbeats: broadcast::Receiver<HeartbeatRequest>,
+    mut heartbeats: broadcast::Receiver<()>,
 ) {
     let mut full_check = tokio::time::interval(Duration::from_secs(30));
     full_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

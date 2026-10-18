@@ -9,7 +9,7 @@ This repository develops its own transport, NAT traversal, and local configurati
 
 - [中文介绍与完整改动说明 / Detailed modifications](docs/CUSTOM_CHANGES.md)
 - Main differences: persistent local TOML management; multiple configuration servers; WSS/HTTP3 transports and P2P policies; SNI; redundant connection cleanup; experimental TCP symmetric-NAT port prediction.
-- Upstream baseline: [`99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7`](https://github.com/EasyTier/EasyTier/commit/99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7) (2026-10-16). This is not a claim of parity with current upstream main.
+- Upstream baseline: [`5af90471bfe654d097f7e488a2699f2850db7dd2`](https://github.com/EasyTier/EasyTier/commit/5af90471bfe654d097f7e488a2699f2850db7dd2) (2026-10-19). This is not a claim of parity with current upstream main.
 - [This project's issues](https://github.com/225284228a-droid/EasyTier-Custom/issues) · [This project's releases](https://github.com/225284228a-droid/EasyTier-Custom/releases)
 
 The original EasyTier introduction below is retained for reference. Its badges, download/install commands, official console, and sponsorship links refer to **upstream EasyTier**, not builds or services of this modified version. Build this repository's source to use these modifications.

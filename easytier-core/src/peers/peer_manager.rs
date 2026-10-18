@@ -1857,6 +1857,23 @@ impl PeerManagerCore {
         self.context.ipv6()
     }
 
+    /// Follow only configuration; each peer resolves exits and exclusions using
+    /// its own routing view. The subscription stops with this manager's tasks.
+    pub(super) async fn follow_network_vpn_policy(
+        &self,
+        mut changes: tokio::sync::watch::Receiver<crate::config::vpn::VpnConfig>,
+    ) {
+        let engine = self.vpn_engine.clone();
+        self.tasks.lock().await.spawn(async move {
+            while changes.changed().await.is_ok() {
+                let config = changes.borrow_and_update().clone();
+                if let Err(error) = engine.install(config) {
+                    tracing::error!(?error, "failed to apply attached peer VPN policy");
+                }
+            }
+        });
+    }
+
     fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
         self.acl_filter.reload_rules(acl);
     }

@@ -2,6 +2,8 @@
 
 每条规则将一个目标网段交给一个 EasyTier 出口节点。支持 IPv4、IPv6、默认网段和多个网段分别使用不同出口。出口节点的转发开关 `exit_enabled` 默认开启；规则为空时不会启动客户端，也不需要保存默认的 `[vpn]` 配置块。
 
+通过 WireGuard 接入 VPN Portal 的 IPv4 客户端继承 Portal 所属网络的 VPN 配置，并跟随规则的热更新及清空。每个客户端独立维护路由排除和出口可达状态，保留自身身份与 ACL；组网及代理子网继续优先，具体出口失联时不会改走宽泛规则。此继承仅处理已进入 Portal 的流量，不扩大生成的 WireGuard `AllowedIPs`，需要由客户端配置将目标网段送入隧道。
+
 ```toml
 [vpn]
 # exit_enabled 默认为 true；设为 false 可关闭本节点的出口转发。

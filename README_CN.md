@@ -9,7 +9,7 @@
 
 - **[完整改动说明、配置选项与兼容性](docs/CUSTOM_CHANGES.md)**
 - 主要改动：本地 TOML 持久化管理、多配置服务器、WSS/HTTP3 传输与 P2P 策略、SNI、冗余连接清理，以及实验性 TCP 对称 NAT 端口预测打洞。
-- 上游基线：[`99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7`](https://github.com/EasyTier/EasyTier/commit/99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7)（2026-10-16），不代表已同步官方最新主线。
+- 上游基线：[`5af90471bfe654d097f7e488a2699f2850db7dd2`](https://github.com/EasyTier/EasyTier/commit/5af90471bfe654d097f7e488a2699f2850db7dd2)（2026-10-19），不代表已同步官方最新主线。
 - [本项目问题反馈](https://github.com/225284228a-droid/EasyTier-Custom/issues) · [本项目发布页](https://github.com/225284228a-droid/EasyTier-Custom/releases)
 
 下面保留的是原版 EasyTier 的介绍。其中徽章、下载与安装命令、官方控制台和赞助链接指向 **EasyTier 上游**，不代表本魔改版本的构建或服务。使用本版改动需要构建本仓库源码。

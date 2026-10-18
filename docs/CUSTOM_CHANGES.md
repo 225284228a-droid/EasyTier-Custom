@@ -6,7 +6,7 @@
 
 - 上游仓库：https://github.com/EasyTier/EasyTier
 - 本项目仓库：https://github.com/225284228a-droid/EasyTier-Custom
-- 最近已合入的上游基线：`99db92a3aeb3109efe1ace5a4a3e2a1bf3840ed7`（2026-10-16 合入）。
+- 最近已合入的上游基线：`5af90471bfe654d097f7e488a2699f2850db7dd2`（2026-10-19 合入）。
 - 开源协议与该上游版本一致：GNU Lesser General Public License v3.0（LGPL-3.0），见根目录 [LICENSE](../LICENSE)。保留上游历史、作者归属及第三方组件各自的许可证；本项目修改按同一项目许可证发布。
 - 本文对比上述固定基线，不把“尚未合入上游后续提交”当作本项目主动删除的功能。
 
@@ -35,8 +35,8 @@
 
 ### 定制 protobuf 字段编号与版本兼容
 
-- 本次合并中，所有原先使用低位编号的 Custom protobuf 字段均迁移到高位：新编号为原 tag 加 `50000`；若该编号已被占用，则每次再加 `1000`，直到找到空闲编号。已有高位编号保持不变。
-- 本轮共迁移 100 个低位字段，保留 9 个已有高位字段；完整旧/新编号见 [Custom 字段清单](../easytier-proto/tests/custom-fields.json)，官方字段编号、类型和保留状态见 [官方 schema 快照](../easytier-proto/tests/upstream-fields.json)。descriptor 测试与 CI 会检查清单完整性和编号分配。
+- 2026-10-16 合并时，所有原先使用低位编号的 Custom protobuf 字段均迁移到高位：新编号为原 tag 加 `50000`；若该编号已被占用，则每次再加 `1000`，直到找到空闲编号。已有高位编号保持不变。
+- 该次共迁移 100 个低位字段，保留 9 个已有高位字段；完整旧/新编号见 [Custom 字段清单](../easytier-proto/tests/custom-fields.json)，官方字段编号、类型和保留状态见 [官方 schema 快照](../easytier-proto/tests/upstream-fields.json)。descriptor 测试与 CI 会检查清单完整性和编号分配。
 - 不保留旧低位编号的双读写兼容路径。使用这些扩展字段通信的定制 Core、Web、GUI、Go 和 JS 组件必须同步升级到对应版本；新版本不再识别旧定制 tag，混用时定制字段无法正确传递。下文的能力降级与旧接口说明不包含迁移前的定制协议版本。
 - 此迁移只调整 protobuf 线上的字段编号；对应 TOML、CLI 和 JSON 字段名保持不变。
 
@@ -202,6 +202,27 @@ cargo build --release --locked -p easytier
 CI 后续修复：同步遗漏的 Go protobuf 生成文件；新增两个控制连接事件时序的回归，旧实现均稳定复现业务拒收，修复后通过。连接接入与末条连接清理现在共享生命周期锁，空 Peer 清理也与接入串行化；保持原有代次授权和测试超时。WSL Linux 的完整 Core 与原生组合 1309 项、同时拨号及生命周期 10 轮压力复验（共 40 次）通过，严格 Clippy 与格式检查通过。
 
 Go 内嵌 WASM 与 protobuf 来源统一刷新为干净源码提交 `48b01ce657164e9906557b3d3c2f0a5f71a86400`。优化后 WASM 为 7,596,355 字节，SHA-256 为 `62c80c2a0df3de0321d31173511dd846be59e8b0570b35eb14328c7c1999c1c3`；schema SHA-256 为 `635670b2b1c8c9d91688328e4760b7c15bf8cfc20590cafdf0e26fb1864c63f1`。两份 provenance、实际产物与 schema 摘要核对通过，重复生成 protobuf 无漂移；使用新内核的 Go 主模块和独立 TUN 示例模块完整测试（`-count=1`）通过。
+
+### 官方主线合入验证（2026-10-19）
+
+本轮固定官方基线为 `5af90471bfe654d097f7e488a2699f2850db7dd2`，在原 `main` 上保留双方历史合入 9 个官方提交，保留本地命名共享网卡路由修复。日志保存在本地 `.test-env/upstream-merge-2026-10-19/`。
+
+- Portal IPv4 客户端继承所属网络的 `[vpn]` 配置并跟随热更新。每个客户端独立维护路由排除和出口可达状态，保留身份、ACL、组网及代理路由优先、最长前缀及出口失联丢弃语义；不恢复旧 `exit_nodes`，不扩大 WireGuard `AllowedIPs`。
+- Web 心跳通知采用无负载唤醒，协调任务读取最新会话快照；本地 TOML 观察任务同步适配，保留本地文件权威、revision/CAS 和中央配置投递。合入官方的接管配置版本防护及迟到回调隔离。
+- 合入 Windows NSIS 升级进程清理及服务退出状态、完整启动错误链、CLI 宽松布尔值、BPF 和共享 TUN 测试隔离及安全数据报宽限期测试修复。保持已退休 OHOS 工作流删除和定制构建矩阵。
+- 本轮官方 schema 未改变，保留既有字段编号。Go WASM、绑定及来源记录通过现有生成器从干净源码提交重建，具体提交与摘要以 `provenance.go` 为准。
+
+本轮实际验证：
+
+- Windows 默认功能集的 GUI 后端 28 项、Web 后端 362 项通过（Web 原有 2 项默认跳过）；前端三组共 450 项测试及生产构建通过，CI 脚本 64 项通过。
+- protobuf 库及 descriptor/字段归属检查共 44 项通过、2 项默认跳过；本轮没有改动 schema 或重新分配字段。
+- Linux `full` 首轮网络回归 44 项全部通过，覆盖 Portal 普通/Secure Mode、配置订阅、ACL、并行池、BPF、共享 TUN 和双栈 DHCP。
+- Linux 补充的 WireGuard Portal 5 项、共享网卡 61 项、Core 并行策略 20 项、监听器 20 项和安全数据报 9 项通过。Native 并行传输首轮 24 项通过、2 项默认跳过，另有 1 项 WSS IPv6 突发收包超时；编译结束后该单例独立复跑 3 轮均通过。首次失败及复跑日志分别保留在 `linux-followup-direct.log` 和 `wss-ipv6-recheck.log`，本轮未改动并行传输实现或断言。
+- CLI 参数和配置单元回归 22 项、文件/stdin 配置与日志集成检查 6 项通过；默认启动错误日志核对实例 ID、监听 URL 和完整绑定失败错误链。
+- Windows 共享网卡 60 项通过，包含命名网卡的 IPv4/IPv6 connected route 生命周期；1 项真实 TUN 测试按原配置跳过，要求管理员权限及 `wintun.dll`。
+- Windows Core/原生/Web/GUI 默认功能集，以及 Linux Core/原生 `full` 全部目标严格 Clippy（`-D warnings`）通过；格式和 Core 无默认功能编译通过。
+- Windows 安装脚本语法及隔离改名夹具的 2 项 GUI 场景通过，目标目录进程关闭、另一安装目录进程保留。本机已有运行服务且当前账户未提权，未执行真实服务更新、恢复、取消及管理员 TUN 重建；macOS/Android 构建与设备验收未在本机执行。
+- Go 内嵌产物从源码合并后的干净提交生成；WASI 构建、来源提交和 Go 测试结果在产物提交中补充。
 
 ### 官方主线合入验证（2026-10-16）
 
