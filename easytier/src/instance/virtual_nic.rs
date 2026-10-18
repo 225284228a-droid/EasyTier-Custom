@@ -102,6 +102,26 @@ fn overlay_routes(
         .collect()
 }
 
+// The operating system installs connected routes when TUN addresses are assigned.
+// Do not add those same routes again: in particular, shared NICs treat a failed
+// route installation as an attachment failure, unlike dedicated NICs.
+fn overlay_routes_excluding_connected(
+    exclusions: easytier_core::config::vpn::routes::VpnRouteExclusions,
+    ipv4: Option<cidr::Ipv4Inet>,
+    ipv6: Option<cidr::Ipv6Inet>,
+) -> BTreeSet<easytier_core::config::vpn::VpnCidr> {
+    use easytier_core::config::vpn::VpnCidr;
+
+    let mut routes = overlay_routes(exclusions);
+    if let Some(ipv4) = ipv4 {
+        routes.remove(&VpnCidr::V4(ipv4.network()));
+    }
+    if let Some(ipv6) = ipv6 {
+        routes.remove(&VpnCidr::V6(ipv6.network()));
+    }
+    routes
+}
+
 pin_project! {
     pub struct TunStream {
         #[pin]
@@ -1503,7 +1523,11 @@ impl NicCtx {
         // Keep known overlay regions captured even when a remote peer
         // becomes unreachable. Public advertised subnets must not fall
         // through to the host's physical default in that state.
-        let initial = overlay_routes(packet_plane.vpn_route_exclusions().await);
+        let initial = overlay_routes_excluding_connected(
+            packet_plane.vpn_route_exclusions().await,
+            global_ctx.get_ipv4(),
+            global_ctx.get_ipv6(),
+        );
         Self::apply_route_changes(
             &backend,
             &mut cur_proxy_cidrs,
@@ -1534,7 +1558,11 @@ impl NicCtx {
                     None => None,
                 };
                 let _ = event;
-                let desired = overlay_routes(packet_plane.vpn_route_exclusions().await);
+                let desired = overlay_routes_excluding_connected(
+                    packet_plane.vpn_route_exclusions().await,
+                    global_ctx.get_ipv4(),
+                    global_ctx.get_ipv6(),
+                );
                 let added = desired.difference(&cur_proxy_cidrs).copied().collect();
                 let removed = cur_proxy_cidrs.difference(&desired).copied().collect();
 
@@ -1910,6 +1938,41 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn named_nic_does_not_reinstall_connected_overlay_routes() {
+        use easytier_core::config::vpn::{VpnCidr, routes::VpnRouteExclusions};
+
+        let exclusions = VpnRouteExclusions {
+            overlay: vec![
+                "10.144.3.0/24".parse().unwrap(),
+                "10.144.4.0/24".parse().unwrap(),
+                "fd00:1234::/64".parse().unwrap(),
+                "fd00:5678::/64".parse().unwrap(),
+            ],
+            physical: vec![],
+        };
+        let routes = super::overlay_routes_excluding_connected(
+            exclusions,
+            Some("10.144.3.5/24".parse().unwrap()),
+            Some("fd00:1234::5/64".parse().unwrap()),
+        );
+        assert!(!routes.contains(&VpnCidr::V4("10.144.3.0/24".parse().unwrap())));
+        assert!(!routes.contains(&VpnCidr::V6("fd00:1234::/64".parse().unwrap())));
+        assert!(routes.contains(&VpnCidr::V4("10.144.4.0/24".parse().unwrap())));
+        assert!(routes.contains(&VpnCidr::V6("fd00:5678::/64".parse().unwrap())));
+
+        // A broader mesh route still covers destinations outside the local subnet.
+        let broader = super::overlay_routes_excluding_connected(
+            VpnRouteExclusions {
+                overlay: vec!["10.144.0.0/16".parse().unwrap()],
+                physical: vec![],
+            },
+            Some("10.144.3.5/24".parse().unwrap()),
+            None,
+        );
+        assert!(broader.contains(&VpnCidr::V4("10.144.0.0/16".parse().unwrap())));
     }
 
     #[test]
