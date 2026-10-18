@@ -295,7 +295,12 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             next_hop: Ipv4Addr::UNSPECIFIED,
             metric: cost.unwrap_or(9000) as u32,
         }])
-        .map_err(|e| anyhow::anyhow!("Failed to add route: {}", format_win_error(e)))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to add route: IPv4 {address}/{cidr_prefix} on {name} (if_index={if_index}): {}",
+                format_win_error(e)
+            )
+        })?;
         Ok(())
     }
 
@@ -383,7 +388,12 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             next_hop: Ipv6Addr::UNSPECIFIED,
             metric: cost.unwrap_or(9000) as u32,
         }])
-        .map_err(|e| anyhow::anyhow!("Failed to add route: {}", format_win_error(e)))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to add route: IPv6 {address}/{cidr_prefix} on {name} (if_index={if_index}): {}",
+                format_win_error(e)
+            )
+        })?;
         Ok(())
     }
 
