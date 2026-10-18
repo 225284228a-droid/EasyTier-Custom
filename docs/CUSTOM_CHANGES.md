@@ -222,7 +222,9 @@ Go 内嵌 WASM 与 protobuf 来源统一刷新为干净源码提交 `48b01ce6571
 - Windows 共享网卡 60 项通过，包含命名网卡的 IPv4/IPv6 connected route 生命周期；1 项真实 TUN 测试按原配置跳过，要求管理员权限及 `wintun.dll`。
 - Windows Core/原生/Web/GUI 默认功能集，以及 Linux Core/原生 `full` 全部目标严格 Clippy（`-D warnings`）通过；格式和 Core 无默认功能编译通过。
 - Windows 安装脚本语法及隔离改名夹具的 2 项 GUI 场景通过，目标目录进程关闭、另一安装目录进程保留。本机已有运行服务且当前账户未提权，未执行真实服务更新、恢复、取消及管理员 TUN 重建；macOS/Android 构建与设备验收未在本机执行。
-- Go 内嵌产物从源码合并后的干净提交生成；WASI 构建、来源提交和 Go 测试结果在产物提交中补充。
+- 从干净源码合并提交 `73ffaece20a7ba435e6ad47fb744598b5a936238` 运行现有 `go generate ./...`，WASI release 构建及 Binaryen 131 优化通过；实际 WASM SHA-256 为 `1d6ad8fc089f2d5dd87a103115135e4dccfc25de7d5b673c4b41a67bad2e3bce`，与生成记录一致。
+- 两份 Go 来源记录均指向该源码提交；protobuf 重新生成后绑定代码无差异，schema SHA-256 保持 `635670b2b1c8c9d91688328e4760b7c15bf8cfc20590cafdf0e26fb1864c63f1`，仅更新来源提交。
+- 使用新 WASM 的 `go test -p 1 ./...` 全部包测试通过，包含 artifact、engine、host 及集成测试；实际文件摘要、两份来源提交和 schema 摘要均已核对。
 
 ### 官方主线合入验证（2026-10-16）
 
