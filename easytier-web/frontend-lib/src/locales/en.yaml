@@ -173,15 +173,11 @@ sni_placeholder: "Example: www.cloudflare.com"
 parallel_connections: Parallel connections
 parallel_connections_help: "1–16, default 1. Peers use the rounded average; either peer disabling concurrency or lacking support keeps one connection."
 disable_parallel_connections: Disable parallel connections
+disable_parallel_connections_help: "Use one connection while retaining the configured count. Disabling on either peer takes effect."
 traffic_disguise: WSS / HTTP3 traffic style
 traffic_disguise_speedtest: Speed test
 traffic_disguise_video: Video
 traffic_disguise_help: "Speed test sends continuously for throughput; video uses short, variable bursts."
-parallel_status: Parallel connection status
-parallel_target: Negotiated target
-parallel_actual: Active connections
-parallel_protocol: Protocol
-parallel_fallback_reason: Fallback reason
 device: Device
 hostname: Hostname
 latency: Latency
@@ -189,6 +185,7 @@ upload_bytes: Upload
 download_bytes: Download
 total_traffic: Total Traffic
 estimated_bandwidth: Estimated Available Bandwidth
+estimated_bandwidth_help: "A reference estimate for the preferred active connection, not a speed test. Parallel connections are not added together. Directions are estimated independently and can differ greatly from link capacity while idle or lightly loaded."
 loss_rate: Loss Rate
 nat_type: NAT Type
 

@@ -117,10 +117,7 @@ const parallelConnections = computed({
   get: () => curNetwork.value.parallel_connections ?? 1,
   set: (value: number | null) => { curNetwork.value.parallel_connections = value ?? 1 },
 })
-const parallelDisabled = computed({
-  get: () => curNetwork.value.disable_parallel_connections ?? false,
-  set: (value: boolean) => { curNetwork.value.disable_parallel_connections = value },
-})
+const parallelDisabled = computed(() => curNetwork.value.disable_parallel_connections ?? false)
 const trafficDisguise = computed({
   get: () => curNetwork.value.traffic_disguise ?? 'speedtest',
   set: (value: string) => { curNetwork.value.traffic_disguise = value },
@@ -165,8 +162,9 @@ const disguisedP2pFields = new Set<keyof NetworkConfig>([
 
 const bool_flags: BoolFlag[] = [
   // The disguise flags share a dedicated selector; all other schema flags
-  // use a checkbox, plus the one network option the form adds itself.
+  // use a checkbox, together with the top-level concurrency option.
   ...formFlags().filter(flag => !disguisedP2pFields.has(flag.field)),
+  { field: 'disable_parallel_connections', help: 'disable_parallel_connections_help' },
 ]
 const visibleBoolFlags = computed(() => bool_flags.filter(flag => extensionSupported(flag.field)))
 
@@ -518,11 +516,19 @@ function removeVpnPortalClient(index: number) {
                 </div>
               </div>
 
-              <div v-if="extensionSupported('sni')" class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
+              <div v-if="extensionSupported('sni') || extensionSupported('traffic_disguise')" class="flex flex-row gap-x-9 flex-wrap">
+                <div v-if="extensionSupported('sni')" class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="sni">{{ t('sni') }}</label>
                   <InputText id="sni" v-model="curNetwork.sni" aria-describedby="sni-help" :format="true"
                     :placeholder="t('sni_placeholder')" />
+                </div>
+                <div v-if="extensionSupported('traffic_disguise')" class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center">
+                    <label for="traffic_disguise">{{ t('traffic_disguise') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('traffic_disguise_help')"></span>
+                  </div>
+                  <Select id="traffic_disguise" v-model="trafficDisguise" :options="trafficDisguiseOptions"
+                    option-label="label" option-value="value" fluid />
                 </div>
               </div>
 
@@ -532,16 +538,6 @@ function removeVpnPortalClient(index: number) {
                   :max-fraction-digits="0" :use-grouping="false" show-buttons :disabled="parallelDisabled"
                   aria-describedby="parallel-connections-help" />
                 <small id="parallel-connections-help" class="text-surface-500">{{ t('parallel_connections_help') }}</small>
-              </div>
-              <div v-if="extensionSupported('disable_parallel_connections')" class="flex items-center gap-3">
-                <Checkbox v-model="parallelDisabled" input-id="disable_parallel_connections" :binary="true" />
-                <label for="disable_parallel_connections">{{ t('disable_parallel_connections') }}</label>
-              </div>
-              <div v-if="extensionSupported('traffic_disguise')" class="flex flex-col gap-2">
-                <label for="traffic_disguise">{{ t('traffic_disguise') }}</label>
-                <Select id="traffic_disguise" v-model="trafficDisguise" :options="trafficDisguiseOptions"
-                  option-label="label" option-value="value" fluid />
-                <small class="text-surface-500">{{ t('traffic_disguise_help') }}</small>
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap w-full">

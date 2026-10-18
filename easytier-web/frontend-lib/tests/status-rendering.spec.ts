@@ -104,7 +104,7 @@ describe('status protobuf JSON rendering', () => {
     expect(rows[1].text()).toContain('50%')
   })
 
-  it('renders active protocol counts, IPv6 labels and expanded negotiated pool details', async () => {
+  it('renders active protocol counts and IPv6 labels without a separate pool status column', async () => {
     const tunnel = (tunnel_type: string, url: string) => ({
       tunnel_type,
       local_addr: { url },
@@ -128,17 +128,9 @@ describe('status protobuf JSON rendering', () => {
     const peerRow = wrapper.findAll('tbody tr')[1]
     const cells = peerRow.findAll('td')
     expect(cells[headers.indexOf('tunnel_proto')].text()).toBe('http36[×2],wss')
-    expect(headers).toContain('parallel_status')
-
-    const details = cells[headers.indexOf('parallel_status')].find('details')
-    expect(details.exists()).toBe(true)
-    expect(details.find('summary').text()).toContain('parallel_actual: 2')
-    expect(details.find('summary').text()).toContain('parallel_target: 4')
-    expect(details.find('dl').text()).toContain('http3')
-    expect(details.find('dl').text()).toContain('capacity limit')
-    expect(details.findAll('dt').map(label => label.text())).toEqual([
-      'parallel_target', 'parallel_actual', 'parallel_protocol', 'parallel_fallback_reason',
-    ])
+    expect(headers).not.toContain('parallel_status')
+    expect(peerRow.find('details').exists()).toBe(false)
+    expect(peerRow.text()).not.toContain('capacity limit')
   })
 
   it('keeps legacy protocol names without a parallel status column when the backend omits pool state', async () => {

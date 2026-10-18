@@ -1091,7 +1091,7 @@ describe('Config.vue network config projection', () => {
     expect((wrapper.emitted('runNetwork')?.[0][0] as NetworkConfig).network_name).toBe('mesh-running')
   })
 
-  it('edits parallel tunnels below SNI and retains the count while disabled', async () => {
+  it('pairs SNI and traffic style and groups the disable option under feature switches', async () => {
     const { curNetwork, wrapper } = mountConfig(DEFAULT_NETWORK_CONFIG())
     await setInput(wrapper, '#parallel_connections', '5')
     await wrapper.find('#disable_parallel_connections').setValue(true)
@@ -1103,6 +1103,18 @@ describe('Config.vue network config projection', () => {
     expect(payload.disable_parallel_connections).toBe(true)
     expect(payload.traffic_disguise).toBe('video')
     expect(wrapper.html().indexOf('id="sni"')).toBeLessThan(wrapper.html().indexOf('id="parallel_connections"'))
+    const sniField = wrapper.find('#sni').element.parentElement!
+    const styleField = wrapper.find('#traffic_disguise').element.parentElement!
+    expect(sniField.parentElement).toBe(styleField.parentElement)
+    expect(sniField.classList.contains('basis-5/12')).toBe(true)
+    expect(styleField.classList.contains('basis-5/12')).toBe(true)
+    const switches = wrapper.findAll('label').find(label => label.text() === 'flags_switch')!.element.parentElement!
+    expect(switches.contains(wrapper.find('#disable_parallel_connections').element)).toBe(true)
+    expect(switches.contains(wrapper.find('#parallel_connections').element)).toBe(false)
+    expect(wrapper.findAll('#disable_parallel_connections')).toHaveLength(1)
+    await wrapper.find('#disable_parallel_connections').setValue(false)
+    expect(input(wrapper, '#parallel_connections').disabled).toBe(false)
+    expect(curNetwork.parallel_connections).toBe(5)
     wrapper.unmount()
   })
 

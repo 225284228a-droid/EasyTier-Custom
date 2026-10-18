@@ -29,10 +29,7 @@ export function peerConns(info: PeerRoutePair) {
 }
 
 interface ParallelConnectionsState {
-  target?: unknown
   active_conn_ids?: unknown
-  protocol?: unknown
-  fallback_reason?: unknown
 }
 
 function parallelConnectionsState(info: PeerRoutePair): ParallelConnectionsState | undefined {
@@ -49,21 +46,6 @@ export function parallelActiveConnectionIds(info: PeerRoutePair): string[] {
     return []
 
   return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
-}
-
-export function parallelConnectionDetails(info: PeerRoutePair) {
-  const state = parallelConnectionsState(info)
-  if (!state)
-    return undefined
-
-  const protocol = typeof state.protocol === 'string' ? state.protocol : ''
-  const fallbackReason = typeof state.fallback_reason === 'string' ? state.fallback_reason : ''
-  return {
-    target: numericValue(state.target),
-    actual: parallelActiveConnectionIds(info).length,
-    protocol,
-    fallbackReason,
-  }
 }
 
 export function tunnelProtocols(info: PeerRoutePair, protocolForConnection: (conn: ReturnType<typeof peerConns>[number]) => string) {
@@ -114,16 +96,22 @@ function defaultConnFirst(info: PeerRoutePair) {
   return defaultConn ? [defaultConn, ...conns.filter(conn => conn !== defaultConn)] : conns
 }
 
+function telemetryConns(info: PeerRoutePair) {
+  const activeIds = new Set(parallelActiveConnectionIds(info))
+  return defaultConnFirst(info).filter(conn => !conn.is_closed
+    && (!activeIds.size || !!conn.conn_id && activeIds.has(conn.conn_id)))
+}
+
 export function latencyMs(info: PeerRoutePair) {
   const connId = defaultConnId(info)
   let minLatencyUs: number | undefined
 
-  for (const conn of peerConns(info)) {
+  for (const conn of telemetryConns(info)) {
     if (!conn.stats)
       continue
 
     const latencyUs = numericValue(conn.stats.latency_us)
-    if (latencyUs === undefined)
+    if (latencyUs === undefined || latencyUs <= 0)
       continue
 
     if (connId === conn.conn_id)
@@ -139,7 +127,7 @@ export function latencyMs(info: PeerRoutePair) {
 }
 
 export function lossRate(info: PeerRoutePair) {
-  for (const conn of defaultConnFirst(info)) {
+  for (const conn of telemetryConns(info)) {
     const loss = numericValue(conn.loss_rate ?? 0)
     if (loss === undefined)
       continue
@@ -174,40 +162,12 @@ function connectionBandwidth(conn: ReturnType<typeof peerConns>[number], directi
 }
 
 export function estimatedBandwidth(info: PeerRoutePair): { upload: string, download: string } {
-  const activeIds = parallelActiveConnectionIds(info)
-  if (activeIds.length) {
-    const activeBandwidth = (direction: 'tx' | 'rx') => {
-      let total = 0
-      for (const connId of activeIds) {
-        const conn = peerConns(info).find(candidate => candidate.conn_id === connId)
-        const value = conn ? connectionBandwidth(conn, direction) : undefined
-        if (value === undefined)
-          return undefined
-        total += value
-      }
-      return total
-    }
-    const upload = activeBandwidth('tx')
-    const download = activeBandwidth('rx')
-    return {
-      upload: upload === undefined ? '--' : formatBitRate(upload),
-      download: download === undefined ? '--' : formatBitRate(download),
-    }
-  }
-
-  let upload: number | undefined
-  let download: number | undefined
-  for (const conn of defaultConnFirst(info)) {
-    upload ??= connectionBandwidth(conn, 'tx')
-    download ??= connectionBandwidth(conn, 'rx')
-    if (upload !== undefined && download !== undefined)
-      break
-  }
-
-  return {
-    upload: upload === undefined ? '--' : formatBitRate(upload),
-    download: download === undefined ? '--' : formatBitRate(download),
-  }
+  // Congestion windows are per connection, not independent link capacities.
+  // Adding them double-counts shared bottlenecks. Prefer the default active
+  // connection and keep both directions on the same connection.
+  const conn = telemetryConns(info).find(conn => connectionBandwidth(conn, 'tx') !== undefined
+    || connectionBandwidth(conn, 'rx') !== undefined)
+  return conn ? estimatedConnectionBandwidth(conn) : { upload: '--', download: '--' }
 }
 
 export function estimatedConnectionBandwidth(conn: ReturnType<typeof peerConns>[number]) {

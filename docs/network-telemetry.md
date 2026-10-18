@@ -73,6 +73,25 @@ The shared status table combines cumulative upload/download into one Total
 Traffic column, with upload and download on separate lines. Estimated Available
 Bandwidth follows it in the same two-line format, before Loss Rate.
 
+Parallel pools do not add per-connection window estimates together: their
+windows can share the same physical bottleneck, so the sum is not a link-capacity
+measurement. The peer row prefers the default active connection, using another
+active connection only if the preferred one has no valid estimate in either
+direction. Both directions always come from that one connection; a missing
+direction remains unknown. Closed connections and standby paths outside an
+active pool do not supply these metrics. Idle or differently loaded senders can
+still produce asymmetric estimates on a symmetric gigabit link. A UI tooltip
+explains this limitation; no physical-capacity cap or mirrored direction is
+invented. Cumulative traffic counters continue to aggregate all connections.
+
+Latency prefers a successful RTT from the default active connection and falls
+back to the lowest valid RTT among active members. Closed/standby connections
+and zero or invalid RTTs are excluded. Each physical connection retains its own
+Ping/Pong exchange; the packets bypass parallel business-data reordering and
+traffic-style pacing. The UI shows only the active multiplier after the protocol
+name, without a separate parallel-status column. Diagnostic pool state remains
+available from the management API.
+
 ## Dashboard Globe
 
 The dashboard collects every running network for each managed machine, with

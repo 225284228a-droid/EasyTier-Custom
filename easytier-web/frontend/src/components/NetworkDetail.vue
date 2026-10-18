@@ -1480,8 +1480,10 @@ const switchTab = async (tab: string) => {
                                 <div class="whitespace-nowrap">{{ t('download') }}: {{ data.traffic.download }}</div>
                             </template></Column>
                             <Column :header="t('estimated_bandwidth')"><template #body="{ data }">
-                                <div class="whitespace-nowrap">{{ t('upload') }}: {{ data.bandwidth.upload }}</div>
-                                <div class="whitespace-nowrap">{{ t('download') }}: {{ data.bandwidth.download }}</div>
+                                <div v-tooltip="t('estimated_bandwidth_help')" class="whitespace-nowrap">
+                                    <div>{{ t('upload') }}: {{ data.bandwidth.upload }}</div>
+                                    <div>{{ t('download') }}: {{ data.bandwidth.download }}</div>
+                                </div>
                             </template></Column>
                             </DataTable>
                             <div class="node-drawer-mobile-peers">
