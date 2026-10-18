@@ -2119,8 +2119,10 @@ type TcpHolePunchRequest struct {
 	// Set by nodes that understand `TcpHolePunchPredictedPorts`. When false
 	// (e.g. upstream peers) the response must not carry prediction info.
 	SupportsPortPrediction bool `protobuf:"varint,50003,opt,name=supports_port_prediction,json=supportsPortPrediction,proto3" json:"supports_port_prediction,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Echoed into both possible TCP dial roles for one parallel pool slot.
+	ParallelMember string `protobuf:"bytes,50004,opt,name=parallel_member,json=parallelMember,proto3" json:"parallel_member,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TcpHolePunchRequest) Reset() {
@@ -2172,6 +2174,13 @@ func (x *TcpHolePunchRequest) GetSupportsPortPrediction() bool {
 		return x.SupportsPortPrediction
 	}
 	return false
+}
+
+func (x *TcpHolePunchRequest) GetParallelMember() string {
+	if x != nil {
+		return x.ParallelMember
+	}
+	return ""
 }
 
 type TcpHolePunchResponse struct {
@@ -3476,11 +3485,12 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\x10base_mapped_addr\x18ц\x03 \x01(\v2\x12.common.SocketAddrR\x0ebaseMappedAddr\x12\"\n" +
 	"\fmax_port_num\x18҆\x03 \x01(\rR\n" +
 	"maxPortNum\x12?\n" +
-	"\tdirection\x18ӆ\x03 \x01(\x0e2\x1f.peer_rpc.PortSequenceDirectionR\tdirection\"\xb3\x01\n" +
+	"\tdirection\x18ӆ\x03 \x01(\x0e2\x1f.peer_rpc.PortSequenceDirectionR\tdirection\"\xde\x01\n" +
 	"\x13TcpHolePunchRequest\x12F\n" +
 	"\x15connector_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x13connectorMappedAddr\x12\x18\n" +
 	"\x06scheme\x18҆\x03 \x01(\tR\x06scheme\x12:\n" +
-	"\x18supports_port_prediction\x18ӆ\x03 \x01(\bR\x16supportsPortPrediction\"\xc7\x01\n" +
+	"\x18supports_port_prediction\x18ӆ\x03 \x01(\bR\x16supportsPortPrediction\x12)\n" +
+	"\x0fparallel_member\x18Ԇ\x03 \x01(\tR\x0eparallelMember\"\xc7\x01\n" +
 	"\x14TcpHolePunchResponse\x12D\n" +
 	"\x14listener_mapped_addr\x18\x01 \x01(\v2\x12.common.SocketAddrR\x12listenerMappedAddr\x12\x18\n" +
 	"\x06scheme\x18҆\x03 \x01(\tR\x06scheme\x12O\n" +

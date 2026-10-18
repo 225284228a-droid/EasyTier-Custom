@@ -488,6 +488,7 @@ pub struct Peer {
     close_event_sender: mpsc::Sender<PeerConnCloseEvent>,
     #[allow(dead_code)]
     close_event_listener: AbortOnDropHandle<()>,
+    conn_lifecycle: Arc<tokio::sync::Mutex<()>>,
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
@@ -528,6 +529,7 @@ impl Peer {
         let parallel_send = Arc::new(Mutex::new(ParallelSendState::default()));
         let parallel_receiver = super::parallel::ParallelReceiver::new(packet_recv_chan.clone());
         let parallel_policy = Arc::new(super::parallel::ParallelPolicy::default());
+        let conn_lifecycle = Arc::new(tokio::sync::Mutex::new(()));
         let receiver = parallel_receiver.clone();
         let receive_conns = conns.clone();
         let parallel_receive_task = AbortOnDropHandle::new(tokio::spawn(async move {
@@ -555,6 +557,7 @@ impl Peer {
         let default_conn_update_lock_copy = default_conn_update_lock.clone();
         let negotiated_disguise_copy = negotiated_disguise.clone();
         let remote_cleanup_requested_copy = remote_cleanup_requested.clone();
+        let conn_lifecycle_copy = conn_lifecycle.clone();
         let close_event_listener = AbortOnDropHandle::new(tokio::spawn(
             async move {
                 loop {
@@ -571,6 +574,7 @@ impl Peer {
                             );
 
                             let removed_conn = {
+                                let _lifecycle = conn_lifecycle_copy.lock().await;
                                 let _update_guard = default_conn_update_lock_copy.lock();
                                 // Cleanup is conditional until the actual removal: a newer
                                 // preference or failed replacement must retain the fallback.
@@ -584,6 +588,17 @@ impl Peer {
                                     {
                                         default_conn_copy.store(None);
                                     }
+                                    // Reset before admitting another connection. Deferring
+                                    // this until after callbacks can skip the reset when
+                                    // a new bootstrap fills the temporarily empty map.
+                                    if conns_copy.is_empty() {
+                                        *parallel_send_copy.lock() = ParallelSendState::default();
+                                        parallel_receiver_copy.reset_epoch();
+                                        parallel_policy_copy.reset();
+                                        remote_cleanup_requested_copy.store(false);
+                                        peer_identity_type_copy.store(None);
+                                        *peer_public_key_copy.write() = None;
+                                    }
                                 }
                                 removed_conn
                             };
@@ -593,14 +608,6 @@ impl Peer {
                                     conn.get_conn_info(),
                                 ));
                                 shrink_dashmap(&conns_copy, Some(4));
-                                if conns_copy.is_empty() {
-                                    *parallel_send_copy.lock() = ParallelSendState::default();
-                                    parallel_receiver_copy.reset_epoch();
-                                    parallel_policy_copy.reset();
-                                    remote_cleanup_requested_copy.store(false);
-                                    peer_identity_type_copy.store(None);
-                                    *peer_public_key_copy.write() = None;
-                                }
                             }
                         }
 
@@ -679,6 +686,7 @@ impl Peer {
 
             close_event_sender,
             close_event_listener,
+            conn_lifecycle,
 
             shutdown_notifier,
             default_conn,
@@ -697,6 +705,7 @@ impl Peer {
     }
 
     pub async fn add_peer_conn(&self, mut conn: PeerConn) -> Result<(), Error> {
+        let lifecycle = self.conn_lifecycle.lock().await;
         if !self.conns.is_empty() && self.conns.iter().all(|c| c.value().is_closed()) {
             *self.parallel_send.lock() = ParallelSendState::default();
             self.parallel_receiver.reset_epoch();
@@ -782,6 +791,9 @@ impl Peer {
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
         self.conns.insert(conn.get_conn_id(), Arc::new(conn));
+        // Close queue backpressure, callbacks and reconciliation must run after
+        // releasing this guard: the close listener needs it to drain the queue.
+        drop(lifecycle);
         for id in obsolete_members {
             let _ = self
                 .close_event_sender

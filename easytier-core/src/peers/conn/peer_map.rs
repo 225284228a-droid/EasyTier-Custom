@@ -7,7 +7,7 @@ use std::{
 use anyhow::Context;
 use dashmap::{DashMap, DashSet};
 use parking_lot::Mutex;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 
 use crate::{
     config::PeerId,
@@ -36,10 +36,14 @@ use crate::peers::{
     route::{ArcRoute, NextHopPolicy},
 };
 
+#[cfg(test)]
+mod lifecycle_tests;
+
 pub struct PeerMap {
     context: ArcPeerContext,
     my_peer_id: PeerId,
     peer_map: DashMap<PeerId, Arc<Peer>>,
+    admission: AsyncMutex<()>,
     packet_send: PacketRecvChan,
     routes: RwLock<Vec<ArcRoute>>,
     alive_client_urls: Arc<Mutex<HashMap<url::Url, AliveClientConns>>>,
@@ -61,6 +65,7 @@ impl PeerMap {
             context,
             my_peer_id,
             peer_map: DashMap::with_shard_amount(small_map_shard_amount()),
+            admission: AsyncMutex::new(()),
             packet_send,
             routes: RwLock::new(Vec::new()),
             alive_client_urls: Arc::new(Mutex::new(HashMap::new())),
@@ -74,6 +79,9 @@ impl PeerMap {
     }
 
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
+        // Publish only fully admitted peers, while ensuring simultaneous first
+        // connections share one Peer and its authenticated receive epochs.
+        let _admission = self.admission.lock().await;
         let peer_id = peer_conn.get_peer_id();
         let conn_id = peer_conn.get_conn_id();
         let conn_is_hole_punched = peer_conn.is_hole_punched();
@@ -491,6 +499,12 @@ impl PeerMap {
     }
 
     pub async fn close_peer(&self, peer_id: PeerId) -> Result<(), TunnelError> {
+        let _admission = self.admission.lock().await;
+        self.remove_peer(peer_id);
+        Ok(())
+    }
+
+    fn remove_peer(&self, peer_id: PeerId) {
         let remove_ret = self.peer_map.remove(&peer_id);
         shrink_dashmap(&self.peer_map, None);
 
@@ -501,7 +515,6 @@ impl PeerMap {
             peer_ref_counter = ?remove_ret.map(|v| Arc::strong_count(&v.1)),
             "peer is closed"
         );
-        Ok(())
     }
 
     pub async fn add_route(&self, route: ArcRoute) {
@@ -524,6 +537,9 @@ impl PeerMap {
     }
 
     pub async fn clean_peer_without_conn(&self) {
+        // Keep the empty check and removal in the same admission transaction:
+        // a stale empty scan must not remove a peer that just reconnected.
+        let _admission = self.admission.lock().await;
         let mut to_remove = vec![];
 
         for peer_id in self.list_peers() {
@@ -534,7 +550,7 @@ impl PeerMap {
         }
 
         for peer_id in to_remove {
-            self.close_peer(peer_id).await.unwrap();
+            self.remove_peer(peer_id);
         }
     }
 

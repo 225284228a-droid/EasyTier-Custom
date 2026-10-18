@@ -332,8 +332,13 @@ type NetworkConfig struct {
 	// automatic disguised P2P; only: require disguise. Manual peers are unaffected.
 	// A nonempty mode overrides legacy TOML disguise booleans (fields 50074-50076).
 	P2PDisguiseMode *string `protobuf:"bytes,50081,opt,name=p2p_disguise_mode,json=p2pDisguiseMode,proto3,oneof" json:"p2p_disguise_mode,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Fork extensions. Omitted values mean one connection, concurrency allowed,
+	// and the throughput-oriented speedtest disguise respectively.
+	ParallelConnections        *uint32 `protobuf:"varint,50082,opt,name=parallel_connections,json=parallelConnections,proto3,oneof" json:"parallel_connections,omitempty"`
+	DisableParallelConnections *bool   `protobuf:"varint,50083,opt,name=disable_parallel_connections,json=disableParallelConnections,proto3,oneof" json:"disable_parallel_connections,omitempty"`
+	TrafficDisguise            *string `protobuf:"bytes,50084,opt,name=traffic_disguise,json=trafficDisguise,proto3,oneof" json:"traffic_disguise,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *NetworkConfig) Reset() {
@@ -885,6 +890,27 @@ func (x *NetworkConfig) GetVpn() *VpnConfig {
 func (x *NetworkConfig) GetP2PDisguiseMode() string {
 	if x != nil && x.P2PDisguiseMode != nil {
 		return *x.P2PDisguiseMode
+	}
+	return ""
+}
+
+func (x *NetworkConfig) GetParallelConnections() uint32 {
+	if x != nil && x.ParallelConnections != nil {
+		return *x.ParallelConnections
+	}
+	return 0
+}
+
+func (x *NetworkConfig) GetDisableParallelConnections() bool {
+	if x != nil && x.DisableParallelConnections != nil {
+		return *x.DisableParallelConnections
+	}
+	return false
+}
+
+func (x *NetworkConfig) GetTrafficDisguise() string {
+	if x != nil && x.TrafficDisguise != nil {
+		return *x.TrafficDisguise
 	}
 	return ""
 }
@@ -3280,7 +3306,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xb7'\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xbb)\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3365,7 +3391,10 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH<R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
 	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH=R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
 	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigH>R\x03vpn\x88\x01\x01\x121\n" +
-	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tH?R\x0fp2pDisguiseMode\x88\x01\x01B\x0e\n" +
+	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tH?R\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
+	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rH@R\x13parallelConnections\x88\x01\x01\x12G\n" +
+	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bHAR\x1adisableParallelConnections\x88\x01\x01\x120\n" +
+	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHBR\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3429,7 +3458,10 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x14_p2p_prefer_protocolB'\n" +
 	"%_close_redundant_conns_when_disguisedB\x06\n" +
 	"\x04_vpnB\x14\n" +
-	"\x12_p2p_disguise_modeJ\x04\b*\x10+R\x10enable_magic_dns\"\x91\x01\n" +
+	"\x12_p2p_disguise_modeB\x17\n" +
+	"\x15_parallel_connectionsB\x1f\n" +
+	"\x1d_disable_parallel_connectionsB\x13\n" +
+	"\x11_traffic_disguiseJ\x04\b*\x10+R\x10enable_magic_dns\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
 	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xcd\x01\n" +
