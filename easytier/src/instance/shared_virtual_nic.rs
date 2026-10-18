@@ -246,8 +246,8 @@ impl SharedVirtualNic {
     }
 
     async fn apply_ifcfg_update(&self, next_ifcfg: &SharedIfConfig) -> Result<(), Error> {
-        let old_effective = self.ifcfg.effective();
-        let next_effective = next_ifcfg.effective();
+        let old_effective = self.ifcfg.effective_for_os();
+        let next_effective = next_ifcfg.effective_for_os();
         let delta = SharedIfConfigDelta::between(&old_effective, &next_effective);
         let changed_routes: Vec<_> = old_effective
             .ipv4_routes

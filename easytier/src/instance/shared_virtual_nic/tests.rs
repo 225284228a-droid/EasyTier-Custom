@@ -104,6 +104,8 @@ fn registered_nic() -> SharedVirtualNic {
 enum RouteChange {
     Add(SharedIpv4Route, Option<Ipv4Addr>),
     Remove(SharedIpv4Route, Option<Ipv4Addr>),
+    AddIpv6(SharedIpv6Route),
+    RemoveIpv6(SharedIpv6Route),
 }
 
 #[derive(Clone, Default)]
@@ -114,6 +116,37 @@ struct RecordingIfConfiger {
 
 #[async_trait::async_trait]
 impl IfConfiguerTrait for RecordingIfConfiger {
+    async fn add_ipv6_route(
+        &self,
+        _name: &str,
+        address: Ipv6Addr,
+        prefix: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        self.routes
+            .lock()
+            .unwrap()
+            .push(RouteChange::AddIpv6(SharedIpv6Route::new(
+                address, prefix, cost,
+            )));
+        Ok(())
+    }
+
+    async fn remove_ipv6_route(
+        &self,
+        _name: &str,
+        address: Ipv6Addr,
+        prefix: u8,
+    ) -> Result<(), Error> {
+        self.routes
+            .lock()
+            .unwrap()
+            .push(RouteChange::RemoveIpv6(SharedIpv6Route::new(
+                address, prefix, None,
+            )));
+        Ok(())
+    }
+
     async fn add_ipv4_route_with_source_hint(
         &self,
         _name: &str,
@@ -156,6 +189,120 @@ async fn set_ifcfg(nic: &SharedVirtualNic, ifcfg: RecordingIfConfiger) {
     let mut device = nic.nic.lock().await;
     device.set_ifname_for_test("et0".to_owned());
     device.set_ifcfg_for_test(Box::new(ifcfg));
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn windows_shared_routes_preserve_automatically_created_connected_routes() {
+    let mut nic = SharedVirtualNic::new(virtual_nic_config(1500, None));
+    let ifcfg = RecordingIfConfiger::default();
+    set_ifcfg(&nic, ifcfg.clone()).await;
+    let mut claims = address_claims("10.50.0.2/24");
+    claims
+        .ipv6_addresses
+        .insert("fd00:50::2/64".parse().unwrap());
+    nic.apply_member_claims(MEMBER, claims.clone(), true)
+        .await
+        .unwrap();
+
+    let connected_v4 = SharedIpv4Route::new("10.50.0.0".parse().unwrap(), 24, None);
+    let connected_v6 = SharedIpv6Route::new("fd00:50::".parse().unwrap(), 64, None);
+    // More specific routes still need explicit installation, even though
+    // their destinations are inside the interface's connected networks.
+    let explicit_v4 = SharedIpv4Route::new("10.50.0.128".parse().unwrap(), 25, None);
+    let explicit_v6 = SharedIpv6Route::new("fd00:50:0:0:1::".parse().unwrap(), 80, None);
+    claims
+        .ipv4_routes
+        .extend([connected_v4.clone(), explicit_v4.clone()]);
+    claims
+        .ipv6_routes
+        .extend([connected_v6.clone(), explicit_v6.clone()]);
+    nic.apply_member_claims(MEMBER, claims.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        *ifcfg.routes.lock().unwrap(),
+        vec![
+            RouteChange::Add(explicit_v4.clone(), Some("10.50.0.2".parse().unwrap())),
+            RouteChange::AddIpv6(explicit_v6.clone()),
+        ],
+        "creating connected routes again would fail with Windows error 5010",
+    );
+    assert_eq!(nic.ifcfg.claims_of(MEMBER), claims);
+    assert!(nic.is_valid());
+
+    // Withdrawing route claims must leave the address-owned routes intact.
+    ifcfg.routes.lock().unwrap().clear();
+    claims.ipv4_routes.clear();
+    claims.ipv6_routes.clear();
+    nic.apply_member_claims(MEMBER, claims.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        *ifcfg.routes.lock().unwrap(),
+        vec![
+            RouteChange::Remove(explicit_v4, Some("10.50.0.2".parse().unwrap())),
+            RouteChange::RemoveIpv6(explicit_v6),
+        ],
+    );
+    assert_eq!(nic.ifcfg.claims_of(MEMBER), claims);
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn windows_shared_connected_routes_follow_address_lifetime() {
+    let mut nic = SharedVirtualNic::new(virtual_nic_config(1500, None));
+    let ifcfg = RecordingIfConfiger::default();
+    set_ifcfg(&nic, ifcfg.clone()).await;
+    let route_v4 = SharedIpv4Route::new("10.50.0.0".parse().unwrap(), 24, None);
+    let route_v6 = SharedIpv6Route::new("fd00:50::".parse().unwrap(), 64, None);
+    let mut claims = SharedIfConfigClaims {
+        ipv4_routes: BTreeSet::from([route_v4.clone()]),
+        ipv6_routes: BTreeSet::from([route_v6.clone()]),
+        ..Default::default()
+    };
+    nic.apply_member_claims(MEMBER, claims.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        *ifcfg.routes.lock().unwrap(),
+        vec![
+            RouteChange::Add(route_v4.clone(), None),
+            RouteChange::AddIpv6(route_v6.clone())
+        ],
+    );
+
+    ifcfg.routes.lock().unwrap().clear();
+    claims
+        .ipv4_addresses
+        .insert("10.50.0.2/24".parse().unwrap());
+    claims
+        .ipv6_addresses
+        .insert("fd00:50::2/64".parse().unwrap());
+    nic.apply_member_claims(MEMBER, claims.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        *ifcfg.routes.lock().unwrap(),
+        vec![
+            RouteChange::Remove(route_v4.clone(), None),
+            RouteChange::RemoveIpv6(route_v6.clone())
+        ],
+        "explicit routes must give way to routes created with the addresses",
+    );
+
+    ifcfg.routes.lock().unwrap().clear();
+    claims.ipv4_addresses.clear();
+    claims.ipv6_addresses.clear();
+    nic.apply_member_claims(MEMBER, claims, true).await.unwrap();
+    assert_eq!(
+        *ifcfg.routes.lock().unwrap(),
+        vec![
+            RouteChange::Add(route_v4, None),
+            RouteChange::AddIpv6(route_v6)
+        ],
+        "remaining route claims must be installed after their addresses are removed",
+    );
 }
 
 #[tokio::test]

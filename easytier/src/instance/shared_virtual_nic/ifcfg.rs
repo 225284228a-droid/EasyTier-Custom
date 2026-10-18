@@ -246,6 +246,31 @@ impl SharedIfConfig {
             .unwrap_or_default()
     }
 
+    pub(super) fn effective_for_os(&self) -> SharedIfConfigClaims {
+        let effective = self.effective();
+        #[cfg(target_os = "windows")]
+        let effective = {
+            let mut effective = effective;
+            // Windows creates connected routes with the addresses. Keep the
+            // claims for isolation, but do not create or delete those routes
+            // as ordinary overlay routes. Explicit metrics still need ifcfg.
+            effective.ipv4_routes.retain(|route| {
+                route.cost.is_some()
+                    || !effective.ipv4_addresses.iter().any(|ip| {
+                        route.address == ip.first_address() && route.prefix == ip.network_length()
+                    })
+            });
+            effective.ipv6_routes.retain(|route| {
+                route.cost.is_some()
+                    || !effective.ipv6_addresses.iter().any(|ip| {
+                        route.address == ip.first_address() && route.prefix == ip.network_length()
+                    })
+            });
+            effective
+        };
+        effective
+    }
+
     pub(super) fn ipv4_route_source_hint(&self, route: &SharedIpv4Route) -> Option<Ipv4Addr> {
         let route_inet = Ipv4Inet::new(route.address, route.prefix).ok();
         let mut fallback = None;
