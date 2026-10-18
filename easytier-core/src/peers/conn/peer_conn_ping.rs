@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_ping_records_tunnel_rtt_and_independent_windows_without_business_traffic() {
+    async fn delayed_first_ping_keeps_transport_rtt_and_directional_windows_independent() {
         let (local, remote) = create_ring_tunnel_pair();
         let tunnel = MpscTunnel::new(local, None);
         let (ctrl_sender, _) = broadcast::channel(16);
@@ -408,17 +408,17 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(30)).await;
             ctrl_sender.send(reply).unwrap();
         });
-        assert!(matches!(
-            pinger
-                .do_pingpong_once(&mut responses, 7, None)
-                .await
-                .unwrap(),
-            PingResponse::Pong(_)
-        ));
+        let response = pinger
+            .do_pingpong_once(&mut responses, 7, None)
+            .await
+            .unwrap();
+        assert!(matches!(response, PingResponse::Pong(rtt_us) if rtt_us >= 20_000));
         responder.await.unwrap();
         assert_eq!(throughput.tx_bytes(), 0);
         assert_eq!(throughput.rx_bytes(), 0);
-        assert!((1..=50_000_000).contains(&throughput.estimated_tx_bps()));
+        // Scheduling/processing delay in Pong must not inflate the RTT paired
+        // with the sender's transport window or copy it into the other direction.
+        assert_eq!(throughput.estimated_tx_bps(), 100_000_000);
         assert_eq!(throughput.estimated_rx_bps(), 40_000_000);
     }
 
