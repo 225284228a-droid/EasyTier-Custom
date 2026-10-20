@@ -5,6 +5,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use crate::common::{
@@ -45,6 +46,8 @@ use zerocopy::{NativeEndian, NetworkEndian};
 use crate::common::ifcfg::RegistryManager;
 
 use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicMember};
+
+const NIC_PACKET_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Netlink sockets and their runtime stay on one thread while a namespace is
 /// selected. A setns guard must never migrate between Tokio worker threads.
@@ -1365,21 +1368,33 @@ impl NicCtx {
         let channel = self.peer_packet_receiver.clone();
         let close_notifier = self.close_notifier.clone();
         self.tasks.spawn(async move {
-            // unlock until coroutine finished
-            let mut channel = channel.lock().await;
-            while let Some(packet) = channel.recv().await {
-                tracing::trace!(
-                    "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
-                    packet
-                );
-                let ret = sink.send(packet.into_tun_packet()).await;
-                if ret.is_err() {
-                    tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
-                }
-            }
+            let result = Self::forward_peer_packets_to_nic(channel, &mut sink).await;
             close_notifier.notify_one();
-            tracing::error!("nic closed when sending to it");
+            tracing::error!(?result, "nic closed when sending to it");
         });
+    }
+
+    async fn forward_peer_packets_to_nic(
+        channel: Arc<Mutex<HostPacketReceiver>>,
+        sink: &mut Pin<Box<dyn ZCPacketSink>>,
+    ) -> Result<(), Error> {
+        // unlock until coroutine finished
+        let mut channel = channel.lock().await;
+        while let Some(packet) = channel.recv().await {
+            tracing::trace!(
+                "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
+                packet
+            );
+            // A failed or indefinitely blocked TUN write must terminate this
+            // forwarding owner. The native runtime then rebuilds the interface
+            // instead of silently consuming every later peer packet.
+            tokio::time::timeout(
+                NIC_PACKET_WRITE_TIMEOUT,
+                sink.send(packet.into_tun_packet()),
+            )
+            .await??;
+        }
+        Ok(())
     }
 
     fn start_tunnel_forwarding(&mut self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
@@ -1806,8 +1821,90 @@ impl NicCtx {
 #[cfg(test)]
 mod tests {
     use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
+    use easytier_core::{
+        host::packet::{HostPacket, HostPacketReceiver},
+        packet::ZCPacket,
+        tunnel::{TunnelError, ZCPacketSink},
+    };
+    use std::{
+        pin::Pin,
+        sync::Arc,
+        task::{Context, Poll},
+    };
+    use tokio::sync::Mutex;
 
     use super::{NicCtx, VirtualNic};
+
+    struct FailingSink;
+
+    impl futures::Sink<ZCPacket> for FailingSink {
+        type Error = TunnelError;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: ZCPacket) -> Result<(), Self::Error> {
+            Err(TunnelError::TunError("write failed".to_owned()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct StalledSink;
+
+    impl futures::Sink<ZCPacket> for StalledSink {
+        type Error = TunnelError;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: ZCPacket) -> Result<(), Self::Error> {
+            unreachable!("a stalled sink never accepts a packet")
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+    }
+
+    async fn queued_peer_packet() -> Arc<Mutex<HostPacketReceiver>> {
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        sender
+            .send(HostPacket::copy_from_payload(&[0x45]))
+            .await
+            .unwrap();
+        Arc::new(Mutex::new(HostPacketReceiver::new(receiver)))
+    }
 
     #[cfg(target_os = "windows")]
     #[rstest::rstest]
@@ -1938,6 +2035,30 @@ mod tests {
                 .iter()
                 .any(|cidr| cidr.contains(&"10.66.0.5".parse().unwrap()))
         );
+    }
+
+    #[tokio::test]
+    async fn peer_packet_write_error_stops_the_forwarder() {
+        let channel = queued_peer_packet().await;
+        let mut sink: Pin<Box<dyn ZCPacketSink>> = Box::pin(FailingSink);
+
+        let result = NicCtx::forward_peer_packets_to_nic(channel, &mut sink).await;
+
+        assert!(matches!(
+            result,
+            Err(Error::TunnelError(TunnelError::TunError(message)))
+                if message == "write failed"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_packet_write_timeout_stops_the_forwarder() {
+        let channel = queued_peer_packet().await;
+        let mut sink: Pin<Box<dyn ZCPacketSink>> = Box::pin(StalledSink);
+
+        let result = NicCtx::forward_peer_packets_to_nic(channel, &mut sink).await;
+
+        assert!(matches!(result, Err(Error::Timeout(_))));
     }
 
     #[tokio::test]
