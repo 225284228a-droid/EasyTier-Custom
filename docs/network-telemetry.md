@@ -1,19 +1,23 @@
 # Network Telemetry
 
-## Transmission Window Estimate
+## Bandwidth Reference
 
 Connection statistics expose `estimated_tx_bps` and `estimated_rx_bps` in bit/s,
-with `bandwidth_estimate_version = 1`. The business-traffic peak estimator,
-sparse-traffic fallback, sampling filter and five-minute peak retention have
-been removed. The UI rejects unversioned/old estimates and closed connections.
+with `bandwidth_estimate_version = 2`. This is a conservative bandwidth
+reference, not a speed test. No synthetic probe payload is sent. The UI rejects
+unversioned/legacy v1 estimates and closed connections.
 
-The formula is `min(cwnd_bytes / gain, peer_receive_window_bytes) * 8 / transport_RTT_seconds`.
+For transports with a congestion window, the upper reference remains
+`min(cwnd_bytes / gain, peer_receive_window_bytes) * 8 / transport_RTT_seconds`.
 Gain is 2 for detected BBR and 1 for loss-based control. This is a simple
 steady-state BBR correction, not a reconstruction of its startup, recovery or
 ACK aggregation state. Linux TCP detects BBR through `TCP_CONGESTION`; QUIC
 detects the controller once when attaching the source. Windows TCP retains
 loss-based treatment because its current `SIO_TCP_INFO` snapshot has no
-congestion-controller identity.
+congestion-controller identity. During active traffic, this window reference is
+capped by the observed application send rate. An idle transport keeps its
+window reference; a windowless transport remains unknown.
+
 If peer flow-control information is not exposed, the formula uses the real
 congestion window alone. Detected BBR uses transport min RTT when available;
 other cases use smoothed transport RTT. The window and RTT must describe the
@@ -39,22 +43,45 @@ WS/WSS retain their underlying TCP telemetry. QUIC/HTTP3 use Quinn's live path
 congestion window and RTT; its peer flow-control credit is not exposed here.
 QUIC reads the current path directly without retaining polling history.
 Other native TCP platforms and transports without congestion-window telemetry
-(plain UDP, WireGuard, fake TCP, ring/host transports) remain unknown.
+(plain UDP, WireGuard, fake TCP, ring/host transports) do not use a synthetic
+window.
 
-Upload is the local transport's window estimate. Download is the remote
-transport's upload estimate, carried in the existing per-connection Ping/Pong
-path, inside session authentication when that security mode is enabled.
-The first four sequence bytes remain compatible with old peers. A distinct
-request/reply marker prevents an old peer's echo from being mistaken for a
-remote measurement. Missing directions are not mirrored. Remote reports expire
-after 90 seconds; polling and zero/invalid reports never extend their lifetime.
-Zero reports retain an existing valid report until it expires and leave an
-unmeasured direction unknown. Normal pings, rather
-than business payloads or added speed-test traffic, maintain idle-link telemetry.
+Windowless transports use receiver feedback piggybacked on normal business
+traffic and the existing per-connection Ping/Pong control path. Each side
+samples tunnel traffic throughput over at least 500 ms and at most 5 seconds. A quick
+Ping/Pong exchange can reuse the most recent sample for up to 5 seconds. A
+direction needs at least 4 KiB in its sample window; control packets therefore
+cannot create a bandwidth estimate on an idle link.
 
-This is a window-limited throughput reference, not measured physical capacity,
-unused headroom or an active speed test. Initial/app-limited congestion windows
-can still underestimate a fast link before the transport learns its path.
+A windowless transport produces an estimate only after at least two recent
+saturation samples. For the outbound direction, the local send rate must be at
+least 15% above the peer's observed receive rate. For the download direction,
+the peer's send rate must be at least 15% above the local receive rate. Each
+delivered rate is retained only for 15 seconds, with up to five samples reduced
+to a lower median. A single sample, a small sample, a light-load sample or an
+older historical maximum cannot establish the estimate.
+
+Upload prefers the local transport reference and a validated outbound
+saturation sample, taking the lower positive value. Download is the peer's
+upper reference combined with a validated inbound saturation sample. Missing
+directions are not mirrored. Remote upper references expire after 90 seconds;
+polling and zero/invalid reports never extend their lifetime. Idle or lightly
+loaded UDP, WireGuard and fake TCP paths display unknown instead of a historical
+peak.
+
+The v2 Ping/Pong report carries the local upper reference plus measured
+bidirectional rates and the sample duration. The first four sequence bytes and
+the v1 report remain readable so a v2 node can reply to an old peer in the old
+wire format. A v2 request sent to an old node is safely ignored if that node
+only echoes the payload. Both directions remain independent and are never
+copied across connections.
+
+This is an observed and window-limited throughput reference, not measured
+physical capacity, unused headroom or an active speed test. Initial/app-limited
+congestion windows can still underestimate a fast link before the transport
+learns its path. A windowless path can be faster than the last validated
+saturation sample; without a probe or sufficiently heavy natural traffic its
+remaining headroom is unobservable.
 TCP terminated by a CDN/proxy supplies that leg's window and RTT; it cannot
 establish the capacity of an unobserved proxy backhaul.
 These paths continue to display the best-effort numeric estimate whenever valid
@@ -66,8 +93,8 @@ Both nodes need the updated binary for two-sided window reporting; updating only
 the web frontend cannot add window telemetry to an old node.
 Connection reconciliation may replace TCP/QUIC with UDP/WireGuard or another
 transport that has no congestion-window telemetry. That new connection remains
-unknown; estimates are never copied across connections or retained after a
-socket closes.
+unknown until it observes recent natural saturation; estimates are never copied
+across connections or retained after a socket closes.
 
 On Windows, the `Windows TCP transmission window` trace event records the raw
 `SIO_TCP_INFO` cwnd, peer send allowance, MSS, RTT and socket endpoints. Both
@@ -78,8 +105,8 @@ RTT error. An idle sender's small congestion window is not evidence that a
 substituted for an unmeasured end-to-end capacity.
 
 The shared status table combines cumulative upload/download into one Total
-Traffic column, with upload and download on separate lines. Estimated Available
-Bandwidth follows it in the same two-line format, before Loss Rate.
+Traffic column, with upload and download on separate lines. Bandwidth Reference
+follows it in the same two-line format, before Loss Rate.
 
 Parallel pools do not add per-connection window estimates together: their
 windows can share the same physical bottleneck, so the sum is not a link-capacity

@@ -32,7 +32,7 @@ function runningInstance(): NetworkInstance {
             stats: {
               tx_bytes: '2048',
               rx_bytes: '0',
-              bandwidth_estimate_version: 1,
+              bandwidth_estimate_version: 2,
               estimated_tx_bps: 1_000_000,
               estimated_rx_bps: 2_000_000,
             },

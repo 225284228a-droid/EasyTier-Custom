@@ -1,5 +1,18 @@
 use std::{fmt::Debug, time::Duration};
 
+/// A sampled bidirectional traffic report exchanged with the peer.
+///
+/// The rates are tunnel-traffic observations, not a speed-test result.
+/// `estimated_tx_bps` is the sender's own outbound estimate, while `tx_bps`
+/// and `rx_bps` describe the traffic observed during `sample_window`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TrafficRateReport {
+    pub estimated_tx_bps: u64,
+    pub tx_bps: u64,
+    pub rx_bps: u64,
+    pub sample_window: Duration,
+}
+
 /// A simple steady-state correction for congestion-control window headroom.
 /// BBR commonly targets about two BDPs of window; startup, recovery and ACK
 /// aggregation can still make this approximation differ from its bandwidth model.

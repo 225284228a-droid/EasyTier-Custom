@@ -184,8 +184,8 @@ latency: Latency
 upload_bytes: Upload
 download_bytes: Download
 total_traffic: Total Traffic
-estimated_bandwidth: Estimated Available Bandwidth
-estimated_bandwidth_help: "A reference estimate for the preferred active connection, not a speed test. Parallel connections are not added together. Directions are estimated independently and can differ greatly from link capacity while idle or lightly loaded."
+estimated_bandwidth: Bandwidth Reference
+estimated_bandwidth_help: "A reference derived from recent business traffic and transport windows, not a speed test; no probe traffic is sent. Parallel connections are not added together. Windowless transports such as UDP show unknown while idle, lightly loaded, or without saturation samples."
 loss_rate: Loss Rate
 nat_type: NAT Type
 

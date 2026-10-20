@@ -1461,17 +1461,25 @@ impl PeerConn {
                     if peer_mgr_hdr.packet_type == PacketType::Ping as u8 {
                         context.record_control_rx(&control_network_name, buf_len);
                         peer_mgr_hdr.packet_type = PacketType::Pong as u8;
-                        if let Some(remote_bps) = decode_window_report(zc_packet.payload(), false) {
-                            throughput.record_peer_window_estimate(remote_bps);
+                        if let Some(remote_report) =
+                            decode_window_report(zc_packet.payload(), false)
+                        {
+                            throughput.record_peer_traffic_report(
+                                remote_report.version,
+                                remote_report.report.tx_bps,
+                                remote_report.report.rx_bps,
+                                remote_report.report.estimated_tx_bps,
+                                remote_report.report.sample_window,
+                            );
                             let seq =
                                 u32::from_le_bytes(zc_packet.payload()[..4].try_into().unwrap());
-                            zc_packet
-                                .mut_payload()
-                                .copy_from_slice(&encode_window_report(
-                                    seq,
-                                    throughput.estimated_tx_bps(),
-                                    true,
-                                ));
+                            let reply = encode_window_report(
+                                seq,
+                                throughput.traffic_report(),
+                                true,
+                                remote_report.version,
+                            );
+                            zc_packet.mut_payload().copy_from_slice(&reply);
                         }
                         if let Err(e) = sink.send(zc_packet).await {
                             tracing::error!(?e, "peer conn send req error");

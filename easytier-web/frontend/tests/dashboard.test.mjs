@@ -508,8 +508,8 @@ test('removed local configuration page falls back to the dashboard without a nav
 test('central node detail uses live directional bandwidth and combined traffic totals', async t => {
     const { page } = await open(t, `/h/networks/${id(100)}`, {}, state => {
         state.networks[0].network_id = id(100);
-        state.nodePeers = [{ peer_id: 2, conns: [{ conn_id: 'live', tunnel: { tunnel_type: 'wss' }, stats: { latency_us: '1000', bandwidth_estimate_version: 1, estimated_tx_bps: '1000000', tx_bytes: '2048', rx_bytes: '1024' } },
-            { conn_id: 'old', is_closed: true, stats: { bandwidth_estimate_version: 1, estimated_rx_bps: '9000000' } }] }];
+        state.nodePeers = [{ peer_id: 2, conns: [{ conn_id: 'live', tunnel: { tunnel_type: 'wss' }, stats: { latency_us: '1000', bandwidth_estimate_version: 2, estimated_tx_bps: '1000000', tx_bytes: '2048', rx_bytes: '1024' } },
+            { conn_id: 'old', is_closed: true, stats: { bandwidth_estimate_version: 2, estimated_rx_bps: '9000000' } }] }];
     });
     await page.getByRole('button', { name: 'Node Detail', exact: true }).click();
     const peers = page.locator('.node-drawer-desktop-peers');

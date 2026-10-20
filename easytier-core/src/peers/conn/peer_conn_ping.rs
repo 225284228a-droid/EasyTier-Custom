@@ -18,7 +18,10 @@ use crate::{
     packet::{PacketType, ZCPacket},
     peers::{conn::peer_conn_liveness::PeerConnLiveness, context::ArcPeerContext, error::Error},
     tunnel::{
-        bandwidth::{decode_window_report, encode_window_report},
+        bandwidth::{
+            BANDWIDTH_ESTIMATE_VERSION, TrafficRateReport, decode_window_report,
+            encode_window_report,
+        },
         mpsc::MpscTunnelSender,
         stats::{Throughput, WindowLatency},
     },
@@ -177,8 +180,14 @@ impl PeerConnPinger {
         }
     }
 
-    fn new_ping_packet(my_node_id: PeerId, peer_id: PeerId, seq: u32, bps: u64) -> ZCPacket {
-        let mut packet = ZCPacket::new_with_payload(&encode_window_report(seq, bps, false));
+    fn new_ping_packet(
+        my_node_id: PeerId,
+        peer_id: PeerId,
+        seq: u32,
+        report: TrafficRateReport,
+    ) -> ZCPacket {
+        let payload = encode_window_report(seq, report, false, BANDWIDTH_ESTIMATE_VERSION);
+        let mut packet = ZCPacket::new_with_payload(&payload);
         packet.fill_peer_manager_hdr(my_node_id, peer_id, PacketType::Ping as u8);
         packet
     }
@@ -194,7 +203,7 @@ impl PeerConnPinger {
             self.my_peer_id,
             self.peer_id,
             seq,
-            self.throughput_stats.estimated_tx_bps(),
+            self.throughput_stats.traffic_report(),
         );
         let req_len = req.buf_len() as u64;
         self.sink.send(req).await?;
@@ -214,8 +223,14 @@ impl PeerConnPinger {
                         };
                         let resp_seq = u32::from_le_bytes(seq_buf);
                         if resp_seq == seq {
-                            if let Some(bps) = decode_window_report(payload, true) {
-                                self.throughput_stats.record_peer_window_estimate(bps);
+                            if let Some(report) = decode_window_report(payload, true) {
+                                self.throughput_stats.record_peer_traffic_report(
+                                    report.version,
+                                    report.report.tx_bps,
+                                    report.report.rx_bps,
+                                    report.report.estimated_tx_bps,
+                                    report.report.sample_window,
+                                );
                             }
                             break;
                         }
@@ -400,10 +415,22 @@ mod tests {
         let responder = tokio::spawn(async move {
             let request = stream.next().await.unwrap().unwrap();
             assert_eq!(
-                decode_window_report(request.payload(), false),
-                Some(100_000_000)
+                decode_window_report(request.payload(), false)
+                    .expect("v2 request")
+                    .report
+                    .estimated_tx_bps,
+                100_000_000
             );
-            let mut reply = ZCPacket::new_with_payload(&encode_window_report(7, 40_000_000, true));
+            let reply_report = TrafficRateReport {
+                estimated_tx_bps: 40_000_000,
+                ..Default::default()
+            };
+            let mut reply = ZCPacket::new_with_payload(&encode_window_report(
+                7,
+                reply_report,
+                true,
+                BANDWIDTH_ESTIMATE_VERSION,
+            ));
             reply.fill_peer_manager_hdr(2, 1, PacketType::Pong as u8);
             tokio::time::sleep(Duration::from_millis(30)).await;
             ctrl_sender.send(reply).unwrap();

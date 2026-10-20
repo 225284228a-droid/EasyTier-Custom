@@ -185,8 +185,8 @@ latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载
 total_traffic: 总流量
-estimated_bandwidth: 预计可用带宽
-estimated_bandwidth_help: "首选活动连接的带宽参考值，并非测速结果。多连接不累加；上下行独立估算，空闲或轻载时可能与实际链路容量相差较大。"
+estimated_bandwidth: 带宽参考
+estimated_bandwidth_help: "根据最近业务流量和传输窗口得到的参考值，并非测速结果，也不会发送测试流量。多连接不累加；UDP 等无窗口传输在空闲、轻载或缺少饱和样本时显示未知。"
 loss_rate: 丢包率
 nat_type: NAT 类型
 

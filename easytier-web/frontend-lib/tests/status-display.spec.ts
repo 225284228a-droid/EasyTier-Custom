@@ -91,16 +91,16 @@ describe('status display helpers', () => {
     expect(lossRate(peerRoutePairWithDefaultConn(conns, defaultConnId))).toBe('50%')
   })
 
-  it('formats window bandwidth estimates and prefers the default connection', () => {
+  it('formats bandwidth references and prefers the default connection', () => {
     const defaultConnId = '00000001-0002-0003-0004-000000000005'
     const conns = [
       {
         conn_id: 'fallback',
-        stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 12_500, estimated_rx_bps: 2_000_000 },
+        stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 12_500, estimated_rx_bps: 2_000_000 },
       },
       {
         conn_id: defaultConnId,
-        stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 1_250_000, estimated_rx_bps: 8_000 },
+        stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 1_250_000, estimated_rx_bps: 8_000 },
       },
     ]
 
@@ -110,18 +110,18 @@ describe('status display helpers', () => {
     })
   })
 
-  it('shows unavailable bandwidth when a peer has no estimate', () => {
+  it('shows unknown bandwidth for an idle windowless peer', () => {
     expect(estimatedBandwidth(peerRoutePair([]))).toEqual({
       upload: '--',
       download: '--',
     })
     expect(estimatedBandwidth(peerRoutePair([{
-      stats: { estimated_tx_bps: 0, estimated_rx_bps: '0' },
+      stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 0, estimated_rx_bps: '0' },
     }]))).toEqual({ upload: '--', download: '--' })
   })
 
   it('reuses valid directional estimates and traffic on central-node connection rows', () => {
-    const conn = { is_closed: false, stats: { bandwidth_estimate_version: '1', estimated_tx_bps: '1000000', tx_bytes: '2048', rx_bytes: '1024' } } as any
+    const conn = { is_closed: false, stats: { bandwidth_estimate_version: '2', estimated_tx_bps: '1000000', tx_bytes: '2048', rx_bytes: '1024' } } as any
     expect(estimatedConnectionBandwidth(conn)).toEqual({ upload: '1.00 Mbit/s', download: '--' })
     expect(totalTraffic(peerRoutePair([conn]))).toEqual({ upload: '2.0 KiB', download: '1.0 KiB' })
     expect(estimatedConnectionBandwidth({ ...conn, is_closed: true })).toEqual({ upload: '--', download: '--' })
@@ -129,14 +129,14 @@ describe('status display helpers', () => {
   })
 
   it('accepts a string default connection ID from a JSON bridge', () => {
-    const info = peerRoutePair([{ conn_id: 'fallback', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 5_000_000 } },
-      { conn_id: 'default', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 1_000_000 } }])
+    const info = peerRoutePair([{ conn_id: 'fallback', stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 5_000_000 } },
+      { conn_id: 'default', stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 1_000_000 } }])
     info.peer.default_conn_id = 'default'
     expect(estimatedBandwidth(info).upload).toBe('1.00 Mbit/s')
   })
 
-  it('ignores the retired traffic estimator and unknown algorithm versions', () => {
-    for (const bandwidth_estimate_version of [undefined, 0, 2, 'invalid']) {
+  it('ignores legacy traffic estimators and unknown algorithm versions', () => {
+    for (const bandwidth_estimate_version of [undefined, 0, 1, 3, 'invalid']) {
       expect(estimatedBandwidth(peerRoutePair([{
         stats: { bandwidth_estimate_version, estimated_tx_bps: 1_000_000_000, estimated_rx_bps: 80_000 },
       }]))).toEqual({ upload: '--', download: '--' })
@@ -145,15 +145,15 @@ describe('status display helpers', () => {
 
   it('uses only live window estimates, without mirroring a missing direction', () => {
     expect(estimatedBandwidth(peerRoutePair([
-      { is_closed: true, stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 9_000_000, estimated_rx_bps: 9_000_000 } },
-      { stats: { bandwidth_estimate_version: '1', estimated_tx_bps: 1_000_000 } },
+      { is_closed: true, stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 9_000_000, estimated_rx_bps: 9_000_000 } },
+      { stats: { bandwidth_estimate_version: '2', estimated_tx_bps: 1_000_000 } },
     ]))).toEqual({ upload: '1.00 Mbit/s', download: '--' })
   })
 
   it('uses a live window transport when the default lacks one, then drops it when closed', () => {
     const defaultConnId = '00000001-0002-0003-0004-000000000005'
-    const udp = { conn_id: defaultConnId, stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 0, estimated_rx_bps: 0 } }
-    const tcp = { conn_id: 'tcp', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 25_000_000, estimated_rx_bps: 10_000_000 } }
+    const udp = { conn_id: defaultConnId, stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 0, estimated_rx_bps: 0 } }
+    const tcp = { conn_id: 'tcp', stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 25_000_000, estimated_rx_bps: 10_000_000 } }
     expect(estimatedBandwidth(peerRoutePairWithDefaultConn([udp, tcp], defaultConnId))).toEqual({
       upload: '25.0 Mbit/s',
       download: '10.0 Mbit/s',
@@ -192,13 +192,13 @@ describe('status display helpers', () => {
 
   it('uses the default active connection without adding windows or mixing directions across members', () => {
     const activeA = { conn_id: 'active-a', stats: {
-      bandwidth_estimate_version: 1, estimated_tx_bps: 2_000_000, estimated_rx_bps: 3_000_000,
+      bandwidth_estimate_version: 2, estimated_tx_bps: 2_000_000, estimated_rx_bps: 3_000_000,
     } }
     const activeB = { conn_id: 'active-b', stats: {
-      bandwidth_estimate_version: 1, estimated_tx_bps: 3_000_000, estimated_rx_bps: 4_000_000,
+      bandwidth_estimate_version: 2, estimated_tx_bps: 3_000_000, estimated_rx_bps: 4_000_000,
     } }
     const backup = { conn_id: 'backup', stats: {
-      bandwidth_estimate_version: 1, estimated_tx_bps: 90_000_000, estimated_rx_bps: 80_000_000,
+      bandwidth_estimate_version: 2, estimated_tx_bps: 90_000_000, estimated_rx_bps: 80_000_000,
     } }
     const info = peerRoutePair([activeA, activeB, backup])
     info.peer.default_conn_id = 'active-a'
@@ -206,7 +206,7 @@ describe('status display helpers', () => {
 
     expect(estimatedBandwidth(info)).toEqual({ upload: '2.00 Mbit/s', download: '3.00 Mbit/s' })
 
-    info.peer.conns[1].stats = { bandwidth_estimate_version: 1, estimated_tx_bps: 3_000_000 }
+    info.peer.conns[1].stats = { bandwidth_estimate_version: 2, estimated_tx_bps: 3_000_000 }
     expect(estimatedBandwidth(info)).toEqual({ upload: '2.00 Mbit/s', download: '3.00 Mbit/s' })
 
     info.peer.default_conn_id = 'active-b'
@@ -223,7 +223,7 @@ describe('status display helpers', () => {
 
   it('does not multiply bandwidth when four connections share a gigabit path', () => {
     const conns = Array.from({ length: 4 }, (_, i) => ({ conn_id: `active-${i}`, stats: {
-      bandwidth_estimate_version: 1, estimated_tx_bps: 500_000_000, estimated_rx_bps: 45_000_000,
+      bandwidth_estimate_version: 2, estimated_tx_bps: 500_000_000, estimated_rx_bps: 45_000_000,
     } }))
     const info = peerRoutePair(conns)
     const single = estimatedBandwidth(info)
@@ -258,8 +258,8 @@ describe('status display helpers', () => {
   it('uses existing default-connection estimates when a pool has no active members', () => {
     const defaultConnId = '00000001-0002-0003-0004-000000000005'
     const info = peerRoutePairWithDefaultConn([
-      { conn_id: defaultConnId, stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 6_000_000, estimated_rx_bps: 7_000_000 } },
-      { conn_id: 'backup', stats: { bandwidth_estimate_version: 1, estimated_tx_bps: 90_000_000, estimated_rx_bps: 80_000_000 } },
+      { conn_id: defaultConnId, stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 6_000_000, estimated_rx_bps: 7_000_000 } },
+      { conn_id: 'backup', stats: { bandwidth_estimate_version: 2, estimated_tx_bps: 90_000_000, estimated_rx_bps: 80_000_000 } },
     ], defaultConnId)
     info.peer.parallel_connections = { target: 4, active_conn_ids: [], protocol: 'http3' }
 
