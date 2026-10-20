@@ -17,6 +17,11 @@ use crate::{
 pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
+    #[cfg(test)]
+    pub(crate) fn from_sender(sender: Sender<ZCPacket>) -> Self {
+        Self(sender)
+    }
+
     pub async fn reserve_owned(
         &self,
     ) -> Result<tokio::sync::mpsc::OwnedPermit<ZCPacket>, TunnelError> {

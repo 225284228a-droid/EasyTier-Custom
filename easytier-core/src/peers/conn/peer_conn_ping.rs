@@ -27,6 +27,8 @@ use crate::{
     },
 };
 
+const PING_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(2);
+
 #[derive(Debug)]
 enum PingResponse {
     Pong(u128),
@@ -206,9 +208,6 @@ impl PeerConnPinger {
             self.throughput_stats.traffic_report(),
         );
         let req_len = req.buf_len() as u64;
-        self.sink.send(req).await?;
-        self.context.record_control_tx(&self.network_name, req_len);
-
         let now = Instant::now();
         let wait_for_pong = async {
             loop {
@@ -243,9 +242,14 @@ impl PeerConnPinger {
                     }
                 }
             }
-            Ok(())
+            Ok::<(), Error>(())
         };
-        let resp = timeout(Duration::from_secs(2), async {
+        let resp = timeout(PING_ROUND_TRIP_TIMEOUT, async {
+            // A blocked outbound queue must count as a failed round trip too.
+            // Otherwise the liveness loop can wait here forever and the peer
+            // remains visible with its last successful latency/loss snapshot.
+            self.sink.send(req).await?;
+            self.context.record_control_tx(&self.network_name, req_len);
             if let Some(token) = liveness_token {
                 tokio::select! {
                     ret = wait_for_pong => ret.map(|()| PingResponse::Pong(now.elapsed().as_micros())),
@@ -261,13 +265,12 @@ impl PeerConnPinger {
 
         tracing::trace!(?resp, "wait ping response done");
 
-        if resp.is_err() {
-            return Err(Error::WaitRespError(
-                "wait ping response timeout".to_owned(),
-            ));
+        match resp {
+            Ok(result) => result,
+            Err(_) => Err(Error::WaitRespError(
+                "ping enqueue or response timeout".to_owned(),
+            )),
         }
-
-        resp.unwrap()
     }
 
     pub async fn pingpong(&mut self) {
@@ -487,6 +490,41 @@ mod tests {
         responder.await.unwrap();
         assert_eq!(throughput.estimated_tx_bps(), 100_000_000);
         assert_eq!(throughput.estimated_rx_bps(), 0);
+    }
+
+    #[cfg(not(target_os = "wasi"))]
+    #[tokio::test(start_paused = true)]
+    async fn blocked_ping_enqueue_times_out_instead_of_stalling_liveness() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let (ctrl_sender, _) = broadcast::channel(16);
+        let mut responses = ctrl_sender.subscribe();
+        sender
+            .send(ZCPacket::new_with_payload(b"queued"))
+            .await
+            .unwrap();
+        let pinger = PeerConnPinger::new(
+            1,
+            2,
+            MpscTunnelSender::from_sender(sender),
+            ctrl_sender,
+            Arc::new(WindowLatency::new(15)),
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(Throughput::new()),
+            Arc::new(NoopPeerContext::default()),
+            "test".to_owned(),
+            PeerConnLiveness::new(),
+            Duration::from_secs(32),
+        );
+
+        let result = pinger.do_pingpong_once(&mut responses, 7, None).await;
+
+        assert!(matches!(
+            result,
+            Err(Error::WaitRespError(message))
+                if message == "ping enqueue or response timeout"
+        ));
+        assert_eq!(receiver.recv().await.unwrap().payload(), b"queued");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[cfg(not(target_os = "wasi"))]
