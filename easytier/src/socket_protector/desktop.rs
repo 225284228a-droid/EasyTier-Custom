@@ -188,23 +188,22 @@ pub(crate) fn with_udp_scope<T>(
         let Some(protection) = protection else {
             return Ok(operation());
         };
+        validate_destination_scope(&protection, destination)?;
         let ipv6 = destination.ip().to_canonical().is_ipv6();
         let previous = get_scope(socket, ipv6)?;
         let source_interface = source
-            .and_then(|source| {
-                crate::tunnel::common::get_interface_name_by_ip(&source.to_canonical())
-            })
-            .and_then(|name| interface_index(&name));
+            .map(|source| local_interface(&protection, source))
+            .transpose()?
+            .flatten();
         let local_interface = socket
             .local_addr()?
             .as_socket()
-            .and_then(|addr| {
-                crate::tunnel::common::get_interface_name_by_ip(&addr.ip().to_canonical())
-            })
-            .and_then(|name| interface_index(&name));
+            .map(|addr| local_interface(&protection, addr.ip()))
+            .transpose()?
+            .flatten();
         let index = source_interface
-            .or((previous != 0).then_some(previous))
             .or(local_interface)
+            .or_else(|| native_interface(&protection, previous))
             .or_else(|| destination_interface(&protection, destination))
             .ok_or_else(|| {
                 io::Error::new(
@@ -291,6 +290,9 @@ impl DesktopProtectionLease {
         namespace: u64,
         bit: u32,
         defaults: [Option<u32>; 2],
+        #[cfg(any(target_os = "windows", target_os = "macos"))] interfaces: Vec<
+            network_interface::NetworkInterface,
+        >,
     ) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         let _ = defaults;
@@ -316,7 +318,16 @@ impl DesktopProtectionLease {
             #[cfg(any(not(target_os = "linux"), test))]
             defaults,
             #[cfg(any(target_os = "windows", target_os = "macos", test))]
-            interface_routes: Arc::new([]),
+            interface_routes: {
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                {
+                    interface_routes(interfaces)
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                {
+                    Arc::new([])
+                }
+            },
             owners: 1,
         };
         let sockets = state
@@ -345,8 +356,13 @@ impl DesktopProtectionLease {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
-    pub(crate) fn refresh_defaults(&mut self, defaults: [Option<u32>; 2]) -> io::Result<()> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    pub(crate) fn refresh_routes(
+        &mut self,
+        defaults: [Option<u32>; 2],
+        interfaces: Vec<network_interface::NetworkInterface>,
+    ) -> io::Result<()> {
+        let routes = interface_routes(interfaces);
         let mut state = registry()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -354,6 +370,7 @@ impl DesktopProtectionLease {
             return Ok(());
         };
         active.defaults = defaults;
+        active.interface_routes = routes;
         let protection = active.clone();
         for socket in state
             .sockets
@@ -364,73 +381,6 @@ impl DesktopProtectionLease {
             apply(&socket.socket, &protection)?;
         }
         Ok(())
-    }
-
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    pub(crate) fn refresh_interfaces(
-        &mut self,
-        interfaces: Vec<network_interface::NetworkInterface>,
-    ) {
-        let routes = interfaces
-            .into_iter()
-            .filter(|interface| {
-                #[cfg(target_os = "windows")]
-                {
-                    use windows::Win32::NetworkManagement::IpHelper::{GetIfEntry2, MIB_IF_ROW2};
-                    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
-                    let mut row = MIB_IF_ROW2 {
-                        InterfaceIndex: interface.index,
-                        ..Default::default()
-                    };
-                    unsafe { GetIfEntry2(&mut row) }.0 == 0 && row.OperStatus == IfOperStatusUp
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = interface;
-                    true
-                }
-            })
-            .flat_map(|interface| {
-                interface.addr.into_iter().filter_map(move |address| {
-                    let ip = address.ip();
-                    let mask = match address {
-                        network_interface::Addr::V4(address) => {
-                            address.netmask.map(std::net::IpAddr::V4)
-                        }
-                        network_interface::Addr::V6(address) => {
-                            address.netmask.map(std::net::IpAddr::V6)
-                        }
-                    }?;
-                    let prefix = crate::common::network::ip_mask_to_prefix(mask).ok()?;
-                    if prefix == 0 {
-                        return None;
-                    }
-                    let network = match (ip, mask) {
-                        (std::net::IpAddr::V4(ip), std::net::IpAddr::V4(mask)) => {
-                            std::net::IpAddr::V4(std::net::Ipv4Addr::from(
-                                u32::from(ip) & u32::from(mask),
-                            ))
-                        }
-                        (std::net::IpAddr::V6(ip), std::net::IpAddr::V6(mask)) => {
-                            std::net::IpAddr::V6(std::net::Ipv6Addr::from(
-                                u128::from(ip) & u128::from(mask),
-                            ))
-                        }
-                        _ => return None,
-                    };
-                    let cidr = format!("{network}/{prefix}").parse().ok()?;
-                    Some((cidr, interface.index))
-                })
-            })
-            .collect::<Vec<_>>();
-        if let Some(active) = registry()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active
-            .get_mut(&self.namespace)
-        {
-            active.interface_routes = routes.into();
-        }
     }
 
     pub(crate) fn release(&mut self) -> io::Result<()> {
@@ -465,6 +415,61 @@ impl DesktopProtectionLease {
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn interface_routes(
+    interfaces: Vec<network_interface::NetworkInterface>,
+) -> Arc<[(easytier_core::config::vpn::VpnCidr, u32)]> {
+    interfaces
+        .into_iter()
+        .filter(|interface| {
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::NetworkManagement::IpHelper::{GetIfEntry2, MIB_IF_ROW2};
+                use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+                let mut row = MIB_IF_ROW2 {
+                    InterfaceIndex: interface.index,
+                    ..Default::default()
+                };
+                unsafe { GetIfEntry2(&mut row) }.0 == 0 && row.OperStatus == IfOperStatusUp
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = interface;
+                true
+            }
+        })
+        .flat_map(|interface| {
+            interface.addr.into_iter().filter_map(move |address| {
+                let ip = address.ip();
+                let mask = match address {
+                    network_interface::Addr::V4(address) => {
+                        address.netmask.map(std::net::IpAddr::V4)
+                    }
+                    network_interface::Addr::V6(address) => {
+                        address.netmask.map(std::net::IpAddr::V6)
+                    }
+                }?;
+                let prefix = crate::common::network::ip_mask_to_prefix(mask).ok()?;
+                if prefix == 0 {
+                    return None;
+                }
+                let network = match (ip, mask) {
+                    (std::net::IpAddr::V4(ip), std::net::IpAddr::V4(mask)) => std::net::IpAddr::V4(
+                        std::net::Ipv4Addr::from(u32::from(ip) & u32::from(mask)),
+                    ),
+                    (std::net::IpAddr::V6(ip), std::net::IpAddr::V6(mask)) => std::net::IpAddr::V6(
+                        std::net::Ipv6Addr::from(u128::from(ip) & u128::from(mask)),
+                    ),
+                    _ => return None,
+                };
+                let cidr = format!("{network}/{prefix}").parse().ok()?;
+                Some((cidr, interface.index))
+            })
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
 #[cfg(target_os = "linux")]
 fn apply(socket: &socket2::Socket, protection: &Protection) -> io::Result<()> {
     let mark = socket.mark()?;
@@ -493,7 +498,7 @@ fn destination_interface(
     if let std::net::SocketAddr::V6(address) = destination
         && address.scope_id() != 0
     {
-        return Some(address.scope_id());
+        return native_interface(protection, address.scope_id());
     }
     let destination = destination.ip().to_canonical();
     protection
@@ -502,7 +507,62 @@ fn destination_interface(
         .filter(|(cidr, _)| cidr.contains(&destination))
         .max_by_key(|(cidr, _)| cidr.prefix_len())
         .map(|(_, index)| *index)
-        .or(protection.defaults[usize::from(destination.is_ipv6())])
+        .or_else(|| {
+            protection.defaults[usize::from(destination.is_ipv6())]
+                .and_then(|index| native_interface(protection, index))
+        })
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+fn native_interface(protection: &Protection, index: u32) -> Option<u32> {
+    // The snapshot contains eligible uplinks and loopback, never the capture
+    // TUN. Default routes are also trusted because they were resolved by the
+    // host route provider with the capture interface explicitly excluded. A
+    // third-party VPN adapter may be the default egress while having no
+    // physical MAC, so it is intentionally absent from the filtered interface
+    // snapshot but must remain usable as a native underlay.
+    let is_default = protection
+        .defaults
+        .iter()
+        .flatten()
+        .any(|default| *default == index);
+    (index != 0 && (is_default || protection.interface_routes.iter().any(|(_, i)| *i == index)))
+        .then_some(index)
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+fn validate_destination_scope(
+    protection: &Protection,
+    destination: std::net::SocketAddr,
+) -> io::Result<()> {
+    if let std::net::SocketAddr::V6(address) = destination
+        && address.scope_id() != 0
+        && native_interface(protection, address.scope_id()).is_none()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NetworkUnreachable,
+            "VPN bypass destination scope is not an eligible native interface",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn local_interface(protection: &Protection, ip: std::net::IpAddr) -> io::Result<Option<u32>> {
+    let ip = ip.to_canonical();
+    if ip.is_unspecified() {
+        return Ok(None);
+    }
+    crate::tunnel::common::get_interface_name_by_ip(&ip)
+        .and_then(|name| interface_index(&name))
+        .and_then(|index| native_interface(protection, index))
+        .map(Some)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NetworkUnreachable,
+                format!("VPN bypass source {ip} is not on an eligible native interface"),
+            )
+        })
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -511,6 +571,9 @@ fn apply_scope(
     protection: &Protection,
     destination: Option<std::net::SocketAddr>,
 ) -> io::Result<()> {
+    if let Some(destination) = destination {
+        validate_destination_scope(protection, destination)?;
+    }
     // Datagram protection applies around send/connect after bind. Windows
     // getsockname rejects an unbound socket, so registration must not call it.
     if socket.r#type()? == socket2::Type::DGRAM {
@@ -547,15 +610,16 @@ fn apply_scope(
         .to_canonical()
         .is_ipv6();
     let previous = get_scope(socket, ipv6)?;
-    let explicit = crate::tunnel::common::get_interface_name_by_ip(&addr.ip().to_canonical())
-        .and_then(|name| interface_index(&name));
-    let index = (previous != 0)
-        .then_some(previous)
-        .or(explicit)
+    let explicit = local_interface(protection, addr.ip())?;
+    let index = explicit
+        .or_else(|| native_interface(protection, previous))
         .or_else(|| {
             destination.and_then(|destination| destination_interface(protection, destination))
         })
-        .or(protection.defaults[usize::from(ipv6)])
+        .or_else(|| {
+            protection.defaults[usize::from(ipv6)]
+                .and_then(|index| native_interface(protection, index))
+        })
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NetworkUnreachable,
@@ -703,11 +767,14 @@ mod tests {
             bit: 0,
             defaults: [Some(1), Some(2)],
             interface_routes: [
+                ("10.1.0.0/16", 1),
+                ("2001:db8:1::/64", 2),
                 ("127.0.0.0/8", 3),
                 ("::1/128", 3),
                 ("192.168.1.0/24", 4),
                 ("192.168.1.128/25", 5),
                 ("fd12::/64", 6),
+                ("fe80::/64", 7),
             ]
             .into_iter()
             .map(|(cidr, index)| (cidr.parse().unwrap(), index))
@@ -733,6 +800,38 @@ mod tests {
                 "{destination}"
             );
         }
+        for destination in ["[fe80::1%99]:53", "[ff02::1%99]:53"] {
+            let destination = destination.parse().unwrap();
+            assert_eq!(destination_interface(&protection, destination), None);
+            assert_eq!(
+                validate_destination_scope(&protection, destination)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NetworkUnreachable
+            );
+        }
+        assert_eq!(native_interface(&protection, 99), None);
+        assert_eq!(native_interface(&protection, 0), None);
+        assert_eq!(native_interface(&protection, 1), Some(1));
+        assert_eq!(native_interface(&protection, 2), Some(2));
+    }
+
+    #[test]
+    fn default_scope_accepts_virtual_underlay_without_filtered_route() {
+        let protection = Protection {
+            bit: 0,
+            defaults: [Some(8), Some(9)],
+            interface_routes: [("127.0.0.0/8", 3), ("::1/128", 3)]
+                .into_iter()
+                .map(|(cidr, index)| (cidr.parse().unwrap(), index))
+                .collect::<Vec<_>>()
+                .into(),
+            owners: 1,
+        };
+        assert_eq!(native_interface(&protection, 8), Some(8));
+        assert_eq!(native_interface(&protection, 9), Some(9));
+        assert_eq!(native_interface(&protection, 99), None);
+        assert_eq!(native_interface(&protection, 0), None);
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -757,12 +856,77 @@ mod tests {
         {
             targets.push(ip);
         }
+        let early_server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let early_remote = early_server.local_addr().unwrap();
+        let early_dial = crate::socket::tcp::create_tcp_socket(
+            early_remote,
+            &easytier_core::socket::tcp::TcpBindOptions::default(),
+        )
+        .await
+        .unwrap();
+        let mut established = crate::socket::tcp::create_tcp_socket(
+            early_remote,
+            &easytier_core::socket::tcp::TcpBindOptions::default(),
+        )
+        .await
+        .unwrap()
+        .connect(early_remote)
+        .await
+        .unwrap();
+        let (mut established_peer, _) = early_server.accept().await.unwrap();
+        let early_udp = crate::socket::udp::create_udp_socket(
+            &easytier_core::socket::udp::UdpBindOptions::direct_connect(),
+        )
+        .await
+        .unwrap();
         // An invalid fallback makes this test prove connected/loopback lookup
         // was used, rather than accidentally succeeding on a default route.
         let mut capture = Cleanup(
-            DesktopProtectionLease::acquire(0, 0, [Some(u32::MAX), Some(u32::MAX)]).unwrap(),
+            DesktopProtectionLease::acquire(
+                0,
+                0,
+                [Some(u32::MAX), Some(u32::MAX)],
+                interfaces.clone(),
+            )
+            .unwrap(),
         );
-        capture.0.refresh_interfaces(interfaces);
+        established
+            .write_all(b"live across takeover")
+            .await
+            .unwrap();
+        let mut established_bytes = [0; 20];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            established_peer.read_exact(&mut established_bytes),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&established_bytes, b"live across takeover");
+        // Sockets registered before takeover must see the complete snapshot as
+        // soon as protection becomes active; no follow-up refresh is required.
+        let _early_client = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            early_dial.connect(early_remote),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (_early_accepted, _) = early_server.accept().await.unwrap();
+        let early_receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        early_udp
+            .send_to(b"existing socket", early_receiver.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut early_bytes = [0; 32];
+        let (length, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            early_receiver.recv_from(&mut early_bytes),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&early_bytes[..length], b"existing socket");
         for ip in targets {
             let server = tokio::net::UdpSocket::bind(std::net::SocketAddr::new(ip, 0))
                 .await
@@ -865,6 +1029,93 @@ mod tests {
             .unwrap()
             .0;
             assert_eq!(&bytes[..length], b"mapped DNS");
+        }
+
+        // Treat a real non-loopback adapter as the capture TUN by omitting it
+        // from the eligible snapshot. This exercises the native socket options
+        // without installing routes or requiring an administrator token.
+        if let Some((excluded, ip)) = interfaces.iter().filter(|i| !i.internal).find_map(|i| {
+            i.addr.iter().find_map(|a| match a.ip() {
+                std::net::IpAddr::V4(ip) if ip.is_private() => Some((i.index, ip)),
+                _ => None,
+            })
+        }) {
+            let eligible: Vec<_> = interfaces.iter().filter(|i| i.internal).cloned().collect();
+            let loopback = eligible.first().map(|interface| interface.index);
+            assert!(loopback.is_some());
+            capture
+                .0
+                .refresh_routes([loopback, loopback], eligible)
+                .unwrap();
+            let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let remote = server.local_addr().unwrap();
+            let socket = crate::socket::udp::create_udp_socket(
+                &easytier_core::socket::udp::UdpBindOptions::direct_connect(),
+            )
+            .await
+            .unwrap();
+            set_scope(&socket2::SockRef::from(&*socket), false, excluded).unwrap();
+            socket.send_to(b"bypass stale scope", remote).await.unwrap();
+            let mut bytes = [0; 32];
+            let (length, _) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                server.recv_from(&mut bytes),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(&bytes[..length], b"bypass stale scope");
+            assert_eq!(
+                get_scope(&socket2::SockRef::from(&*socket), false).unwrap(),
+                excluded
+            );
+            let error = socket
+                .send_to_with_src_ip(ip.into(), remote, b"no TUN source")
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NetworkUnreachable);
+
+            let bound = crate::socket::udp::create_udp_socket(
+                &easytier_core::socket::udp::UdpBindOptions::direct_connect()
+                    .with_local_addr(Some(std::net::SocketAddr::new(ip.into(), 0))),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                bound
+                    .send_to(b"no bound TUN", remote)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NetworkUnreachable
+            );
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let remote = listener.local_addr().unwrap();
+            let dial = crate::socket::tcp::create_tcp_socket(
+                remote,
+                &easytier_core::socket::tcp::TcpBindOptions::default(),
+            )
+            .await
+            .unwrap();
+            set_scope(&socket2::SockRef::from(&*dial), false, excluded).unwrap();
+            let _client =
+                tokio::time::timeout(std::time::Duration::from_secs(2), dial.connect(remote))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let (_accepted, _) = listener.accept().await.unwrap();
+            let bound = crate::socket::tcp::create_tcp_socket(
+                remote,
+                &easytier_core::socket::tcp::TcpBindOptions::default()
+                    .with_local_addr(Some(std::net::SocketAddr::new(ip.into(), 0))),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                bound.connect(remote).await.unwrap_err().kind(),
+                io::ErrorKind::NetworkUnreachable
+            );
         }
     }
     #[test]

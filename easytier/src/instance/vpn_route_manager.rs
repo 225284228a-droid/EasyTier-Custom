@@ -307,10 +307,27 @@ impl RouteOwner {
                     .await?
                     .and_then(|route| socket_protector::interface_index(&route.interface_name));
             }
-            if let Some(protection) = self.protection.as_mut() {
-                protection.refresh_defaults(defaults)?;
-            }
         }
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        let interfaces = if !desired.is_empty() {
+            let mut interfaces =
+                crate::common::network::collect_interfaces(net_ns.clone(), true).await;
+            interfaces.extend(
+                crate::common::network::collect_interfaces(net_ns.clone(), false)
+                    .await
+                    .into_iter()
+                    .filter(|interface| interface.internal),
+            );
+            interfaces.retain(|interface| interface.name != ifname);
+            // Publish defaults and eligible interfaces together, before the
+            // first socket is protected and before installing any captures.
+            if let Some(protection) = self.protection.as_mut() {
+                protection.refresh_routes(defaults, interfaces.clone())?;
+            }
+            interfaces
+        } else {
+            Vec::new()
+        };
         if !desired.is_empty() && self.protection.is_none() {
             anyhow::ensure!(
                 cfg!(feature = "dns-resolver"),
@@ -339,22 +356,13 @@ impl RouteOwner {
                 if !socket_protector::native_socket_protection_available() {
                     anyhow::bail!("native VPN socket protection is unsupported on this platform");
                 }
-                self.protection = Some(DesktopProtectionLease::acquire(namespace, 0, defaults)?);
-            }
-        }
-        #[cfg(any(target_os = "windows", target_os = "macos"))]
-        if !desired.is_empty() {
-            let mut interfaces =
-                crate::common::network::collect_interfaces(net_ns.clone(), true).await;
-            interfaces.extend(
-                crate::common::network::collect_interfaces(net_ns.clone(), false)
-                    .await
-                    .into_iter()
-                    .filter(|interface| interface.internal),
-            );
-            interfaces.retain(|interface| interface.name != ifname);
-            if let Some(protection) = self.protection.as_mut() {
-                protection.refresh_interfaces(interfaces);
+                self.protection = Some(DesktopProtectionLease::acquire(
+                    namespace,
+                    0,
+                    defaults,
+                    #[cfg(any(target_os = "windows", target_os = "macos"))]
+                    interfaces,
+                )?);
             }
         }
         // Add captures first. Failed additions leave the old capture set in
