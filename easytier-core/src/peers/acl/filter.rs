@@ -719,8 +719,7 @@ mod tests {
         let local_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
         let packet_info = packet_info(IpAddr::V6(local_ipv6));
 
-        let chain =
-            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == local_ipv6);
+        let chain = AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == local_ipv6);
 
         assert_eq!(chain, ChainType::Inbound);
     }
@@ -732,8 +731,7 @@ mod tests {
             0x2001, 0xdb8, 0xffff, 2, 0, 0, 0, 0x100,
         )));
 
-        let chain =
-            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == local_ipv6);
+        let chain = AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == local_ipv6);
 
         assert_eq!(chain, ChainType::Forward);
     }
