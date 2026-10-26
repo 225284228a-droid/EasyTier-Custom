@@ -164,6 +164,7 @@ pub struct SessionData {
     webhook_validation_change_epoch: u64,
     webhook_validation_notify: Arc<Notify>,
     session_epoch: u64,
+    local_config_view: Option<local_configs::LocalConfigView>,
 }
 
 impl SessionData {
@@ -201,6 +202,7 @@ impl SessionData {
             webhook_validation_change_epoch: 0,
             webhook_validation_notify: Arc::new(Notify::new()),
             session_epoch: 0,
+            local_config_view: None,
         }
     }
 
@@ -1158,7 +1160,6 @@ impl Session {
         self.local_snapshot_task
             .replace(AbortOnDropHandle::new(tokio::spawn(local_configs::worker(
                 Arc::downgrade(&self.data),
-                self.persisted_client(),
                 data.heartbeat_waiter(),
             ))));
     }

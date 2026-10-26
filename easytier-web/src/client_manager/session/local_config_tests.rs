@@ -88,7 +88,7 @@ fn patch_acknowledgement_never_adopts_a_later_console_revision() {
         revision: "our-write".into(),
         ..Default::default()
     };
-    let mut mirror = LocalConfigMirror {
+    let mut mirror = LocalConfigView {
         machine_id: uuid::Uuid::new_v4(),
         snapshot: ObserveConfigsResponse {
             entries: vec![applied.clone()],
@@ -154,25 +154,16 @@ async fn send_heartbeat(
         .unwrap();
 }
 
-async fn await_mirrors(
-    stores: &[Storage],
-    users: &[i32],
-    machine: uuid::Uuid,
-    generation: u64,
-    hostname: &str,
-) {
+async fn await_views(sessions: &[&Arc<Session>], generation: u64, hostname: &str) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let mut complete = true;
-            for (storage, user) in stores.iter().zip(users) {
-                let mirror = storage
-                    .db()
-                    .local_config_mirror(*user, machine)
-                    .await
-                    .unwrap();
-                complete &= mirror.as_ref().is_some_and(|m| {
-                    m.snapshot.catalog_generation >= generation
-                        && m.snapshot
+            for session in sessions {
+                let view = session.local_configs().await.ok();
+                complete &= view.as_ref().is_some_and(|view| {
+                    view.snapshot.catalog_generation >= generation
+                        && view
+                            .snapshot
                             .entries
                             .first()
                             .and_then(|e| e.config.as_ref())
@@ -187,7 +178,7 @@ async fn await_mirrors(
         }
     })
     .await
-    .expect("both independent databases must refresh within ten seconds");
+    .expect("both independent consoles must read the node within ten seconds");
 }
 
 #[tokio::test]
@@ -303,14 +294,7 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
     let (second, rpc2) = connect_console(&stores[1], &process, 2102).await;
     send_heartbeat(&rpc1, machine, &baseline).await;
     send_heartbeat(&rpc2, machine, &baseline).await;
-    await_mirrors(
-        &stores,
-        &users,
-        machine,
-        baseline.catalog_generation,
-        "base",
-    )
-    .await;
+    await_views(&[&first, &second], baseline.catalog_generation, "base").await;
     let patch = |name: &str| PatchPersistedConfigRequest {
         inst_id: Some(id.into()),
         expected_revision: baseline.entries[0].revision.clone(),
@@ -333,7 +317,7 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
     let saved = manager.local_config_catalog().snapshot();
     send_heartbeat(&rpc1, machine, &saved).await;
     send_heartbeat(&rpc2, machine, &saved).await;
-    await_mirrors(&stores, &users, machine, saved.catalog_generation, winner).await;
+    await_views(&[&first, &second], saved.catalog_generation, winner).await;
     assert!(!saved.entries[0].enabled && !saved.entries[0].running);
     assert!(manager.instance_ids().is_empty());
     let raw = String::from_utf8(files.read(&path).await.unwrap().unwrap()).unwrap();
@@ -360,14 +344,7 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
     .expect("the node's 30-second directory scan must observe manual edits");
     send_heartbeat(&rpc1, machine, &manual).await;
     send_heartbeat(&rpc2, machine, &manual).await;
-    await_mirrors(
-        &stores,
-        &users,
-        machine,
-        manual.catalog_generation,
-        "manual",
-    )
-    .await;
+    await_views(&[&first, &second], manual.catalog_generation, "manual").await;
     assert!(edit_started.elapsed() < Duration::from_secs(45));
     assert!(manager.instance_ids().is_empty());
     let started = first
@@ -387,25 +364,17 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
     assert!(files.read(&path).await.unwrap().is_none());
     send_heartbeat(&rpc1, machine, &deleted.snapshot).await;
     send_heartbeat(&rpc2, machine, &deleted.snapshot).await;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let mut complete = true;
-            for (storage, user) in stores.iter().zip(&users) {
-                complete &= storage
-                    .db()
-                    .local_config_mirror(*user, machine)
-                    .await
-                    .unwrap()
-                    .is_some_and(|m| m.snapshot.entries.is_empty());
-            }
-            if complete {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("deletion must reach both independent mirrors");
+    for session in [&first, &second] {
+        assert!(
+            session
+                .local_configs()
+                .await
+                .unwrap()
+                .snapshot
+                .entries
+                .is_empty()
+        );
+    }
     first.stop().await;
     second.stop().await;
     rpc1.stop().await;
@@ -417,15 +386,6 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
             .await
             .unwrap()
     );
-    assert!(
-        stores[0]
-            .db()
-            .local_config_mirror(users[0], machine)
-            .await
-            .unwrap()
-            .unwrap()
-            .stale
-    );
 }
 
 struct DelayedObservation {
@@ -435,11 +395,11 @@ struct DelayedObservation {
 }
 
 #[tokio::test]
-async fn page_reads_use_the_current_session_mirror_without_an_observe_rpc() {
+async fn page_reads_reuse_the_observation_of_the_announced_generation() {
     let storage = Storage::new(Db::memory_db().await);
     let user = storage
         .db()
-        .auto_create_user("mirror-owner")
+        .auto_create_user("view-owner")
         .await
         .unwrap()
         .id;
@@ -460,7 +420,7 @@ async fn page_reads_use_the_current_session_mirror_without_an_observe_rpc() {
         2,
     );
     let token = StorageToken {
-        token: "mirror-owner".into(),
+        token: "view-owner".into(),
         client_url: "tcp://127.0.0.1:2401".parse().unwrap(),
         machine_id: machine,
         user_id: user,
@@ -470,68 +430,42 @@ async fn page_reads_use_the_current_session_mirror_without_an_observe_rpc() {
         data.storage_token = Some(token.clone());
         data.auth_state = SessionAuthState::Authorized;
         data.req = Some(heartbeat_request(machine, &snapshot));
+        data.local_config_view = Some(LocalConfigView {
+            machine_id: machine,
+            snapshot: snapshot.clone(),
+            capabilities: Vec::new(),
+            observed_at: String::new(),
+            online: true,
+            stale: false,
+        });
     }
-    storage.update_session_client(token.clone(), 1, true, 2);
-    let observer = storage.weak_ref().upgrade().unwrap().local_observer_epoch;
-    // A previous session's snapshot cannot satisfy a live page read, even if
-    // it advertises the same catalog revision. Nor can a previous web process.
-    for (old_observer, old_session) in [(uuid::Uuid::new_v4(), 2), (observer, 1)] {
-        storage
-            .db()
-            .store_local_config_snapshot(user, machine, old_observer, old_session, &snapshot, &[])
-            .await
-            .unwrap();
+    storage.update_session_client(token, 1, true, 2);
+    let view = session.local_configs().await.unwrap();
+    assert_eq!(view.snapshot, snapshot);
+    assert!(view.online && !view.stale);
+    assert_eq!(view.capabilities, vec![REVISION_CAPABILITY.to_string()]);
+
+    // A newer announced generation or node process needs a fresh read.
+    for change in [0, 1] {
+        {
+            let mut data = session.data.write().await;
+            let req = data.req.as_mut().unwrap();
+            if change == 0 {
+                req.local_config_catalog_generation += 1;
+            } else {
+                req.local_config_catalog_epoch = "new-node-process".into();
+            }
+        }
         assert!(cached_observation(&session.data).await.unwrap().is_none());
+        assert!(session.local_configs().await.is_err());
     }
-    storage
-        .db()
-        .store_local_config_snapshot(user, machine, observer, 2, &snapshot, &[])
-        .await
-        .unwrap();
-    let mirror = session.mirrored_local_configs().await.unwrap();
-    assert_eq!(mirror.snapshot, snapshot);
-    assert!(mirror.online && !mirror.stale);
-    assert_eq!(mirror.capabilities, vec![REVISION_CAPABILITY.to_string()]);
-
-    session
-        .data
-        .write()
-        .await
-        .req
-        .as_mut()
-        .unwrap()
-        .local_config_catalog_generation += 1;
-    let pending = session.mirrored_local_configs().await.unwrap();
-    assert_eq!(pending.snapshot, snapshot);
-    assert!(pending.online && pending.stale);
-    session
-        .data
-        .write()
-        .await
-        .req
-        .as_mut()
-        .unwrap()
-        .local_config_catalog_epoch = "new-node-process".into();
-    assert!(session.mirrored_local_configs().await.unwrap().stale);
-
-    // Raw offline reads continue to preserve the last observation as stale.
-    let offline = storage
-        .db()
-        .local_config_mirror(user, machine)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(!offline.online && offline.stale);
     session.data.write().await.auth_state = SessionAuthState::Invalid;
-    assert!(cached_observation(&session.data).await.is_err());
-    session.data.write().await.auth_state = SessionAuthState::Authorized;
-    storage.update_session_client(token, 2, true, 3);
     assert!(cached_observation(&session.data).await.is_err());
     session.stop().await;
 }
 
 #[tokio::test]
-async fn page_read_bootstraps_the_current_session_before_reusing_its_mirror() {
+async fn page_read_bootstraps_the_current_session_before_reusing_its_observation() {
     let machine = uuid::Uuid::new_v4();
     let process = ProcessManagementRpc::new(
         Arc::new(
@@ -571,15 +505,15 @@ async fn page_read_bootstraps_the_current_session_before_reusing_its_mirror() {
     }
     storage.update_session_client(token, 1, true, 1);
     assert!(cached_observation(&session.data).await.unwrap().is_none());
-    let initial = session.mirrored_local_configs().await.unwrap();
+    let initial = session.local_configs().await.unwrap();
     assert_eq!(initial.snapshot, snapshot);
     assert!(initial.online && !initial.stale);
     rpc.stop().await;
-    let cached = session.mirrored_local_configs().await.unwrap();
+    let cached = session.local_configs().await.unwrap();
     assert_eq!(cached.snapshot, snapshot);
     assert_eq!(
         cached.observed_at,
-        session.mirrored_local_configs().await.unwrap().observed_at
+        session.local_configs().await.unwrap().observed_at
     );
     session.stop().await;
 }
@@ -657,35 +591,9 @@ async fn late_observation_cannot_replace_a_reconnected_session_snapshot() {
     });
     delayed.started.notified().await;
     storage.update_session_client(token, 2, true, 2);
-    let fresh = ObserveConfigsResponse {
-        catalog_epoch: "new-node".into(),
-        catalog_generation: 1,
-        ..Default::default()
-    };
-    storage
-        .db()
-        .store_local_config_snapshot(
-            user,
-            machine,
-            storage.weak_ref().upgrade().unwrap().local_observer_epoch,
-            2,
-            &fresh,
-            &[],
-        )
-        .await
-        .unwrap();
     delayed.release.notify_one();
     assert!(task.await.unwrap().is_err());
-    assert_eq!(
-        storage
-            .db()
-            .local_config_mirror(user, machine)
-            .await
-            .unwrap()
-            .unwrap()
-            .snapshot,
-        fresh
-    );
+    assert!(session.data.read().await.local_config_view.is_none());
     session.stop().await;
 }
 
@@ -867,12 +775,14 @@ async fn timed_out_write_observes_again_without_resending_the_mutation() {
     .unwrap();
     assert!(matches!(result, Err(LocalConfigError::Unknown)));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // The read after an unknown outcome refreshed the connection's view.
     assert_eq!(
-        storage
-            .db()
-            .local_config_mirror(user, machine)
+        session
+            .data
+            .read()
             .await
-            .unwrap()
+            .local_config_view
+            .as_ref()
             .unwrap()
             .snapshot,
         snapshot

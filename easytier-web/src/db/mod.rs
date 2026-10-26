@@ -4,7 +4,7 @@ mod central_local_delivery;
 mod devices;
 #[allow(unused_imports)]
 pub mod entity;
-pub(crate) mod local_config_mirror;
+pub(crate) mod local_config_mode;
 
 pub(crate) use central_intent::{CentralIntentError, CentralOwnedRuntimeConfig};
 pub(crate) use central_local_delivery::CentralLocalDelivery;

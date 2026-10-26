@@ -1,4 +1,6 @@
-//! Pull-only observations for nodes whose local files own their configuration.
+//! Live reads and revision-checked writes of a node's config directory. The
+//! console keeps no copy: a connection caches only the latest observation of
+//! the catalog generation its node announced in a heartbeat.
 use std::{sync::Weak, time::Duration};
 
 use easytier::proto::{
@@ -13,8 +15,18 @@ use easytier::proto::{
 use tokio::sync::{RwLock, broadcast};
 
 use super::{Session, SessionData, SharedSessionData};
-use crate::db::local_config_mirror::LocalConfigMirror;
 use easytier_core::management::LocalConfigMutationError;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct LocalConfigView {
+    pub machine_id: uuid::Uuid,
+    #[serde(flatten)]
+    pub snapshot: easytier::proto::api::manage::ObserveConfigsResponse,
+    pub capabilities: Vec<String>,
+    pub observed_at: String,
+    pub online: bool,
+    pub stale: bool,
+}
 
 pub(crate) const REVISION_CAPABILITY: &str = "management:persisted-config-revision-v1";
 pub(crate) const APPLY_CAPABILITY: &str = "management:persisted-config-apply-v1";
@@ -83,7 +95,7 @@ pub(super) async fn persist_management_mode(data: &SharedSessionData) -> anyhow:
 pub(super) async fn observe(
     data: &SharedSessionData,
     client: &(dyn PersistedConfigService<Controller = BaseController> + Send + Sync),
-) -> anyhow::Result<LocalConfigMirror> {
+) -> anyhow::Result<LocalConfigView> {
     let (storage, token, session_epoch, binding_version, req) = {
         let data = data.read().await;
         anyhow::ensure!(data.auth_state.is_authorized(), "local_config_offline");
@@ -138,83 +150,48 @@ pub(super) async fn observe(
         );
         current.req.as_ref().unwrap().runtime_capabilities.clone()
     };
-    let accepted = storage
-        .db
-        .store_local_config_snapshot(
-            token.user_id,
-            token.machine_id,
-            storage.local_observer_epoch,
-            session_epoch,
-            &snapshot,
-            &capabilities,
-        )
-        .await?;
-    anyhow::ensure!(accepted, "local_config_stale_observation");
-    Ok(LocalConfigMirror {
+    let view = LocalConfigView {
         machine_id: token.machine_id,
         snapshot,
         capabilities,
         observed_at: chrono::Utc::now().to_rfc3339(),
         online: true,
         stale: false,
-    })
+    };
+    {
+        let mut current = data.write().await;
+        anyhow::ensure!(
+            current.binding_version == binding_version
+                && storage.owns_authorized_session(&token, session_epoch),
+            "local_config_session_changed"
+        );
+        current.local_config_view = Some(view.clone());
+    }
+    Ok(view)
 }
 
+/// Remembers the node's management mode for offline publication decisions.
 pub(super) async fn worker(
     data: Weak<RwLock<SessionData>>,
-    client: PersistedClient,
     mut heartbeats: broadcast::Receiver<()>,
 ) {
-    let mut full_check = tokio::time::interval(Duration::from_secs(30));
-    full_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut observed = None;
     loop {
-        let full = tokio::select! {
-            _ = full_check.tick() => true,
-            event = heartbeats.recv() => {
-                match event {
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => false,
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        };
+        match heartbeats.recv().await {
+            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
         let Some(data) = data.upgrade() else { return };
         // Remember even legacy custom nodes. Losing their live capability flag
         // must never send them into the official offline publication queue.
         if let Err(error) = persist_management_mode(&data).await {
             tracing::warn!(%error, "could not persist node configuration management mode");
         }
-        let revision = {
-            let data = data.read().await;
-            data.req
-                .as_ref()
-                .filter(|req| supports_revision(req))
-                .map(|req| {
-                    (
-                        req.local_config_catalog_epoch.clone(),
-                        req.local_config_catalog_generation,
-                    )
-                })
-        };
-        let Some(revision) = revision else { continue };
-        if !full && observed.as_ref() == Some(&revision) {
-            continue;
-        }
-        match observe(&data, client.as_ref()).await {
-            Ok(mirror) => {
-                observed = Some((
-                    mirror.snapshot.catalog_epoch,
-                    mirror.snapshot.catalog_generation,
-                ))
-            }
-            Err(error) => tracing::debug!(%error, "local config snapshot refresh failed"),
-        }
     }
 }
 
-async fn cached_observation(data: &SharedSessionData) -> anyhow::Result<Option<LocalConfigMirror>> {
-    // Hold the binding stable while reading, then recheck storage ownership:
-    // a different connection can supersede this session during the DB await.
+/// The connection's cached observation, while it still matches the catalog
+/// generation announced by the node's latest heartbeat.
+async fn cached_observation(data: &SharedSessionData) -> anyhow::Result<Option<LocalConfigView>> {
     let data = data.read().await;
     anyhow::ensure!(data.auth_state.is_authorized(), "local_config_offline");
     let heartbeat = data
@@ -222,40 +199,17 @@ async fn cached_observation(data: &SharedSessionData) -> anyhow::Result<Option<L
         .as_ref()
         .filter(|req| supports_revision(req))
         .ok_or_else(|| anyhow::anyhow!("local_config_unsupported"))?;
-    let token = data
-        .storage_token
+    Ok(data
+        .local_config_view
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("local_config_offline"))?;
-    let storage = data
-        .storage
-        .upgrade()
-        .ok_or_else(|| anyhow::anyhow!("local_config_offline"))?;
-    anyhow::ensure!(
-        storage.owns_authorized_session(token, data.session_epoch),
-        "local_config_session_changed"
-    );
-    let mirror = storage
-        .db
-        .local_config_mirror_for_session(
-            token.user_id,
-            token.machine_id,
-            storage.local_observer_epoch,
-            data.session_epoch,
-        )
-        .await?;
-    anyhow::ensure!(
-        storage.owns_authorized_session(token, data.session_epoch),
-        "local_config_session_changed"
-    );
-    Ok(mirror.map(|mut mirror| {
-        mirror.online = true;
-        // Heartbeats trigger the worker independently of page reads. While its
-        // next observation is pending, expose the existing snapshot as stale.
-        mirror.stale = mirror.snapshot.catalog_epoch != heartbeat.local_config_catalog_epoch
-            || mirror.snapshot.catalog_generation < heartbeat.local_config_catalog_generation;
-        mirror.capabilities = heartbeat.runtime_capabilities.clone();
-        mirror
-    }))
+        .filter(|view| {
+            view.snapshot.catalog_epoch == heartbeat.local_config_catalog_epoch
+                && view.snapshot.catalog_generation >= heartbeat.local_config_catalog_generation
+        })
+        .map(|view| LocalConfigView {
+            capabilities: heartbeat.runtime_capabilities.clone(),
+            ..view.clone()
+        }))
 }
 
 impl Session {
@@ -263,16 +217,16 @@ impl Session {
         self.scoped_client::<PersistedConfigServiceClientFactory<BaseController>>()
     }
 
-    pub(crate) async fn observe_local_configs(&self) -> anyhow::Result<LocalConfigMirror> {
+    pub(crate) async fn observe_local_configs(&self) -> anyhow::Result<LocalConfigView> {
         observe(&self.data, self.persisted_client().as_ref()).await
     }
 
-    pub(crate) async fn mirrored_local_configs(&self) -> anyhow::Result<LocalConfigMirror> {
-        if let Some(mirror) = cached_observation(&self.data).await? {
-            return Ok(mirror);
+    /// Page reads reuse the observation of the current catalog generation and
+    /// ask the node again only after it announced a change.
+    pub(crate) async fn local_configs(&self) -> anyhow::Result<LocalConfigView> {
+        if let Some(view) = cached_observation(&self.data).await? {
+            return Ok(view);
         }
-        // Bootstrap only this authenticated session. Normal page reads consume
-        // the worker's mirror without requesting another node directory scan.
         self.observe_local_configs().await
     }
 
@@ -284,7 +238,7 @@ impl Session {
     pub(crate) async fn patch_local_config(
         &self,
         request: PatchPersistedConfigRequest,
-    ) -> Result<LocalConfigMirror, LocalConfigError> {
+    ) -> Result<LocalConfigView, LocalConfigError> {
         let (storage, token, session_epoch, binding, capabilities) = {
             let data = self.data.read().await;
             if !data.auth_state.is_authorized() {
@@ -366,7 +320,7 @@ impl Session {
         instance: uuid::Uuid,
         expected_revision: String,
         enabled: Option<bool>,
-    ) -> Result<LocalConfigMirror, LocalConfigError> {
+    ) -> Result<LocalConfigView, LocalConfigError> {
         if !self.has_local_revision_capability().await {
             return Err(LocalConfigError::Unsupported);
         }
@@ -441,7 +395,7 @@ impl Session {
 }
 
 fn patch_result_is_current(
-    mirror: &LocalConfigMirror,
+    mirror: &LocalConfigView,
     applied: &easytier::proto::api::manage::PersistedConfigEntry,
 ) -> bool {
     if applied.inst_id.is_none() || applied.revision.is_empty() {

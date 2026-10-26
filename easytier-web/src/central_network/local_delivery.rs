@@ -12,8 +12,11 @@ use easytier_core::config::api::network_config_from_toml;
 use uuid::Uuid;
 
 use crate::{
-    client_manager::{ClientManager, session::local_configs::LocalConfigError},
-    db::{CentralLocalDelivery, Db, UserIdInDb, local_config_mirror::LocalConfigMirror},
+    client_manager::{
+        ClientManager,
+        session::local_configs::{LocalConfigError, LocalConfigView},
+    },
+    db::{CentralLocalDelivery, Db, UserIdInDb},
 };
 
 const CONFLICT: &str =
@@ -84,7 +87,7 @@ fn preserve_node_identity(desired: &mut NetworkConfig, observed: &NetworkConfig)
 }
 
 fn entry(
-    mirror: &LocalConfigMirror,
+    mirror: &LocalConfigView,
     instance_id: Uuid,
 ) -> anyhow::Result<Option<PersistedConfigEntry>> {
     let mut entries = mirror
@@ -157,7 +160,7 @@ async fn observe(
     manager: &ClientManager,
     user_id: UserIdInDb,
     device_id: Uuid,
-) -> anyhow::Result<LocalConfigMirror> {
+) -> anyhow::Result<LocalConfigView> {
     // A cached offline mirror is never a mutation baseline.
     let session = manager
         .get_session_by_machine_id(user_id, &device_id)

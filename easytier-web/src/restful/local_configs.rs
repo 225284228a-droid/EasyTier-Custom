@@ -8,10 +8,7 @@ use easytier::proto::api::manage::PatchPersistedConfigRequest;
 use uuid::Uuid;
 
 use super::{AppStateInner, Error, HttpHandleError, authed_user_id, users::AuthSession};
-use crate::{
-    client_manager::session::local_configs::LocalConfigError,
-    db::local_config_mirror::LocalConfigMirror,
-};
+use crate::client_manager::session::local_configs::{LocalConfigError, LocalConfigView};
 
 pub(super) fn failure(error: LocalConfigError) -> HttpHandleError {
     let (status, code, revision) = match &error {
@@ -61,23 +58,23 @@ async fn observe(
     auth: AuthSession,
     State(manager): State<AppStateInner>,
     Path(machine): Path<Uuid>,
-) -> Result<Json<LocalConfigMirror>, HttpHandleError> {
+) -> Result<Json<LocalConfigView>, HttpHandleError> {
     let user = authed_user_id(&auth)?;
-    let mirror = manager
-        .local_config_mirror(user, machine)
+    let view = manager
+        .local_configs(user, machine)
         .await
         .map_err(|_| failure(LocalConfigError::Observation))?
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
                 Json(Error {
-                    message: "no observed local configuration catalog".into(),
-                    code: Some("local_config_not_found".into()),
+                    message: "device is offline or does not manage local configurations".into(),
+                    code: Some("local_config_offline".into()),
                     current_config_revision: None,
                 }),
             )
         })?;
-    Ok(Json(mirror))
+    Ok(Json(view))
 }
 
 async fn patch(
@@ -85,7 +82,7 @@ async fn patch(
     State(manager): State<AppStateInner>,
     Path(machine): Path<Uuid>,
     Json(request): Json<PatchPersistedConfigRequest>,
-) -> Result<Json<LocalConfigMirror>, HttpHandleError> {
+) -> Result<Json<LocalConfigView>, HttpHandleError> {
     let user = authed_user_id(&auth)?;
     Ok(Json(
         manager

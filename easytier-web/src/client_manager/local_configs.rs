@@ -1,26 +1,26 @@
 use easytier::proto::api::manage::PatchPersistedConfigRequest;
 use uuid::Uuid;
 
-use super::{ClientManager, session::local_configs::LocalConfigError};
-use crate::db::{UserIdInDb, local_config_mirror::LocalConfigMirror};
+use super::{
+    ClientManager,
+    session::local_configs::{LocalConfigError, LocalConfigView},
+};
+use crate::db::UserIdInDb;
 
 impl ClientManager {
-    pub(crate) async fn local_config_mirror(
+    /// The node's config directory, read live. An offline node has none.
+    pub(crate) async fn local_configs(
         &self,
         user_id: UserIdInDb,
         machine_id: Uuid,
-    ) -> anyhow::Result<Option<LocalConfigMirror>> {
-        if let Some(session) = self.get_session_by_machine_id(user_id, &machine_id)
-            && session.has_local_revision_capability().await
-        {
-            return session.mirrored_local_configs().await.map(Some);
+    ) -> anyhow::Result<Option<LocalConfigView>> {
+        let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) else {
+            return Ok(None);
+        };
+        if !session.has_local_revision_capability().await {
+            return Ok(None);
         }
-        // Cached mirrors contain only observations, and remain stale offline.
-        Ok(self
-            .storage
-            .db()
-            .local_config_mirror(user_id, machine_id)
-            .await?)
+        session.local_configs().await.map(Some)
     }
 
     pub(crate) async fn patch_local_config(
@@ -28,7 +28,7 @@ impl ClientManager {
         user_id: UserIdInDb,
         machine_id: Uuid,
         request: PatchPersistedConfigRequest,
-    ) -> Result<LocalConfigMirror, LocalConfigError> {
+    ) -> Result<LocalConfigView, LocalConfigError> {
         let session = self
             .get_session_by_machine_id(user_id, &machine_id)
             .ok_or(LocalConfigError::Offline)?;
@@ -42,7 +42,7 @@ impl ClientManager {
         instance: Uuid,
         expected_revision: String,
         enabled: Option<bool>,
-    ) -> Result<LocalConfigMirror, LocalConfigError> {
+    ) -> Result<LocalConfigView, LocalConfigError> {
         self.get_session_by_machine_id(user_id, &machine_id)
             .ok_or(LocalConfigError::Offline)?
             .mutate_local_config_lifecycle(instance, expected_revision, enabled)
