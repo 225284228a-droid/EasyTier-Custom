@@ -2,13 +2,8 @@ import { NETWORK_CONFIG_FIELDS } from '../generated/proto/networkConfigFields'
 import { normalizeNetworkConfig, toBackendNetworkConfig, type NetworkConfig } from '../types/network'
 import { type UUID, UuidToStr } from './utils'
 import { ConfigFilePermission } from './api'
-import { assertLocalConfigApplyCapability, assertPatchCapabilities, configFieldSupported, LOCAL_CONFIG_REVISION_CAPABILITY } from './capabilities'
+import { assertPatchCapabilities, configFieldSupported, LOCAL_CONFIG_REVISION_CAPABILITY } from './capabilities'
 import { LEGACY_P2P_DISGUISE_FIELDS, P2P_DISGUISE_MODE_CAPABILITY } from './p2pDisguise'
-
-export enum LocalConfigApplyMode {
-  SaveAndApply = 0,
-  PersistOnly = 1,
-}
 
 export interface LocalConfigEntry {
   entry_key: string
@@ -21,7 +16,6 @@ export interface LocalConfigEntry {
   running: boolean
   persisted_raw_hash: string
   active_raw_hash?: string
-  pending_apply: boolean
   status: string
   network_name: string
   source: string | number
@@ -38,12 +32,16 @@ export interface LocalConfigSnapshot {
   observed_at?: string
 }
 
+/**
+ * Every successful write is the new file; a running network restarts with it.
+ * A typed patch merges `field_mask` into the file, while `toml` replaces it.
+ */
 export interface LocalConfigPatchRequest {
   inst_id: string
   expected_revision: string
-  config: Partial<NetworkConfig>
+  config?: Partial<NetworkConfig>
   field_mask: string[]
-  apply_mode: LocalConfigApplyMode
+  toml?: string
 }
 
 export interface LocalConfigPatchResult {
@@ -70,24 +68,6 @@ export function localConfigEditable(snapshot: LocalConfigSnapshot, entry: LocalC
     && (snapshot.support_local_config_revision === true || snapshot.capabilities.includes(LOCAL_CONFIG_REVISION_CAPABILITY))
     && !!localConfigInstanceId(entry) && entry.status === 'ready' && !!entry.revision && !!entry.config
     && ConfigFilePermission.isEditable(entry.config_permission ?? 0)
-}
-
-/** Apply this observed revision on the node, without copying a typed projection over its TOML. */
-export function buildLocalConfigApplyRequest(
-  entry: Pick<LocalConfigEntry, 'inst_id' | 'revision'>,
-  capabilities: readonly string[],
-): LocalConfigPatchRequest {
-  const instId = localConfigInstanceId(entry)
-  if (!instId) throw new Error('Configuration identity is unavailable')
-  if (!entry.revision) throw new Error('Configuration revision is unavailable')
-  assertLocalConfigApplyCapability(capabilities)
-  return {
-    inst_id: instId,
-    expected_revision: entry.revision,
-    config: {},
-    field_mask: [],
-    apply_mode: LocalConfigApplyMode.SaveAndApply,
-  }
 }
 
 export function cloneEditableConfig(config: NetworkConfig): NetworkConfig {
@@ -126,7 +106,6 @@ export function buildLocalConfigPatch(
   current: NetworkConfig,
   fieldMask: readonly string[],
   capabilities: readonly string[],
-  applyMode = LocalConfigApplyMode.SaveAndApply,
   allowCreation = false,
 ): LocalConfigPatchRequest {
   const instId = localConfigInstanceId(entry)
@@ -151,18 +130,28 @@ export function buildLocalConfigPatch(
     expected_revision: entry.revision,
     config: config as Partial<NetworkConfig>,
     field_mask: wireMask,
-    apply_mode: applyMode,
   }
+}
+
+/** Replace the whole file, as an editor on the node would. */
+export function buildLocalConfigReplace(
+  entry: Pick<LocalConfigEntry, 'inst_id' | 'revision'>,
+  toml: string,
+): LocalConfigPatchRequest {
+  const instId = localConfigInstanceId(entry)
+  if (!instId) throw new Error('Configuration identity is unavailable')
+  if (!entry.revision) throw new Error('Configuration revision is unavailable')
+  return { inst_id: instId, expected_revision: entry.revision, field_mask: [], toml }
 }
 
 export function buildLocalConfigCreatePatch(
   config: NetworkConfig,
   capabilities: readonly string[],
-  applyMode = LocalConfigApplyMode.PersistOnly,
 ): LocalConfigPatchRequest {
+  // Creation always writes a disabled network; starting it is a separate step.
   const fields = [...EDIT_FIELDS].filter(field => configFieldSupported(field, capabilities))
   return buildLocalConfigPatch({ inst_id: config.instance_id, revision: '' } as LocalConfigEntry,
-    config, fields, capabilities, applyMode, true)
+    config, fields, capabilities, true)
 }
 
 export function patchStatusName(status: string | number | undefined): string {

@@ -122,19 +122,22 @@ test('embedded console creates a default network and Core restores it as disable
             const response = await context.request.get(`/api/v1/machines/${machine}/local-configs`);
             if (!response.ok()) return false;
             const snapshot = await response.json();
-            return snapshot.online && !snapshot.stale && snapshot.capabilities?.includes('management:persisted-config-revision-v1');
+            return snapshot.online && !snapshot.stale && snapshot.capabilities?.includes('management:persisted-config-revision-v2');
         }, 'Core revision-capable connection');
         const listed = page.waitForResponse(response => response.url().endsWith(`/machines/${machine}/networks`) && response.request().method() === 'GET');
         await page.goto(`/#/h/deviceList/device/${machine}`);
-        assert.ok((await (await listed).json()).runtime_capabilities?.includes('management:persisted-config-revision-v1'));
+        assert.ok((await (await listed).json()).runtime_capabilities?.includes('management:persisted-config-revision-v2'));
         await page.getByText('creation-smoke-node', { exact: true }).first().waitFor();
-        const createdResponse = page.waitForResponse(response => response.url().endsWith(`/machines/${machine}/local-configs/patch`));
+        // Creating opens a draft; nothing is written until it is submitted.
         await page.getByRole('button', { name: 'Create New Network', exact: true }).click();
+        const createdResponse = page.waitForResponse(response => response.url().endsWith(`/machines/${machine}/local-configs/patch`));
+        const startedResponse = page.waitForResponse(response => response.url().includes(`/machines/${machine}/networks/`) && response.request().method() === 'PUT');
+        await page.getByRole('button', { name: 'Create and start', exact: true }).click();
         const created = await createdResponse;
         assert.equal(created.status(), 200, await created.text());
         const submitted = created.request().postDataJSON();
         assert.equal(submitted.expected_revision, '');
-        assert.equal(submitted.apply_mode, 1);
+        assert.equal(submitted.apply_mode, undefined);
         assert.deepEqual(submitted.field_mask.filter(field => /^enable_vpn_portal$|^vpn_portal_(listen_port|client_network_addr|client_network_len)$|^quic_listen_port$/.test(field)), []);
         const snapshot = await created.json();
         const entry = snapshot.entries.find(entry => entry.config?.hostname === 'creation-smoke-node');
@@ -147,8 +150,14 @@ test('embedded console creates a default network and Core restores it as disable
         const file = join(directory, `${id}.toml`);
         const saved = await readFile(file, 'utf8');
         assert.ok(saved.includes(id));
-        const state = JSON.parse(await readFile(join(directory, 'easytier-state.json'), 'utf8'));
-        assert.equal(state.instances[id].enabled, false);
+        // The file is created disabled, then started with its created revision.
+        const started = await startedResponse;
+        assert.equal(started.status(), 200, await started.text());
+        assert.deepEqual(started.request().postDataJSON(), { disabled: false, expected_revision: entry.revision });
+        await waitFor(async () => {
+            const state = JSON.parse(await readFile(join(directory, 'easytier-state.json'), 'utf8'));
+            return state.instances[id]?.enabled === true;
+        }, 'created network started');
         // Exercise every shared frontend request against the actual shipped Core.
         for (const fixture of fixtures) {
             const response = await context.request.post(`/api/v1/machines/${machine}/local-configs/patch`, { data: wireRequest(fixture.request) });
@@ -169,7 +178,7 @@ test('embedded console creates a default network and Core restores it as disable
             return mirror.online && !mirror.stale && mirror.catalog_epoch !== snapshot.catalog_epoch && mirror.entries.length === fixtures.length + 1;
         }, 'Core catalog after restart');
         const restored = (await api(`/machines/${machine}/local-configs`)).entries;
-        assert.ok(restored.every(entry => !entry.enabled && !entry.running));
+        assert.ok(restored.every(entry => entry.entry_key === `${id}.toml` ? entry.enabled : !entry.enabled && !entry.running));
         assert.equal(await readFile(file, 'utf8'), saved);
 
         if (process.env.OFFICIAL_EASYTIER_BIN) {
@@ -185,10 +194,11 @@ test('embedded console creates a default network and Core restores it as disable
             }, 'official Core enrollment');
             const legacyList = page.waitForResponse(response => response.url().endsWith(`/machines/${officialMachine}/networks`) && response.request().method() === 'GET');
             await page.goto(`/#/h/deviceList/device/${officialMachine}`);
-            assert.ok(!(await (await legacyList).json()).runtime_capabilities?.includes('management:persisted-config-revision-v1'));
+            assert.ok(!(await (await legacyList).json()).runtime_capabilities?.includes('management:persisted-config-revision-v2'));
             await page.getByText('official-smoke-node', { exact: true }).first().waitFor();
-            const savedResponse = page.waitForResponse(response => response.url().includes(`/machines/${officialMachine}/networks/config/`) && response.request().method() === 'PUT');
             await page.getByRole('button', { name: 'Create New Network', exact: true }).click();
+            const savedResponse = page.waitForResponse(response => response.url().endsWith(`/machines/${officialMachine}/networks`) && response.request().method() === 'POST');
+            await page.getByRole('button', { name: 'Create and start', exact: true }).click();
             const response = await savedResponse;
             assert.equal(response.status(), 200, await response.text());
             const config = response.request().postDataJSON().config;
@@ -200,9 +210,10 @@ test('embedded console creates a default network and Core restores it as disable
             const saved = await api(`/machines/${officialMachine}/networks/config/${config.instance_id}`);
             assert.equal(saved.instance_id, config.instance_id);
             assert.equal(saved.hostname, config.hostname);
-            const ids = await api(`/machines/${officialMachine}/networks`);
-            assert.equal((ids.running_inst_ids ?? []).length, 0);
-            assert.equal((ids.disabled_inst_ids ?? []).length, 1);
+            await waitFor(async () => {
+                const ids = await api(`/machines/${officialMachine}/networks`);
+                return (ids.running_inst_ids ?? []).length === 1 && (ids.disabled_inst_ids ?? []).length === 0;
+            }, 'official network started');
         }
     } catch (error) {
         error.message += `\nWeb logs: ${web?.logs()}\nCore logs: ${core?.logs()}\nOfficial logs: ${official?.logs()}`;

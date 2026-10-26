@@ -1,8 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, nextTick } from 'vue'
 import RemoteManagement from '../src/components/RemoteManagement.vue'
-import { LOCAL_CONFIG_APPLY_CAPABILITY } from '../src/modules/capabilities'
 import {
   DEFAULT_NETWORK_CONFIG,
   type NetworkConfig,
@@ -157,285 +156,379 @@ function snapshotBooleanConfigFields(config: NetworkConfig): Record<string, unkn
   )
 }
 
-async function settleRemoteManagement() {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    await flushPromises()
-    await nextTick()
-  }
-}
-
-describe('RemoteManagement config save', () => {
-  it('emits a string instance id when creating a network', async () => {
-    const config = {
-      ...DEFAULT_NETWORK_CONFIG(),
-      instance_id: INSTANCE_ID,
-    }
-    const api = {
-      delete_network: vi.fn(),
-      generate_config: vi.fn(),
-      get_network_config: vi.fn(async () => cloneConfig(config)),
-      get_network_info: vi.fn(),
-      get_vpn_portal_info: vi.fn(),
-      get_network_metas: vi.fn(async () => ({ metas: {} })),
-      list_network_instance_ids: vi.fn()
-        .mockResolvedValueOnce({ disabled_inst_ids: [], running_inst_ids: [] })
-        .mockResolvedValue({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [] }),
-      parse_config: vi.fn(),
-      run_network: vi.fn(),
-      save_config: vi.fn(async () => undefined),
-      update_network_instance_state: vi.fn(),
-      validate_config: vi.fn(),
-    }
-
-    const wrapper = mount(RemoteManagement, {
-      props: {
-        api,
-        newConfigGenerator: () => config,
-      },
-      global: {
-        stubs: {
-          Config: true,
-          ConfigEditDialog: true,
-          Status: true,
-        },
-      },
-    })
-
-    try {
-      await settleRemoteManagement()
-
-      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
-      await flushPromises()
-
-      expect(api.save_config).toHaveBeenCalledOnce()
-      expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
-    } finally {
-      wrapper.unmount()
-    }
-  })
-
-  it('reports a failed network creation instead of doing nothing', async () => {
-    const config = {
-      ...DEFAULT_NETWORK_CONFIG(),
-      instance_id: INSTANCE_ID,
-    }
-    const api = {
-      delete_network: vi.fn(),
-      generate_config: vi.fn(),
-      get_network_config: vi.fn(),
-      get_network_info: vi.fn(),
-      get_vpn_portal_info: vi.fn(),
-      get_network_metas: vi.fn(async () => ({ metas: {} })),
-      list_network_instance_ids: vi.fn(async () => ({ disabled_inst_ids: [], running_inst_ids: [] })),
-      parse_config: vi.fn(),
-      run_network: vi.fn(),
-      save_config: vi.fn(async () => {
-        throw { response: { data: { message: 'config file config.d/x.toml is read-only' } } }
-      }),
-      update_network_instance_state: vi.fn(),
-      validate_config: vi.fn(),
-    }
-
-    const wrapper = mount(RemoteManagement, {
-      props: {
-        api,
-        newConfigGenerator: () => config,
-      },
-      global: {
-        stubs: {
-          Config: true,
-          ConfigEditDialog: true,
-          Status: true,
-        },
-      },
-    })
-
-    try {
-      await settleRemoteManagement()
-      toastSpy.add.mockClear()
-
-      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
-      await flushPromises()
-
-      expect(toastSpy.add).toHaveBeenCalledTimes(1)
-      const toast = toastSpy.add.mock.calls[0][0] as { severity: string; detail: string }
-      expect(toast.severity).toBe('error')
-      expect(toast.detail).toContain('config file config.d/x.toml is read-only')
-      expect(wrapper.emitted('update:instanceId')).toBeUndefined()
-    } finally {
-      wrapper.unmount()
-    }
-  })
-
-  it('saves the current network config without dropping boolean fields', async () => {
-    const config = makeFlagConfig()
-    const expectedFlags = snapshotBooleanConfigFields(config)
-    const api = {
-      delete_network: vi.fn(),
-      generate_config: vi.fn(),
-      get_network_config: vi.fn(async () => cloneConfig(config)),
-      get_network_info: vi.fn(),
-      get_vpn_portal_info: vi.fn(),
-      get_network_metas: vi.fn(async (instanceIds: string[]) => ({
-        metas: Object.fromEntries(instanceIds.map((id) => [id, {
-          config_permission: 0xffffffff,
-          inst_id: INSTANCE_UUID,
-          instance_name: 'mesh-save',
-          network_name: 'mesh-save',
-          source: 2,
-        }])),
-      })),
-      list_network_instance_ids: vi.fn(async () => ({
-        disabled_inst_ids: [INSTANCE_UUID],
-        running_inst_ids: [],
-      })),
-      parse_config: vi.fn(),
-      run_network: vi.fn(),
-      save_config: vi.fn(async () => undefined),
-      update_network_instance_state: vi.fn(),
-      validate_config: vi.fn(),
-    }
-
-    const wrapper = mount(RemoteManagement, {
-      props: {
-        api,
-        instanceId: INSTANCE_ID,
-      },
-      global: {
-        stubs: {
-          Config: true,
-          ConfigEditDialog: true,
-          Status: true,
-        },
-      },
-    })
-
-    try {
-      await settleRemoteManagement()
-
-      const saveButton = wrapper.find('button[data-label="web.device_management.save_config"]')
-      expect(saveButton.exists()).toBe(true)
-      expect(saveButton.attributes('disabled')).toBeUndefined()
-
-      await saveButton.trigger('click')
-      await flushPromises()
-
-      expect(api.save_config).toHaveBeenCalledOnce()
-      const savedConfig = api.save_config.mock.calls[0][0] as NetworkConfig
-
-      for (const field of BOOLEAN_CONFIG_FIELDS) {
-        expect(savedConfig[field], `${field} should be saved`).toBe(expectedFlags[field])
-      }
-    } finally {
-      wrapper.unmount()
-    }
-  })
-})
-
-const RevisionConfigForm = defineComponent({
-  name: 'Config', props: ['curNetwork', 'actionLabel', 'configInvalid'], emits: ['runNetwork'], template: '<div class="revision-config-form" />',
+const ConfigForm = defineComponent({
+  name: 'Config', props: ['curNetwork', 'actionLabel', 'configInvalid'], emits: ['runNetwork'], template: '<div class="config-form" />',
 })
 const ConfigFileDialog = defineComponent({
-  name: 'ConfigEditDialog', props: ['visible', 'curNetwork'], emits: ['update:visible'], template: '<div class="config-file-dialog" />',
+  name: 'ConfigEditDialog', props: ['visible', 'curNetwork', 'generateConfig', 'saveConfig'], emits: ['update:visible'],
+  template: '<div class="config-file-dialog" />',
 })
+
+const REVISION = 'management:persisted-config-revision-v2'
+
 function revisionApi() {
-  const config = { ...DEFAULT_NETWORK_CONFIG(), instance_id: INSTANCE_ID, hostname: 'original-host' }
+  const config = { ...makeFlagConfig(), hostname: 'original-host' }
   const entry = { entry_key: 'mesh.toml', inst_id: INSTANCE_ID, revision: 'revision-a', config,
-    config_permission: 0, enabled: false, running: false, persisted_raw_hash: 'a', pending_apply: false,
+    persisted_toml: `# node file\ninstance_id = '${INSTANCE_ID}'\nhostname = 'original-host'\n`,
+    config_permission: 0, enabled: false, running: false, persisted_raw_hash: 'a',
     status: 'ready', network_name: 'mesh', source: 1 }
-  const snapshot = { catalog_epoch: 'boot-a', catalog_generation: 1, entries: [entry], online: true,
-    capabilities: ['management:persisted-config-revision-v1'] }
-  return {
-    entry, snapshot,
-    api: {
-      scope: 'connection-a',
-      list_network_instance_ids: vi.fn(async () => ({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [],
-        runtime_capabilities: snapshot.capabilities })),
-      get_network_metas: vi.fn(async () => ({ metas: { [INSTANCE_ID]: { network_name: 'mesh', config_permission: 0 } } })),
-      get_network_config: vi.fn(async () => config), get_network_info: vi.fn(), get_vpn_portal_info: vi.fn(),
-      observe_local_configs: vi.fn(async () => snapshot),
-      patch_local_config: vi.fn(async () => ({ status: 0, entry: { ...entry, revision: 'revision-b' } })),
-      save_config: vi.fn(), run_network: vi.fn(), delete_network: vi.fn(), update_network_instance_state: vi.fn(),
-      validate_config: vi.fn(), generate_config: vi.fn(), parse_config: vi.fn(),
-    },
+  const snapshot = { catalog_epoch: 'boot-a', catalog_generation: 1, entries: [entry as any], online: true,
+    capabilities: [REVISION] }
+  const api = {
+    scope: 'connection-a',
+    list_network_instance_ids: vi.fn(async () => ({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [] as any[],
+      runtime_capabilities: snapshot.capabilities })),
+    get_network_metas: vi.fn(async () => ({ metas: { [INSTANCE_ID]: { network_name: 'mesh', config_permission: 0 } } })),
+    get_network_config: vi.fn(async () => cloneConfig(config)), get_network_info: vi.fn(), get_vpn_portal_info: vi.fn(),
+    observe_local_configs: vi.fn(async () => structuredClone(snapshot)),
+    patch_local_config: vi.fn(async (request: any) => ({ status: 0, entry: { ...entry, revision: 'revision-b',
+      config: { ...entry.config, ...request.config } } })),
+    save_config: vi.fn(), run_network: vi.fn(), delete_network: vi.fn(), update_network_instance_state: vi.fn(),
+    validate_config: vi.fn(), generate_config: vi.fn(async () => ({ toml_config: 'generated = true' })), parse_config: vi.fn(),
   }
-}
-async function openRevision(api: any, instanceId: string | null = INSTANCE_ID, newConfigGenerator?: () => NetworkConfig) {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-  const wrapper = mount(RemoteManagement, { props: { api, instanceId: instanceId ?? undefined, newConfigGenerator }, global: {
-    stubs: { Config: RevisionConfigForm, ConfigEditDialog: ConfigFileDialog, Status: true },
-  } })
-  await vi.advanceTimersByTimeAsync(1)
-  await flushPromises()
-  return wrapper
+  return { entry, snapshot, api }
 }
 
-function runningRevision(pendingApply = false, applySupported = true) {
-  const state = revisionApi()
-  Object.assign(state.entry, { enabled: true, running: true, pending_apply: pendingApply })
-  if (applySupported) state.snapshot.capabilities.push(LOCAL_CONFIG_APPLY_CAPABILITY)
+function running(state: ReturnType<typeof revisionApi>) {
+  Object.assign(state.entry, { enabled: true, running: true })
   state.api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [],
     runtime_capabilities: state.snapshot.capabilities })
   state.api.get_network_info.mockResolvedValue({ running: true })
   return state
 }
 
-async function editRunning(wrapper: Awaited<ReturnType<typeof openRevision>>) {
-  const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
-  await actions[0].command()
-  await flushPromises()
-  return wrapper.findComponent(RevisionConfigForm)
-}
-
-function legacyApi(running: boolean) {
-  const state = revisionApi()
+function legacy(state: ReturnType<typeof revisionApi>) {
   state.snapshot.capabilities.length = 0
-  state.api.list_network_instance_ids.mockImplementation(async () => ({
-    running_inst_ids: running ? [INSTANCE_UUID] : [],
-    disabled_inst_ids: running ? [] : [INSTANCE_UUID],
-    runtime_capabilities: [],
-  }))
-  state.api.get_network_info.mockResolvedValue({ running: true })
-  state.api.run_network.mockImplementation(async () => { running = true })
-  state.api.update_network_instance_state.mockImplementation(async () => { running = true })
+  delete (state.api as any).observe_local_configs
+  delete (state.api as any).patch_local_config
   return state
 }
 
-describe('RemoteManagement catalog isolation', () => {
-  it.each([undefined, null])('edits, starts, and deletes a valid entry after an invalid entry with UUID %s', async instId => {
+async function mountManagement(api: any, instanceId: string | null = INSTANCE_ID, newConfigGenerator?: () => NetworkConfig) {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  const wrapper = mount(RemoteManagement, { props: { api, instanceId: instanceId ?? undefined, newConfigGenerator }, global: {
+    stubs: { Config: ConfigForm, ConfigEditDialog: ConfigFileDialog, Status: true },
+  } })
+  await vi.advanceTimersByTimeAsync(1)
+  await flushPromises()
+  return wrapper
+}
+
+type Wrapper = Awaited<ReturnType<typeof mountManagement>>
+
+async function editRunning(wrapper: Wrapper) {
+  const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
+  await actions[0].command()
+  await flushPromises()
+  return wrapper.findComponent(ConfigForm)
+}
+
+const form = (wrapper: Wrapper) => wrapper.findComponent(ConfigForm)
+const button = (wrapper: Wrapper, label: string) => wrapper.find(`button[data-label="${label}"]`)
+
+async function submit(wrapper: Wrapper) {
+  form(wrapper).vm.$emit('runNetwork')
+  await flushPromises()
+}
+
+async function poll(ms = 2_000) {
+  await vi.advanceTimersByTimeAsync(ms)
+  await flushPromises()
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+  toastSpy.add.mockClear()
+  confirmSpy.require.mockClear()
+})
+
+describe('creating networks', () => {
+  it('creates and starts an official network, then selects it', async () => {
+    const { api, entry } = legacy(revisionApi())
+    api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [], runtime_capabilities: [] })
+    api.run_network.mockImplementation(async () => {
+      api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [INSTANCE_UUID], runtime_capabilities: [] })
+    })
+    const wrapper = await mountManagement(api, null, () => cloneConfig(entry.config))
+    try {
+      await button(wrapper, 'web.device_management.create_network').trigger('click')
+      await flushPromises()
+      expect(form(wrapper).props('actionLabel')).toBe('web.local_configs.create_and_start')
+      expect(api.save_config).not.toHaveBeenCalled()
+      form(wrapper).props('curNetwork').hostname = 'new-host'
+      await submit(wrapper)
+      expect(api.run_network).toHaveBeenCalledWith(expect.objectContaining({ hostname: 'new-host' }), true)
+      expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
+      expect(wrapper.emitted('update')).toHaveLength(1)
+    } finally { wrapper.unmount() }
+  })
+
+  it('reports a failed creation and keeps the draft', async () => {
+    const { api, entry } = legacy(revisionApi())
+    api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [], runtime_capabilities: [] })
+    api.run_network.mockRejectedValue({ response: { data: { message: 'config file config.d/x.toml is read-only' } } })
+    const wrapper = await mountManagement(api, null, () => cloneConfig(entry.config))
+    try {
+      await button(wrapper, 'web.device_management.create_network').trigger('click')
+      await flushPromises()
+      await submit(wrapper)
+      const toast = toastSpy.add.mock.calls.at(-1)![0] as { severity: string; detail: string }
+      expect(toast.severity).toBe('error')
+      expect(toast.detail).toContain('config file config.d/x.toml is read-only')
+      expect(wrapper.emitted('update:instanceId')).toBeUndefined()
+      expect(form(wrapper).exists()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+
+  it('creates a node file with an empty revision and starts it with the created revision', async () => {
+    const { api, entry } = revisionApi()
+    api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [], runtime_capabilities: [REVISION] })
+    const wrapper = await mountManagement(api, null, () => cloneConfig(entry.config))
+    try {
+      await button(wrapper, 'web.device_management.create_network').trigger('click')
+      await flushPromises()
+      expect(api.patch_local_config).not.toHaveBeenCalled()
+      await submit(wrapper)
+      const request = api.patch_local_config.mock.calls[0][0]
+      expect(request).toMatchObject({ inst_id: INSTANCE_ID, expected_revision: '' })
+      expect(request).not.toHaveProperty('apply_mode')
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-b')
+    } finally { wrapper.unmount() }
+  })
+})
+
+describe('saving official networks', () => {
+  it('saves a stopped network without dropping boolean fields or starting it', async () => {
+    const { api, entry } = legacy(revisionApi())
+    const expected = snapshotBooleanConfigFields(entry.config)
+    const wrapper = await mountManagement(api)
+    try {
+      expect(form(wrapper).props('actionLabel')).toBe('web.local_configs.save')
+      form(wrapper).props('curNetwork').hostname = 'saved-host'
+      await submit(wrapper)
+      expect(api.save_config).toHaveBeenCalledOnce()
+      const saved = api.save_config.mock.calls[0][0] as NetworkConfig
+      expect(saved.hostname).toBe('saved-host')
+      for (const field of BOOLEAN_CONFIG_FIELDS) expect(saved[field], field).toBe(expected[field])
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
+      expect(api.run_network).not.toHaveBeenCalled()
+      expect(form(wrapper).exists()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+
+  it('applies a running network through run_network and returns to its status', async () => {
+    const { api } = legacy(running(revisionApi()))
+    const wrapper = await mountManagement(api)
+    try {
+      const editor = await editRunning(wrapper)
+      editor.props('curNetwork').hostname = 'applied-host'
+      await submit(wrapper)
+      expect(api.run_network).toHaveBeenCalledWith(expect.objectContaining({ hostname: 'applied-host' }), true)
+      expect(api.save_config).not.toHaveBeenCalled()
+      expect(wrapper.find('.network-status-container').exists()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+})
+
+describe('saving node configuration files', () => {
+  it.each([undefined, null])('edits and deletes a valid entry after an invalid entry with UUID %s', async instId => {
     const { api, snapshot } = revisionApi()
     snapshot.entries.unshift({ entry_key: 'broken.toml', inst_id: instId, status: 'invalid',
       revision: '', network_name: '', config_permission: 0 } as any)
-    const wrapper = await openRevision(api)
+    const wrapper = await mountManagement(api)
     try {
-      toastSpy.add.mockClear()
-      confirmSpy.require.mockClear()
-      const form = wrapper.findComponent(RevisionConfigForm)
-      expect(form.props('curNetwork').hostname).toBe('original-host')
-      expect(api.observe_local_configs).toHaveBeenCalledOnce()
-      form.props('curNetwork').hostname = 'edited-valid-host'
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config).toHaveBeenCalledWith(expect.objectContaining({
+      expect(form(wrapper).props('curNetwork').hostname).toBe('original-host')
+      form(wrapper).props('curNetwork').hostname = 'edited-valid-host'
+      await submit(wrapper)
+      expect(api.patch_local_config).toHaveBeenCalledWith({
         inst_id: INSTANCE_ID, expected_revision: 'revision-a', field_mask: ['hostname'],
         config: { hostname: 'edited-valid-host' },
-      }))
-      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-b')
+      })
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
 
       const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
       actions[2].command()
       await confirmSpy.require.mock.calls[0][0].accept()
       expect(api.delete_network).toHaveBeenCalledWith(INSTANCE_ID, 'revision-a')
-      expect(toastSpy.add).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
+      expect(toastSpy.add.mock.calls.filter(call => call[0].severity === 'error')).toEqual([])
+    } finally { wrapper.unmount() }
   })
 
-  it('keeps option order, identity, selection and config stable across shuffled catalog polls', async () => {
+  it('saves a running network once and returns to its status', async () => {
+    const { api } = running(revisionApi())
+    const wrapper = await mountManagement(api)
+    try {
+      const editor = await editRunning(wrapper)
+      editor.props('curNetwork').hostname = 'applied-host'
+      await submit(wrapper)
+      expect(api.patch_local_config).toHaveBeenCalledOnce()
+      expect(api.patch_local_config.mock.calls[0][0].field_mask).toEqual(['hostname'])
+      expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({ detail: 'web.local_configs.saved_applied' }))
+      expect(wrapper.find('.network-status-container').exists()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+
+  it('keeps the edits when the network is stopped elsewhere', async () => {
+    const state = running(revisionApi())
+    const { api } = state
+    const wrapper = await mountManagement(api)
+    try {
+      const editor = await editRunning(wrapper)
+      editor.props('curNetwork').hostname = 'unsaved'
+      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID],
+        runtime_capabilities: state.snapshot.capabilities })
+      await poll()
+      expect(form(wrapper).props('curNetwork').hostname).toBe('unsaved')
+      expect(button(wrapper, 'web.local_configs.enable').attributes('disabled')).toBeDefined()
+    } finally { wrapper.unmount() }
+  })
+
+  it('reports a failed apply and keeps the edits', async () => {
+    const { api } = running(revisionApi())
+    api.patch_local_config.mockResolvedValue({ status: 5, message: 'tun unavailable' } as any)
+    const wrapper = await mountManagement(api)
+    try {
+      const editor = await editRunning(wrapper)
+      editor.props('curNetwork').hostname = 'rejected-host'
+      await submit(wrapper)
+      expect(toastSpy.add.mock.calls.at(-1)![0].detail).toContain('web.local_configs.apply_failed')
+      expect(toastSpy.add.mock.calls.at(-1)![0].detail).toContain('tun unavailable')
+      expect(form(wrapper).props('curNetwork').hostname).toBe('rejected-host')
+    } finally { wrapper.unmount() }
+  })
+
+  it('follows changes made elsewhere while the form is unchanged', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await mountManagement(api)
+    try {
+      entry.revision = 'revision-local-edit'
+      entry.config.hostname = 'edited-on-node'
+      await poll()
+      expect(form(wrapper).props('curNetwork').hostname).toBe('edited-on-node')
+      expect(wrapper.text()).not.toContain('web.local_configs.merged_elsewhere')
+    } finally { wrapper.unmount() }
+  })
+
+  it('merges changes made elsewhere to other fields into the edits', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await mountManagement(api)
+    try {
+      form(wrapper).props('curNetwork').hostname = 'mine'
+      entry.revision = 'revision-other-console'
+      entry.config.network_name = 'renamed-elsewhere'
+      await poll()
+      const draft = form(wrapper).props('curNetwork')
+      expect(draft.hostname).toBe('mine')
+      expect(draft.network_name).toBe('renamed-elsewhere')
+      expect(wrapper.text()).toContain('web.local_configs.merged_elsewhere')
+      await submit(wrapper)
+      expect(api.patch_local_config).toHaveBeenCalledWith(expect.objectContaining({
+        expected_revision: 'revision-other-console', field_mask: ['hostname'],
+      }))
+    } finally { wrapper.unmount() }
+  })
+
+  it.each(['keep_mine', 'take_theirs'])('resolves overlapping changes with %s', async choice => {
+    const { api, entry } = revisionApi()
+    const wrapper = await mountManagement(api)
+    try {
+      form(wrapper).props('curNetwork').hostname = 'mine'
+      entry.revision = 'revision-other-console'
+      entry.config.hostname = 'theirs'
+      await poll()
+      expect(wrapper.text()).toContain('web.local_configs.conflict_fields')
+      expect(wrapper.text()).toContain('hostname')
+      expect(form(wrapper).props('configInvalid')).toBe(true)
+      expect(form(wrapper).props('curNetwork').hostname).toBe('mine')
+
+      await button(wrapper, `web.local_configs.${choice}`).trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).not.toContain('web.local_configs.conflict_fields')
+      expect(form(wrapper).props('curNetwork').hostname).toBe(choice === 'keep_mine' ? 'mine' : 'theirs')
+      await submit(wrapper)
+      if (choice === 'keep_mine') {
+        expect(api.patch_local_config).toHaveBeenCalledWith(expect.objectContaining({
+          expected_revision: 'revision-other-console', field_mask: ['hostname'], config: { hostname: 'mine' },
+        }))
+      } else {
+        expect(api.patch_local_config).not.toHaveBeenCalled()
+      }
+    } finally { wrapper.unmount() }
+  })
+
+  it('surfaces a save conflict without resubmitting', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await mountManagement(api)
+    try {
+      form(wrapper).props('curNetwork').hostname = 'mine'
+      api.patch_local_config.mockImplementationOnce(async () => {
+        entry.revision = 'revision-raced'
+        entry.config.hostname = 'theirs'
+        return { status: 1 } as any
+      })
+      await submit(wrapper)
+      expect(api.patch_local_config).toHaveBeenCalledOnce()
+      expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({ detail: 'web.local_configs.changed_elsewhere' }))
+      expect(wrapper.text()).toContain('web.local_configs.conflict_fields')
+      expect(form(wrapper).props('curNetwork').hostname).toBe('mine')
+    } finally { wrapper.unmount() }
+  })
+
+  it('enables a stopped network only when the form has no unsaved changes', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await mountManagement(api)
+    try {
+      form(wrapper).props('curNetwork').hostname = 'unsaved'
+      await nextTick()
+      expect(button(wrapper, 'web.local_configs.enable').attributes('disabled')).toBeDefined()
+      await button(wrapper, 'web.local_configs.discard').trigger('click')
+      await nextTick()
+      expect(form(wrapper).props('curNetwork').hostname).toBe('original-host')
+      entry.revision = 'revision-latest'
+      await button(wrapper, 'web.local_configs.enable').trigger('click')
+      await flushPromises()
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-latest')
+    } finally { wrapper.unmount() }
+  })
+
+  it('edits the original node file and saves it as a whole document', async () => {
+    const { api, entry } = revisionApi()
+    const wrapper = await mountManagement(api)
+    try {
+      const dialog = wrapper.findComponent(ConfigFileDialog)
+      expect(await dialog.props('generateConfig')(form(wrapper).props('curNetwork'))).toBe(entry.persisted_toml)
+      expect(api.generate_config).not.toHaveBeenCalled()
+      const edited = entry.persisted_toml.replace('original-host', 'file-host')
+      api.patch_local_config.mockResolvedValueOnce({ status: 0, entry: { ...entry, revision: 'revision-file',
+        persisted_toml: edited, config: { ...entry.config, hostname: 'file-host' } } } as any)
+      await dialog.props('saveConfig')(edited)
+      await flushPromises()
+      expect(api.patch_local_config).toHaveBeenCalledWith({
+        inst_id: INSTANCE_ID, expected_revision: 'revision-a', field_mask: [], toml: edited,
+      })
+      expect(form(wrapper).props('curNetwork').hostname).toBe('file-host')
+
+      form(wrapper).props('curNetwork').hostname = 'unsaved'
+      await nextTick()
+      expect(button(wrapper, 'web.device_management.edit_as_file').attributes('disabled')).toBeDefined()
+    } finally { wrapper.unmount() }
+  })
+
+  it('reports a file changed elsewhere to the file editor', async () => {
+    const { api, entry } = revisionApi()
+    api.patch_local_config.mockResolvedValueOnce({ status: 1 } as any)
+    const wrapper = await mountManagement(api)
+    try {
+      const dialog = wrapper.findComponent(ConfigFileDialog)
+      await expect(dialog.props('saveConfig')(entry.persisted_toml + '# edit\n'))
+        .rejects.toThrow('web.local_configs.file_changed_elsewhere')
+    } finally { wrapper.unmount() }
+  })
+
+  it('keeps option order, selection and the form stable across shuffled catalog polls', async () => {
     const { api, snapshot, entry } = revisionApi()
     const nextId = '00000000-0000-0000-0000-000000000002'
     const nextUuid = { ...INSTANCE_UUID, part4: 2 }
-    snapshot.entries.unshift({ entry_key: 'broken.toml', status: 'invalid', revision: '' } as any)
     snapshot.entries.push({ ...entry, inst_id: nextId, entry_key: 'other.toml',
       config: { ...entry.config, instance_id: nextId } })
     let backwards = true
@@ -444,659 +537,18 @@ describe('RemoteManagement catalog isolation', () => {
       return { running_inst_ids: [], disabled_inst_ids: backwards ? [nextUuid, INSTANCE_UUID] : [INSTANCE_UUID, nextUuid],
         runtime_capabilities: snapshot.capabilities }
     })
-    const wrapper = await openRevision(api)
+    const wrapper = await mountManagement(api)
     try {
       const select = wrapper.findComponent({ name: 'Select' })
       const options = select.props('options')
       const selected = select.props('modelValue')
-      const config = wrapper.findComponent(RevisionConfigForm).props('curNetwork')
+      const config = form(wrapper).props('curNetwork')
       expect(options.map((option: any) => option.uuid)).toEqual([INSTANCE_ID, nextId])
-      expect(select.attributes('datakey')).toBe('uuid')
-      await vi.advanceTimersByTimeAsync(3_000)
-      await flushPromises()
+      await poll(3_000)
       expect(select.props('options')).toBe(options)
       expect(select.props('modelValue')).toBe(selected)
-      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork')).toBe(config)
-      expect(api.observe_local_configs).toHaveBeenCalledTimes(4)
+      expect(form(wrapper).props('curNetwork')).toBe(config)
       expect(wrapper.emitted('update:instanceId')).toBeUndefined()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('ignores an older disabled catalog response after a successful start refresh', async () => {
-    const { api } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      let finish!: (response: any) => void
-      api.list_network_instance_ids.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-      const poll = vi.advanceTimersByTimeAsync(1_000)
-      await flushPromises()
-      const form = wrapper.findComponent(RevisionConfigForm)
-      api.update_network_instance_state.mockImplementation(async () => {
-        api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [],
-          runtime_capabilities: ['management:persisted-config-revision-v1'] })
-      })
-      api.get_network_info.mockResolvedValue({ running: true })
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-a')
-      expect(wrapper.find('.network-status-container').exists()).toBe(true)
-      finish({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID],
-        runtime_capabilities: ['management:persisted-config-revision-v1'] })
-      await poll
-      await flushPromises()
-      expect(wrapper.find('.network-status-container').exists()).toBe(true)
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-})
-
-describe('legacy RemoteManagement save and run', () => {
-  it('creates, selects, and runs a network when no instance was initially selected', async () => {
-    const { api, entry } = legacyApi(false)
-    api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: [] })
-    api.save_config.mockImplementation(async () => {
-      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID], runtime_capabilities: [] })
-    })
-    api.update_network_instance_state.mockImplementation(async () => {
-      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [], runtime_capabilities: [] })
-    })
-    const wrapper = await openRevision(api, null, () => entry.config)
-    try {
-      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
-      await flushPromises()
-      expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
-      const form = wrapper.findComponent(RevisionConfigForm)
-      form.props('curNetwork').hostname = 'new-network-host'
-      form.vm.$emit('runNetwork', form.props('curNetwork'))
-      await flushPromises()
-
-      expect(api.save_config).toHaveBeenCalledTimes(2)
-      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false)
-      expect(wrapper.find('.network-status-container').exists()).toBe(true)
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
-      expect(wrapper.emitted('update')).toHaveLength(1)
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each([false, true])('returns to network status after applying edits (initially running: %s)', async running => {
-    const { api } = legacyApi(running)
-    const wrapper = await openRevision(api)
-    try {
-      const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
-      form.props('curNetwork').hostname = 'applied-host'
-      await nextTick()
-      expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
-
-      form.vm.$emit('runNetwork', form.props('curNetwork'))
-      await flushPromises()
-
-      if (running) {
-        expect(api.run_network).toHaveBeenCalledWith(expect.objectContaining({ hostname: 'applied-host' }), true)
-        expect(api.save_config).not.toHaveBeenCalled()
-      } else {
-        expect(api.save_config).toHaveBeenCalledWith(expect.objectContaining({ hostname: 'applied-host' }))
-        expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false)
-        expect(api.run_network).not.toHaveBeenCalled()
-      }
-      expect(wrapper.find('.network-status-container').exists()).toBe(true)
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
-      expect(wrapper.text()).not.toContain('web.local_configs.dirty_preserved')
-      expect(wrapper.emitted('update')).toHaveLength(1)
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each(['save_config', 'update_network_instance_state', 'run_network'] as const)(
-    'keeps the dirty form when %s fails', async operation => {
-      const running = operation === 'run_network'
-      const { api } = legacyApi(running)
-      api[operation].mockRejectedValue(new Error('request failed'))
-      const wrapper = await openRevision(api)
-      try {
-        const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
-        form.props('curNetwork').hostname = 'unsaved-host'
-        form.vm.$emit('runNetwork', form.props('curNetwork'))
-        await flushPromises()
-        await vi.advanceTimersByTimeAsync(1_000)
-
-        expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('unsaved-host')
-        expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
-        expect(wrapper.find('.network-status-container').exists()).toBe(false)
-        expect(wrapper.emitted('update')).toBeUndefined()
-        if (operation === 'save_config') expect(api.update_network_instance_state).not.toHaveBeenCalled()
-      } finally { wrapper.unmount(); vi.useRealTimers() }
-    },
-  )
-
-  it.each([false, true])('retains edits made while the run request is pending (initially running: %s)', async running => {
-    const { api } = legacyApi(running)
-    let finish!: () => void
-    const operation = running ? api.run_network : api.update_network_instance_state
-    operation.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
-    const wrapper = await openRevision(api)
-    try {
-      const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
-      form.props('curNetwork').hostname = 'submitted-host'
-      form.vm.$emit('runNetwork', form.props('curNetwork'))
-      await flushPromises()
-      form.props('curNetwork').hostname = 'newer-edit'
-      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [], runtime_capabilities: [] })
-      finish()
-      await flushPromises()
-
-      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('newer-edit')
-      expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
-      expect(wrapper.find('.network-status-container').exists()).toBe(false)
-      const submitted = (running ? api.run_network : api.save_config).mock.calls[0][0]
-      expect(submitted.hostname).toBe('submitted-host')
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each(['save_config', 'run_network', 'get_network_metas'] as const)(
-    'does not restore the previous selection after a delayed %s response', async operation => {
-      const running = operation !== 'save_config'
-      const { api, entry } = legacyApi(running)
-      const nextId = '00000000-0000-0000-0000-000000000002'
-      const nextUuid = { ...INSTANCE_UUID, part4: 2 }
-      api.list_network_instance_ids.mockResolvedValue({
-        running_inst_ids: running ? [INSTANCE_UUID] : [],
-        disabled_inst_ids: running ? [nextUuid] : [INSTANCE_UUID, nextUuid],
-        runtime_capabilities: [],
-      })
-      api.get_network_config.mockImplementation(async (...args: string[]) => ({ ...entry.config, instance_id: args[0] }))
-      const wrapper = await openRevision(api)
-      try {
-        const form = running ? await editRunning(wrapper) : wrapper.findComponent(RevisionConfigForm)
-        form.props('curNetwork').hostname = 'submitted-host'
-        let finish!: () => void
-        api[operation].mockImplementationOnce(() => new Promise<any>(resolve => {
-          finish = () => resolve(operation === 'get_network_metas' ? { metas: {} } : undefined)
-        }))
-        form.vm.$emit('runNetwork', form.props('curNetwork'))
-        await flushPromises()
-
-        await wrapper.setProps({ instanceId: nextId })
-        await flushPromises()
-        const nextForm = wrapper.findComponent(RevisionConfigForm)
-        nextForm.props('curNetwork').hostname = 'new-network-edit'
-        finish()
-        await flushPromises()
-
-        expect(wrapper.findComponent({ name: 'Select' }).props('modelValue').uuid).toBe(nextId)
-        expect(nextForm.props('curNetwork').hostname).toBe('new-network-edit')
-        expect(nextForm.props('configInvalid')).toBe(false)
-        expect(wrapper.text()).toContain('web.local_configs.dirty_preserved')
-        expect(wrapper.emitted('update:instanceId')).toBeUndefined()
-        expect(wrapper.emitted('update')).toBeUndefined()
-        if (operation === 'save_config') expect(api.update_network_instance_state).not.toHaveBeenCalled()
-      } finally { wrapper.unmount(); vi.useRealTimers() }
-    },
-  )
-})
-
-describe('revision-aware RemoteManagement forms', () => {
-  it('starts a pristine configuration using its latest revision even before the next poll', async () => {
-    const { api, entry } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      entry.revision = 'latest-lifecycle-revision'
-      wrapper.findComponent(RevisionConfigForm).vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config).not.toHaveBeenCalled()
-      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'latest-lifecycle-revision')
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('refreshes an untouched form and its revision together but preserves edits made during the read', async () => {
-    const { api, entry, snapshot } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      entry.revision = 'fresh-revision'
-      entry.config.hostname = 'fresh-host'
-      await vi.advanceTimersByTimeAsync(1000)
-      const form = wrapper.findComponent(RevisionConfigForm)
-      expect(form.props('curNetwork').hostname).toBe('fresh-host')
-      let finish!: (value: typeof snapshot) => void
-      api.observe_local_configs.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-      await vi.advanceTimersByTimeAsync(1000)
-      form.props('curNetwork').hostname = 'typed-during-refresh'
-      entry.revision = 'newer-revision'
-      entry.config.hostname = 'newer-host'
-      finish(snapshot)
-      await flushPromises()
-      expect(form.props('curNetwork').hostname).toBe('typed-during-refresh')
-      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[0][0].expected_revision).toBe('fresh-revision')
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('recovers from a real conflict through an explicit reload without resubmitting stale edits', async () => {
-    const { api, entry } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname = 'unsaved-host'
-      api.patch_local_config.mockResolvedValueOnce({ status: 1 } as any)
-      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-      await flushPromises()
-      entry.revision = 'external-revision'
-      entry.config.hostname = 'external-host'
-      await wrapper.find('button[data-label="web.local_configs.reload_discard"]').trigger('click')
-      await flushPromises()
-      const form = wrapper.findComponent(RevisionConfigForm)
-      expect(form.props('curNetwork').hostname).toBe('external-host')
-      expect(wrapper.text()).not.toContain('web.local_configs.dirty_preserved')
-      form.props('curNetwork').hostname = 'new-edit'
-      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[1][0].expected_revision).toBe('external-revision')
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each([false, true])('opens the file editor from the current form without refreshing its revision with dirty=%s', async dirty => {
-    const { api, entry } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      const form = wrapper.findComponent(RevisionConfigForm)
-      if (dirty) form.props('curNetwork').hostname = 'unsaved-host'
-      api.observe_local_configs.mockClear()
-      entry.config.hostname = 'new-disk-host'
-      entry.revision = 'new-disk-revision'
-      const button = wrapper.find('button[data-label="web.device_management.edit_as_file"]')
-      const dialog = wrapper.findComponent(ConfigFileDialog)
-      await button.trigger('click')
-      await button.trigger('click')
-      expect(dialog.props('visible')).toBe(true)
-      expect(dialog.props('curNetwork')).toBe(form.props('curNetwork'))
-      expect(dialog.props('curNetwork').hostname).toBe(dirty ? 'unsaved-host' : 'original-host')
-      await vi.advanceTimersByTimeAsync(5_000)
-      dialog.vm.$emit('update:visible', false)
-      await nextTick()
-      await button.trigger('click')
-      expect(api.observe_local_configs).not.toHaveBeenCalled()
-      expect(api.get_network_config).not.toHaveBeenCalled()
-      if (dirty) {
-        dialog.vm.$emit('update:visible', false)
-        await nextTick()
-        api.patch_local_config.mockRejectedValue({ response: { status: 409, data: { message: 'revision conflict' } } })
-        await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-        await flushPromises()
-        expect(api.patch_local_config.mock.calls[0][0]).toMatchObject({
-          expected_revision: 'revision-a', config: { hostname: 'unsaved-host' }, field_mask: ['hostname'],
-        })
-        expect(form.props('curNetwork').hostname).toBe('unsaved-host')
-      }
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each([false, true])('reuses the initial legacy configuration in the file editor with dirty=%s', async dirty => {
-    const { api, entry } = legacyApi(false)
-    const wrapper = await openRevision(api)
-    try {
-      const form = wrapper.findComponent(RevisionConfigForm)
-      if (dirty) form.props('curNetwork').hostname = 'unsaved-host'
-      api.get_network_config.mockClear().mockResolvedValue({ ...entry.config, hostname: 'legacy-disk-host' })
-      api.observe_local_configs.mockClear()
-      await wrapper.find('button[data-label="web.device_management.edit_as_file"]').trigger('click')
-      const dialog = wrapper.findComponent(ConfigFileDialog)
-      expect(dialog.props('visible')).toBe(true)
-      expect(dialog.props('curNetwork').hostname).toBe(dirty ? 'unsaved-host' : 'original-host')
-      await vi.advanceTimersByTimeAsync(5_000)
-      expect(api.get_network_config).not.toHaveBeenCalled()
-      expect(api.observe_local_configs).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each(['revision', 'legacy'] as const)('loads a running %s configuration once when entering network editing', async mode => {
-    const { api } = mode === 'revision' ? runningRevision() : legacyApi(true)
-    const wrapper = await openRevision(api)
-    try {
-      expect(api.observe_local_configs).not.toHaveBeenCalled()
-      expect(api.get_network_config).not.toHaveBeenCalled()
-      const form = await editRunning(wrapper)
-      expect(mode === 'revision' ? api.observe_local_configs : api.get_network_config).toHaveBeenCalledOnce()
-      form.props('curNetwork').hostname = 'unsaved-host'
-      await editRunning(wrapper)
-      await wrapper.find('button[data-label="web.device_management.edit_as_file"]').trigger('click')
-      expect(mode === 'revision' ? api.observe_local_configs : api.get_network_config).toHaveBeenCalledOnce()
-      expect(form.props('curNetwork').hostname).toBe('unsaved-host')
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each(['revision', 'legacy'] as const)('shares a pending initial %s read across repeated network edit clicks', async mode => {
-    const { api, snapshot, entry } = mode === 'revision' ? runningRevision() : legacyApi(true)
-    const read = mode === 'revision' ? api.observe_local_configs : api.get_network_config
-    const resolvers: Array<() => void> = []
-    ;(read as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(done => {
-      resolvers.push(() => done(mode === 'revision' ? snapshot : entry.config))
-    }))
-    const wrapper = await openRevision(api)
-    try {
-      const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
-      const first = actions[0].command()
-      const second = actions[0].command()
-      await flushPromises()
-      expect(read).toHaveBeenCalledOnce()
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
-      resolvers.forEach(resolve => resolve())
-      await Promise.all([first, second])
-      await flushPromises()
-      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('original-host')
-    } finally {
-      resolvers.forEach(resolve => resolve())
-      wrapper.unmount(); vi.useRealTimers()
-    }
-  })
-
-  it.each(['revision', 'legacy'] as const)('shares a pending initial %s read between creation and the disabled-network watcher', async mode => {
-    const { api, snapshot, entry } = mode === 'revision' ? revisionApi() : legacyApi(false)
-    const capabilities = mode === 'revision' ? snapshot.capabilities : []
-    api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: capabilities })
-    const created = async () => {
-      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID], runtime_capabilities: capabilities })
-      return { status: 0, entry }
-    }
-    if (mode === 'revision') api.patch_local_config.mockImplementation(created)
-    else api.save_config.mockImplementation(created)
-    const read = mode === 'revision' ? api.observe_local_configs : api.get_network_config
-    const resolvers: Array<() => void> = []
-    ;(read as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(done => {
-      resolvers.push(() => done(mode === 'revision' ? snapshot : entry.config))
-    }))
-    const wrapper = await openRevision(api, null, () => entry.config)
-    try {
-      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
-      await flushPromises()
-      expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
-      expect(read).toHaveBeenCalledOnce()
-      resolvers.forEach(resolve => resolve())
-      await flushPromises()
-      const form = wrapper.findComponent(RevisionConfigForm)
-      expect(form.props('curNetwork').hostname).toBe('original-host')
-      form.props('curNetwork').hostname = 'created-edit'
-      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-      await flushPromises()
-      if (mode === 'revision') expect(api.patch_local_config.mock.calls[1][0]).toMatchObject({
-        expected_revision: 'revision-a', config: { hostname: 'created-edit' }, field_mask: ['hostname'],
-      })
-      else expect(api.save_config.mock.calls[1][0]).toMatchObject({ hostname: 'created-edit' })
-    } finally {
-      resolvers.forEach(resolve => resolve())
-      wrapper.unmount(); vi.useRealTimers()
-    }
-  })
-
-  it.each(['selection', 'connection'] as const)('isolates a new pending initial read after a %s change', async change => {
-    const { api, snapshot, entry } = runningRevision()
-    const resolvers: Array<(hostname: string) => void> = []
-    api.observe_local_configs.mockImplementation(() => new Promise(done => {
-      resolvers.push(hostname => done({ ...snapshot, entries: [{ ...entry, config: { ...entry.config, hostname } }] }))
-    }))
-    const wrapper = await openRevision(api)
-    try {
-      const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
-      const first = actions[0].command()
-      if (change === 'selection') {
-        await wrapper.setProps({ instanceId: undefined })
-        await wrapper.setProps({ instanceId: INSTANCE_ID })
-      } else await wrapper.setProps({ scopeKey: 'connection-b' })
-      await flushPromises()
-      const second = actions[0].command()
-      expect(api.observe_local_configs).toHaveBeenCalledTimes(2)
-      resolvers[0]('stale-host')
-      await first
-      await flushPromises()
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
-      const repeated = actions[0].command()
-      expect(api.observe_local_configs).toHaveBeenCalledTimes(2)
-      resolvers[1]('current-host')
-      await Promise.all([second, repeated])
-      await flushPromises()
-      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('current-host')
-    } finally {
-      resolvers.forEach(resolve => resolve('cleanup-host'))
-      wrapper.unmount(); vi.useRealTimers()
-    }
-  })
-
-  it.each(['success', 'failure'] as const)('ignores an initial network edit read %s after the selection changes', async outcome => {
-    const { api, snapshot } = runningRevision()
-    let resolve!: (value: typeof snapshot) => void
-    let reject!: (error: unknown) => void
-    api.observe_local_configs.mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail }))
-    const wrapper = await openRevision(api)
-    try {
-      const actions = wrapper.findComponent({ name: 'Menu' }).props('model')
-      const opening = actions[0].command()
-      await wrapper.setProps({ instanceId: undefined })
-      toastSpy.add.mockClear()
-      if (outcome === 'success') resolve(snapshot)
-      else reject(new Error('stale initial read'))
-      await opening
-      await flushPromises()
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
-      expect(wrapper.findComponent(ConfigFileDialog).props('visible')).toBe(false)
-      expect(toastSpy.add).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('keeps the file editor unavailable until the initial configuration has loaded and closes it on selection changes', async () => {
-    const { api, snapshot } = revisionApi()
-    let resolve!: (value: typeof snapshot) => void
-    api.observe_local_configs.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-    const wrapper = await openRevision(api)
-    try {
-      const button = wrapper.find('button[data-label="web.device_management.edit_as_file"]')
-      const dialog = wrapper.findComponent(ConfigFileDialog)
-      expect(button.attributes('disabled')).toBeDefined()
-      await button.trigger('click')
-      expect(dialog.props('visible')).toBe(false)
-      resolve(snapshot)
-      await flushPromises()
-      expect(button.attributes('disabled')).toBeUndefined()
-      await button.trigger('click')
-      expect(dialog.props('visible')).toBe(true)
-      await wrapper.setProps({ instanceId: undefined })
-      expect(dialog.props('visible')).toBe(false)
-      expect(dialog.props('curNetwork')).toBeUndefined()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('applies persisted changes after a running configuration is saved without further edits', async () => {
-    const { api, entry } = runningRevision()
-    api.patch_local_config.mockImplementation(async (...args: any[]) => {
-      const request = args[0]
-      Object.assign(entry.config, request.config)
-      entry.pending_apply = request.apply_mode === 1
-      entry.revision = entry.pending_apply ? 'saved-revision' : 'applied-revision'
-      return { status: 0, entry: { ...entry } }
-    })
-    const wrapper = await openRevision(api)
-    try {
-      const form = await editRunning(wrapper)
-      form.props('curNetwork').hostname = 'persisted-host'
-      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-      await flushPromises()
-      expect(entry.pending_apply).toBe(true)
-      expect(form.props('actionLabel')).toBe('web.local_configs.apply_saved')
-      expect(wrapper.text()).toContain('web.local_configs.pending_apply')
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[1][0]).toEqual({ inst_id: INSTANCE_ID, expected_revision: 'saved-revision',
-        config: {}, field_mask: [], apply_mode: 0 })
-      expect(entry.pending_apply).toBe(false)
-      expect(api.update_network_instance_state).not.toHaveBeenCalled()
-      expect(api.run_network).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('applies the persisted revision after reopening the editor and observing a manual disk edit', async () => {
-    const { api, entry } = runningRevision(true)
-    const first = await openRevision(api)
-    await editRunning(first)
-    first.unmount()
-    vi.useRealTimers()
-    entry.config.hostname = 'manually-edited-on-disk'
-    entry.revision = 'disk-revision'
-    const wrapper = await openRevision(api)
-    try {
-      const form = await editRunning(wrapper)
-      expect(form.props('curNetwork').hostname).toBe('manually-edited-on-disk')
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[0][0]).toEqual({ inst_id: INSTANCE_ID, expected_revision: 'disk-revision',
-        config: {}, field_mask: [], apply_mode: 0 })
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('keeps pending changes visible and asks to upgrade an older revision-capable node', async () => {
-    const { api } = runningRevision(true, false)
-    const wrapper = await openRevision(api)
-    try {
-      const form = await editRunning(wrapper)
-      toastSpy.add.mockClear()
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config).not.toHaveBeenCalled()
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(true)
-      expect(wrapper.text()).toContain('web.local_configs.apply_unsupported')
-      expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error',
-        detail: expect.stringContaining('web.local_configs.apply_unsupported') }))
-      expect(wrapper.emitted('update')).toBeUndefined()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it.each([{ status: 1, message: 'revision conflict' }, { status: 5, message: 'apply failed' }])(
-    'retains the pending revision and form after an apply failure: $message', async failure => {
-      const { api } = runningRevision(true)
-      api.patch_local_config.mockResolvedValue(failure)
-      const wrapper = await openRevision(api)
-      try {
-        const form = await editRunning(wrapper)
-        form.vm.$emit('runNetwork')
-        await flushPromises()
-        await vi.advanceTimersByTimeAsync(1_000)
-        expect(api.patch_local_config).toHaveBeenCalledTimes(1)
-        expect(api.patch_local_config.mock.calls[0][0].expected_revision).toBe('revision-a')
-        expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(true)
-        expect(wrapper.text()).toContain('web.local_configs.pending_apply')
-        expect(wrapper.emitted('update')).toBeUndefined()
-      } finally { wrapper.unmount(); vi.useRealTimers() }
-    },
-  )
-
-  it('ignores an outstanding apply response after the management connection changes', async () => {
-    const { api, entry } = runningRevision(true)
-    let resolve!: (result: any) => void
-    api.patch_local_config.mockImplementation(() => new Promise(done => { resolve = done }))
-    const wrapper = await openRevision(api)
-    try {
-      const form = await editRunning(wrapper)
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(form.props('configInvalid')).toBe(true)
-      const next = runningRevision()
-      next.api.scope = 'connection-b'
-      await wrapper.setProps({ api: next.api })
-      resolve({ status: 0, entry: { ...entry, pending_apply: false, revision: 'late-revision' } })
-      await flushPromises()
-      expect(wrapper.findComponent(RevisionConfigForm).exists()).toBe(false)
-      expect(wrapper.text()).not.toContain('web.local_configs.pending_apply')
-      expect(wrapper.emitted('update')).toBeUndefined()
-      expect(next.api.patch_local_config).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('starts an unchanged disabled configuration through the existing lifecycle CAS', async () => {
-    const { api } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      wrapper.findComponent(RevisionConfigForm).vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config).not.toHaveBeenCalled()
-      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-a')
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('shows GUI conflict messages on save-and-start and retains the dirty form and revision', async () => {
-    const { api } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      toastSpy.add.mockClear()
-      api.patch_local_config.mockResolvedValue({ status: 1, message: 'Configuration changed; reread its revision' })
-      const form = wrapper.findComponent(RevisionConfigForm)
-      form.props('curNetwork').hostname = 'unsaved-host'
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({
-        severity: 'error', detail: 'Failed to run network, error: Configuration changed; reread its revision',
-      }))
-      expect(form.props('curNetwork').hostname).toBe('unsaved-host')
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[1][0]).toMatchObject({
-        expected_revision: 'revision-a', field_mask: ['hostname'], config: { hostname: 'unsaved-host' },
-      })
-      expect(api.update_network_instance_state).not.toHaveBeenCalled()
-      expect(api.save_config).not.toHaveBeenCalled()
-      expect(api.run_network).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('saves dirty fields only and keeps edits/revision on conflict and status refresh', async () => {
-    const { api, entry } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname = 'unsaved-host'
-      await nextTick()
-      api.patch_local_config.mockRejectedValue({ response: { status: 409, data: { message: 'revision conflict' } } })
-      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[0][0]).toMatchObject({ expected_revision: 'revision-a', field_mask: ['hostname'], config: { hostname: 'unsaved-host' }, apply_mode: 1 })
-      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [INSTANCE_UUID], disabled_inst_ids: [], runtime_capabilities: ['management:persisted-config-revision-v1'] })
-      await vi.advanceTimersByTimeAsync(1000)
-      entry.revision = 'remote-revision'
-      entry.config.hostname = 'remote-host'
-      api.list_network_instance_ids.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [INSTANCE_UUID], runtime_capabilities: ['management:persisted-config-revision-v1'] })
-      await vi.advanceTimersByTimeAsync(1000)
-      expect(wrapper.findComponent(RevisionConfigForm).props('curNetwork').hostname).toBe('unsaved-host')
-      await wrapper.find('button[data-label="web.device_management.save_config"]').trigger('click')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[1][0].expected_revision).toBe('revision-a')
-      expect(api.save_config).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('starts a disabled configuration only after patch success with the returned revision', async () => {
-    const { api } = revisionApi()
-    const wrapper = await openRevision(api)
-    try {
-      const form = wrapper.findComponent(RevisionConfigForm)
-      form.props('curNetwork').hostname = 'saved-host'
-      form.vm.$emit('runNetwork')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[0][0].apply_mode).toBe(0)
-      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-b')
-      expect(api.save_config).not.toHaveBeenCalled()
-      expect(api.run_network).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
-  })
-
-  it('creates revision-capable configurations through an empty-revision CAS and leaves them disabled', async () => {
-    const { api, entry } = revisionApi()
-    api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [], runtime_capabilities: ['management:persisted-config-revision-v1'] })
-    api.patch_local_config.mockImplementation(async () => {
-      api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [INSTANCE_UUID], running_inst_ids: [], runtime_capabilities: ['management:persisted-config-revision-v1'] })
-      return { status: 0, entry }
-    })
-    const wrapper = await openRevision(api, null, () => entry.config)
-    try {
-      await wrapper.find('button[data-label="web.device_management.create_network"]').trigger('click')
-      await flushPromises()
-      expect(api.patch_local_config.mock.calls[0][0]).toMatchObject({ expected_revision: '', apply_mode: 1 })
-      expect(api.patch_local_config.mock.calls[0][0].field_mask).not.toContain('instance_id')
-      expect(api.patch_local_config.mock.calls[0][0].config).not.toHaveProperty('close_redundant_conns_when_disguised')
-      expect(api.save_config).not.toHaveBeenCalled()
-      expect(api.update_network_instance_state).not.toHaveBeenCalled()
-    } finally { wrapper.unmount(); vi.useRealTimers() }
+    } finally { wrapper.unmount() }
   })
 })

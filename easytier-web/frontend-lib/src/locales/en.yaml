@@ -376,23 +376,20 @@ event:
 
 web:
   local_configs:
-    save_apply: Save and apply
-    reload: Reload configuration
-    reload_discard: Discard edits and reload
-    apply_saved: Apply saved configuration
-    apply_unsupported: This node does not support applying saved configuration without edits. Upgrade it before applying.
-    protected: Protected
-    invalid: Invalid configuration
-    pending_apply: Pending apply
-    reopen_editor: Reload this page to load the latest configuration and try again.
-    dirty_preserved: You have unsaved changes. Switching between the form and file editor keeps these changes. After a conflict, copy your edits before reloading this page to load the latest configuration.
-    unavailable: This configuration cannot be written now. Check device connectivity, permissions, and its latest snapshot.
-    success: Success
-    conflict: Configuration changed; copy your edits and reload this page before trying again
-    not_found: Configuration not found
-    apply_failed: Saved; apply failed
-    unsupported: This management feature is unsupported
-    unknown: Save outcome unknown; reload this page to check the saved configuration
+    save: Save
+    saved_applied: Configuration saved and applied
+    create_and_start: Create and start
+    enable: Enable network
+    enable_failed: "Failed to enable network: {error}"
+    discard: Discard changes
+    apply_failed: "The new configuration could not be applied; the previous configuration was restored: {error}"
+    changed_elsewhere: The configuration was changed elsewhere. Resolve the changes shown, then save again.
+    file_changed_elsewhere: The configuration file was changed elsewhere. Copy your edits, then close and reopen the editor to load the latest file.
+    merged_elsewhere: Changes made elsewhere to this configuration were merged into your edits.
+    conflict_fields: "This configuration was changed elsewhere. These fields conflict with your edits: {fields}"
+    keep_mine: Keep my changes
+    take_theirs: Use the latest configuration
+    file_editor_needs_save: Save or discard the form changes before editing the configuration file.
   console:
     theme_mode: Theme (light / dark / system)
     location: "Location"

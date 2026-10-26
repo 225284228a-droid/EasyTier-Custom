@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ApiClient from '../src/modules/api'
 import { normalizeNetworkConfig } from '../../frontend-lib/src/types/network'
-import { LOCAL_CONFIG_APPLY_CAPABILITY, LOCAL_CONFIG_REVISION_CAPABILITY } from '../../frontend-lib/src/modules/capabilities'
+import { LOCAL_CONFIG_REVISION_CAPABILITY } from '../../frontend-lib/src/modules/capabilities'
 import { Utils } from 'easytier-frontend-lib'
 import creationFixtures from '../../frontend-lib/tests/fixtures/network-create-patches.json'
 
@@ -41,17 +41,12 @@ describe('dashboard API request limits', () => {
     expect(client.put).not.toHaveBeenCalled()
   })
 
-  it('gates remote apply-only separately from revision-aware editing without changing the request shape', async () => {
+  it('forwards whole-file replacements without changing the request shape', async () => {
     const api = new ApiClient('http://localhost')
     const id = '00000000-0000-0000-0000-000000000001'
-    const request = { inst_id: id, expected_revision: 'observed-revision', config: {}, field_mask: [], apply_mode: 0 }
+    const request = { inst_id: id, expected_revision: 'observed-revision', field_mask: [], toml: "instance_id = 'x'" }
     const remote = api.get_remote_client('machine')
     client.get.mockResolvedValue({ running_inst_ids: [id], disabled_inst_ids: [], runtime_capabilities: [LOCAL_CONFIG_REVISION_CAPABILITY] })
-    await remote.list_network_instance_ids()
-    await expect(remote.patch_local_config!(request)).rejects.toThrow('Upgrade the device')
-    expect(client.post).not.toHaveBeenCalled()
-    client.get.mockResolvedValue({ running_inst_ids: [id], disabled_inst_ids: [],
-      runtime_capabilities: [LOCAL_CONFIG_REVISION_CAPABILITY, LOCAL_CONFIG_APPLY_CAPABILITY] })
     await remote.list_network_instance_ids()
     await remote.patch_local_config!(request)
     expect(client.post).toHaveBeenCalledWith('/machines/machine/local-configs/patch', { ...request,
@@ -140,8 +135,8 @@ describe('dashboard API request limits', () => {
     const api = new ApiClient('http://localhost')
     const id = '00000000-0000-0000-0000-000000000001'
     const remote = api.get_remote_client(id)
-    await remote.patch_local_config!({ inst_id: id, expected_revision: 'own-revision', field_mask: ['hostname'], config: { hostname: 'edited' }, apply_mode: 1 })
-    expect(client.post.mock.calls[0][1]).toMatchObject({ inst_id: { part1: 0, part2: 0, part3: 0, part4: 1 }, expected_revision: 'own-revision', field_mask: ['hostname'], apply_mode: 1 })
+    await remote.patch_local_config!({ inst_id: id, expected_revision: 'own-revision', field_mask: ['hostname'], config: { hostname: 'edited' } })
+    expect(client.post.mock.calls[0][1]).toMatchObject({ inst_id: { part1: 0, part2: 0, part3: 0, part4: 1 }, expected_revision: 'own-revision', field_mask: ['hostname'] })
     await remote.update_network_instance_state(id, false, 'new-revision')
     expect(client.put).toHaveBeenCalledWith(`/machines/${id}/networks/${id}`, { expected_revision: 'new-revision', disabled: false })
     await remote.delete_network(id, 'delete-revision')

@@ -2,7 +2,7 @@
   {
     "name": "default_full",
     "capabilities": [
-      "management:persisted-config-revision-v1",
+      "management:persisted-config-revision-v2",
       "config:sni",
       "config:p2p_prefer_protocol",
       "config:only_use_wss_http3_for_hole_punching",
@@ -136,7 +136,7 @@
   {
     "name": "manual_limited",
     "capabilities": [
-      "management:persisted-config-revision-v1",
+      "management:persisted-config-revision-v2",
       "config:close_redundant_conns_when_disguised"
     ],
     "overrides": {
@@ -269,7 +269,7 @@
   {
     "name": "public_server",
     "capabilities": [
-      "management:persisted-config-revision-v1"
+      "management:persisted-config-revision-v2"
     ],
     "overrides": {
       "instance_id": "00000000-0000-0000-0000-000000000066",
@@ -396,7 +396,7 @@
   {
     "name": "standalone",
     "capabilities": [
-      "management:persisted-config-revision-v1"
+      "management:persisted-config-revision-v2"
     ],
     "overrides": {
       "instance_id": "00000000-0000-0000-0000-000000000067",

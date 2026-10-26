@@ -2,16 +2,9 @@ import type { NetworkConfig } from '../types/network'
 import { CONFIG_FIELD_CAPABILITIES as SCHEMA_CONFIG_FIELD_CAPABILITIES } from '../generated/proto/configCapabilities'
 import { adaptP2pDisguisePayload, legacyP2pDisguiseSupported } from './p2pDisguise'
 
-export const LOCAL_CONFIG_REVISION_CAPABILITY = 'management:persisted-config-revision-v1'
-export const LOCAL_CONFIG_APPLY_CAPABILITY = 'management:persisted-config-apply-v1'
+export const LOCAL_CONFIG_REVISION_CAPABILITY = 'management:persisted-config-revision-v2'
 export const HTTP3_CAPABILITY = 'transport:http3-rfc9114-v2'
 export const PRIVATE_MODE_DEFAULT_CAPABILITY = 'config:private-mode-default-true-v1'
-
-export function assertLocalConfigApplyCapability(capabilities: readonly string[]): void {
-  if (!capabilities.includes(LOCAL_CONFIG_APPLY_CAPABILITY)) {
-    throw new Error('Applying saved configuration without edits is unsupported. Upgrade the device before applying.')
-  }
-}
 
 export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = SCHEMA_CONFIG_FIELD_CAPABILITIES
 

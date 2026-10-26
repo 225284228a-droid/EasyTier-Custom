@@ -376,23 +376,20 @@ event:
 
 web:
   local_configs:
-    save_apply: 保存并应用
-    reload: 重新加载配置
-    reload_discard: 丢弃修改并重新加载
-    apply_saved: 应用已保存配置
-    apply_unsupported: 此节点不支持直接应用已保存配置，请升级节点后再应用。
-    protected: 受保护
-    invalid: 配置无效
-    pending_apply: 尚未应用
-    reopen_editor: 请刷新页面以加载最新配置后重试。
-    dirty_preserved: 当前有未保存的修改，切换表单与文件编辑器会保留这些修改。遇到冲突时，请先复制修改，再刷新页面以加载最新配置。
-    unavailable: 配置当前不可写，请确认设备在线、权限及最新快照。
-    success: 成功
-    conflict: 配置已变化，请先复制修改，再刷新页面后重试
-    not_found: 配置不存在
-    apply_failed: 已保存，应用失败
-    unsupported: 设备不支持此管理功能
-    unknown: 保存结果未知，请刷新页面以确认已保存的配置
+    save: 保存
+    saved_applied: 配置已保存并应用
+    create_and_start: 创建并启动
+    enable: 启用网络
+    enable_failed: "启用网络失败: {error}"
+    discard: 放弃修改
+    apply_failed: "无法应用新配置，已恢复原配置: {error}"
+    changed_elsewhere: 配置已在其他位置修改，请按提示处理后再保存
+    file_changed_elsewhere: 配置文件已在其他位置修改。请复制你的修改，关闭后重新打开以加载最新内容。
+    merged_elsewhere: 其他位置对此配置的修改已合并到当前编辑中。
+    conflict_fields: "此配置已在其他位置修改，以下字段与你的修改冲突: {fields}"
+    keep_mine: 保留我的修改
+    take_theirs: 使用最新配置
+    file_editor_needs_save: 请先保存或放弃表单中的修改，再编辑配置文件。
   console:
     theme_mode: 主题（浅色 / 深色 / 跟随系统）
     location: "位置"
