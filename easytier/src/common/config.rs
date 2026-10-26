@@ -40,36 +40,19 @@ pub fn load_toml_config_from_str_with_source(
     source_name: &str,
     config_str: &str,
 ) -> Result<TomlConfigLoader, anyhow::Error> {
-    let config = TomlConfigLoader::new_from_str_tolerant_with_source(source_name, config_str)?;
+    let config = TomlConfigLoader::new_from_str_with_source(source_name, config_str)?;
     #[cfg(feature = "logging")]
-    warn_ignored_logging_sections(source_name, config_str);
-    Ok(config)
-}
-
-/// Explicit validation must reject invalid values even though startup may
-/// recover the remaining valid fields from the same file.
-pub fn validate_toml_config_from_str_with_source(
-    source_name: &str,
-    config_str: &str,
-) -> Result<(), anyhow::Error> {
-    TomlConfigLoader::new_from_str_with_source(source_name, config_str)?;
-    #[cfg(feature = "logging")]
-    warn_ignored_logging_sections(source_name, config_str);
-    Ok(())
-}
-
-#[cfg(feature = "logging")]
-fn warn_ignored_logging_sections(source_name: &str, config_str: &str) {
-    let ignored_sections = ignored_logging_sections(config_str);
-    if !ignored_sections.is_empty() {
-        log::warn!(
-            config_source = source_name,
-            ?ignored_sections,
-            "Logging configuration in TOML is ignored because logging is process-wide. \
-             Use command-line options (e.g. --console-log-level, --file-log-level, --file-log-dir) \
-             or ET_* logging environment variables instead."
-        );
+    {
+        let ignored_sections = ignored_logging_sections(config_str);
+        if !ignored_sections.is_empty() {
+            log::warn!(
+                config_source = source_name,
+                ?ignored_sections,
+                "Logging configuration in TOML is ignored because logging is process-wide.                  Use command-line options (e.g. --console-log-level, --file-log-level, --file-log-dir)                  or ET_* logging environment variables instead."
+            );
+        }
     }
+    Ok(config)
 }
 
 #[cfg(any(feature = "logging", test))]
@@ -124,41 +107,14 @@ pub async fn load_config_from_file(
     load_config_from_contents(config_file, config_str, config_dir, disable_env_parsing).await
 }
 
-/// Recover the exact document captured for startup, so the acknowledgement
-/// and the runtime refer to the same file read.
+/// Load the exact document captured for startup, so the acknowledgement and
+/// the runtime refer to the same file read.
 #[cfg(feature = "management")]
 pub(crate) async fn load_config_from_contents(
     config_file: &PathBuf,
     config_str: String,
     config_dir: Option<&PathBuf>,
     disable_env_parsing: bool,
-) -> Result<(TomlConfigLoader, ConfigFileControl), anyhow::Error> {
-    load_config_from_contents_with_policy(
-        config_file,
-        config_str,
-        config_dir,
-        disable_env_parsing,
-        ConfigLoadPolicy::RecoverInvalid,
-    )
-    .await
-}
-
-#[cfg(feature = "management")]
-pub(crate) enum ConfigLoadPolicy {
-    /// Startup can recover valid parts so one bad field cannot block the node.
-    RecoverInvalid,
-    /// Management and live edits retain the previous runtime on invalid input.
-    Strict,
-}
-
-#[cfg(feature = "management")]
-/// Both parsing policies share environment expansion and file permissions.
-pub(crate) async fn load_config_from_contents_with_policy(
-    config_file: &PathBuf,
-    config_str: String,
-    config_dir: Option<&PathBuf>,
-    disable_env_parsing: bool,
-    policy: ConfigLoadPolicy,
 ) -> Result<(TomlConfigLoader, ConfigFileControl), anyhow::Error> {
     let (expanded_config_str, uses_env_vars) = if disable_env_parsing {
         (config_str, false)
@@ -173,14 +129,7 @@ pub(crate) async fn load_config_from_contents_with_policy(
     }
 
     let source_name = config_file.display().to_string();
-    let config = match policy {
-        ConfigLoadPolicy::RecoverInvalid => {
-            load_toml_config_from_str_with_source(&source_name, &expanded_config_str)?
-        }
-        ConfigLoadPolicy::Strict => {
-            TomlConfigLoader::new_from_str_with_source(&source_name, &expanded_config_str)?
-        }
-    };
+    let config = load_toml_config_from_str_with_source(&source_name, &expanded_config_str)?;
     let mut control = config_file_control_from_path(config_file.clone()).await;
 
     if uses_env_vars {
@@ -268,19 +217,16 @@ level = 123
     }
 
     #[test]
-    fn path_adapter_recovers_invalid_fields_without_rewriting_file() {
+    fn path_adapter_preserves_file_name_in_parse_error() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "hostname = 'survives'").unwrap();
         writeln!(file, "dhcp = \"yes\"").unwrap();
 
-        let config = load_toml_config_from_path(&file.path().to_path_buf()).unwrap();
-        assert_eq!(config.get_hostname(), "survives");
-        assert!(!config.get_dhcp());
-        assert!(
-            std::fs::read_to_string(file.path())
-                .unwrap()
-                .contains("dhcp = \"yes\"")
-        );
+        let error = load_toml_config_from_path(&file.path().to_path_buf())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(file.path().to_string_lossy().as_ref()));
+        assert!(error.contains("dhcp = \"yes\""));
     }
 
     #[tokio::test]

@@ -5,8 +5,8 @@ use crate::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
             LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
             VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_config,
-            load_config_from_file, parse_mapped_listener_urls,
-            validate_toml_config_from_str_with_source,
+            load_config_from_file, load_toml_config_from_path,
+            load_toml_config_from_str_with_source, parse_mapped_listener_urls,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -1671,14 +1671,9 @@ async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
                 .read_to_string(&mut stdin)
                 .await
                 .context("failed to read config from stdin")?;
-            validate_toml_config_from_str_with_source("stdin", stdin.as_str())?;
+            load_toml_config_from_str_with_source("stdin", stdin.as_str())?;
         } else {
-            let config = tokio::fs::read_to_string(config_file)
-                .await
-                .with_context(|| {
-                    format!("failed to read config file: {}", config_file.display())
-                })?;
-            validate_toml_config_from_str_with_source(&config_file.display().to_string(), &config)?;
+            load_toml_config_from_path(config_file)?;
         };
     }
 
@@ -1716,8 +1711,7 @@ mod tests {
         let removed = uuid::Uuid::new_v4();
         let removed_enabled = uuid::Uuid::new_v4();
         for id in [invalid, stopped, active] {
-            // Type errors are recoverable. Invalid UTF-8 still exercises the
-            // isolation of a file that cannot be loaded at all.
+            // A file that cannot be loaded is isolated from the others.
             let raw = if id == invalid {
                 vec![0xff, 0xfe]
             } else {

@@ -18,7 +18,6 @@ use crate::proto::{acl::Acl, common::SecureModeConfig};
 
 pub use crate::proto::common::{Flags, FlagsPatch};
 
-mod tolerant;
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
@@ -701,29 +700,6 @@ impl TomlConfig {
         })
     }
 
-    /// Load a startup document, ignoring invalid values while retaining the
-    /// remaining fields. API edits should use the strict constructors instead.
-    pub fn new_from_str_tolerant_with_source(
-        source_name: &str,
-        config_str: &str,
-    ) -> Result<Self, anyhow::Error> {
-        let (config, mut warnings) = tolerant::load(config_str)?;
-        let config = Self::new_from_config(config)
-            .with_context(|| format!("failed to load recovered config from {source_name}"))?;
-        tolerant::sanitize_portal(&config, &mut warnings)?;
-        for warning in warnings {
-            // Do not log the input value or deserializer error: either can
-            // contain network secrets or private keys.
-            tracing::warn!(
-                config_source = source_name,
-                field = warning.path,
-                reason = warning.reason,
-                "Ignoring invalid configuration value and continuing startup"
-            );
-        }
-        Ok(config)
-    }
-
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
         validate_transport_tuning(
             config.parallel_connections,
@@ -1311,15 +1287,6 @@ mod tests {
         ] {
             assert!(TomlConfig::new_from_str(input).is_err(), "{input}");
         }
-    }
-
-    #[test]
-    fn startup_recovers_invalid_parallel_tuning_independently() {
-        let config = TomlConfig::new_from_str_tolerant_with_source("test", "hostname = 'keep'\nparallel_connections = 17\ntraffic_disguise = 'invalid'\ndisable_parallel_connections = true").unwrap();
-        assert_eq!(config.get_hostname(), "keep");
-        assert_eq!(config.get_parallel_connections(), 1);
-        assert_eq!(config.get_traffic_disguise(), "speedtest");
-        assert!(config.get_disable_parallel_connections());
     }
 
     #[test]

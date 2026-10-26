@@ -129,12 +129,11 @@ impl ConfigFileStorage for NativeConfigFileStorage {
             self.disable_env_parsing,
         )
         .await?;
-        match crate::common::config::load_config_from_contents_with_policy(
+        match crate::common::config::load_config_from_contents(
             &path.to_path_buf(),
             String::from_utf8(raw)?,
             config_dir.map(Path::to_path_buf).as_ref(),
             self.disable_env_parsing,
-            crate::common::config::ConfigLoadPolicy::Strict,
         )
         .await
         {
@@ -187,9 +186,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn management_reads_reject_errors_that_startup_recovers() {
-        use easytier_core::config::toml::ConfigLoader as _;
-
+    async fn startup_and_management_reads_reject_invalid_fields() {
         let directory = tempfile::tempdir().unwrap();
         let id = uuid::Uuid::new_v4();
         let path = directory.path().join(format!("{id}.toml"));
@@ -203,8 +200,7 @@ mod tests {
             super::super::config_dir_startup::load_config_dir_entries(directory.path(), true)
                 .await
                 .unwrap();
-        assert_eq!(startup.files.len(), 1);
-        assert_eq!(startup.files[0].config.get_hostname(), "survives");
+        assert!(startup.files.is_empty());
         assert!(
             storage
                 .load_config(&path, Some(directory.path()))
