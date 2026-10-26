@@ -1,19 +1,9 @@
 import { Event, listen } from "@tauri-apps/api/event";
 import { type } from "@tauri-apps/plugin-os";
-import { NetworkTypes } from "easytier-frontend-lib"
 import { Utils } from "easytier-frontend-lib";
-import { normalizeConfigSource } from './config_source'
 import { onNetworkInstanceUpdate } from './mobile_vpn'
-import { type RemoteConfigSnapshot, storeRemoteConfigs } from './remote_configs'
-
-interface StoredGuiConfig {
-    config: NetworkTypes.NetworkConfig
-    source?: unknown
-}
 
 const EVENTS = Object.freeze({
-    SAVE_CONFIGS: 'save_configs',
-    SAVE_REMOTE_CONFIGS: 'save_remote_configs',
     PRE_RUN_NETWORK_INSTANCE: 'pre_run_network_instance',
     POST_RUN_NETWORK_INSTANCE: 'post_run_network_instance',
     VPN_SERVICE_STOP: 'vpn_service_stop',
@@ -21,20 +11,6 @@ const EVENTS = Object.freeze({
     PROXY_CIDRS_UPDATED: 'proxy_cidrs_updated',
     EVENT_LAGGED: 'event_lagged',
 });
-
-function onSaveConfigs(event: Event<StoredGuiConfig[]>) {
-    // Desktop configs live in the core's shared config dir. The browser cache
-    // remains only for Android's existing local-storage migration path.
-    if (type() !== 'android') return
-    console.log(`Received event '${EVENTS.SAVE_CONFIGS}': ${event.payload}`);
-    localStorage.setItem(
-        'networkList',
-        JSON.stringify(event.payload.map(({ config, source }) => ({
-            config: NetworkTypes.normalizeNetworkConfig(config),
-            source: normalizeConfigSource(source),
-        }))),
-    );
-}
 
 function normalizeInstanceIdPayload(payload: unknown): string {
     if (typeof payload === 'string') {
@@ -106,8 +82,6 @@ async function onEventLagged(event: Event<unknown>) {
 
 export async function listenGlobalEvents() {
     const unlisteners = [
-        await listen(EVENTS.SAVE_CONFIGS, onSaveConfigs),
-        await listen<RemoteConfigSnapshot>(EVENTS.SAVE_REMOTE_CONFIGS, event => storeRemoteConfigs(event.payload)),
         await listen(EVENTS.PRE_RUN_NETWORK_INSTANCE, onPreRunNetworkInstance),
         await listen(EVENTS.POST_RUN_NETWORK_INSTANCE, onPostRunNetworkInstance),
         await listen(EVENTS.VPN_SERVICE_STOP, onVpnServiceStop),

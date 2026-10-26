@@ -1,11 +1,13 @@
-import { type Api, NetworkTypes, LocalConfigs, Capabilities, Utils } from "easytier-frontend-lib";
+import { type Api, NetworkTypes, LocalConfigs, Capabilities } from "easytier-frontend-lib";
 import * as backend from "~/composables/backend";
 
+/**
+ * The GUI manages only EasyTier Custom Cores. Their config directory is the
+ * single store of network configurations, so every read observes it and
+ * every write is a revision-checked patch of one file.
+ */
 export class GUIRemoteClient implements Api.RemoteClient {
     private capabilities?: string[];
-    private supportsRevision = false;
-    private readonly persistedConfigs = new Map<string, NetworkTypes.NetworkConfig>();
-    private knownInstanceIds = new Set<string>();
     private readonly boundScope: string;
     constructor(private readonly scopeSource: () => string = () => 'embedded') { this.boundScope = this.scope; }
     get scope(): string { return this.scopeSource(); }
@@ -21,22 +23,14 @@ export class GUIRemoteClient implements Api.RemoteClient {
         return this.capabilities ?? [];
     }
 
-    private async legacyWriteCapabilities(config: NetworkTypes.NetworkConfig): Promise<string[]> {
-        const scope = this.scope;
-        const capabilities = await this.targetCapabilities();
-        if (this.knownInstanceIds.has(config.instance_id) && !this.persistedConfigs.has(config.instance_id)) {
-            await this.get_network_config(config.instance_id);
-        }
-        if (scope !== this.scope) throw new Error('Management connection changed');
-        Capabilities.assertLegacyConfigPreservable(this.persistedConfigs.get(config.instance_id), capabilities);
-        return capabilities;
-    }
-
     async validate_config(config: NetworkTypes.NetworkConfig): Promise<Api.ValidateConfigResponse> {
         return backend.validateConfig(config, await this.targetCapabilities());
     }
-    async run_network(config: NetworkTypes.NetworkConfig, save: boolean): Promise<undefined> {
-        await backend.runNetworkInstance(config, save, await this.legacyWriteCapabilities(config));
+    async run_network(): Promise<undefined> {
+        throw new Error('Networks are saved through the Core config directory');
+    }
+    async save_config(): Promise<undefined> {
+        throw new Error('Networks are saved through the Core config directory');
     }
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
         return backend.collectNetworkInfo(inst_id).then(infos => infos.info?.map?.[inst_id]);
@@ -64,28 +58,23 @@ export class GUIRemoteClient implements Api.RemoteClient {
         const response = await backend.listNetworkInstanceIds();
         if (scope !== this.scope) throw new Error('Management connection changed');
         this.capabilities = response.runtime_capabilities ?? [];
-        this.knownInstanceIds = new Set([...response.running_inst_ids, ...response.disabled_inst_ids].map(id => typeof id === 'string' ? id : Utils.UuidToStr(id)));
-        this.supportsRevision = response.support_local_config_revision === true
-            || this.capabilities.includes(Capabilities.LOCAL_CONFIG_REVISION_CAPABILITY);
-        return response;
+        return { ...response, support_local_config_revision: true };
     }
     async delete_network(inst_id: string, expectedRevision?: string): Promise<undefined> {
         this.ensureScope();
+        if (!expectedRevision) throw new Error('A configuration revision is required');
         await backend.deleteNetworkInstance(inst_id, expectedRevision);
     }
     async update_network_instance_state(inst_id: string, disabled: boolean, expectedRevision?: string): Promise<undefined> {
         this.ensureScope();
+        if (!expectedRevision) throw new Error('A configuration revision is required');
         await backend.updateNetworkConfigState(inst_id, disabled, expectedRevision);
     }
-    async save_config(config: NetworkTypes.NetworkConfig): Promise<undefined> {
-        await backend.saveNetworkConfig(config, await this.legacyWriteCapabilities(config));
-    }
     async get_network_config(inst_id: string): Promise<NetworkTypes.NetworkConfig> {
-        const scope = this.scope;
-        const config = await backend.getConfig(inst_id, false);
-        if (scope !== this.scope) throw new Error('Management connection changed');
-        this.persistedConfigs.set(inst_id, structuredClone(config));
-        return NetworkTypes.normalizeNetworkConfig(config);
+        const entry = (await this.observe_local_configs()).entries
+            .find(entry => LocalConfigs.localConfigInstanceId(entry) === inst_id);
+        if (!entry?.config) throw new Error(`Configuration ${inst_id} is unavailable`);
+        return NetworkTypes.normalizeNetworkConfig(entry.config);
     }
     async generate_config(config: NetworkTypes.NetworkConfig): Promise<Api.GenerateConfigResponse> {
         try {
@@ -108,21 +97,17 @@ export class GUIRemoteClient implements Api.RemoteClient {
     async observe_local_configs(): Promise<LocalConfigs.LocalConfigSnapshot> {
         const scope = this.scope;
         const capabilities = await this.targetCapabilities();
-        if (!this.supportsRevision) throw new Error('Local configuration revisions are unsupported');
         const response = await backend.observeLocalConfigs();
         if (scope !== this.scope) throw new Error('Management connection changed');
-        return { ...response, online: true, stale: false, capabilities,
-            support_local_config_revision: this.supportsRevision };
+        return { ...response, online: true, stale: false, capabilities, support_local_config_revision: true };
     }
 
     async patch_local_config(request: LocalConfigs.LocalConfigPatchRequest): Promise<LocalConfigs.LocalConfigPatchResult> {
         const capabilities = await this.targetCapabilities();
-        if (!this.supportsRevision) throw new Error('Local configuration revisions are unsupported');
         if (!request.field_mask.length && request.apply_mode === LocalConfigs.LocalConfigApplyMode.SaveAndApply) {
             Capabilities.assertLocalConfigApplyCapability(capabilities);
         }
         Capabilities.assertPatchCapabilities(request.config, request.field_mask, capabilities);
         return backend.patchLocalConfig(request);
     }
-
 }

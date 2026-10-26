@@ -12,7 +12,7 @@ import {
   stop_vpn,
   type VpnTileAction,
 } from 'tauri-plugin-vpnservice-api'
-import { collectNetworkInfo, getConfig, getMobileTunConfig, getVpnStatus, listNetworkInstanceIds, setTunFd } from './backend'
+import { collectNetworkInfo, getMobileTunConfig, getVpnStatus, getMobileNetworkProfile, listNetworkInstanceIds, setTunFd } from './backend'
 
 interface vpnStatus {
   running: boolean
@@ -642,7 +642,7 @@ async function isNoTunEnabled(instanceId: string | undefined) {
   if (!instanceId) {
     return false
   }
-  return (await getConfig(instanceId)).no_tun ?? false
+  return (await getMobileNetworkProfile(instanceId)).no_tun
 }
 
 async function findRunningTunInstances() {
@@ -651,7 +651,7 @@ async function findRunningTunInstances() {
   const runningTunInstances = []
 
   for (const instanceId of runningIds) {
-    const config = await getConfig(instanceId)
+    const config = await getMobileNetworkProfile(instanceId)
     if (config.no_tun)
       continue
     runningTunInstances.push({ instanceId, config })

@@ -1,11 +1,12 @@
+//! The GUI edits network configurations only through the connected Core's
+//! config directory. Every write carries the revision it was based on.
 use std::time::Duration;
 
 use easytier::proto::{
     api::manage::{
-        DeleteNetworkInstanceRequest, ListNetworkInstanceRequest, ObserveConfigsRequest,
-        ObserveConfigsResponse, PatchPersistedConfigRequest, PatchPersistedConfigResponse,
-        PersistedConfigApplyMode, PersistedConfigService, PersistedConfigServiceClientFactory,
-        SetNetworkInstanceEnabledRequest, WebClientService, WebClientServiceClientFactory,
+        DeleteNetworkInstanceRequest, ObserveConfigsRequest, ObserveConfigsResponse,
+        PatchPersistedConfigRequest, PatchPersistedConfigResponse, PersistedConfigService,
+        SetNetworkInstanceEnabledRequest, WebClientService,
     },
     rpc_types::controller::BaseController,
 };
@@ -15,13 +16,11 @@ use super::{CLIENT_MANAGER, RwLockReadGuard};
 #[tauri::command]
 pub(crate) async fn observe_local_configs() -> Result<ObserveConfigsResponse, String> {
     let manager = get_client_manager!()?;
-    let client = manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<PersistedConfigServiceClientFactory<BaseController>>(1, 1, String::new());
     tokio::time::timeout(
         Duration::from_secs(10),
-        client.observe_configs(BaseController::default(), ObserveConfigsRequest {}),
+        manager
+            .persisted_configs()
+            .observe_configs(BaseController::default(), ObserveConfigsRequest {}),
     )
     .await
     .map_err(|_| "local_config_observation_timeout".to_owned())?
@@ -34,61 +33,30 @@ pub(crate) async fn patch_local_config(
 ) -> Result<PatchPersistedConfigResponse, String> {
     let manager = get_client_manager!()?;
     let _mutation = manager.config_mutation.lock().await;
-    let management = manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<WebClientServiceClientFactory<BaseController>>(1, 1, String::new());
-    let capabilities = management
-        .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-        .await
-        .map_err(|error| error.to_string())?
-        .runtime_capabilities;
-    validate_patch_capabilities(&request, &capabilities)?;
-    let client = manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<PersistedConfigServiceClientFactory<BaseController>>(1, 1, String::new());
-    // The caller refreshes observations after an unknown result. Retrying a
-    // timed-out save can race a write that is still completing inside Core.
+    // The caller observes again after an unknown result. Retrying a timed-out
+    // save can race a write that is still completing inside Core.
     tokio::time::timeout(
         Duration::from_secs(10),
-        client.patch_config(BaseController::default(), request),
+        manager
+            .persisted_configs()
+            .patch_config(BaseController::default(), request),
     )
     .await
     .map_err(|_| "local_config_outcome_unknown".to_owned())?
     .map_err(|error| error.to_string())
 }
 
-fn validate_patch_capabilities(
-    request: &PatchPersistedConfigRequest,
-    capabilities: &[String],
-) -> Result<(), String> {
-    if !capabilities
-        .iter()
-        .any(|cap| cap == "management:persisted-config-revision-v1")
-    {
-        return Err("local_config_revision_unsupported".into());
-    }
-    if request.field_mask.is_empty()
-        && request.apply_mode == PersistedConfigApplyMode::SaveAndApply as i32
-        && !capabilities
-            .iter()
-            .any(|cap| cap == "management:persisted-config-apply-v1")
-    {
-        return Err("local_config_apply_unsupported".into());
-    }
-    Ok(())
-}
-
-pub(crate) async fn set_local_config_enabled(
+#[tauri::command]
+pub(crate) async fn update_network_config_state(
     instance_id: String,
+    disabled: bool,
     expected_revision: String,
-    enabled: bool,
 ) -> Result<(), String> {
-    lifecycle(instance_id, expected_revision, Some(enabled)).await
+    lifecycle(instance_id, expected_revision, Some(!disabled)).await
 }
 
-pub(crate) async fn remove_local_config(
+#[tauri::command]
+pub(crate) async fn remove_network_instance(
     instance_id: String,
     expected_revision: String,
 ) -> Result<(), String> {
@@ -105,21 +73,7 @@ async fn lifecycle(
         .map_err(|error: uuid::Error| error.to_string())?;
     let manager = get_client_manager!()?;
     let _mutation = manager.config_mutation.lock().await;
-    let client = manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<WebClientServiceClientFactory<BaseController>>(1, 1, String::new());
-    let capabilities = client
-        .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-        .await
-        .map_err(|error| error.to_string())?
-        .runtime_capabilities;
-    if !capabilities
-        .iter()
-        .any(|cap| cap == "management:persisted-config-revision-v1")
-    {
-        return Err("local_config_revision_unsupported".into());
-    }
+    let client = manager.web_client();
     tokio::time::timeout(Duration::from_secs(10), async {
         match enabled {
             Some(enabled) => client
@@ -154,35 +108,4 @@ async fn lifecycle(
     .await
     .map_err(|_| "local_config_outcome_unknown".to_owned())?
     .map_err(|error| error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn apply_only_requires_its_capability_without_blocking_existing_patches() {
-        let old_capabilities = vec!["management:persisted-config-revision-v1".into()];
-        let mut request = PatchPersistedConfigRequest {
-            config: Some(Default::default()),
-            apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
-            ..Default::default()
-        };
-        assert_eq!(
-            validate_patch_capabilities(&request, &old_capabilities),
-            Err("local_config_apply_unsupported".into())
-        );
-        let mut new_capabilities = old_capabilities.clone();
-        new_capabilities.push("management:persisted-config-apply-v1".into());
-        assert!(validate_patch_capabilities(&request, &new_capabilities).is_ok());
-        request.field_mask = vec!["hostname".into()];
-        assert!(validate_patch_capabilities(&request, &old_capabilities).is_ok());
-        request.field_mask.clear();
-        request.apply_mode = PersistedConfigApplyMode::PersistOnly as i32;
-        assert!(validate_patch_capabilities(&request, &old_capabilities).is_ok());
-        assert_eq!(
-            validate_patch_capabilities(&request, &[]),
-            Err("local_config_revision_unsupported".into())
-        );
-    }
 }

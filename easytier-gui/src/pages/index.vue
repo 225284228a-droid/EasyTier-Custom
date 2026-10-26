@@ -28,7 +28,7 @@ import {
   saveVpnTileStoppedInstanceIds,
 } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getEasytierVersion, getServiceStatus, resolveSharedConfigDir, retireConflictingServices, syncConfigsFromCore } from '~/composables/backend'
+import { getEasytierVersion, getServiceStatus, resolveSharedConfigDir, retireConflictingServices } from '~/composables/backend'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
@@ -273,13 +273,7 @@ async function connectWithRetry(mode: Mode, attempts: number): Promise<boolean> 
   throw lastError
 }
 
-async function refreshFromCore(mode: Mode = currentMode.value) {
-  if (type() === 'android' && mode.mode !== 'remote') {
-    await sendConfigs([], 'core-config-migrated:normal')
-  } else {
-    await syncConfigsFromCore(mode.mode === 'remote' ? rpcUrl(mode) : undefined)
-      .catch(error => console.warn('Failed to refresh GUI config cache', error))
-  }
+async function refreshFromCore() {
   try {
     const ids = await remoteClient.value.list_network_instance_ids()
     const available = [...(ids.running_inst_ids ?? []), ...(ids.disabled_inst_ids ?? [])]
@@ -345,7 +339,7 @@ async function initWithMode(mode: Mode) {
   if (mode.mode === 'normal') normalWebClientInitialized = false
   const connected = await connectWithRetry(mode, mode.mode === 'service' ? 5 : 3)
   if (connected) {
-    await refreshFromCore(mode)
+    await refreshFromCore()
     if (mode.mode === 'normal') {
       await initWebClient(mode.config_server_url || undefined)
       normalWebClientInitialized = true
@@ -604,7 +598,7 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
 ])
 
 async function connectRpcClient(mode: Mode) {
-  await initRpcConnection(mode.mode === 'normal', rpcUrl(mode), mode.mode === 'normal' ? mode.config_dir : undefined, mode.mode === 'remote')
+  await initRpcConnection(mode.mode === 'normal', rpcUrl(mode), mode.mode === 'normal' ? mode.config_dir : undefined)
   console.log('easytier rpc connection established, mode:', mode.mode)
 }
 

@@ -38,23 +38,24 @@ describe('GUI management bridge capabilities and revisions', () => {
     expect(invoke).toHaveBeenCalledWith('patch_local_config', { request: { ...request, inst_id: { part1: 0, part2: 0, part3: 0, part4: 1 } } })
   })
 
-  it('removes unsupported extensions from every legacy config operation, keeping WS/WSS', async () => {
+  it('removes unsupported extensions from validation and TOML generation, keeping WS/WSS', async () => {
     invoke.mockImplementation(async (command: string) => command === 'list_network_instance_ids'
       ? { running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: ['config:sni'] }
       : command === 'parse_network_config' ? 'network_name = "mesh"' : undefined)
     const api = new GUIRemoteClient()
     const config = { ...NetworkTypes.DEFAULT_NETWORK_CONFIG(), sni: 'example.com', close_redundant_conns_when_disguised: true,
       listener_urls: ['ws://0.0.0.0:1', 'wss://0.0.0.0:2', 'http3://0.0.0.0:3'] }
-    await api.save_config(config)
     await api.validate_config(config)
-    await api.run_network(config, true)
     await api.generate_config(config)
     for (const [command, args] of invoke.mock.calls.filter(([command]) => command !== 'list_network_instance_ids')) {
-      expect(args.cfg.sni, command).toBe('example.com')
-      expect(args.cfg, command).not.toHaveProperty('close_redundant_conns_when_disguised')
-      expect(args.cfg, command).not.toHaveProperty('p2p_prefer_protocol')
-      expect(args.cfg.listener_urls, command).toEqual(['ws://0.0.0.0:1', 'wss://0.0.0.0:2'])
+      const sent = args.cfg ?? args.config
+      expect(sent.sni, command).toBe('example.com')
+      expect(sent, command).not.toHaveProperty('close_redundant_conns_when_disguised')
+      expect(sent, command).not.toHaveProperty('p2p_prefer_protocol')
+      expect(sent.listener_urls, command).toEqual(['ws://0.0.0.0:1', 'wss://0.0.0.0:2'])
     }
+    await expect(api.save_config()).rejects.toThrow('config directory')
+    await expect(api.run_network()).rejects.toThrow('config directory')
   })
 
   it('passes sparse patches as JSON objects with protobuf UUID parts and handles void lifecycle results', async () => {
@@ -79,24 +80,13 @@ describe('GUI management bridge capabilities and revisions', () => {
     invoke.mockImplementation(() => new Promise(done => { resolve = done }))
     let scope = 'remote-a'
     const api = new GUIRemoteClient(() => scope)
-    const save = api.save_config(NetworkTypes.DEFAULT_NETWORK_CONFIG())
+    const save = api.observe_local_configs()
     scope = 'remote-b'
     resolve({ running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: [] })
     await expect(save).rejects.toThrow('Management connection changed')
     expect(invoke.mock.calls.map(([command]) => command)).toEqual(['list_network_instance_ids'])
     invoke.mockResolvedValue({ running_inst_ids: [], disabled_inst_ids: [], runtime_capabilities: [] })
-    await expect(new GUIRemoteClient(() => scope).patch_local_config({ inst_id: id, expected_revision: 'revision-a', field_mask: ['close_redundant_conns_when_disguised'], config: { close_redundant_conns_when_disguised: true }, apply_mode: 0 })).rejects.toThrow('unsupported')
+    await expect(new GUIRemoteClient(() => scope).patch_local_config({ inst_id: id, expected_revision: 'revision-a', field_mask: ['close_redundant_conns_when_disguised'], config: { close_redundant_conns_when_disguised: true }, apply_mode: 0 })).rejects.toThrow(/unsupported/i)
     expect(invoke.mock.calls.some(([command]) => command === 'patch_local_config')).toBe(false)
-  })
-
-  it.each(['udp', 'tcp'])('keeps an old custom node saved %s preference intact by refusing an unsafe legacy write', async protocol => {
-    invoke.mockImplementation(async command => command === 'list_network_instance_ids'
-      ? { running_inst_ids: [], disabled_inst_ids: [id], runtime_capabilities: [] }
-      : command === 'get_config' ? { instance_id: id, hostname: 'saved', p2p_prefer_protocol: protocol, peer_urls: ['wss://saved.example:443'] } : undefined)
-    const api = new GUIRemoteClient()
-    const config = await api.get_network_config(id)
-    await expect(api.save_config({ ...config, hostname: 'edited' })).rejects.toThrow('saved custom settings')
-    await expect(api.run_network({ ...config, hostname: 'edited' }, true)).rejects.toThrow('saved custom settings')
-    expect(invoke.mock.calls.some(([command]) => command === 'save_network_config' || command === 'run_network_instance')).toBe(false)
   })
 })

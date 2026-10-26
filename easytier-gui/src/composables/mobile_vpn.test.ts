@@ -21,7 +21,10 @@ const mocks = vi.hoisted(() => {
     completeVpnReconfigure: vi.fn(async () => ({ accepted: true })),
     getUnderlyingDnsServers: vi.fn(async () => ({ dnsServers: ['192.0.2.53'], systemDnsServers: ['192.0.2.53'] })),
     getCoreVpnStatus: vi.fn(async (_id: string) => ({ policy_generation: '1' })),
-    getConfig: vi.fn(async (instanceId: string) => configs.get(instanceId)),
+    getMobileNetworkProfile: vi.fn(async (instanceId: string) => {
+      const config = configs.get(instanceId)
+      return { no_tun: !!config?.no_tun, dhcp: !!config?.dhcp, dhcpv6: !!config?.dhcpv6, virtual_ipv4: config?.virtual_ipv4 }
+    }),
     getVpnStatus: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({ running: false })),
     listNetworkInstanceIds: vi.fn<() => Promise<{ running_inst_ids: unknown[] }>>(async () => ({ running_inst_ids: [] })),
     prepareVpn: vi.fn(async () => ({ granted: true })),
@@ -64,7 +67,7 @@ vi.mock('tauri-plugin-vpnservice-api', () => ({
 
 vi.mock('./backend', () => ({
   collectNetworkInfo: mocks.collectNetworkInfo,
-  getConfig: mocks.getConfig,
+  getMobileNetworkProfile: mocks.getMobileNetworkProfile,
   getMobileTunConfig: mocks.getMobileTunConfig,
   getVpnStatus: mocks.getCoreVpnStatus,
   listNetworkInstanceIds: mocks.listNetworkInstanceIds,
@@ -152,7 +155,7 @@ beforeEach(() => {
   mocks.collectNetworkInfo.mockClear()
   mocks.consumeVpnTileAction.mockReset()
   mocks.consumeVpnTileAction.mockResolvedValue({})
-  mocks.getConfig.mockClear()
+  mocks.getMobileNetworkProfile.mockClear()
   mocks.getVpnStatus.mockReset()
   mocks.getVpnStatus.mockResolvedValue({ running: false })
   mocks.listNetworkInstanceIds.mockReset()
