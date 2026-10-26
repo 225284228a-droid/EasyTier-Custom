@@ -4,6 +4,7 @@ mod central_local_delivery_tests;
 mod listener_tests;
 mod local_configs;
 mod managed_config;
+pub mod network_info_cache;
 mod runtime_reconcile;
 pub mod session;
 pub mod storage;
@@ -156,6 +157,7 @@ pub struct ClientManager {
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
     city_geo_cache: Option<Arc<CityGeoCache>>,
     network_location_refresh_slots: Arc<tokio::sync::Semaphore>,
+    network_info_cache: Arc<network_info_cache::NetworkInfoCache>,
     heartbeat_policy: HeartbeatPolicy,
 }
 
@@ -201,8 +203,13 @@ impl ClientManager {
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
             city_geo_cache: None,
             network_location_refresh_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            network_info_cache: Default::default(),
             heartbeat_policy,
         }
+    }
+
+    pub fn network_info_cache(&self) -> &network_info_cache::NetworkInfoCache {
+        &self.network_info_cache
     }
 
     pub fn set_city_geo_cache(&mut self, cache: Arc<CityGeoCache>) {

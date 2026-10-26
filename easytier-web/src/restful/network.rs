@@ -117,6 +117,28 @@ struct CollectNetworkInfoJsonReq {
     inst_ids: Option<Vec<uuid::Uuid>>,
 }
 
+/// Bounds one topology request, like the per-user device limit of a console.
+const MAX_TOPOLOGY_MACHINES: usize = 1024;
+const TOPOLOGY_COLLECT_CONCURRENCY: usize = 16;
+
+#[derive(Debug, serde::Deserialize)]
+struct CollectTopologyJsonReq {
+    machine_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+struct TopologyMachineItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    info: Option<CollectNetworkInfoResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+struct CollectTopologyJsonResp {
+    machines: std::collections::BTreeMap<uuid::Uuid, TopologyMachineItem>,
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct UpdateNetworkStateJsonReq {
     disabled: bool,
@@ -459,20 +481,92 @@ impl NetworkApi {
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<CollectNetworkInfoJsonReq>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
+        let user_id = Self::get_user_id(&auth_session)?;
+        let inst_ids = payload.inst_ids.filter(|ids| !ids.is_empty());
+        if inst_ids.is_none() {
+            return Self::collect_all_network_info(&client_mgr, user_id, machine_id)
+                .await
+                .map(Json);
+        }
         let mut response: CollectNetworkInfoResponse = client_mgr
-            .handle_collect_network_info(
-                (Self::get_user_id(&auth_session)?, machine_id),
-                payload.inst_ids,
-            )
+            .handle_collect_network_info((user_id, machine_id), inst_ids)
             .await
             .map_err(convert_error)?;
-        Self::annotate_network_locations(
-            &client_mgr,
-            Self::get_user_id(&auth_session)?,
-            machine_id,
-            &mut response,
-        )
-        .await;
+        Self::annotate_network_locations(&client_mgr, user_id, machine_id, &mut response).await;
+        Ok(Json(response))
+    }
+
+    /// A machine's full, location-annotated network info, shared with every
+    /// concurrent viewer through the network-info cache.
+    async fn collect_all_network_info(
+        client_mgr: &ClientManager,
+        user_id: UserIdInDb,
+        machine_id: uuid::Uuid,
+    ) -> Result<CollectNetworkInfoResponse, HttpHandleError> {
+        client_mgr
+            .network_info_cache()
+            .get_or_collect(user_id, machine_id, || async {
+                let mut response = client_mgr
+                    .handle_collect_network_info((user_id, machine_id), None)
+                    .await
+                    .map_err(convert_error)?;
+                Self::annotate_network_locations(client_mgr, user_id, machine_id, &mut response)
+                    .await;
+                Ok(response)
+            })
+            .await
+    }
+
+    /// Network info of several machines in one request, for the topology
+    /// view. Machines are collected concurrently through the shared cache;
+    /// each reports its own failure.
+    async fn handle_collect_topology_network_info(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Json(payload): Json<CollectTopologyJsonReq>,
+    ) -> Result<Json<CollectTopologyJsonResp>, HttpHandleError> {
+        use futures::StreamExt;
+        let user_id = Self::get_user_id(&auth_session)?;
+        let mut machine_ids = payload.machine_ids;
+        machine_ids.sort_unstable();
+        machine_ids.dedup();
+        if machine_ids.len() > MAX_TOPOLOGY_MACHINES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(other_error(format!(
+                    "at most {MAX_TOPOLOGY_MACHINES} machines can be collected at once"
+                ))),
+            ));
+        }
+        let client_mgr = &client_mgr;
+        let machines = futures::stream::iter(machine_ids)
+            .map(|machine_id| async move {
+                let result = Self::collect_all_network_info(client_mgr, user_id, machine_id).await;
+                (machine_id, result)
+            })
+            .buffer_unordered(TOPOLOGY_COLLECT_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        let mut response = CollectTopologyJsonResp::default();
+        for (machine_id, result) in machines {
+            let item = match result {
+                Ok(info) => TopologyMachineItem {
+                    info: Some(info),
+                    error: None,
+                },
+                // An authorization failure for one machine is the session's.
+                Err((status, error))
+                    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) =>
+                {
+                    return Err((status, error));
+                }
+                Err((_, error)) => TopologyMachineItem {
+                    info: None,
+                    error: Some(error.0.message),
+                },
+            };
+            response.machines.insert(machine_id, item);
+        }
         Ok(Json(response))
     }
 
@@ -1046,6 +1140,10 @@ impl NetworkApi {
             .route(
                 "/api/v1/machines/{machine-id}/networks/info",
                 get(Self::handle_collect_network_info).post(Self::handle_collect_network_info),
+            )
+            .route(
+                "/api/v1/topology/networks",
+                post(Self::handle_collect_topology_network_info),
             )
             .route(
                 "/api/v1/machines/{machine-id}/networks/info/{inst-id}",

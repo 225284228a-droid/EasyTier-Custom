@@ -132,3 +132,39 @@ describe('dashboard persistent display and warning grace', () => {
     expect(wrapper.findComponent(globe).props('loading')).toBe(false)
   })
 })
+
+describe('dashboard batched topology collection', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    for (const wrapper of wrappers.splice(0))
+      wrapper.unmount()
+    vi.restoreAllMocks()
+    localStorage.clear()
+  })
+
+  it('collects every machine in one request', async () => {
+    const client = {
+      ...api(),
+      collect_topology_network_info: vi.fn().mockResolvedValue({ [machineId]: { info: { info: { map: info } } } }),
+    }
+    const wrapper = await dashboard(client)
+    expect(client.collect_topology_network_info).toHaveBeenCalledWith([machineId], expect.anything())
+    expect(client.collect_machine_network_info).not.toHaveBeenCalled()
+    expect(wrapper.findComponent(globe).props('nodes')).toHaveLength(1)
+  })
+
+  it('retries a machine the batch could not collect on its own', async () => {
+    const client = {
+      ...api(),
+      collect_topology_network_info: vi.fn().mockResolvedValue({ [machineId]: { error: 'device busy' } }),
+    }
+    const wrapper = await dashboard(client)
+    await vi.waitFor(() => expect(client.collect_machine_network_info).toHaveBeenCalledTimes(1))
+    await flushPromises()
+    expect(wrapper.findComponent(globe).props('nodes')).toHaveLength(1)
+  })
+})

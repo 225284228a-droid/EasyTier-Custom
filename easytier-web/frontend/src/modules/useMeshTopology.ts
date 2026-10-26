@@ -136,14 +136,44 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
       }
       const pending = devices.filter(device => device.online !== false && device.running_network_count > 0)
       const freshMachines = new Set<string>()
+      // One request collects every machine; the server shares each device
+      // collection with other viewers. Retries go to the single machine.
+      let batch: Awaited<ReturnType<ApiClient['collect_topology_network_info']>> = {}
+      if (pending.length) {
+        try {
+          batch = await client.collect_topology_network_info(pending.map(device => device.machine_id), requestOptions)
+        } catch (cause) {
+          if (!isCurrent())
+            return
+          if (isTopologyAuthError(cause)) {
+            clearPrivateData()
+            availability.clear(performance.now())
+            updateWarning()
+            controller.abort()
+            return
+          }
+          console.warn('Failed to collect topology in one request', cause)
+        }
+        if (!isCurrent())
+          return
+      }
       // Bound concurrent remote RPC calls, and collect all networks per machine.
       await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
         while (pending.length && isCurrent()) {
           const device = pending.shift()!
+          let batched = batch[device.machine_id]
           try {
             const snapshots = await collectTopologySnapshotsWithRetry(
               device,
-              () => client.collect_machine_network_info(device.machine_id, requestOptions),
+              async () => {
+                const first = batched
+                batched = undefined
+                if (!first)
+                  return client.collect_machine_network_info(device.machine_id, requestOptions)
+                if (first.error !== undefined)
+                  throw new Error(first.error)
+                return first.info?.info?.map ?? {}
+              },
               isCurrent,
             )
             if (isCurrent()) {

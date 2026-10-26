@@ -192,9 +192,7 @@ async fn central_local_delivery_creates_updates_deletes_and_preserves_local_file
                 support_local_config_revision: true,
                 local_config_catalog_epoch: snapshot.catalog_epoch,
                 local_config_catalog_generation: snapshot.catalog_generation,
-                runtime_capabilities: vec![
-                    "management:persisted-config-revision-v2".into(),
-                ],
+                runtime_capabilities: vec!["management:persisted-config-revision-v2".into()],
                 ..Default::default()
             },
         )

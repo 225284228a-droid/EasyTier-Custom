@@ -382,6 +382,14 @@ export class ApiClient {
         return response.info?.map ?? {};
     }
 
+    /** Network info of several machines in one request; each machine reports its own failure. */
+    public async collect_topology_network_info(machine_ids: string[], options?: ReadRequestOptions) {
+        const response = await this.client.post<any, {
+            machines?: Record<string, { info?: Api.CollectNetworkInfoResponse; error?: string }>;
+        }>('/topology/networks', { machine_ids }, options);
+        return response.machines ?? {};
+    }
+
     // --- Central networks ---
 
     public async list_networks(): Promise<CentralNetworkSummary[]> {
