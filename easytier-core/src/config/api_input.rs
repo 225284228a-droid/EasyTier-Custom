@@ -59,13 +59,6 @@ pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
 
 pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
-    // Older consoles ignore the new mode field. Project its effective policy
-    // into their existing controls too, so reading and saving cannot reset it.
-    let disguise_compat = flags
-        .p2p_disguise_mode
-        .as_deref()
-        .filter(|mode| !mode.trim().is_empty())
-        .map(|_| easytier_proto::common::Flags::resolve(flags.clone()));
     result.latency_first = flags.latency_first;
     result.dev_name = flags.dev_name;
     result.use_smoltcp = flags.use_smoltcp;
@@ -92,19 +85,10 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.prefer_peer_relay = flags.prefer_peer_relay;
     result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
     result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
-    result.only_use_wss_http3_for_hole_punching = flags.only_use_wss_http3_for_hole_punching;
-    result.prefer_wss_http3_for_p2p = flags.prefer_wss_http3_for_p2p;
-    result.disable_wss_http3_for_p2p = flags.disable_wss_http3_for_p2p;
     result.p2p_disguise_mode = flags
         .p2p_disguise_mode
         .filter(|mode| !mode.trim().is_empty())
         .map(|mode| mode.trim().to_ascii_lowercase());
-    if let Some(policy) = disguise_compat {
-        result.only_use_wss_http3_for_hole_punching =
-            Some(policy.only_use_wss_http3_for_hole_punching);
-        result.prefer_wss_http3_for_p2p = Some(policy.prefer_wss_http3_for_p2p);
-        result.disable_wss_http3_for_p2p = Some(policy.disable_wss_http3_for_p2p);
-    }
     result.p2p_prefer_protocol = flags.default_protocol;
     result.close_redundant_conns_when_disguised = flags.close_redundant_conns_when_disguised;
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
@@ -578,9 +562,6 @@ impl NetworkConfigExt for NetworkConfig {
             prefer_peer_relay: self.prefer_peer_relay,
             enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
             disable_sym_hole_punching: self.disable_sym_hole_punching,
-            only_use_wss_http3_for_hole_punching: self.only_use_wss_http3_for_hole_punching,
-            prefer_wss_http3_for_p2p: self.prefer_wss_http3_for_p2p,
-            disable_wss_http3_for_p2p: self.disable_wss_http3_for_p2p,
             p2p_disguise_mode: self.p2p_disguise_mode.clone(),
             close_redundant_conns_when_disguised: self.close_redundant_conns_when_disguised,
             instance_recv_bps_limit: self.instance_recv_bps_limit,
@@ -822,26 +803,11 @@ mod tests {
     }
 
     #[test]
-    fn gen_config_rejects_contradictory_disguise_flags() {
+    fn gen_config_rejects_unknown_disguise_modes() {
         let mut config = standalone_config();
-        config.only_use_wss_http3_for_hole_punching = Some(true);
-        config.disable_wss_http3_for_p2p = Some(true);
+        config.p2p_disguise_mode = Some("disable".into());
         let error = config.gen_config().unwrap_err().to_string();
-        assert!(error.contains("mutually exclusive"), "{error}");
-
-        for (only, disable) in [
-            (Some(true), None),
-            (None, Some(true)),
-            (Some(true), Some(false)),
-            (Some(false), Some(true)),
-        ] {
-            let mut config = standalone_config();
-            config.only_use_wss_http3_for_hole_punching = only;
-            config.disable_wss_http3_for_p2p = disable;
-            config
-                .gen_config()
-                .unwrap_or_else(|error| panic!("single disguise flag must load: {error}"));
-        }
+        assert!(error.contains("p2p_disguise_mode"), "{error}");
     }
 
     #[test]
@@ -1017,9 +983,6 @@ mod tests {
         for mode in ["prefer", "off", "disabled", "only"] {
             let input = NetworkConfig {
                 p2p_disguise_mode: Some(mode.to_owned()),
-                prefer_wss_http3_for_p2p: Some(false),
-                disable_wss_http3_for_p2p: Some(true),
-                only_use_wss_http3_for_hole_punching: Some(true),
                 ..standalone_config()
             };
             let generated = input.gen_config().unwrap();
@@ -1032,27 +995,12 @@ mod tests {
                 assert_eq!(flags.unwrap()["p2p_disguise_mode"].as_str(), Some(mode));
             }
             let restored = TomlConfigLoader::new_from_str(&generated.dump()).unwrap();
-            let flags = restored.get_flags();
-            assert_eq!(flags.prefer_wss_http3_for_p2p, mode == "prefer");
-            assert_eq!(flags.disable_wss_http3_for_p2p, mode == "disabled");
-            assert_eq!(flags.only_use_wss_http3_for_hole_punching, mode == "only");
-            if mode != "prefer" {
-                let mut legacy = NetworkConfig::new_from_config(&restored).unwrap();
-                assert_eq!(legacy.p2p_disguise_mode.as_deref(), Some(mode));
-                assert_eq!(legacy.prefer_wss_http3_for_p2p, Some(mode == "prefer"));
-                assert_eq!(legacy.disable_wss_http3_for_p2p, Some(mode == "disabled"));
-                assert_eq!(
-                    legacy.only_use_wss_http3_for_hole_punching,
-                    Some(mode == "only")
-                );
-                // A previous console discards the unknown mode but receives
-                // equivalent boolean controls, which must survive its save.
-                legacy.p2p_disguise_mode = None;
-                let flags = legacy.gen_config().unwrap().get_flags();
-                assert_eq!(flags.disable_wss_http3_for_p2p, mode == "disabled");
-                assert_eq!(flags.only_use_wss_http3_for_hole_punching, mode == "only");
-                assert_eq!(flags.prefer_wss_http3_for_p2p, mode == "prefer");
-            }
+            assert_eq!(restored.get_flags().p2p_disguise().as_str(), mode);
+            let output = NetworkConfig::new_from_config(&restored).unwrap();
+            assert_eq!(
+                output.p2p_disguise_mode.as_deref(),
+                (mode != "prefer").then_some(mode)
+            );
         }
     }
 
@@ -1098,27 +1046,28 @@ mod tests {
     #[test]
     fn p2p_defaults_and_explicit_settings_round_trip_through_toml() {
         let defaults = TomlConfigLoader::default().get_flags();
-        assert!(defaults.prefer_wss_http3_for_p2p);
+        assert_eq!(
+            defaults.p2p_disguise(),
+            crate::config::P2pDisguiseMode::Prefer
+        );
         assert_eq!(defaults.default_protocol, "udp");
-        assert!(!defaults.only_use_wss_http3_for_hole_punching);
-        assert!(!defaults.disable_wss_http3_for_p2p);
         assert!(defaults.close_redundant_conns_when_disguised);
 
-        for (prefer, protocol, cleanup) in [
+        for (mode, protocol, cleanup) in [
             (None, None, None),
             (None, Some(""), None),
             (None, Some("  "), None),
-            (Some(false), Some("udp"), Some(false)),
-            (Some(true), Some("tcp"), Some(false)),
-            (Some(false), Some("tcp"), Some(true)),
+            (Some("off"), Some("udp"), Some(false)),
+            (Some("prefer"), Some("tcp"), Some(false)),
+            (Some("off"), Some("tcp"), Some(true)),
         ] {
             let input = NetworkConfig {
-                prefer_wss_http3_for_p2p: prefer,
+                p2p_disguise_mode: mode.map(str::to_owned),
                 p2p_prefer_protocol: protocol.map(str::to_owned),
                 close_redundant_conns_when_disguised: cleanup,
                 ..standalone_config()
             };
-            let expected_prefer = prefer.unwrap_or(true);
+            let expected_mode = mode.unwrap_or("prefer");
             let expected_protocol = protocol
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -1126,19 +1075,19 @@ mod tests {
             let expected_cleanup = cleanup.unwrap_or(true);
             let config = input.gen_config().unwrap();
             let flags = config.get_flags();
-            assert_eq!(flags.prefer_wss_http3_for_p2p, expected_prefer);
+            assert_eq!(flags.p2p_disguise().as_str(), expected_mode);
             assert_eq!(flags.default_protocol, expected_protocol);
             assert_eq!(flags.close_redundant_conns_when_disguised, expected_cleanup);
 
             let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
             let flags = restored.get_flags();
-            assert_eq!(flags.prefer_wss_http3_for_p2p, expected_prefer);
+            assert_eq!(flags.p2p_disguise().as_str(), expected_mode);
             assert_eq!(flags.default_protocol, expected_protocol);
             assert_eq!(flags.close_redundant_conns_when_disguised, expected_cleanup);
             let output = NetworkConfig::new_from_config(&restored).unwrap();
             assert_eq!(
-                output.prefer_wss_http3_for_p2p,
-                prefer.filter(|value| !value)
+                output.p2p_disguise_mode.as_deref(),
+                (expected_mode != "prefer").then_some(expected_mode)
             );
             assert_eq!(
                 output.close_redundant_conns_when_disguised,
@@ -1152,8 +1101,8 @@ mod tests {
             {
                 let output = crate::config::api::network_config_from_toml(&restored);
                 assert_eq!(
-                    output.prefer_wss_http3_for_p2p,
-                    prefer.filter(|value| !value)
+                    output.p2p_disguise_mode.as_deref(),
+                    (expected_mode != "prefer").then_some(expected_mode)
                 );
                 assert_eq!(
                     output.close_redundant_conns_when_disguised,
@@ -1171,48 +1120,26 @@ mod tests {
     #[test]
     fn disguise_api_flags_preserve_missing_and_explicit_values() {
         for value in [None, Some(false), Some(true)] {
-            for only_use in [None, Some(false), Some(true)] {
-                // Both disguise toggles on is a contradictory policy the
-                // config layer rejects; every other pairing must round-trip.
-                if value == Some(true) && only_use == Some(true) {
-                    continue;
-                }
-                let input = NetworkConfig {
-                    only_use_wss_http3_for_hole_punching: only_use,
-                    prefer_wss_http3_for_p2p: value,
-                    disable_wss_http3_for_p2p: value,
-                    close_redundant_conns_when_disguised: value,
-                    dev_name: Some(String::new()),
-                    encryption_algorithm: Some(String::new()),
-                    instance_recv_bps_limit: Some(0),
-                    socket_mark: Some(0),
-                    ..standalone_config()
-                };
-                let config = input.gen_config().unwrap();
-                let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
-                let output = NetworkConfig::new_from_config(&restored).unwrap();
-                assert_eq!(
-                    output.only_use_wss_http3_for_hole_punching,
-                    only_use.filter(|value| *value)
-                );
-                assert_eq!(
-                    output.prefer_wss_http3_for_p2p,
-                    value.filter(|value| !value)
-                );
-                assert_eq!(
-                    output.disable_wss_http3_for_p2p,
-                    value.filter(|value| *value)
-                );
-                assert_eq!(
-                    output.close_redundant_conns_when_disguised,
-                    value.filter(|value| !value)
-                );
-                assert_eq!(output.dev_name, None);
-                assert_eq!(output.encryption_algorithm.as_deref(), Some(""));
-                assert_eq!(output.instance_recv_bps_limit, Some(0));
-                assert_eq!(output.socket_mark, Some(0));
-                assert_eq!(output.p2p_prefer_protocol, None);
-            }
+            let input = NetworkConfig {
+                close_redundant_conns_when_disguised: value,
+                dev_name: Some(String::new()),
+                encryption_algorithm: Some(String::new()),
+                instance_recv_bps_limit: Some(0),
+                socket_mark: Some(0),
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+            let output = NetworkConfig::new_from_config(&restored).unwrap();
+            assert_eq!(
+                output.close_redundant_conns_when_disguised,
+                value.filter(|value| !value)
+            );
+            assert_eq!(output.dev_name, None);
+            assert_eq!(output.encryption_algorithm.as_deref(), Some(""));
+            assert_eq!(output.instance_recv_bps_limit, Some(0));
+            assert_eq!(output.socket_mark, Some(0));
+            assert_eq!(output.p2p_prefer_protocol, None);
         }
     }
 
@@ -1485,11 +1412,11 @@ multi_thread_count = 7
 "#;
         let parsed = TomlConfigLoader::new_from_str(original).unwrap();
         let mut config = NetworkConfig::new_from_config(&parsed).unwrap();
+        // The legacy booleans load as the equivalent mode.
+        assert_eq!(config.p2p_disguise_mode.as_deref(), Some("only"));
         config.sni = Some("new.example.com".to_owned());
         config.p2p_prefer_protocol = Some("udp".to_owned());
-        config.only_use_wss_http3_for_hole_punching = None;
-        config.prefer_wss_http3_for_p2p = Some(false);
-        config.disable_wss_http3_for_p2p = None;
+        config.p2p_disguise_mode = Some("off".to_owned());
         config.close_redundant_conns_when_disguised = Some(false);
 
         let merged = merge_network_config_toml(original, &config).unwrap();
@@ -1497,9 +1424,8 @@ multi_thread_count = 7
         let output = NetworkConfig::new_from_config(&restored).unwrap();
         assert_eq!(output.sni.as_deref(), Some("new.example.com"));
         assert_eq!(output.p2p_prefer_protocol, None);
-        assert_eq!(output.only_use_wss_http3_for_hole_punching, None);
-        assert_eq!(output.prefer_wss_http3_for_p2p, Some(false));
-        assert_eq!(output.disable_wss_http3_for_p2p, None);
+        assert_eq!(output.p2p_disguise_mode.as_deref(), Some("off"));
+        assert!(!merged.contains("wss_http3"), "{merged}");
         assert_eq!(output.close_redundant_conns_when_disguised, Some(false));
         assert_eq!(restored.get_flags().multi_thread_count, 7);
     }
@@ -1675,9 +1601,6 @@ disableP2p = false
             dhcp_ipv6_cidr: Some("fd55::/64".to_owned()),
             sni: Some("overlay.example.com".to_owned()),
             p2p_disguise_mode: Some("only".to_owned()),
-            only_use_wss_http3_for_hole_punching: Some(true),
-            prefer_wss_http3_for_p2p: Some(false),
-            disable_wss_http3_for_p2p: Some(false),
             ..standalone_config()
         };
         let generated = input.gen_config().unwrap();
@@ -1687,18 +1610,7 @@ disableP2p = false
         assert_eq!(readback.dhcpv6, input.dhcpv6);
         assert_eq!(readback.dhcp_ipv6_cidr, input.dhcp_ipv6_cidr);
         assert_eq!(readback.sni, input.sni);
-        assert_eq!(
-            readback.only_use_wss_http3_for_hole_punching,
-            input.only_use_wss_http3_for_hole_punching
-        );
-        assert_eq!(
-            readback.prefer_wss_http3_for_p2p,
-            input.prefer_wss_http3_for_p2p
-        );
-        assert_eq!(
-            readback.disable_wss_http3_for_p2p,
-            input.disable_wss_http3_for_p2p
-        );
+        assert_eq!(readback.p2p_disguise_mode, input.p2p_disguise_mode);
     }
 
     #[test]

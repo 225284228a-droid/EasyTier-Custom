@@ -418,9 +418,6 @@ fn validate_capability_mask(
     const EXTENSIONS: &[&str] = &[
         "sni",
         "p2p_prefer_protocol",
-        "only_use_wss_http3_for_hole_punching",
-        "prefer_wss_http3_for_p2p",
-        "disable_wss_http3_for_p2p",
         "close_redundant_conns_when_disguised",
     ];
     for path in &request.field_mask {

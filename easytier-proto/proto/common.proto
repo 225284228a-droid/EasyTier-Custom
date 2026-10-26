@@ -95,17 +95,10 @@ message Flags {
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44 [(easytier.flag) = { default: "false" }];
 
-  // Restrict automatic P2P/hole-punch attempts to disguised protocols.
-  bool only_use_wss_http3_for_hole_punching = 50045 [(easytier.flag) = { default: "false" }];
-
-  // Prefer WSS/HTTP3 for automatic P2P while still allowing TCP/UDP fallback.
-  // Enabled by default: both peers must advertise the preference (or one side
-  // must require it) before disguised punches and WSS/HTTP3 ranking apply, so
-  // nodes that explicitly disable it keep the raw protocol ordering.
-  bool prefer_wss_http3_for_p2p = 50046 [(easytier.flag) = { default: "true" }];
-
-  // Do not use WSS/HTTP3 for automatic P2P at all.
-  bool disable_wss_http3_for_p2p = 50047 [(easytier.flag) = { default: "false" }];
+  // Legacy disguise booleans, replaced by p2p_disguise_mode. Configuration
+  // files that still use them are migrated when they are loaded.
+  reserved 50045, 50046, 50047;
+  reserved "only_use_wss_http3_for_hole_punching", "prefer_wss_http3_for_p2p", "disable_wss_http3_for_p2p";
 
   // Enabled by default in configuration. Requires both peers to negotiate cleanup support and
   // confirm usability with a round trip. Keep one manually configured initial
@@ -120,9 +113,7 @@ message Flags {
   bool close_redundant_conns_when_disguised = 50049 [(easytier.flag) = { default: "true" }];
 
   // Automatic P2P disguise policy: prefer, off, disabled, or only.
-  // Empty/unset preserves legacy boolean configuration. A nonempty mode
-  // overrides the three legacy TOML booleans above.
-  string p2p_disguise_mode = 50050 [(easytier.flag) = { default: "", form: true }];
+  string p2p_disguise_mode = 50050 [(easytier.flag) = { default: "prefer", form: true }];
 }
 
 

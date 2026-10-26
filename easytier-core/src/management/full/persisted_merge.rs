@@ -14,12 +14,6 @@ use crate::config::{
     toml::{ConfigLoader as _, TomlConfig},
 };
 
-const LEGACY_DISGUISE_FIELDS: [&str; 3] = [
-    "prefer_wss_http3_for_p2p",
-    "disable_wss_http3_for_p2p",
-    "only_use_wss_http3_for_hole_punching",
-];
-
 /// Only fixed reasons and validated field names may cross the management RPC.
 /// Conversion errors can contain configuration values, URLs or key material.
 #[derive(Debug, thiserror::Error)]
@@ -124,6 +118,7 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "enable_relay_network_whitelist" | "relay_network_whitelist" => {
             vec!["flags.relay_network_whitelist"]
         }
+        // Writing the mode also retires the legacy booleans it replaces.
         "p2p_disguise_mode" => vec![
             "flags.p2p_disguise_mode",
             "flags.prefer_wss_http3_for_p2p",
@@ -321,43 +316,12 @@ pub(super) fn merge_persisted_config(
         serde_json::to_value(network_config_from_toml(&loaded))
             .map_err(|_| invalid_patch("invalid persisted configuration values", []))?,
     );
-    let legacy_disguise_edit = !field_mask.iter().any(|field| field == "p2p_disguise_mode")
-        && field_mask
-            .iter()
-            .any(|field| LEGACY_DISGUISE_FIELDS.contains(&field.as_str()))
-        && loaded
-            .get_flags_patch()
-            .p2p_disguise_mode
-            .as_deref()
-            .is_some_and(|mode| !mode.trim().is_empty());
-    if legacy_disguise_edit {
-        // An older client edits the boolean projection of a unified policy.
-        // Start from its effective values, so changing one flag preserves the
-        // other two, then retire the mode that would otherwise override it.
-        let flags = loaded.get_flags();
-        let object = base.as_object_mut().unwrap();
-        object.remove("p2p_disguise_mode");
-        for (field, value) in [
-            ("prefer_wss_http3_for_p2p", flags.prefer_wss_http3_for_p2p),
-            ("disable_wss_http3_for_p2p", flags.disable_wss_http3_for_p2p),
-            (
-                "only_use_wss_http3_for_hole_punching",
-                flags.only_use_wss_http3_for_hole_punching,
-            ),
-        ] {
-            object.insert(field.into(), Value::Bool(value));
-        }
-    }
     let values = normalized_json(
         serde_json::to_value(values)
             .map_err(|_| invalid_patch("invalid configuration values", fields()))?,
     );
     let mut selected = HashSet::new();
     let mut locations = HashSet::new();
-    if legacy_disguise_edit {
-        locations.insert("flags.p2p_disguise_mode".to_owned());
-        locations.extend(LEGACY_DISGUISE_FIELDS.map(|field| format!("flags.{field}")));
-    }
     for path in field_mask {
         if path.is_empty()
             || path.split('.').any(|part| {
@@ -425,13 +389,6 @@ pub(super) fn merge_persisted_config(
     }
     if selected.contains("public_server_url") && !selected.contains("peers") {
         base.as_object_mut().unwrap().remove("peers");
-    }
-    if selected.contains("p2p_disguise_mode") {
-        // Selecting/resetting the unified policy replaces legacy overrides,
-        // including when the selected default is omitted from the payload.
-        for field in LEGACY_DISGUISE_FIELDS {
-            base.as_object_mut().unwrap().remove(field);
-        }
     }
     let merged: NetworkConfig = serde_json::from_value(base)
         .map_err(|_| invalid_patch("invalid field mask values", fields()))?;
@@ -760,42 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_disguise_patch_edits_effective_mode_flags_without_losing_siblings() {
-        let original = format!("{ORIGINAL}p2p_disguise_mode = 'disabled'\n");
-        let changed = merge_persisted_config(
-            &original,
-            &NetworkConfig {
-                disable_wss_http3_for_p2p: Some(false),
-                ..Default::default()
-            },
-            &["disable_wss_http3_for_p2p".into()],
-        )
-        .unwrap();
-        let flags = TomlConfig::new_from_str(&changed).unwrap().get_flags();
-        assert!(!flags.disable_wss_http3_for_p2p);
-        assert!(!flags.prefer_wss_http3_for_p2p);
-        assert!(!flags.only_use_wss_http3_for_hole_punching);
-        assert!(!changed.contains("p2p_disguise_mode ="));
-
-        let original = format!("{ORIGINAL}p2p_disguise_mode = 'only'\n");
-        let changed = merge_persisted_config(
-            &original,
-            &NetworkConfig {
-                prefer_wss_http3_for_p2p: Some(true),
-                ..Default::default()
-            },
-            &["prefer_wss_http3_for_p2p".into()],
-        )
-        .unwrap();
-        let flags = TomlConfig::new_from_str(&changed).unwrap().get_flags();
-        assert!(flags.prefer_wss_http3_for_p2p);
-        assert!(flags.only_use_wss_http3_for_hole_punching);
-        assert!(!flags.disable_wss_http3_for_p2p);
-        assert!(!changed.contains("p2p_disguise_mode ="));
-        assert!(changed.contains("# retained comment"));
-    }
-
-    #[test]
     fn unified_disguise_patch_replaces_legacy_flags_and_reset_uses_default() {
         let original = format!(
             "{ORIGINAL}prefer_wss_http3_for_p2p = false\nonly_use_wss_http3_for_hole_punching = true\n"
@@ -811,8 +732,7 @@ mod tests {
         )
         .unwrap();
         let flags = TomlConfig::new_from_str(&merged).unwrap().get_flags();
-        assert!(!flags.prefer_wss_http3_for_p2p);
-        assert!(!flags.only_use_wss_http3_for_hole_punching);
+        assert_eq!(flags.p2p_disguise().as_str(), "off");
         assert!(merged.contains("# retained comment"));
         assert!(!merged.contains("prefer_wss_http3_for_p2p ="));
         assert!(!merged.contains("only_use_wss_http3_for_hole_punching ="));
@@ -820,8 +740,7 @@ mod tests {
         // An omitted selected value resets the whole policy, including old overrides.
         let reset = merge_persisted_config(&original, &NetworkConfig::default(), &mask).unwrap();
         let flags = TomlConfig::new_from_str(&reset).unwrap().get_flags();
-        assert!(flags.prefer_wss_http3_for_p2p);
-        assert!(!flags.only_use_wss_http3_for_hole_punching);
+        assert_eq!(flags.p2p_disguise().as_str(), "prefer");
         assert!(!reset.contains("p2p_disguise_mode ="));
         assert!(!reset.contains("only_use_wss_http3_for_hole_punching ="));
     }
@@ -1107,9 +1026,6 @@ mod tests {
             sni: Some(String::new()),
             p2p_prefer_protocol: Some(String::new()),
             p2p_disguise_mode: Some(String::new()),
-            only_use_wss_http3_for_hole_punching: Some(false),
-            prefer_wss_http3_for_p2p: Some(false),
-            disable_wss_http3_for_p2p: Some(false),
             close_redundant_conns_when_disguised: Some(false),
             ..Default::default()
         };

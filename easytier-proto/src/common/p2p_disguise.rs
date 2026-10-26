@@ -2,13 +2,18 @@ use std::str::FromStr;
 
 use super::{Flags, FlagsPatch};
 
-/// Local configuration policy. Peer feature flags deliberately retain their
+/// Automatic P2P disguise policy. Peer feature flags deliberately retain their
 /// existing boolean wire representation for compatibility with older peers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum P2pDisguiseMode {
+    /// Negotiate disguise with raw fallback.
+    #[default]
     Prefer,
+    /// Do not initiate disguise, but accept a peer that requires it.
     Off,
+    /// Never use disguise for automatic P2P.
     Disabled,
+    /// Require disguise for automatic P2P.
     Only,
 }
 
@@ -38,17 +43,58 @@ impl P2pDisguiseMode {
         }
     }
 
-    pub(super) fn apply(self, flags: &mut Flags) {
-        flags.p2p_disguise_mode = self.as_str().to_owned();
-        flags.prefer_wss_http3_for_p2p = self == Self::Prefer;
-        flags.disable_wss_http3_for_p2p = self == Self::Disabled;
-        flags.only_use_wss_http3_for_hole_punching = self == Self::Only;
+    /// Initiates disguise when the peer also prefers it.
+    pub fn prefers(self) -> bool {
+        self == Self::Prefer
+    }
+
+    /// Never dials a disguised automatic P2P transport.
+    pub fn forbids(self) -> bool {
+        self == Self::Disabled
+    }
+
+    /// Never dials a raw automatic P2P transport.
+    pub fn requires(self) -> bool {
+        self == Self::Only
+    }
+
+    /// The policy of the former three boolean flags (`prefer_wss_http3_for_p2p`,
+    /// `disable_wss_http3_for_p2p`, `only_use_wss_http3_for_hole_punching`),
+    /// with their defaults for omitted values.
+    pub fn from_legacy_flags(
+        prefer: Option<bool>,
+        disable: Option<bool>,
+        only: Option<bool>,
+    ) -> anyhow::Result<Self> {
+        match (disable == Some(true), only == Some(true)) {
+            (true, true) => anyhow::bail!(
+                "disable_wss_http3_for_p2p and only_use_wss_http3_for_hole_punching are mutually \
+                 exclusive: the first forbids the disguised transport while the second forbids the raw transport"
+            ),
+            (true, false) => Ok(Self::Disabled),
+            (false, true) => Ok(Self::Only),
+            (false, false) if prefer == Some(false) => Ok(Self::Off),
+            (false, false) => Ok(Self::Prefer),
+        }
+    }
+}
+
+impl Flags {
+    /// The configured disguise policy. Resolved flags always carry a mode
+    /// (configurations are validated when loaded); the empty mode of a bare
+    /// `Flags::default()` does not initiate disguise, like the former boolean.
+    pub fn p2p_disguise(&self) -> P2pDisguiseMode {
+        self.p2p_disguise_mode
+            .parse()
+            .unwrap_or(P2pDisguiseMode::Off)
+    }
+
+    pub fn set_p2p_disguise(&mut self, mode: P2pDisguiseMode) {
+        self.p2p_disguise_mode = mode.as_str().to_owned();
     }
 }
 
 impl FlagsPatch {
-    /// A new mode overrides legacy booleans. Without it, retain the legacy
-    /// conflict check rather than accepting a policy with no dialable path.
     pub fn validate_p2p_disguise(&self) -> anyhow::Result<()> {
         if let Some(mode) = self
             .p2p_disguise_mode
@@ -56,33 +102,26 @@ impl FlagsPatch {
             .filter(|mode| !mode.trim().is_empty())
         {
             mode.parse::<P2pDisguiseMode>()?;
-        } else if self.disable_wss_http3_for_p2p == Some(true)
-            && self.only_use_wss_http3_for_hole_punching == Some(true)
-        {
-            anyhow::bail!(
-                "disable_wss_http3_for_p2p and only_use_wss_http3_for_hole_punching are mutually \
-                 exclusive: the first forbids the disguised transport while the second forbids the raw transport"
-            );
         }
         Ok(())
     }
 
-    /// Store one policy when the new setting is present. Default `prefer` can
-    /// be omitted safely after clearing legacy overrides; legacy-only patches
-    /// remain untouched, including explicit false values.
+    /// Store the policy in its canonical spelling; the default `prefer` is
+    /// omitted.
     pub fn canonicalize_p2p_disguise(&mut self) {
-        let Some(mode) = self
+        let mode = self
             .p2p_disguise_mode
             .as_deref()
-            .and_then(|mode| mode.parse::<P2pDisguiseMode>().ok())
-        else {
-            return;
-        };
-        self.prefer_wss_http3_for_p2p = None;
-        self.disable_wss_http3_for_p2p = None;
-        self.only_use_wss_http3_for_hole_punching = None;
-        self.p2p_disguise_mode =
-            (mode != P2pDisguiseMode::Prefer).then(|| mode.as_str().to_owned());
+            .filter(|mode| !mode.trim().is_empty())
+            .map(|mode| mode.parse::<P2pDisguiseMode>());
+        match mode {
+            Some(Ok(mode)) => {
+                self.p2p_disguise_mode =
+                    (mode != P2pDisguiseMode::Prefer).then(|| mode.as_str().to_owned())
+            }
+            Some(Err(_)) => {}
+            None => self.p2p_disguise_mode = None,
+        }
     }
 }
 
@@ -91,65 +130,71 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mode_overrides_legacy_flags_and_preserves_peer_wire_policy() {
-        for (mode, expected) in [
-            ("prefer", (true, false, false)),
-            ("off", (false, false, false)),
-            ("disabled", (false, true, false)),
-            ("only", (false, false, true)),
+    fn legacy_flags_map_to_the_equivalent_mode() {
+        for (prefer, disable, only, expected) in [
+            (None, None, None, P2pDisguiseMode::Prefer),
+            (
+                Some(true),
+                Some(false),
+                Some(false),
+                P2pDisguiseMode::Prefer,
+            ),
+            (Some(false), None, None, P2pDisguiseMode::Off),
+            (Some(true), Some(true), None, P2pDisguiseMode::Disabled),
+            (
+                Some(false),
+                Some(true),
+                Some(false),
+                P2pDisguiseMode::Disabled,
+            ),
+            (Some(true), None, Some(true), P2pDisguiseMode::Only),
+            (Some(false), Some(false), Some(true), P2pDisguiseMode::Only),
         ] {
-            let patch = FlagsPatch {
-                p2p_disguise_mode: Some(mode.into()),
-                prefer_wss_http3_for_p2p: Some(true),
-                disable_wss_http3_for_p2p: Some(true),
-                only_use_wss_http3_for_hole_punching: Some(true),
-                ..Default::default()
-            };
-            patch.validate_p2p_disguise().unwrap();
-            let flags = Flags::resolve(patch);
             assert_eq!(
-                (
-                    flags.prefer_wss_http3_for_p2p,
-                    flags.disable_wss_http3_for_p2p,
-                    flags.only_use_wss_http3_for_hole_punching
-                ),
-                expected
+                P2pDisguiseMode::from_legacy_flags(prefer, disable, only).unwrap(),
+                expected,
+                "{prefer:?} {disable:?} {only:?}"
             );
         }
+        assert!(P2pDisguiseMode::from_legacy_flags(None, Some(true), Some(true)).is_err());
     }
 
     #[test]
-    fn legacy_off_is_not_changed_to_the_default_prefer() {
-        let patch = FlagsPatch {
-            prefer_wss_http3_for_p2p: Some(false),
+    fn omitted_mode_resolves_to_the_default_prefer() {
+        let flags = Flags::resolve(FlagsPatch::default());
+        assert_eq!(flags.p2p_disguise(), P2pDisguiseMode::Prefer);
+        let flags = Flags::resolve(FlagsPatch {
+            p2p_disguise_mode: Some("  ".into()),
             ..Default::default()
-        };
-        assert!(!Flags::resolve(patch.clone()).prefer_wss_http3_for_p2p);
-        let mut canonical = patch.clone();
-        canonical.canonicalize_p2p_disguise();
-        assert_eq!(canonical, patch);
-        assert!(Flags::resolve(FlagsPatch::default()).prefer_wss_http3_for_p2p);
+        });
+        assert_eq!(flags.p2p_disguise(), P2pDisguiseMode::Prefer);
+        assert_eq!(Flags::default().p2p_disguise(), P2pDisguiseMode::Off);
+        let flags = Flags::resolve(FlagsPatch {
+            p2p_disguise_mode: Some(" Only ".into()),
+            ..Default::default()
+        });
+        assert_eq!(flags.p2p_disguise(), P2pDisguiseMode::Only);
     }
 
     #[test]
-    fn validates_modes_and_canonicalizes_only_new_settings() {
+    fn validates_modes_and_stores_them_canonically() {
         let invalid = FlagsPatch {
             p2p_disguise_mode: Some("disable".into()),
             ..Default::default()
         };
         assert!(invalid.validate_p2p_disguise().is_err());
-        let mut patch = FlagsPatch {
-            p2p_disguise_mode: Some("prefer".into()),
-            prefer_wss_http3_for_p2p: Some(false),
-            ..Default::default()
-        };
-        patch.canonicalize_p2p_disguise();
-        assert_eq!(patch, FlagsPatch::default());
-        let contradictory = FlagsPatch {
-            disable_wss_http3_for_p2p: Some(true),
-            only_use_wss_http3_for_hole_punching: Some(true),
-            ..Default::default()
-        };
-        assert!(contradictory.validate_p2p_disguise().is_err());
+        for (input, stored) in [
+            ("prefer", None),
+            ("", None),
+            (" OFF ", Some("off")),
+            ("only", Some("only")),
+        ] {
+            let mut patch = FlagsPatch {
+                p2p_disguise_mode: Some(input.into()),
+                ..Default::default()
+            };
+            patch.canonicalize_p2p_disguise();
+            assert_eq!(patch.p2p_disguise_mode.as_deref(), stored, "{input}");
+        }
     }
 }

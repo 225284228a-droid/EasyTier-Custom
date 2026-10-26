@@ -108,9 +108,8 @@ message NetworkConfig {
   optional bool dhcpv6 = 75;
   optional string dhcp_ipv6_cidr = 76;
   optional string sni = 50073;
-  optional bool only_use_wss_http3_for_hole_punching = 50074;
-  optional bool prefer_wss_http3_for_p2p = 50075;
-  optional bool disable_wss_http3_for_p2p = 50076;
+  reserved 50074, 50075, 50076;
+  reserved "only_use_wss_http3_for_hole_punching", "prefer_wss_http3_for_p2p", "disable_wss_http3_for_p2p";
 
   // Preferred underlay transport for automatic P2P connect attempts: "tcp" or
   // "udp". Disguise policy separately decides whether dialing uses WSS/HTTP3;
@@ -136,7 +135,6 @@ message NetworkConfig {
   // prefer: negotiate disguise with raw fallback (default); off: do not
   // initiate disguise but accept a peer requiring it; disabled: forbid
   // automatic disguised P2P; only: require disguise. Manual peers are unaffected.
-  // A nonempty mode overrides legacy TOML disguise booleans (fields 50074-50076).
   optional string p2p_disguise_mode = 50081;
 
   // Fork extensions. Omitted values mean one connection, concurrency allowed,

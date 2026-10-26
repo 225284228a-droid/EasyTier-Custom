@@ -45,7 +45,12 @@ impl PeerContext for ParallelContext {
     fn flags(&self) -> Flags {
         Flags {
             default_protocol: "tcp".into(),
-            prefer_wss_http3_for_p2p: self.prefer_disguise,
+            p2p_disguise_mode: if self.prefer_disguise {
+                "prefer"
+            } else {
+                "off"
+            }
+            .into(),
             ..Default::default()
         }
     }

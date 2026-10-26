@@ -125,9 +125,7 @@ fn hosted_network_config(config: &NetworkConfig) -> NetworkConfig {
         disable_sym_hole_punching: config.disable_sym_hole_punching,
         p2p_only: config.p2p_only,
         disable_tcp_hole_punching: config.disable_tcp_hole_punching,
-        only_use_wss_http3_for_hole_punching: config.only_use_wss_http3_for_hole_punching,
-        prefer_wss_http3_for_p2p: config.prefer_wss_http3_for_p2p,
-        disable_wss_http3_for_p2p: config.disable_wss_http3_for_p2p,
+        p2p_disguise_mode: config.p2p_disguise_mode.clone(),
         p2p_prefer_protocol: config.p2p_prefer_protocol.clone(),
         close_redundant_conns_when_disguised: config.close_redundant_conns_when_disguised,
         secure_mode: config.secure_mode.clone(),
@@ -453,9 +451,7 @@ mod tests {
             enable_private_mode: Some(true),
             disable_relay_data: Some(true),
             prefer_peer_relay: Some(true),
-            only_use_wss_http3_for_hole_punching: Some(true),
-            prefer_wss_http3_for_p2p: Some(true),
-            disable_wss_http3_for_p2p: Some(true),
+            p2p_disguise_mode: Some("only".to_owned()),
             proxy_cidrs: vec!["10.88.0.0/24".to_owned()],
             managed_credentials: vec![ManagedCredentialConfig {
                 credential_id: "managed".to_owned(),
@@ -490,9 +486,7 @@ mod tests {
         assert_eq!(hosted.enable_private_mode, Some(true));
         assert_eq!(hosted.disable_relay_data, Some(true));
         assert_eq!(hosted.prefer_peer_relay, Some(true));
-        assert_eq!(hosted.only_use_wss_http3_for_hole_punching, Some(true));
-        assert_eq!(hosted.prefer_wss_http3_for_p2p, Some(true));
-        assert_eq!(hosted.disable_wss_http3_for_p2p, Some(true));
+        assert_eq!(hosted.p2p_disguise_mode.as_deref(), Some("only"));
         assert_eq!(hosted.proxy_cidrs, original.proxy_cidrs);
         assert_eq!(hosted.managed_credentials, original.managed_credentials);
         assert_eq!(hosted.port_forwards, original.port_forwards);

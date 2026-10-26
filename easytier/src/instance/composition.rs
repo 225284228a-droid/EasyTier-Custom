@@ -607,9 +607,7 @@ mod tests {
         global_b.set_ipv4(Some("10.251.0.2/24".parse().unwrap()));
         for global in [&global_a, &global_b] {
             let mut flags = global.get_flags();
-            flags.prefer_wss_http3_for_p2p = true;
-            flags.disable_wss_http3_for_p2p = false;
-            flags.only_use_wss_http3_for_hole_punching = false;
+            flags.set_p2p_disguise(easytier_proto::common::P2pDisguiseMode::Prefer);
             flags.disable_tcp_hole_punching = true;
             flags.disable_udp_hole_punching = true;
             flags.disable_upnp = true;
@@ -779,9 +777,11 @@ mod tests {
             flags.default_protocol = "udp".to_owned();
             flags.disable_p2p = !automatic_p2p;
             flags.lazy_p2p = false;
-            flags.prefer_wss_http3_for_p2p = automatic_p2p;
-            flags.disable_wss_http3_for_p2p = false;
-            flags.only_use_wss_http3_for_hole_punching = false;
+            flags.set_p2p_disguise(if automatic_p2p {
+                easytier_proto::common::P2pDisguiseMode::Prefer
+            } else {
+                easytier_proto::common::P2pDisguiseMode::Off
+            });
             flags.close_redundant_conns_when_disguised = true;
             flags.disable_tcp_hole_punching = true;
             flags.disable_udp_hole_punching = true;

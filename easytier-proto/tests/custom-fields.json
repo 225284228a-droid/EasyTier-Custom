@@ -1,8 +1,5 @@
 {
   "fields": [
-    {"message":"common.Flags","field":"only_use_wss_http3_for_hole_punching","number":50045,"type":8,"type_name":"","label":1,"proto3_optional":false,"previous_number":45},
-    {"message":"common.Flags","field":"prefer_wss_http3_for_p2p","number":50046,"type":8,"type_name":"","label":1,"proto3_optional":false,"previous_number":46},
-    {"message":"common.Flags","field":"disable_wss_http3_for_p2p","number":50047,"type":8,"type_name":"","label":1,"proto3_optional":false,"previous_number":47},
     {"message":"common.Flags","field":"close_redundant_conns_when_disguised","number":50049,"type":8,"type_name":"","label":1,"proto3_optional":false,"previous_number":49},
     {"message":"common.Flags","field":"p2p_disguise_mode","number":50050,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50},
     {"message":"common.PeerFeatureFlag","field":"prefer_wss_http3_for_p2p","number":50012,"type":8,"type_name":"","label":1,"proto3_optional":false,"previous_number":12},
@@ -41,9 +38,6 @@
     {"message":"api.instance.GetVpnStatusResponse","field":"ipv6_addr","number":50015,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":15},
     {"message":"api.instance.GetVpnStatusResponse","field":"activation_error","number":50016,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":16},
     {"message":"api.manage.NetworkConfig","field":"sni","number":50073,"type":9,"type_name":"","label":1,"proto3_optional":true,"previous_number":73},
-    {"message":"api.manage.NetworkConfig","field":"only_use_wss_http3_for_hole_punching","number":50074,"type":8,"type_name":"","label":1,"proto3_optional":true,"previous_number":74},
-    {"message":"api.manage.NetworkConfig","field":"prefer_wss_http3_for_p2p","number":50075,"type":8,"type_name":"","label":1,"proto3_optional":true,"previous_number":75},
-    {"message":"api.manage.NetworkConfig","field":"disable_wss_http3_for_p2p","number":50076,"type":8,"type_name":"","label":1,"proto3_optional":true,"previous_number":76},
     {"message":"api.manage.NetworkConfig","field":"p2p_prefer_protocol","number":50078,"type":9,"type_name":"","label":1,"proto3_optional":true,"previous_number":78},
     {"message":"api.manage.NetworkConfig","field":"close_redundant_conns_when_disguised","number":50079,"type":8,"type_name":"","label":1,"proto3_optional":true,"previous_number":79},
     {"message":"api.manage.NetworkConfig","field":"vpn","number":50080,"type":11,"type_name":".api.manage.VpnConfig","label":1,"proto3_optional":true,"previous_number":80},

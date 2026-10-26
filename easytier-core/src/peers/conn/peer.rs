@@ -275,9 +275,8 @@ fn disguised_tunnel_scheme(tunnel_type: &str) -> Option<&'static str> {
 }
 
 fn use_disguise_preference(flags: &Flags, negotiated: Option<bool>) -> bool {
-    !flags.disable_wss_http3_for_p2p
-        && negotiated
-            .unwrap_or(flags.prefer_wss_http3_for_p2p || flags.only_use_wss_http3_for_hole_punching)
+    !flags.p2p_disguise().forbids()
+        && negotiated.unwrap_or(flags.p2p_disguise().prefers() || flags.p2p_disguise().requires())
 }
 
 fn conn_protocol_rank(conn: &PeerConn, flags: &Flags) -> Option<u8> {
@@ -306,7 +305,7 @@ fn conn_protocol_rank(conn: &PeerConn, flags: &Flags) -> Option<u8> {
     Some(
         1 + p2p_protocol_rank(
             &flags.default_protocol,
-            !flags.disable_wss_http3_for_p2p,
+            !flags.p2p_disguise().forbids(),
             &tunnel.tunnel_type,
         ),
     )
@@ -1196,7 +1195,7 @@ impl Peer {
         }
         let target_rank = 1 + p2p_protocol_rank(
             &flags.default_protocol,
-            !flags.disable_wss_http3_for_p2p,
+            !flags.p2p_disguise().forbids(),
             target_scheme,
         );
         self.conns.iter().any(|entry| {

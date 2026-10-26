@@ -94,9 +94,6 @@ mod tests {
                 ("p2p_prefer_protocol", prefer_protocol),
                 ("sni", sni),
                 ("p2p_disguise_mode", mode),
-                ("prefer_wss_http3_for_p2p", mode),
-                ("disable_wss_http3_for_p2p", mode),
-                ("only_use_wss_http3_for_hole_punching", mode),
                 ("close_redundant_conns_when_disguised", mode),
                 ("vpn", true),
             ] {

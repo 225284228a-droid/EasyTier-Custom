@@ -5,9 +5,7 @@
       "management:persisted-config-revision-v2",
       "config:sni",
       "config:p2p_prefer_protocol",
-      "config:only_use_wss_http3_for_hole_punching",
-      "config:prefer_wss_http3_for_p2p",
-      "config:disable_wss_http3_for_p2p",
+      "config:p2p_disguise_mode",
       "config:close_redundant_conns_when_disguised",
       "config:vpn-subnet-exit-v1"
     ],
@@ -59,11 +57,9 @@
         "enable_udp_broadcast_relay": false,
         "prefer_peer_relay": false,
         "sni": "",
-        "only_use_wss_http3_for_hole_punching": false,
-        "prefer_wss_http3_for_p2p": true,
-        "disable_wss_http3_for_p2p": false,
         "p2p_prefer_protocol": "udp",
-        "close_redundant_conns_when_disguised": true
+        "close_redundant_conns_when_disguised": true,
+        "p2p_disguise_mode": "prefer"
       },
       "field_mask": [
         "dhcp",
@@ -124,12 +120,10 @@
         "dhcpv6",
         "dhcp_ipv6_cidr",
         "sni",
-        "only_use_wss_http3_for_hole_punching",
-        "prefer_wss_http3_for_p2p",
-        "disable_wss_http3_for_p2p",
         "p2p_prefer_protocol",
         "close_redundant_conns_when_disguised",
-        "vpn"
+        "vpn",
+        "p2p_disguise_mode"
       ]
     }
   },

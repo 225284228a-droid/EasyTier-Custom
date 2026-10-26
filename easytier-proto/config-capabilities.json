@@ -5,9 +5,6 @@
   "traffic_disguise": { "capability": "config:traffic-disguise-v1", "support": "tls" },
   "p2p_prefer_protocol": { "capability": "config:p2p_prefer_protocol", "support": "tcp_udp" },
   "p2p_disguise_mode": { "capability": "config:p2p_disguise_mode", "support": "disguised_p2p" },
-  "only_use_wss_http3_for_hole_punching": { "capability": "config:only_use_wss_http3_for_hole_punching", "support": "disguised_p2p" },
-  "prefer_wss_http3_for_p2p": { "capability": "config:prefer_wss_http3_for_p2p", "support": "disguised_p2p" },
-  "disable_wss_http3_for_p2p": { "capability": "config:disable_wss_http3_for_p2p", "support": "disguised_p2p" },
   "close_redundant_conns_when_disguised": { "capability": "config:close_redundant_conns_when_disguised", "support": "disguised_p2p" },
   "vpn": { "capability": "config:vpn-subnet-exit-v1", "support": "always" }
 }

@@ -101,8 +101,8 @@ impl CoreInstanceHostConfig {
         // Never advertise a WSS/HTTP3 preference the runtime cannot serve:
         // peers would repeatedly attempt WSS hole punching only to be
         // rejected, turning every punch cycle into a futile retry loop.
-        if !self.wss_http3_supported {
-            flags.prefer_wss_http3_for_p2p = false;
+        if !self.wss_http3_supported && flags.p2p_disguise().prefers() {
+            flags.set_p2p_disguise(crate::config::P2pDisguiseMode::Off);
         }
         if !self.ignore_unsupported_config {
             return flags;
@@ -292,7 +292,7 @@ impl CoreInstanceConfig {
                 flags.enable_ipv6,
                 socket_context.clone(),
             )
-            .with_udp_http3(!flags.disable_wss_http3_for_p2p),
+            .with_udp_http3(!flags.p2p_disguise().forbids()),
         );
         let socks5_bind = (!host.ignore_unsupported_config || host.gateway_enabled)
             .then(|| config.get_socks5_portal())
@@ -638,7 +638,7 @@ disable_p2p = true
     fn wss_preference_is_not_broadcast_without_runtime_support() {
         let config = TomlConfig::default();
         config.set_flags(Flags {
-            prefer_wss_http3_for_p2p: true,
+            p2p_disguise_mode: "prefer".into(),
             ..config.get_flags()
         });
 

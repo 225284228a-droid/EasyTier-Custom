@@ -22,8 +22,8 @@ function apiCarries(field: string): boolean {
 /**
  * The checkboxes the form is expected to offer, read off the schema the way a
  * config form reads it: every boolean flag it declares that the management API
- * carries, less the deprecated ones and the flags with a dedicated selector,
- * plus the one network option the form adds itself.
+ * carries, less the deprecated ones, plus the one network option the form
+ * adds itself.
  */
 const CONFIG_FLAG_FIELDS = [
   ...FlagsPb.fields.flatMap((flag) => {
@@ -32,7 +32,6 @@ const CONFIG_FLAG_FIELDS = [
     if (flag.kind !== 'scalar' || flag.T !== ScalarType.BOOL) return []
     const field = (meta.api?.field ?? flag.name) as keyof NetworkConfig
     if (!apiCarries(field)) return []
-    if (['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'].includes(field)) return []
 
     return [field]
   }),
@@ -399,10 +398,7 @@ function makeConfig(): NetworkConfig {
     no_tun: true,
     hostname: 'host-a',
     sni: 'www.cloudflare.com',
-    p2p_disguise_mode: undefined,
-    only_use_wss_http3_for_hole_punching: true,
-    prefer_wss_http3_for_p2p: false,
-    disable_wss_http3_for_p2p: false,
+    p2p_disguise_mode: 'only',
     proxy_cidrs: ['10.10.0.0/16', '172.16.1.0/24'],
     vpn_portal_config: {
       wireguard_listen: '0.0.0.0:22023',
@@ -525,9 +521,6 @@ describe('Config.vue network config projection', () => {
     expect(selector.attributes('data-stub')).toBe('select')
     await selector.setValue('disabled')
     expect(curNetwork.p2p_disguise_mode).toBe('disabled')
-    for (const field of ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p'] as const) {
-      expect(curNetwork[field]).toBeUndefined()
-    }
     expect(toBackendNetworkConfig(curNetwork, ['config:p2p_disguise_mode']).p2p_disguise_mode).toBe('disabled')
     wrapper.unmount()
   })
@@ -540,9 +533,6 @@ describe('Config.vue network config projection', () => {
       expect(wrapper.find(`#${field}`).exists(), `${field} should be available for offline configuration`).toBe(true)
       expect(wrapper.find(`#${field}`).attributes('disabled')).toBeUndefined()
       expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(true)
-    }
-    for (const field of ['only_use_wss_http3_for_hole_punching', 'prefer_wss_http3_for_p2p', 'disable_wss_http3_for_p2p']) {
-      expect(wrapper.find(`#${field}`).exists(), `${field} uses the dedicated disguise selector`).toBe(false)
     }
     for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
       expect(urls.props('protos')).toHaveProperty('http3')
@@ -578,7 +568,7 @@ describe('Config.vue network config projection', () => {
   })
 
   it('shows individual supported extensions and updates the complete disguise selector when capabilities change', async () => {
-    const supported = ['config:sni', 'config:p2p_prefer_protocol', 'config:prefer_wss_http3_for_p2p']
+    const supported = ['config:sni', 'config:p2p_prefer_protocol']
     const { curNetwork, wrapper } = mountConfig(makeConfig(), supported)
     await nextTick()
 
@@ -594,8 +584,7 @@ describe('Config.vue network config projection', () => {
 
     await wrapper.setProps({ runtimeCapabilities: [
       ...supported,
-      'config:only_use_wss_http3_for_hole_punching',
-      'config:disable_wss_http3_for_p2p',
+      'config:p2p_disguise_mode',
       'config:close_redundant_conns_when_disguised',
       'transport:http3-rfc9114-v2',
     ] })
@@ -603,8 +592,7 @@ describe('Config.vue network config projection', () => {
     expect(wrapper.find('#close_redundant_conns_when_disguised').exists()).toBe(true)
     expect(wrapper.find('[data-tooltip="p2p_disguise_mode_help"]').exists()).toBe(true)
     await wrapper.find('#p2p_disguise_mode').setValue('prefer')
-    expect(curNetwork.prefer_wss_http3_for_p2p).toBe(true)
-    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBe(false)
+    expect(curNetwork.p2p_disguise_mode).toBe('prefer')
     for (const urls of wrapper.findAllComponents(UrlListInputStub)) {
       expect(urls.props('protos')).toHaveProperty('http3')
     }
@@ -618,14 +606,11 @@ describe('Config.vue network config projection', () => {
   })
 
   it('shows preferred disguise, UDP and enabled cleanup for new and missing settings', async () => {
-    for (const legacy of [false, true]) {
+    for (const unset of [false, true]) {
       const config = DEFAULT_NETWORK_CONFIG()
       config.advanced_settings = true
-      if (legacy) {
+      if (unset) {
         delete config.p2p_disguise_mode
-        delete config.prefer_wss_http3_for_p2p
-        delete config.only_use_wss_http3_for_hole_punching
-        delete config.disable_wss_http3_for_p2p
         delete config.p2p_prefer_protocol
         delete config.close_redundant_conns_when_disguised
       }
@@ -636,9 +621,9 @@ describe('Config.vue network config projection', () => {
       expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('prefer')
       expect(wrapper.find<HTMLSelectElement>('select#p2p_prefer_protocol').element.value).toBe('udp')
       expect(input(wrapper, '#close_redundant_conns_when_disguised').checked).toBe(true)
-      if (legacy) {
+      if (unset) {
         const backend = toBackendNetworkConfig(curNetwork)
-        for (const field of ['prefer_wss_http3_for_p2p', 'only_use_wss_http3_for_hole_punching', 'disable_wss_http3_for_p2p', 'p2p_prefer_protocol', 'close_redundant_conns_when_disguised'] as const) {
+        for (const field of ['p2p_disguise_mode', 'p2p_prefer_protocol', 'close_redundant_conns_when_disguised'] as const) {
           expect(curNetwork[field], `${field} should remain unset`).toBeUndefined()
           expect(backend, `${field} should remain absent when saving`).not.toHaveProperty(field)
         }
@@ -913,37 +898,6 @@ describe('Config.vue network config projection', () => {
         dst_port: 9090,
       }],
     })
-  })
-
-  it('keeps the all-clear WSS/HTTP3 state distinct from prefer', async () => {
-    // All three disguise flags false means "never initiate disguised P2P";
-    // the UI must render it as its own state instead of collapsing it into
-    // prefer (which would flip the flag to true on the next save).
-    const config = makeConfig()
-    delete config.p2p_disguise_mode
-    config.only_use_wss_http3_for_hole_punching = false
-    config.prefer_wss_http3_for_p2p = false
-    config.disable_wss_http3_for_p2p = false
-
-    const { curNetwork, wrapper } = mountConfig(config)
-    await nextTick()
-
-    expect(wrapper.find<HTMLSelectElement>('select#p2p_disguise_mode').element.value).toBe('off')
-
-    // Selecting off stores one explicit policy and clears legacy overrides.
-    await wrapper.find('select#p2p_disguise_mode').setValue('off')
-    await nextTick()
-    expect(curNetwork.p2p_disguise_mode).toBe('off')
-    expect(curNetwork.prefer_wss_http3_for_p2p).toBeUndefined()
-    expect(curNetwork.disable_wss_http3_for_p2p).toBeUndefined()
-    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBeUndefined()
-
-    await wrapper.find('select#p2p_disguise_mode').setValue('prefer')
-    await nextTick()
-    expect(curNetwork.p2p_disguise_mode).toBe('prefer')
-    expect(curNetwork.prefer_wss_http3_for_p2p).toBeUndefined()
-    expect(curNetwork.disable_wss_http3_for_p2p).toBeUndefined()
-    expect(curNetwork.only_use_wss_http3_for_hole_punching).toBeUndefined()
   })
 
   it('shows a flag the configuration does not state as the value the core resolves without setting it', async () => {

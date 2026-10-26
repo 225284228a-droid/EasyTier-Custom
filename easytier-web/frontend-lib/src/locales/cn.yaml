@@ -254,8 +254,6 @@ disable_tcp_hole_punching_help: 禁用TCP打洞功能
 disable_udp_hole_punching: 禁用UDP打洞
 disable_udp_hole_punching_help: 禁用UDP打洞功能
 
-only_use_wss_http3_for_hole_punching: 仅使用 WSS/HTTP3 进行P2P
-only_use_wss_http3_for_hole_punching_help: 自动P2P和NAT打洞仅使用 WSS 和 HTTP/3；不影响普通直连或手动连接。
 
 p2p_disguise_mode: 自动 P2P 伪装策略
 p2p_disguise_mode_prefer: 优先伪装（默认，可回退）

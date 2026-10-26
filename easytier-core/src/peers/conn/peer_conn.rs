@@ -1877,12 +1877,12 @@ mod tests {
         for secure in [false, true] {
             let client_flags = Flags {
                 default_protocol: " TCP ".to_owned(),
-                prefer_wss_http3_for_p2p: true,
+                p2p_disguise_mode: "prefer".into(),
                 ..Default::default()
             };
             let server_flags = Flags {
                 default_protocol: "tcp".to_owned(),
-                only_use_wss_http3_for_hole_punching: true,
+                p2p_disguise_mode: "only".into(),
                 ..Default::default()
             };
             let client_context = cleanup_handshake_context(1, secure, client_flags.clone());
@@ -2006,7 +2006,7 @@ mod tests {
             server_tunnel,
             Arc::new(PeerSessionStore::new()),
         );
-        context.0.lock().unwrap().prefer_wss_http3_for_p2p = true;
+        context.0.lock().unwrap().p2p_disguise_mode = "prefer".into();
         let (client_result, server_result) = tokio::join!(
             client.do_handshake_as_client(),
             server.do_handshake_as_server_ext(|_, _| Ok(())),

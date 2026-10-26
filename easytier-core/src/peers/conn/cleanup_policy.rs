@@ -24,9 +24,9 @@ impl CleanupPolicySnapshot {
     fn from_flags(flags: &Flags) -> Self {
         Self {
             protocol: normalized_p2p_protocol(&flags.default_protocol),
-            prefer: flags.prefer_wss_http3_for_p2p,
-            only: flags.only_use_wss_http3_for_hole_punching,
-            disabled: flags.disable_wss_http3_for_p2p,
+            prefer: flags.p2p_disguise().prefers(),
+            only: flags.p2p_disguise().requires(),
+            disabled: flags.p2p_disguise().forbids(),
         }
     }
 
@@ -344,30 +344,16 @@ mod tests {
     #[test]
     fn cleanup_order_is_symmetric_and_respects_both_protocol_preferences() {
         for protocol in ["", " tcp ", "UDP"] {
-            for (a_prefer, a_only, a_disabled) in [
-                (false, false, false),
-                (true, false, false),
-                (false, true, false),
-                (true, true, true),
-            ] {
-                for (b_prefer, b_only, b_disabled) in [
-                    (false, false, false),
-                    (true, false, false),
-                    (false, true, false),
-                    (true, true, true),
-                ] {
+            for a_mode in ["off", "prefer", "only", "disabled"] {
+                for b_mode in ["off", "prefer", "only", "disabled"] {
                     let a_flags = Flags {
                         default_protocol: protocol.to_owned(),
-                        prefer_wss_http3_for_p2p: a_prefer,
-                        only_use_wss_http3_for_hole_punching: a_only,
-                        disable_wss_http3_for_p2p: a_disabled,
+                        p2p_disguise_mode: a_mode.into(),
                         ..Default::default()
                     };
                     let b_flags = Flags {
                         default_protocol: normalized_p2p_protocol(protocol),
-                        prefer_wss_http3_for_p2p: b_prefer,
-                        only_use_wss_http3_for_hole_punching: b_only,
-                        disable_wss_http3_for_p2p: b_disabled,
+                        p2p_disguise_mode: b_mode.into(),
                         ..Default::default()
                     };
                     let mut a = policy(&a_flags);
@@ -401,7 +387,7 @@ mod tests {
             assert!(!paired.both_prefer_transport(replacement, candidate));
         }
         let changed = Flags {
-            prefer_wss_http3_for_p2p: true,
+            p2p_disguise_mode: "prefer".into(),
             ..flags.clone()
         };
         assert_eq!(paired.agreed_disguise(&changed), None);
@@ -443,7 +429,7 @@ mod tests {
     fn parallel_protocol_conflicts_follow_the_smaller_peer_at_both_ends() {
         let tcp_flags = Flags {
             default_protocol: "tcp".into(),
-            prefer_wss_http3_for_p2p: true,
+            p2p_disguise_mode: "prefer".into(),
             ..Default::default()
         };
         let udp_flags = Flags {
@@ -478,7 +464,7 @@ mod tests {
     fn explicit_disguise_ban_keeps_its_ordering_and_conflicts_do_not_retire_either_path() {
         let allowed = Flags::default();
         let banned = Flags {
-            disable_wss_http3_for_p2p: true,
+            p2p_disguise_mode: "disabled".into(),
             ..allowed.clone()
         };
         let mut local = policy(&banned);

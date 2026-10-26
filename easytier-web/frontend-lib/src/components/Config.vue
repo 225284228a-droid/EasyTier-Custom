@@ -154,23 +154,17 @@ interface BoolFlag {
   help: string
 }
 
-const disguisedP2pFields = new Set<keyof NetworkConfig>([
-  'only_use_wss_http3_for_hole_punching',
-  'prefer_wss_http3_for_p2p',
-  'disable_wss_http3_for_p2p',
-])
-
 const bool_flags: BoolFlag[] = [
-  // The disguise flags share a dedicated selector; all other schema flags
-  // use a checkbox, together with the top-level concurrency option.
-  ...formFlags().filter(flag => !disguisedP2pFields.has(flag.field)),
+  // Every schema flag uses a checkbox, together with the top-level
+  // concurrency option.
+  ...formFlags(),
   { field: 'disable_parallel_connections', help: 'disable_parallel_connections_help' },
 ]
 const visibleBoolFlags = computed(() => bool_flags.filter(flag => extensionSupported(flag.field)))
 
 const disguisedP2pMode = computed<P2pDisguiseMode>({
   get: () => p2pDisguiseMode(curNetwork.value),
-  set: value => setP2pDisguiseMode(curNetwork.value, value, props.runtimeCapabilities),
+  set: value => setP2pDisguiseMode(curNetwork.value, value),
 })
 
 const disguisedP2pModeOptions = computed(() => [

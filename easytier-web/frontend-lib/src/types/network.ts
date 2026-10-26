@@ -40,7 +40,7 @@ import {
 } from '../generated/proto/common'
 import { prepareNetworkConfigForProtoJson } from './networkCompat'
 import { filterConfigPayload, PRIVATE_MODE_DEFAULT_CAPABILITY } from '../modules/capabilities'
-import { canonicalizeP2pDisguisePayload, LEGACY_P2P_DISGUISE_FIELDS } from '../modules/p2pDisguise'
+import { canonicalizeP2pDisguisePayload } from '../modules/p2pDisguise'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, NatType, NetworkingMethod }
 export { VpnPortalClientState }
@@ -173,8 +173,7 @@ function newFlagValues(): Record<string, boolean> {
     // This default differs between custom and official kernels. Keep it
     // implicit so each target applies its own default; the form uses its
     // advertised capability to display the value until the user changes it.
-    if (flag.boolean && flag.field !== 'enable_private_mode'
-      && !(LEGACY_P2P_DISGUISE_FIELDS as readonly string[]).includes(flag.field)) {
+    if (flag.boolean && flag.field !== 'enable_private_mode') {
       values[flag.field] = declaredValue(flag)
     }
   }

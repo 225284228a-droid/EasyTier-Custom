@@ -1537,7 +1537,9 @@ mod tests {
                 config.snapshot.flags.default_protocol = default_protocol.to_owned();
                 options.default_protocol = default_protocol.to_owned();
             }
-            config.snapshot.flags.only_use_wss_http3_for_hole_punching = strict_disguise;
+            if strict_disguise {
+                config.snapshot.flags.p2p_disguise_mode = "only".into();
+            }
             let (packet_tx, _packet_rx) = host_packet_channel();
             let peers =
                 Arc::new(PeerManagerCore::new_portable_for_test(config, packet_tx).unwrap());

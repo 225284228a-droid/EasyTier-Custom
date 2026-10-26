@@ -324,15 +324,6 @@ type Flags struct {
 	// Prefer direct credential peers that already relay to a destination over
 	// advertising another direct edge to the same destination.
 	PreferPeerRelay bool `protobuf:"varint,44,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3" json:"prefer_peer_relay,omitempty"`
-	// Restrict automatic P2P/hole-punch attempts to disguised protocols.
-	OnlyUseWssHttp3ForHolePunching bool `protobuf:"varint,50045,opt,name=only_use_wss_http3_for_hole_punching,json=onlyUseWssHttp3ForHolePunching,proto3" json:"only_use_wss_http3_for_hole_punching,omitempty"`
-	// Prefer WSS/HTTP3 for automatic P2P while still allowing TCP/UDP fallback.
-	// Enabled by default: both peers must advertise the preference (or one side
-	// must require it) before disguised punches and WSS/HTTP3 ranking apply, so
-	// nodes that explicitly disable it keep the raw protocol ordering.
-	PreferWssHttp3ForP2P bool `protobuf:"varint,50046,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3" json:"prefer_wss_http3_for_p2p,omitempty"`
-	// Do not use WSS/HTTP3 for automatic P2P at all.
-	DisableWssHttp3ForP2P bool `protobuf:"varint,50047,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3" json:"disable_wss_http3_for_p2p,omitempty"`
 	// Enabled by default in configuration. Requires both peers to negotiate cleanup support and
 	// confirm usability with a round trip. Keep one manually configured initial
 	// peer connection, chosen in a shared deterministic order, and close all other
@@ -345,8 +336,6 @@ type Flags struct {
 	// change disguise policy for dialing. Legacy/unsupported peers are not cleaned up.
 	CloseRedundantConnsWhenDisguised bool `protobuf:"varint,50049,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3" json:"close_redundant_conns_when_disguised,omitempty"`
 	// Automatic P2P disguise policy: prefer, off, disabled, or only.
-	// Empty/unset preserves legacy boolean configuration. A nonempty mode
-	// overrides the three legacy TOML booleans above.
 	P2PDisguiseMode string `protobuf:"bytes,50050,opt,name=p2p_disguise_mode,json=p2pDisguiseMode,proto3" json:"p2p_disguise_mode,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -659,27 +648,6 @@ func (x *Flags) GetSocketMark() uint32 {
 func (x *Flags) GetPreferPeerRelay() bool {
 	if x != nil {
 		return x.PreferPeerRelay
-	}
-	return false
-}
-
-func (x *Flags) GetOnlyUseWssHttp3ForHolePunching() bool {
-	if x != nil {
-		return x.OnlyUseWssHttp3ForHolePunching
-	}
-	return false
-}
-
-func (x *Flags) GetPreferWssHttp3ForP2P() bool {
-	if x != nil {
-		return x.PreferWssHttp3ForP2P
-	}
-	return false
-}
-
-func (x *Flags) GetDisableWssHttp3ForP2P() bool {
-	if x != nil {
-		return x.DisableWssHttp3ForP2P
 	}
 	return false
 }
@@ -2271,7 +2239,7 @@ const file_common_proto_rawDesc = "" +
 	"\x06target\x18ц\x03 \x01(\rR\x06target\x12(\n" +
 	"\x0factive_conn_ids\x18҆\x03 \x03(\tR\ractiveConnIds\x12\x1c\n" +
 	"\bprotocol\x18ӆ\x03 \x01(\tR\bprotocol\x12)\n" +
-	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xa2\x16\n" +
+	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xb5\x15\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2364,21 +2332,15 @@ const file_common_proto_rawDesc = "" +
 	"\vsocket_mark\x18+ \x01(\rB\x06\x8a\xb5\x18\x02\x18\x01H\x00R\n" +
 	"socketMark\x88\x01\x01\x127\n" +
 	"\x11prefer_peer_relay\x18, \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x0fpreferPeerRelay\x12[\n" +
-	"$only_use_wss_http3_for_hole_punching\x18\xfd\x86\x03 \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x1eonlyUseWssHttp3ForHolePunching\x12D\n" +
-	"\x18prefer_wss_http3_for_p2p\x18\xfe\x86\x03 \x01(\bB\n" +
-	"\x8a\xb5\x18\x06\n" +
-	"\x04trueR\x14preferWssHttp3ForP2p\x12G\n" +
-	"\x19disable_wss_http3_for_p2p\x18\xff\x86\x03 \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x15disableWssHttp3ForP2p\x12\\\n" +
+	"\x05falseR\x0fpreferPeerRelay\x12\\\n" +
 	"$close_redundant_conns_when_disguised\x18\x81\x87\x03 \x01(\bB\n" +
 	"\x8a\xb5\x18\x06\n" +
-	"\x04trueR closeRedundantConnsWhenDisguised\x126\n" +
-	"\x11p2p_disguise_mode\x18\x82\x87\x03 \x01(\tB\b\x8a\xb5\x18\x04\n" +
-	"\x00\x18\x01R\x0fp2pDisguiseModeB\x0e\n" +
-	"\f_socket_markJ\x04\b\x16\x10\x17J\x04\b\x1f\x10 R\n" +
-	"accept_dnsR\ftld_dns_zone\"\x95\x01\n" +
+	"\x04trueR closeRedundantConnsWhenDisguised\x12<\n" +
+	"\x11p2p_disguise_mode\x18\x82\x87\x03 \x01(\tB\x0e\x8a\xb5\x18\n" +
+	"\n" +
+	"\x06prefer\x18\x01R\x0fp2pDisguiseModeB\x0e\n" +
+	"\f_socket_markJ\x04\b\x16\x10\x17J\x04\b\x1f\x10 J\b\b\xfd\x86\x03\x10\xfe\x86\x03J\b\b\xfe\x86\x03\x10\xff\x86\x03J\b\b\xff\x86\x03\x10\x80\x87\x03R\n" +
+	"accept_dnsR\ftld_dns_zoneR$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
 	"domainName\x12\x1d\n" +

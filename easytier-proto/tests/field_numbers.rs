@@ -210,9 +210,7 @@ fn upstream_dhcp_and_custom_policy_do_not_share_tags() {
         dhcpv6: Some(true),
         dhcp_ipv6_cidr: Some("fd55::/64".into()),
         sni: Some("example.com".into()),
-        only_use_wss_http3_for_hole_punching: Some(true),
-        prefer_wss_http3_for_p2p: Some(false),
-        disable_wss_http3_for_p2p: Some(false),
+        p2p_disguise_mode: Some("only".into()),
         ..Default::default()
     };
     assert_eq!(
@@ -227,9 +225,8 @@ fn upstream_dhcp_and_custom_policy_do_not_share_tags() {
         ("dhcp_ipv4_cidr", 74),
         ("dhcpv6", 75),
         ("dhcp_ipv6_cidr", 76),
-        ("only_use_wss_http3_for_hole_punching", 50074),
-        ("prefer_wss_http3_for_p2p", 50075),
-        ("disable_wss_http3_for_p2p", 50076),
+        ("sni", 50073),
+        ("p2p_disguise_mode", 50081),
     ] {
         assert_eq!(descriptor.get_field_by_name(name).unwrap().number(), number);
     }

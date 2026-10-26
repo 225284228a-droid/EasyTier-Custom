@@ -173,13 +173,21 @@ async fn check_preferred_transition(default_protocol: &str, use_disguise: bool, 
         ("tcp", false) => ("tcp", "udp", PeerConnectionOrigin::TcpHolePunch),
         _ => unreachable!(),
     };
-    let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
-        default_protocol: default_protocol.to_owned(),
-        prefer_wss_http3_for_p2p: use_disguise && !strict,
-        only_use_wss_http3_for_hole_punching: strict,
-        close_redundant_conns_when_disguised: true,
-        ..Default::default()
-    }));
+    let context: ArcPeerContext = Arc::new(
+        NoopPeerContext::default().with_flags(Flags {
+            default_protocol: default_protocol.to_owned(),
+            p2p_disguise_mode: if strict {
+                "only"
+            } else if use_disguise {
+                "prefer"
+            } else {
+                "off"
+            }
+            .into(),
+            close_redundant_conns_when_disguised: true,
+            ..Default::default()
+        }),
+    );
     let (local_tx, _local_rx) = create_packet_recv_chan();
     let peer = Peer::new(2, local_tx, context.clone());
     let (old, mut old_remote) = handshaken_connection(
@@ -310,7 +318,7 @@ async fn check_dual_peer_cleanup(
         .map(|(protocol, enabled)| {
             Arc::new(NoopPeerContext::default().with_flags(Flags {
                 default_protocol: protocol.to_owned(),
-                prefer_wss_http3_for_p2p: use_disguise,
+                p2p_disguise_mode: if use_disguise { "prefer" } else { "off" }.into(),
                 close_redundant_conns_when_disguised: enabled,
                 ..Default::default()
             })) as ArcPeerContext
@@ -803,7 +811,7 @@ async fn cleanup_keeps_noncooperating_peers_and_mismatched_connection_snapshots(
     let (tx, _rx) = create_packet_recv_chan();
     let peer = Peer::new(2, tx, context.clone());
     let remote_context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
-        prefer_wss_http3_for_p2p: true,
+        p2p_disguise_mode: "prefer".into(),
         ..flags
     }));
     let mut ids = Vec::new();
@@ -874,7 +882,7 @@ async fn server_punch_cleanup_requires_enabled_flag_and_a_verified_better_protoc
         ] {
             let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
                 default_protocol: default_protocol.to_owned(),
-                prefer_wss_http3_for_p2p: use_disguise,
+                p2p_disguise_mode: if use_disguise { "prefer" } else { "off" }.into(),
                 close_redundant_conns_when_disguised: cleanup_enabled,
                 ..Default::default()
             }));
@@ -1088,9 +1096,9 @@ async fn queued_cleanup_rechecks_every_local_ordering_input() {
             let mut flags = context.0.lock().unwrap();
             match changed_field {
                 0 => flags.default_protocol = "udp".to_owned(),
-                1 => flags.prefer_wss_http3_for_p2p = true,
-                2 => flags.only_use_wss_http3_for_hole_punching = true,
-                _ => flags.disable_wss_http3_for_p2p = true,
+                1 => flags.p2p_disguise_mode = "prefer".into(),
+                2 => flags.p2p_disguise_mode = "only".into(),
+                _ => flags.p2p_disguise_mode = "disabled".into(),
             }
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1245,7 +1253,7 @@ async fn live_preference_flip_fences_stale_cleanup_and_keeps_the_surviving_path_
         {
             let change = |flags: &mut Flags| {
                 if flip_disguise {
-                    flags.prefer_wss_http3_for_p2p = true;
+                    flags.p2p_disguise_mode = "prefer".into();
                 } else {
                     flags.default_protocol = "tcp".to_owned();
                 }
@@ -1307,7 +1315,7 @@ async fn live_preference_flip_fences_stale_cleanup_and_keeps_the_surviving_path_
 async fn cleanup_waits_for_route_cache_to_match_the_handshake_disguise_policy() {
     let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: "tcp".to_owned(),
-        prefer_wss_http3_for_p2p: true,
+        p2p_disguise_mode: "prefer".into(),
         close_redundant_conns_when_disguised: true,
         ..Default::default()
     }));
@@ -1414,7 +1422,7 @@ async fn queued_server_punch_cleanup_is_cancelled_when_the_flag_is_disabled() {
 async fn failed_unverified_preferred_path_keeps_working_fallback() {
     let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: "udp".to_owned(),
-        prefer_wss_http3_for_p2p: true,
+        p2p_disguise_mode: "prefer".into(),
         close_redundant_conns_when_disguised: true,
         ..Default::default()
     }));
@@ -1461,7 +1469,7 @@ async fn queued_cleanup_rechecks_policy_and_replacement_at_removal() {
     for preference_changed in [false, true] {
         let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
             default_protocol: "udp".to_owned(),
-            prefer_wss_http3_for_p2p: true,
+            p2p_disguise_mode: "prefer".into(),
             close_redundant_conns_when_disguised: true,
             ..Default::default()
         }));
@@ -1556,7 +1564,7 @@ async fn established_disguise_precedes_raw_despite_passive_negotiation() {
     for cleanup_enabled in [false, true] {
         let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
             default_protocol: "udp".to_owned(),
-            prefer_wss_http3_for_p2p: true,
+            p2p_disguise_mode: "prefer".into(),
             close_redundant_conns_when_disguised: cleanup_enabled,
             ..Default::default()
         }));
@@ -1564,7 +1572,7 @@ async fn established_disguise_precedes_raw_despite_passive_negotiation() {
         let peer = Peer::new(2, local_tx, context.clone());
         let remote_context: ArcPeerContext =
             Arc::new(NoopPeerContext::default().with_flags(Flags {
-                prefer_wss_http3_for_p2p: false,
+                p2p_disguise_mode: "off".into(),
                 ..context.flags()
             }));
         let (wss, mut wss_remote) = handshaken_connection_with_remote(
@@ -1621,7 +1629,7 @@ async fn established_disguise_precedes_raw_despite_passive_negotiation() {
 async fn missing_route_metadata_keeps_negotiated_disguise_stable() {
     let context: ArcPeerContext = Arc::new(NoopPeerContext::default().with_flags(Flags {
         default_protocol: "udp".to_owned(),
-        prefer_wss_http3_for_p2p: true,
+        p2p_disguise_mode: "prefer".into(),
         close_redundant_conns_when_disguised: true,
         ..Default::default()
     }));

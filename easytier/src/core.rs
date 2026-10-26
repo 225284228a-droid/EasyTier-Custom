@@ -2005,11 +2005,8 @@ mod tests {
             "machine-state",
             "--sni",
             "front.example.com",
-            "--only-use-wss-http3-for-hole-punching",
-            "--prefer-wss-http3-for-p2p",
-            "false",
-            "--disable-wss-http3-for-p2p",
-            "false",
+            "--p2p-disguise-mode",
+            "only",
             "--close-redundant-conns-when-disguised",
             "--multi-thread",
             "false",
@@ -2023,9 +2020,7 @@ mod tests {
             Some("front.example.com")
         );
         let patch = &cli.network_options.flags;
-        assert_eq!(patch.only_use_wss_http3_for_hole_punching, Some(true));
-        assert_eq!(patch.prefer_wss_http3_for_p2p, Some(false));
-        assert_eq!(patch.disable_wss_http3_for_p2p, Some(false));
+        assert_eq!(patch.p2p_disguise_mode.as_deref(), Some("only"));
         assert_eq!(patch.close_redundant_conns_when_disguised, Some(true));
         assert_eq!(patch.multi_thread, Some(false));
         assert_eq!(patch.multi_thread_count, Some(7));
@@ -2041,10 +2036,12 @@ disable_p2p = true
         .unwrap();
         cli.network_options.merge_into(&cfg).unwrap();
         assert_eq!(cfg.get_sni(), "front.example.com");
+        // The file's legacy booleans load as `disabled`; the CLI mode wins.
         let merged = cfg.get_flags();
-        assert!(merged.only_use_wss_http3_for_hole_punching);
-        assert!(!merged.prefer_wss_http3_for_p2p);
-        assert!(!merged.disable_wss_http3_for_p2p);
+        assert_eq!(
+            merged.p2p_disguise(),
+            easytier_proto::common::P2pDisguiseMode::Only
+        );
         assert!(merged.close_redundant_conns_when_disguised);
         assert!(merged.disable_p2p);
         assert!(!merged.multi_thread);

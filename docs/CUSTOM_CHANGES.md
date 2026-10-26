@@ -123,7 +123,7 @@
 - 可选 `close_redundant_conns_when_disguised`（界面为“首选连接建立后断开多余连接”），开关默认开启，可显式关闭。开启后，已建立且通过往返验证的 WSS/HTTP3 优先于裸 TCP/UDP，即使伪装策略为 `off`（不主动伪装）也如此；显式“禁止伪装”时仍按普通协议排序。此规则仅决定已建连接的保留优先级，不改变主动拨号的伪装策略。自动连接之间仍按 TCP 偏好 WSS、UDP 偏好 HTTP3 的顺序清理较低优先级连接，同级自动连接保留。
 - 手动填写初始节点建立的连接优先级最高，不受伪装策略限制。双方新版握手协商并确认连接可用后，按共同顺序保留手动锚点及已协商的并发槽位；未启用并发时保留一条。被清理的其他手动 URL 暂停重拨，保留连接失败后恢复重拨。缺少清理能力的节点不强制清理连接。
 - 冗余清理通过普通和 Noise 握手已有的 `features` 声明 `p2p-cleanup-v2` 策略快照，包含连接来源和双方共享排序，不修改官方线格式。自动连接只有在双方都认定其优先级更低时才清理；未知或非法声明不影响握手，但不触发清理。热修改排序配置后，旧连接暂停清理，直到重新握手取得匹配快照。
-- 新配置与没有旧布尔覆盖的旧配置默认使用 `prefer`、UDP 和开启冗余连接清理，GUI/Web 与内核一致；旧布尔字段仍按原含义读取，GUI/Web 将新策略下拉选择转换为旧字段供兼容内核使用。
+- 新配置与省略伪装策略的配置默认使用 `prefer`、UDP 和开启冗余连接清理，GUI/Web 与内核一致。
 - 省略 `default_protocol` 时优先 UDP；需要优先 TCP 时，在 `[flags]` 显式保存 `default_protocol = "tcp"`。省略清理开关时默认开启；需要禁用时显式保存 `close_redundant_conns_when_disguised = false`。
 - 修复 SNI 改写 URL 后连接身份不一致导致的重连堆积，并替换相同 URL 的重复客户端连接。
 - `disable_p2p` 调整为半严格行为：拒绝普通节点发起的 TCP/UDP 打洞 RPC，保留声明 `need_p2p` 的节点例外，不主动断开已有连接。
@@ -166,9 +166,6 @@
 | `[flags] default_protocol` | `"udp"` | 自动P2P优先 UDP，协商伪装时优先 HTTP3 |
 | `[flags] private_mode` | 定制内核 `true`；官方内核保持官方默认 | 网页按能力显示默认值，默认不写入配置；官方节点没有定制能力标记时显示并沿用官方默认 `false` |
 | `[flags] p2p_disguise_mode` | `"prefer"` | 自动 P2P 伪装策略；取值为 `prefer`、`off`、`disabled`、`only`，默认策略可省略 |
-| `[flags] prefer_wss_http3_for_p2p` | `true`（旧字段） | 兼容旧定制内核的策略输入；新内核用 `p2p_disguise_mode` 保存单一策略 |
-| `[flags] disable_wss_http3_for_p2p` | `false`（旧字段） | 兼容旧策略输入；`true` 对应 `disabled` |
-| `[flags] only_use_wss_http3_for_hole_punching` | `false`（旧字段） | 兼容旧策略输入；`true` 对应 `only` |
 | `[flags] close_redundant_conns_when_disguised` | `true` | 双方协商并验证连接可用后，优先保留手动锚点及并发槽位；否则优先 WSS/HTTP3（显式禁止伪装除外），清理较低优先级自动连接 |
 | `[vpn].exit_enabled` | `true` | 允许本节点提供出口转发；没有规则时不会启动 VPN 客户端，默认空策略不需要写 `[vpn]` |
 
@@ -176,7 +173,7 @@
 
 配置标志使用 schema 生成的 `Flags` / `FlagsPatch`、CLI 和管理表单。网页生成 TOML 时会省略与目标默认值相同的表单值，减少冗余；能改变行为的显式 `false`、有意义的 `0`，以及用于关闭隐式默认的空 `listeners`、`routes` 仍会保留。`private_mode` 的定制默认值为 `true`，由能力 `config:private-mode-default-true-v1` 声明；网页将该默认留空，由内核应用。官方节点没有此能力时，网页显示 `false` 并继续交给官方内核按官方默认处理。用户明确修改后，值仍作为显式字段发送。
 
-新定制内核以 `[flags].p2p_disguise_mode` 保存一个伪装策略：`prefer` 在双方都偏好或一方要求时协商伪装，并允许回退普通 TCP/UDP；`off` 不主动发起伪装，但仍接受对端要求；`disabled` 禁止自动伪装；`only` 要求自动 P2P 只使用伪装。默认 `prefer` 不写入 TOML。旧的三个布尔字段继续读取；向仅支持旧字段的定制内核保存时，网页会将下拉选择转换为对应布尔值。官方节点不会收到不支持的定制策略字段。GUI/Web 使用紧凑下拉框编辑这四种模式；互相冲突的旧布尔组合在编辑、API 和严格 TOML 加载时会被拒绝。
+定制内核以 `[flags].p2p_disguise_mode` 保存一个伪装策略：`prefer` 在双方都偏好或一方要求时协商伪装，并允许回退普通 TCP/UDP；`off` 不主动发起伪装，但仍接受对端要求；`disabled` 禁止自动伪装；`only` 要求自动 P2P 只使用伪装。默认 `prefer` 不写入 TOML。官方节点不会收到不支持的定制策略字段。GUI/Web 使用紧凑下拉框编辑这四种模式。早期版本的三个布尔字段（`prefer_wss_http3_for_p2p`、`disable_wss_http3_for_p2p`、`only_use_wss_http3_for_hole_punching`）已删除：TOML 文件仍含这些字段时，加载时换算为对应模式（文件已写模式时以模式为准），下次保存只写模式；`disable` 与 `only` 同时为 `true` 时加载报错。对应的 CLI 参数、管理 API 字段和 `config:` 能力标识不再提供，protobuf 编号保留占用；只认旧字段的早期定制节点需升级后才能在网页中编辑伪装策略。
 
 VPN 出口的 `exit_enabled` 默认 `true`，表示本节点允许提供出口转发；它本身不会启动客户端。`rules` 为空时没有客户端捕获规则，网页输出会省略默认的 `[vpn]`；显式关闭出口时仍保存 `exit_enabled = false`。缺少数据包转发能力的构建或主机会保持普通网络可运行，并在运行配置中关闭默认出口提供能力。`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。定制 protobuf 字段采用本轮高位清单中的编号；既有 CLI 参数和 `ET_*` 环境变量保持不变。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
 

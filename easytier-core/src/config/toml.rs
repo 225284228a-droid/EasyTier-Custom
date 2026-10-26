@@ -479,6 +479,60 @@ fn flags_patch_is_empty(flags: &FlagsPatch) -> bool {
     prost::Message::encoded_len(flags) == 0
 }
 
+const LEGACY_P2P_DISGUISE_FLAGS: [&str; 3] = [
+    "prefer_wss_http3_for_p2p",
+    "disable_wss_http3_for_p2p",
+    "only_use_wss_http3_for_hole_punching",
+];
+
+/// Files written before `p2p_disguise_mode` existed state the policy with three
+/// booleans in `[flags]`. Rewrite them as the equivalent mode (a mode that is
+/// already set wins); the next save of the file stores only the mode.
+/// Returns `None` when the document has nothing to migrate.
+fn migrate_legacy_p2p_disguise_flags(config_str: &str) -> anyhow::Result<Option<String>> {
+    if !LEGACY_P2P_DISGUISE_FLAGS
+        .iter()
+        .any(|key| config_str.contains(key))
+    {
+        return Ok(None);
+    }
+    // Syntax errors are reported against the original document.
+    let Ok(mut document) = toml::from_str::<toml::Table>(config_str) else {
+        return Ok(None);
+    };
+    let Some(flags) = document
+        .get_mut("flags")
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return Ok(None);
+    };
+    let mut legacy = [None; 3];
+    for (value, key) in legacy.iter_mut().zip(LEGACY_P2P_DISGUISE_FLAGS) {
+        if let Some(raw) = flags.remove(key) {
+            *value = Some(
+                raw.as_bool()
+                    .with_context(|| format!("[flags] {key} must be a boolean"))?,
+            );
+        }
+    }
+    if legacy.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let mode_set = flags
+        .get("p2p_disguise_mode")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|mode| !mode.trim().is_empty());
+    if !mode_set {
+        let mode = super::P2pDisguiseMode::from_legacy_flags(legacy[0], legacy[1], legacy[2])
+            .context("invalid legacy P2P disguise flags")?;
+        flags.insert(
+            "p2p_disguise_mode".to_owned(),
+            toml::Value::String(mode.as_str().to_owned()),
+        );
+    }
+    Ok(Some(toml::to_string(&document)?))
+}
+
 #[cfg(feature = "rich-config-errors")]
 fn format_toml_parse_error(source_name: &str, config_str: &str, error: &toml::de::Error) -> String {
     let message = format!("failed to parse config TOML from {source_name}");
@@ -686,6 +740,9 @@ impl TomlConfig {
         source_name: &str,
         config_str: &str,
     ) -> Result<Self, anyhow::Error> {
+        let migrated = migrate_legacy_p2p_disguise_flags(config_str)
+            .with_context(|| format!("failed to load config from {source_name}"))?;
+        let config_str = migrated.as_deref().unwrap_or(config_str);
         let mut config = toml::de::from_str::<Config>(config_str).map_err(|err| {
             let message = format_toml_parse_error(source_name, config_str, &err);
             anyhow::Error::new(err).context(message)
@@ -1045,44 +1102,13 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().flags.clone()
     }
 
-    fn patch_flags(&self, mut flags: FlagsPatch) {
+    fn patch_flags(&self, flags: FlagsPatch) {
         // Protobuf merge: an update overwrites exactly the fields it carries,
         // and presence is the encoding, so a flag explicitly set to its default
         // value is applied like any other. Optionize's merge cannot express that
         // here, because the one flattened nullable field would have to assign
         // unconditionally.
         let mut config = self.config.lock().unwrap();
-        let sets_mode = flags
-            .p2p_disguise_mode
-            .as_deref()
-            .is_some_and(|mode| !mode.trim().is_empty());
-        if sets_mode {
-            // A unified policy replaces legacy overrides, even when an older
-            // caller's projection includes both representations in one update.
-            config.flags.prefer_wss_http3_for_p2p = None;
-            config.flags.disable_wss_http3_for_p2p = None;
-            config.flags.only_use_wss_http3_for_hole_punching = None;
-            flags.prefer_wss_http3_for_p2p = None;
-            flags.disable_wss_http3_for_p2p = None;
-            flags.only_use_wss_http3_for_hole_punching = None;
-        } else if (flags.prefer_wss_http3_for_p2p.is_some()
-            || flags.disable_wss_http3_for_p2p.is_some()
-            || flags.only_use_wss_http3_for_hole_punching.is_some())
-            && config
-                .flags
-                .p2p_disguise_mode
-                .as_deref()
-                .is_some_and(|mode| mode.parse::<super::P2pDisguiseMode>().is_ok())
-        {
-            // Legacy CLI/API patches edit the effective boolean policy. Keep
-            // untouched siblings, then retire the mode that would mask edits.
-            let resolved = Flags::resolve(config.flags.clone());
-            config.flags.prefer_wss_http3_for_p2p = Some(resolved.prefer_wss_http3_for_p2p);
-            config.flags.disable_wss_http3_for_p2p = Some(resolved.disable_wss_http3_for_p2p);
-            config.flags.only_use_wss_http3_for_hole_punching =
-                Some(resolved.only_use_wss_http3_for_hole_punching);
-            config.flags.p2p_disguise_mode = None;
-        }
         let update = prost::Message::encode_to_vec(&flags);
         prost::Message::merge(&mut config.flags, update.as_slice())
             .expect("decoding the bytes just encoded cannot fail");
@@ -1255,6 +1281,27 @@ pub type TomlConfigLoader = TomlConfig;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Configuration files are parsed strictly, so every sample we ship must
+    /// only use fields this build understands.
+    #[test]
+    fn shipped_sample_configs_load() {
+        let install = include_str!("../../../script/install.sh");
+        let start = "cat >$INSTALL_PATH/config/default.conf <<EOF\n";
+        let body = &install[install.find(start).unwrap() + start.len()..];
+        let install_default = &body[..body.find("\nEOF").unwrap()];
+        for (name, sample) in [
+            ("script/install.sh default.conf", install_default),
+            (
+                "easytier-magisk/config/config.toml",
+                include_str!("../../../easytier-contrib/easytier-magisk/config/config.toml"),
+            ),
+        ] {
+            if let Err(error) = TomlConfig::new_from_str_with_source(name, sample) {
+                panic!("{name}: {error}");
+            }
+        }
+    }
 
     #[cfg(feature = "config-write")]
     #[test]
@@ -1704,50 +1751,43 @@ socket_mark = 66
     }
 
     #[test]
-    fn legacy_flag_patches_edit_unified_disguise_policy_and_preserve_siblings() {
-        let config = TomlConfig::new_from_str("[flags]\np2p_disguise_mode = 'disabled'\n").unwrap();
-        config.patch_flags(FlagsPatch {
-            disable_wss_http3_for_p2p: Some(false),
-            ..Default::default()
-        });
-        let flags = config.get_flags();
-        assert!(!flags.prefer_wss_http3_for_p2p);
-        assert!(!flags.disable_wss_http3_for_p2p);
-        assert!(!flags.only_use_wss_http3_for_hole_punching);
-        assert_eq!(config.get_flags_patch().p2p_disguise_mode, None);
-
-        let config = TomlConfig::new_from_str("[flags]\np2p_disguise_mode = 'only'\n").unwrap();
-        config.patch_flags(FlagsPatch {
-            prefer_wss_http3_for_p2p: Some(true),
-            ..Default::default()
-        });
-        let flags = config.get_flags();
-        assert!(flags.prefer_wss_http3_for_p2p);
-        assert!(flags.only_use_wss_http3_for_hole_punching);
-        assert!(!flags.disable_wss_http3_for_p2p);
-        assert_eq!(config.get_flags_patch().p2p_disguise_mode, None);
+    fn legacy_disguise_flags_load_as_the_equivalent_mode() {
+        for (input, mode) in [
+            ("prefer_wss_http3_for_p2p = true", "prefer"),
+            ("prefer_wss_http3_for_p2p = false", "off"),
+            ("disable_wss_http3_for_p2p = true", "disabled"),
+            ("only_use_wss_http3_for_hole_punching = true", "only"),
+            (
+                "prefer_wss_http3_for_p2p = true\nonly_use_wss_http3_for_hole_punching = true",
+                "only",
+            ),
+            // A mode that is already set wins over the booleans it replaced.
+            (
+                "p2p_disguise_mode = 'off'\ndisable_wss_http3_for_p2p = true",
+                "off",
+            ),
+        ] {
+            let config = TomlConfig::new_from_str(&format!("[flags]\n{input}\nmtu = 1300\n"))
+                .unwrap_or_else(|error| panic!("{input}: {error}"));
+            assert_eq!(config.get_flags().p2p_disguise().as_str(), mode, "{input}");
+            assert_eq!(config.get_flags().mtu, 1300);
+            let dumped = config.dump();
+            assert!(!dumped.contains("wss_http3"), "{dumped}");
+        }
+        let error = TomlConfig::new_from_str(
+            "[flags]\nonly_use_wss_http3_for_hole_punching = true\ndisable_wss_http3_for_p2p = true\n",
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("mutually exclusive"),
+            "{error:#}"
+        );
+        assert!(TomlConfig::new_from_str("[flags]\nprefer_wss_http3_for_p2p = 'yes'\n").is_err());
     }
 
     #[test]
-    fn unified_disguise_patch_replaces_legacy_overrides_but_unrelated_patch_keeps_mode() {
-        let config =
-            TomlConfig::new_from_str("[flags]\nonly_use_wss_http3_for_hole_punching = true\n")
-                .unwrap();
-        config.patch_flags(FlagsPatch {
-            p2p_disguise_mode: Some("off".into()),
-            disable_wss_http3_for_p2p: Some(true),
-            ..Default::default()
-        });
-        let patch = config.get_flags_patch();
-        assert_eq!(patch.p2p_disguise_mode.as_deref(), Some("off"));
-        assert_eq!(patch.prefer_wss_http3_for_p2p, None);
-        assert_eq!(patch.disable_wss_http3_for_p2p, None);
-        assert_eq!(patch.only_use_wss_http3_for_hole_punching, None);
-        let flags = config.get_flags();
-        assert!(!flags.prefer_wss_http3_for_p2p);
-        assert!(!flags.disable_wss_http3_for_p2p);
-        assert!(!flags.only_use_wss_http3_for_hole_punching);
-
+    fn mode_patches_keep_unrelated_flags() {
+        let config = TomlConfig::new_from_str("[flags]\np2p_disguise_mode = 'off'\n").unwrap();
         config.patch_flags(FlagsPatch {
             latency_first: Some(true),
             ..Default::default()
@@ -1757,25 +1797,12 @@ socket_mark = 66
             Some("off")
         );
         assert!(config.get_flags().latency_first);
-    }
-
-    #[test]
-    fn contradictory_disguise_flags_are_rejected_on_load() {
-        let error = TomlConfig::new_from_str(
-            "[flags]\nonly_use_wss_http3_for_hole_punching = true\ndisable_wss_http3_for_p2p = true\n",
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("mutually exclusive"), "{error}");
-
-        for input in [
-            "only_use_wss_http3_for_hole_punching = true",
-            "disable_wss_http3_for_p2p = true",
-            "only_use_wss_http3_for_hole_punching = false\ndisable_wss_http3_for_p2p = true",
-        ] {
-            TomlConfig::new_from_str(&format!("[flags]\n{input}\n"))
-                .unwrap_or_else(|error| panic!("single disguise flag must load: {error}"));
-        }
+        config.patch_flags(FlagsPatch {
+            p2p_disguise_mode: Some("only".into()),
+            ..Default::default()
+        });
+        assert_eq!(config.get_flags().p2p_disguise().as_str(), "only");
+        assert!(config.get_flags().latency_first);
     }
 
     #[cfg(feature = "config-write")]
@@ -1834,9 +1861,7 @@ close_redundant_conns_when_disguised = true
             mtu: Some(0),
             instance_recv_bps_limit: Some(0),
             socket_mark: Some(0),
-            only_use_wss_http3_for_hole_punching: Some(false),
-            prefer_wss_http3_for_p2p: Some(false),
-            disable_wss_http3_for_p2p: Some(false),
+            p2p_disguise_mode: Some("off".into()),
             close_redundant_conns_when_disguised: Some(false),
             ..Default::default()
         };

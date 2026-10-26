@@ -256,13 +256,10 @@ type NetworkConfig struct {
 	ManagedCredentials      []*ManagedCredentialConfig `protobuf:"bytes,71,rep,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
 	PreferPeerRelay         *bool                      `protobuf:"varint,72,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
 	// Bootstrap subnet used when DHCP has not learned a subnet from peers.
-	DhcpIpv4Cidr                   *string `protobuf:"bytes,74,opt,name=dhcp_ipv4_cidr,json=dhcpIpv4Cidr,proto3,oneof" json:"dhcp_ipv4_cidr,omitempty"`
-	Dhcpv6                         *bool   `protobuf:"varint,75,opt,name=dhcpv6,proto3,oneof" json:"dhcpv6,omitempty"`
-	DhcpIpv6Cidr                   *string `protobuf:"bytes,76,opt,name=dhcp_ipv6_cidr,json=dhcpIpv6Cidr,proto3,oneof" json:"dhcp_ipv6_cidr,omitempty"`
-	Sni                            *string `protobuf:"bytes,50073,opt,name=sni,proto3,oneof" json:"sni,omitempty"`
-	OnlyUseWssHttp3ForHolePunching *bool   `protobuf:"varint,50074,opt,name=only_use_wss_http3_for_hole_punching,json=onlyUseWssHttp3ForHolePunching,proto3,oneof" json:"only_use_wss_http3_for_hole_punching,omitempty"`
-	PreferWssHttp3ForP2P           *bool   `protobuf:"varint,50075,opt,name=prefer_wss_http3_for_p2p,json=preferWssHttp3ForP2p,proto3,oneof" json:"prefer_wss_http3_for_p2p,omitempty"`
-	DisableWssHttp3ForP2P          *bool   `protobuf:"varint,50076,opt,name=disable_wss_http3_for_p2p,json=disableWssHttp3ForP2p,proto3,oneof" json:"disable_wss_http3_for_p2p,omitempty"`
+	DhcpIpv4Cidr *string `protobuf:"bytes,74,opt,name=dhcp_ipv4_cidr,json=dhcpIpv4Cidr,proto3,oneof" json:"dhcp_ipv4_cidr,omitempty"`
+	Dhcpv6       *bool   `protobuf:"varint,75,opt,name=dhcpv6,proto3,oneof" json:"dhcpv6,omitempty"`
+	DhcpIpv6Cidr *string `protobuf:"bytes,76,opt,name=dhcp_ipv6_cidr,json=dhcpIpv6Cidr,proto3,oneof" json:"dhcp_ipv6_cidr,omitempty"`
+	Sni          *string `protobuf:"bytes,50073,opt,name=sni,proto3,oneof" json:"sni,omitempty"`
 	// Preferred underlay transport for automatic P2P connect attempts: "tcp" or
 	// "udp". Disguise policy separately decides whether dialing uses WSS/HTTP3;
 	// when it does, this preference also picks the disguised transport -
@@ -284,7 +281,6 @@ type NetworkConfig struct {
 	// prefer: negotiate disguise with raw fallback (default); off: do not
 	// initiate disguise but accept a peer requiring it; disabled: forbid
 	// automatic disguised P2P; only: require disguise. Manual peers are unaffected.
-	// A nonempty mode overrides legacy TOML disguise booleans (fields 50074-50076).
 	P2PDisguiseMode *string `protobuf:"bytes,50081,opt,name=p2p_disguise_mode,json=p2pDisguiseMode,proto3,oneof" json:"p2p_disguise_mode,omitempty"`
 	// Fork extensions. Omitted values mean one connection, concurrency allowed,
 	// and the throughput-oriented speedtest disguise respectively.
@@ -797,27 +793,6 @@ func (x *NetworkConfig) GetSni() string {
 		return *x.Sni
 	}
 	return ""
-}
-
-func (x *NetworkConfig) GetOnlyUseWssHttp3ForHolePunching() bool {
-	if x != nil && x.OnlyUseWssHttp3ForHolePunching != nil {
-		return *x.OnlyUseWssHttp3ForHolePunching
-	}
-	return false
-}
-
-func (x *NetworkConfig) GetPreferWssHttp3ForP2P() bool {
-	if x != nil && x.PreferWssHttp3ForP2P != nil {
-		return *x.PreferWssHttp3ForP2P
-	}
-	return false
-}
-
-func (x *NetworkConfig) GetDisableWssHttp3ForP2P() bool {
-	if x != nil && x.DisableWssHttp3ForP2P != nil {
-		return *x.DisableWssHttp3ForP2P
-	}
-	return false
 }
 
 func (x *NetworkConfig) GetP2PPreferProtocol() string {
@@ -3317,7 +3292,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xbb)\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xfb'\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3395,17 +3370,14 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x0edhcp_ipv4_cidr\x18J \x01(\tH5R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
 	"\x06dhcpv6\x18K \x01(\bH6R\x06dhcpv6\x88\x01\x01\x12)\n" +
 	"\x0edhcp_ipv6_cidr\x18L \x01(\tH7R\fdhcpIpv6Cidr\x88\x01\x01\x12\x17\n" +
-	"\x03sni\x18\x99\x87\x03 \x01(\tH8R\x03sni\x88\x01\x01\x12S\n" +
-	"$only_use_wss_http3_for_hole_punching\x18\x9a\x87\x03 \x01(\bH9R\x1eonlyUseWssHttp3ForHolePunching\x88\x01\x01\x12=\n" +
-	"\x18prefer_wss_http3_for_p2p\x18\x9b\x87\x03 \x01(\bH:R\x14preferWssHttp3ForP2p\x88\x01\x01\x12?\n" +
-	"\x19disable_wss_http3_for_p2p\x18\x9c\x87\x03 \x01(\bH;R\x15disableWssHttp3ForP2p\x88\x01\x01\x125\n" +
-	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH<R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
-	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH=R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
-	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigH>R\x03vpn\x88\x01\x01\x121\n" +
-	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tH?R\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
-	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rH@R\x13parallelConnections\x88\x01\x01\x12G\n" +
-	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bHAR\x1adisableParallelConnections\x88\x01\x01\x120\n" +
-	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHBR\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
+	"\x03sni\x18\x99\x87\x03 \x01(\tH8R\x03sni\x88\x01\x01\x125\n" +
+	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH9R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
+	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH:R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
+	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigH;R\x03vpn\x88\x01\x01\x121\n" +
+	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tH<R\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
+	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rH=R\x13parallelConnections\x88\x01\x01\x12G\n" +
+	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bH>R\x1adisableParallelConnections\x88\x01\x01\x120\n" +
+	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tH?R\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3462,17 +3434,14 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x0f_dhcp_ipv4_cidrB\t\n" +
 	"\a_dhcpv6B\x11\n" +
 	"\x0f_dhcp_ipv6_cidrB\x06\n" +
-	"\x04_sniB'\n" +
-	"%_only_use_wss_http3_for_hole_punchingB\x1b\n" +
-	"\x19_prefer_wss_http3_for_p2pB\x1c\n" +
-	"\x1a_disable_wss_http3_for_p2pB\x16\n" +
+	"\x04_sniB\x16\n" +
 	"\x14_p2p_prefer_protocolB'\n" +
 	"%_close_redundant_conns_when_disguisedB\x06\n" +
 	"\x04_vpnB\x14\n" +
 	"\x12_p2p_disguise_modeB\x17\n" +
 	"\x15_parallel_connectionsB\x1f\n" +
 	"\x1d_disable_parallel_connectionsB\x13\n" +
-	"\x11_traffic_disguiseJ\x04\b*\x10+R\x10enable_magic_dns\"\x91\x01\n" +
+	"\x11_traffic_disguiseJ\x04\b*\x10+J\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R\x10enable_magic_dnsR$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
 	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xcd\x01\n" +

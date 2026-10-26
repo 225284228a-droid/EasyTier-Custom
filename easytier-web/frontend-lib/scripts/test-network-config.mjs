@@ -64,12 +64,6 @@ const LEGACY_VPN_PORTAL_FIELDS = [
   'vpn_portal_client_network_len',
 ]
 
-const LEGACY_P2P_DISGUISE_FIELDS = [
-  'only_use_wss_http3_for_hole_punching',
-  'prefer_wss_http3_for_p2p',
-  'disable_wss_http3_for_p2p',
-]
-
 function readGeneratedNetworkConfigFields() {
   const source = ts.createSourceFile(
     generatedApiManagePath,
@@ -159,11 +153,7 @@ function allFieldFixture() {
     no_tun: true,
     relay_all_peer_rpc: true,
     prefer_peer_relay: true,
-    // Compatibility inputs remain in the API schema; new writes combine them
-    // into p2p_disguise_mode rather than persisting independent booleans.
-    only_use_wss_http3_for_hole_punching: false,
-    prefer_wss_http3_for_p2p: true,
-    disable_wss_http3_for_p2p: false,
+    p2p_disguise_mode: 'prefer',
     multi_thread: false,
     enable_relay_network_whitelist: true,
     relay_network_whitelist: ['10.0.0.0/8', 'fd00::/8'],
@@ -306,14 +296,10 @@ function assertFullFieldRoundTrip() {
   expectNoCamelCaseKeys(backend)
 
   for (const field of readGeneratedNetworkConfigFields()
-    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field) && !LEGACY_P2P_DISGUISE_FIELDS.includes(field))) {
+    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field))) {
     assert.ok(field in backend, `backend JSON should include fixture field ${field}`)
   }
   assert.equal(backend.p2p_disguise_mode, 'prefer')
-  for (const field of LEGACY_P2P_DISGUISE_FIELDS) assert.ok(!(field in backend))
-  const legacy = toBackendNetworkConfig(normalized, LEGACY_P2P_DISGUISE_FIELDS.map(field => `config:${field}`))
-  assert.ok(!('p2p_disguise_mode' in legacy))
-  for (const field of LEGACY_P2P_DISGUISE_FIELDS) assert.equal(legacy[field], input[field])
 
   assert.equal(backend.networking_method, 'Manual')
   assert.equal(backend.public_server_url, '')

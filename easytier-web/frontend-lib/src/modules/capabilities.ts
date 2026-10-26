@@ -1,6 +1,6 @@
 import type { NetworkConfig } from '../types/network'
 import { CONFIG_FIELD_CAPABILITIES as SCHEMA_CONFIG_FIELD_CAPABILITIES } from '../generated/proto/configCapabilities'
-import { adaptP2pDisguisePayload, legacyP2pDisguiseSupported } from './p2pDisguise'
+import { canonicalizeP2pDisguisePayload } from './p2pDisguise'
 
 export const LOCAL_CONFIG_REVISION_CAPABILITY = 'management:persisted-config-revision-v2'
 export const HTTP3_CAPABILITY = 'transport:http3-rfc9114-v2'
@@ -9,7 +9,6 @@ export const PRIVATE_MODE_DEFAULT_CAPABILITY = 'config:private-mode-default-true
 export const CONFIG_FIELD_CAPABILITIES: Readonly<Record<string, string>> = SCHEMA_CONFIG_FIELD_CAPABILITIES
 
 export function configFieldSupported(field: string, capabilities: readonly string[] = []): boolean {
-  if (field.split('.')[0] === 'p2p_disguise_mode' && legacyP2pDisguiseSupported(capabilities)) return true
   const required = CONFIG_FIELD_CAPABILITIES[field.split('.')[0]]
   return required === undefined || capabilities.includes(required)
 }
@@ -23,7 +22,7 @@ const URL_FIELDS = ['peer_urls', 'listener_urls', 'mapped_listeners'] as const
 /** Filter extensions individually. Official WS/WSS remain ordinary transports. */
 export function filterConfigPayload<T extends object>(config: T, capabilities: readonly string[]): T {
   const filtered = { ...config } as Record<string, unknown>
-  adaptP2pDisguisePayload(filtered, capabilities)
+  canonicalizeP2pDisguisePayload(filtered)
   for (const [field, capability] of Object.entries(CONFIG_FIELD_CAPABILITIES)) {
     if (!capabilities.includes(capability)) delete filtered[field]
   }

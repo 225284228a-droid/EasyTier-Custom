@@ -67,18 +67,13 @@ impl Flags {
     /// Applies `patch` over [`Flags::defaults`]. A field the user left out keeps
     /// its default, so nothing downstream has to decide what "unset" means.
     pub fn resolve(patch: FlagsPatch) -> Self {
-        let disguise_mode = patch
-            .p2p_disguise_mode
-            .as_deref()
-            .filter(|mode| !mode.trim().is_empty())
-            .and_then(|mode| mode.parse::<P2pDisguiseMode>().ok());
         let mut flags = Self::defaults();
         flags.load(patch);
-        if let Some(mode) = disguise_mode {
-            mode.apply(&mut flags);
-        }
         if flags.default_protocol.trim().is_empty() {
             flags.default_protocol = Self::defaults().default_protocol;
+        }
+        if flags.p2p_disguise_mode.trim().is_empty() {
+            flags.p2p_disguise_mode = Self::defaults().p2p_disguise_mode;
         }
         flags
     }
@@ -661,17 +656,13 @@ mod tests {
     fn disguise_defaults_and_high_wire_tags() {
         let defaults = Flags::defaults();
         assert_eq!(defaults.default_protocol, "udp");
-        assert!(!defaults.only_use_wss_http3_for_hole_punching);
-        assert!(defaults.prefer_wss_http3_for_p2p);
-        assert!(!defaults.disable_wss_http3_for_p2p);
+        assert_eq!(defaults.p2p_disguise(), super::P2pDisguiseMode::Prefer);
         assert!(defaults.close_redundant_conns_when_disguised);
 
         for (name, number) in [
             ("default_protocol", 1),
-            ("only_use_wss_http3_for_hole_punching", 50045),
-            ("prefer_wss_http3_for_p2p", 50046),
-            ("disable_wss_http3_for_p2p", 50047),
             ("close_redundant_conns_when_disguised", 50049),
+            ("p2p_disguise_mode", 50050),
         ] {
             let field = Flags::flags()
                 .iter()

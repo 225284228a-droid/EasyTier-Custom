@@ -220,9 +220,8 @@ fn config_semantic_hash(config: &TomlConfig) -> Option<String> {
     // its management API projection untouched.
     let mut normalized = toml::from_str::<toml::Table>(&config.dump()).ok()?;
     let mut resolved_flags = config.get_flags();
-    // The mode is a local spelling of the resolved legacy wire flags. Keeping
-    // both would treat a representation-only migration as a pending change.
-    resolved_flags.p2p_disguise_mode.clear();
+    // Compare the disguise policy, not its spelling.
+    resolved_flags.set_p2p_disguise(resolved_flags.p2p_disguise());
     normalized.insert(
         "flags".to_owned(),
         toml::Value::try_from(resolved_flags).ok()?,
@@ -656,6 +655,8 @@ mod tests {
             "disable_p2p = false",
             "close_redundant_conns_when_disguised = true",
             "prefer_wss_http3_for_p2p = true",
+            "p2p_disguise_mode = 'prefer'",
+            "p2p_disguise_mode = ' Prefer '",
             "mtu = 1380",
             "instance_recv_bps_limit = '18446744073709551615'",
             "dev_name = ''",
@@ -671,6 +672,7 @@ mod tests {
             "enable_encryption = false",
             "close_redundant_conns_when_disguised = false",
             "prefer_wss_http3_for_p2p = false",
+            "p2p_disguise_mode = 'off'",
             "mtu = 0",
             "instance_recv_bps_limit = 0",
             "socket_mark = 0",
