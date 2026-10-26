@@ -14,6 +14,7 @@ use crate::{
     },
 };
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 struct ParallelContext {
@@ -422,4 +423,48 @@ async fn capped_pool_releases_one_old_member_before_protocol_migration() {
         assert_eq!(reservation.token().slot, 0);
         assert_eq!(left.conns.len(), cap as usize - 1);
     }
+}
+
+#[test]
+fn earliest_arrival_paces_members_by_rate_and_weighs_latency() {
+    let now = Instant::now();
+    // Picks the earliest member for `packets` packets of 1500 bytes sent at
+    // once, modelling each member's queue from its rate.
+    let schedule = |models: [LaneModel; 2], packets: usize| {
+        let mut busy = [None::<Instant>; 2];
+        let mut sent = [0; 2];
+        for _ in 0..packets {
+            let pick = usize::from(
+                models[1].arrival(busy[1], now, 1500) < models[0].arrival(busy[0], now, 1500),
+            );
+            busy[pick] =
+                Some(busy[pick].unwrap_or(now).max(now) + models[pick].transmit_time(1500));
+            sent[pick] += 1;
+        }
+        sent
+    };
+    // 1500 bytes take 120 us at 100 Mbit/s; the far member is 1 ms further.
+    let near = LaneModel {
+        bps: 100_000_000,
+        one_way: Duration::from_micros(500),
+    };
+    let far = LaneModel {
+        bps: 100_000_000,
+        one_way: Duration::from_micros(1500),
+    };
+    // About 1 ms of queue builds on the near member before the far one is
+    // earlier; a short burst stays on the near member.
+    assert_eq!(schedule([near, far], 8), [8, 0]);
+    let [near_sent, far_sent] = schedule([near, far], 40);
+    assert!(
+        near_sent > far_sent && far_sent > 0,
+        "{near_sent} {far_sent}"
+    );
+    // A three times faster member carries about three quarters of a long burst.
+    let fast = LaneModel {
+        bps: 300_000_000,
+        ..near
+    };
+    let [_, fast_sent] = schedule([near, fast], 400);
+    assert!((280..=320).contains(&fast_sent), "{fast_sent}");
 }

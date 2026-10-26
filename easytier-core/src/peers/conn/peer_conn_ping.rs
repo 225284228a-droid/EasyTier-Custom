@@ -225,7 +225,6 @@ impl PeerConnPinger {
                             if let Some(report) = decode_window_report(payload, true) {
                                 self.throughput_stats.record_peer_traffic_report(
                                     report.version,
-                                    report.report.tx_bps,
                                     report.report.rx_bps,
                                     report.report.estimated_tx_bps,
                                     report.report.sample_window,

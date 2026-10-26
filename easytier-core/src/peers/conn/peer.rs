@@ -4,6 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwapOption;
@@ -39,6 +40,8 @@ type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
 struct ParallelSendState {
     epoch: uuid::Uuid,
     sequence: u64,
+    /// When each member is expected to have transmitted what was queued on it.
+    busy_until: HashMap<PeerConnId, Instant>,
     sent_bytes: HashMap<PeerConnId, u64>,
     pool_anchor: Option<(uuid::Uuid, uuid::Uuid)>,
 }
@@ -47,10 +50,39 @@ impl Default for ParallelSendState {
         Self {
             epoch: uuid::Uuid::new_v4(),
             sequence: 0,
+            busy_until: HashMap::new(),
             sent_bytes: HashMap::new(),
             pool_anchor: None,
         }
     }
+}
+
+/// How fast a member transmits and how far away the peer is over it.
+#[derive(Clone, Copy)]
+struct LaneModel {
+    bps: u64,
+    one_way: Duration,
+}
+
+impl LaneModel {
+    fn transmit_time(self, bytes: usize) -> Duration {
+        Duration::from_micros((bytes as u64).saturating_mul(8_000_000) / self.bps.max(1))
+    }
+
+    /// When a packet queued now would arrive at the peer. The member's queue
+    /// is modelled from its estimated rate: backlog in the kernel or the
+    /// network is not observable, and datagram paths never queue locally.
+    fn arrival(self, busy_until: Option<Instant>, now: Instant, bytes: usize) -> Instant {
+        busy_until.map_or(now, |busy| busy.max(now)) + self.transmit_time(bytes) + self.one_way
+    }
+}
+
+/// One member with its delivery model, refreshed with the send plan.
+struct Lane {
+    conn: ArcPeerConn,
+    /// Absent while any member's rate is unknown.
+    model: Option<LaneModel>,
+    order_key: Option<(uuid::Uuid, uuid::Uuid)>,
 }
 
 /// What `send_msg` needs for every packet. Computing it walks every
@@ -61,7 +93,7 @@ impl Default for ParallelSendState {
 struct SendPlan {
     generation: u64,
     target: u32,
-    members: Vec<ArcPeerConn>,
+    members: Vec<Lane>,
     /// Stripe packets across `members` instead of using the default connection.
     stripe: bool,
     my_peer_id: PeerId,
@@ -101,16 +133,9 @@ fn compute_send_plan(
     // receiver keeps one ordered sequence.
     let stripe = capable && !members.is_empty() && (target > 1 || state.sequence > 0);
     if stripe {
-        receiver.set_max_rtt_us(
-            members
-                .iter()
-                .map(|c| c.get_stats().latency_us)
-                .max()
-                .unwrap_or(0),
-        );
-        state
-            .sent_bytes
-            .retain(|id, _| members.iter().any(|c| c.get_conn_id() == *id));
+        let member = |id: &PeerConnId| members.iter().any(|c| c.get_conn_id() == *id);
+        state.busy_until.retain(|id, _| member(id));
+        state.sent_bytes.retain(|id, _| member(id));
         let baseline = state.sent_bytes.values().copied().min().unwrap_or(0);
         for conn in &members {
             state
@@ -119,6 +144,33 @@ fn compute_send_plan(
                 .or_insert(baseline);
         }
     }
+    drop(state);
+    let stats: Vec<_> = members.iter().map(|conn| conn.get_stats()).collect();
+    if stripe {
+        receiver.set_max_rtt_us(
+            stats
+                .iter()
+                .map(|stats| stats.latency_us)
+                .max()
+                .unwrap_or(0),
+        );
+    }
+    // Only rates measured from delivery are trusted for scheduling; a window
+    // estimate may promise more than a shaped path delivers.
+    let delivered: Vec<_> = members.iter().map(|conn| conn.delivered_tx_bps()).collect();
+    let rates_known = delivered.iter().all(|bps| *bps > 0);
+    let members = members
+        .into_iter()
+        .zip(stats.into_iter().zip(delivered))
+        .map(|(conn, (stats, bps))| Lane {
+            order_key: conn.cleanup_policy().shared_connection_key(),
+            model: rates_known.then(|| LaneModel {
+                bps,
+                one_way: Duration::from_micros(stats.latency_us / 2),
+            }),
+            conn,
+        })
+        .collect();
     SendPlan {
         generation,
         target,
@@ -665,6 +717,7 @@ impl Peer {
                                 let removed_conn = conns_copy.remove(&conn_id);
                                 if let Some((_, conn)) = removed_conn.as_ref() {
                                     send_plan_copy.invalidate();
+                                    parallel_receiver_copy.forget_lane(&conn_id);
                                     let cached_conn = default_conn_copy.load();
                                     if cached_conn
                                         .as_ref()
@@ -1006,59 +1059,79 @@ impl Peer {
         Ok(())
     }
 
+    /// Sends on the member expected to deliver the packet first, from its
+    /// modelled queue, rate and one-way delay. Until every member's rate is
+    /// known, members take turns by bytes sent, which also gives each one the
+    /// traffic its rate is measured from. A member that cannot take the
+    /// packet now yields to the next.
     async fn send_striped(&self, msg: ZCPacket, plan: &SendPlan) -> Result<(), Error> {
-        let mut members: Vec<&ArcPeerConn> = plan.members.iter().collect();
-        let (epoch, sequence) = {
+        let bytes = msg.buf_len() + crate::packet::PARALLEL_PACKET_OVERHEAD;
+        let now = Instant::now();
+        let record_sent = |state: &mut ParallelSendState, lane: &Lane| {
+            let id = lane.conn.get_conn_id();
+            *state.sent_bytes.entry(id).or_default() += bytes as u64;
+            if let Some(model) = lane.model {
+                let busy = state.busy_until.entry(id).or_insert(now);
+                *busy = (*busy).max(Instant::now()) + model.transmit_time(bytes);
+            }
+        };
+        // Assigning the sequence and queueing it under one lock keeps each
+        // member's queue in sequence order, which lets the receiver treat a
+        // gap behind an ordered member as loss.
+        let (order, packet) = {
             let mut state = self.parallel_send.lock();
-            members.sort_by_key(|c| {
-                (
-                    state.sent_bytes.get(&c.get_conn_id()).copied().unwrap_or(0),
-                    c.cleanup_policy().shared_connection_key(),
-                )
-            });
+            let mut order: Vec<_> = plan
+                .members
+                .iter()
+                .map(|lane| {
+                    let id = lane.conn.get_conn_id();
+                    let arrival = lane.model.map_or(now, |model| {
+                        model.arrival(state.busy_until.get(&id).copied(), now, bytes)
+                    });
+                    let sent = state.sent_bytes.get(&id).copied().unwrap_or(0);
+                    ((arrival, sent, lane.order_key), lane)
+                })
+                .collect();
+            order.sort_by_key(|(key, _)| *key);
             let sequence = state.sequence;
             state.sequence = state.sequence.wrapping_add(1);
-            (state.epoch, sequence)
-        };
-        let mut packet =
-            super::parallel::wrap(msg, plan.my_peer_id, self.peer_node_id, epoch, sequence);
-        let bytes = packet.tunnel_payload().len() as u64;
-        let record_sent = |conn: &ArcPeerConn| {
-            *self
-                .parallel_send
-                .lock()
-                .sent_bytes
-                .entry(conn.get_conn_id())
-                .or_default() += bytes;
-        };
-        for &conn in &members {
-            match conn.try_send_owned(packet) {
-                Ok(()) => {
-                    record_sent(conn);
-                    return Ok(());
-                }
-                Err(
-                    tokio::sync::mpsc::error::TrySendError::Full(p)
-                    | tokio::sync::mpsc::error::TrySendError::Closed(p),
-                ) => {
-                    packet = p;
+            let mut packet = super::parallel::wrap(
+                msg,
+                plan.my_peer_id,
+                self.peer_node_id,
+                state.epoch,
+                sequence,
+            );
+            for &(_, lane) in &order {
+                match lane.conn.try_send_owned(packet) {
+                    Ok(()) => {
+                        record_sent(&mut state, lane);
+                        return Ok(());
+                    }
+                    Err(
+                        tokio::sync::mpsc::error::TrySendError::Full(p)
+                        | tokio::sync::mpsc::error::TrySendError::Closed(p),
+                    ) => {
+                        packet = p;
+                    }
                 }
             }
-        }
+            (order, packet)
+        };
         // Backpressure waits for any member to become writable; a stalled
         // first member cannot block the other paths.
         use futures::StreamExt;
         let mut ready = futures::stream::FuturesUnordered::new();
-        for conn in members {
+        for (_, lane) in order {
             ready.push(async move {
-                let permit = conn.reserve_send().await;
-                (conn, permit)
+                let permit = lane.conn.reserve_send().await;
+                (lane, permit)
             });
         }
-        while let Some((conn, permit)) = ready.next().await {
+        while let Some((lane, permit)) = ready.next().await {
             if let Ok(permit) = permit {
                 permit.send(packet);
-                record_sent(conn);
+                record_sent(&mut self.parallel_send.lock(), lane);
                 return Ok(());
             }
         }

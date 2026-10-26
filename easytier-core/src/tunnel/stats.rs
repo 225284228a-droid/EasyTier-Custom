@@ -15,11 +15,9 @@ const RATE_SAMPLE_MAX_INTERVAL: Duration = Duration::from_secs(5);
 const RATE_SAMPLE_TTL: Duration = Duration::from_secs(5);
 const RATE_SAMPLE_MIN_BYTES: u64 = 4 * 1024;
 
-const SATURATION_SAMPLE_TTL: Duration = Duration::from_secs(15);
-const SATURATION_SAMPLE_LIMIT: usize = 5;
-const SATURATION_MIN_SAMPLE_COUNT: usize = 2;
-const SATURATION_MIN_DELIVERED_BPS: u64 = 64_000;
-const SATURATION_OFFERED_PERCENT: u128 = 115;
+const DELIVERY_SAMPLE_TTL: Duration = Duration::from_secs(10);
+const DELIVERY_SAMPLE_LIMIT: usize = 20;
+const DELIVERY_MIN_BPS: u64 = 64_000;
 
 pub struct WindowLatency {
     latency_us_window: Vec<AtomicU32>,
@@ -100,31 +98,25 @@ impl Default for RateState {
     }
 }
 
+/// Recent delivery-rate samples of one direction. A sample cannot exceed
+/// what the path delivers, but it understates it whenever the sender had less
+/// to send, so the recent maximum is the estimate (as BBR's bandwidth
+/// filter). A path that stops carrying traffic ages out to unknown.
 #[derive(Debug, Default)]
-struct SaturationEstimator {
+struct DeliveryRate {
     samples: VecDeque<(Instant, u64)>,
 }
 
-impl SaturationEstimator {
-    fn record(
-        &mut self,
-        offered_bps: u64,
-        delivered_bps: u64,
-        sample_window: Duration,
-        now: Instant,
-    ) {
+impl DeliveryRate {
+    fn record(&mut self, delivered_bps: u64, sample_window: Duration, now: Instant) {
         if sample_window < RATE_SAMPLE_MIN_INTERVAL
-            || offered_bps == u64::MAX
             || delivered_bps == u64::MAX
-            || delivered_bps < SATURATION_MIN_DELIVERED_BPS
-            || u128::from(offered_bps) * 100
-                < u128::from(delivered_bps) * SATURATION_OFFERED_PERCENT
+            || delivered_bps < DELIVERY_MIN_BPS
         {
             return;
         }
-
         self.samples.push_back((now, delivered_bps));
-        while self.samples.len() > SATURATION_SAMPLE_LIMIT {
+        while self.samples.len() > DELIVERY_SAMPLE_LIMIT {
             self.samples.pop_front();
         }
         self.retain_recent(now);
@@ -132,26 +124,24 @@ impl SaturationEstimator {
 
     fn estimate(&mut self, now: Instant) -> u64 {
         self.retain_recent(now);
-        if self.samples.len() < SATURATION_MIN_SAMPLE_COUNT {
-            return 0;
-        }
-
-        let mut rates: Vec<_> = self.samples.iter().map(|(_, rate)| *rate).collect();
-        rates.sort_unstable();
-        rates[(rates.len() - 1) / 2]
+        self.samples
+            .iter()
+            .map(|(_, rate)| *rate)
+            .max()
+            .unwrap_or_default()
     }
 
     fn retain_recent(&mut self, now: Instant) {
         self.samples.retain(|(observed_at, _)| {
-            now.saturating_duration_since(*observed_at) < SATURATION_SAMPLE_TTL
+            now.saturating_duration_since(*observed_at) < DELIVERY_SAMPLE_TTL
         });
     }
 }
 
 #[derive(Debug, Default)]
-struct SaturationState {
-    tx: SaturationEstimator,
-    rx: SaturationEstimator,
+struct DeliveryState {
+    tx: DeliveryRate,
+    rx: DeliveryRate,
 }
 
 #[derive(Debug, Default)]
@@ -163,7 +153,7 @@ pub struct Throughput {
     window_source: Mutex<Option<Arc<dyn TransmissionWindowSource>>>,
     peer_window_report: Mutex<Option<(u64, Instant)>>,
     rate_state: Mutex<RateState>,
-    saturation: Mutex<SaturationState>,
+    delivery: Mutex<DeliveryState>,
 }
 
 impl Clone for Throughput {
@@ -222,7 +212,6 @@ impl Throughput {
     pub(crate) fn record_peer_traffic_report(
         &self,
         version: u32,
-        peer_tx_bps: u64,
         peer_rx_bps: u64,
         peer_estimated_tx_bps: u64,
         peer_sample_window: Duration,
@@ -234,19 +223,12 @@ impl Throughput {
 
         let now = Instant::now();
         let local = self.traffic_rate_at(now);
-        let mut saturation = self.saturation.lock().unwrap();
-        saturation.rx.record(
-            peer_tx_bps,
-            local.rx_bps,
-            peer_sample_window.min(local.sample_window),
-            now,
-        );
-        saturation.tx.record(
-            local.tx_bps,
-            peer_rx_bps,
-            peer_sample_window.min(local.sample_window),
-            now,
-        );
+        let window = peer_sample_window.min(local.sample_window);
+        let mut delivery = self.delivery.lock().unwrap();
+        // The peer measures what reached it of our traffic; we measure what
+        // reached us of its traffic.
+        delivery.tx.record(peer_rx_bps, window, now);
+        delivery.rx.record(local.rx_bps, window, now);
     }
 
     pub(crate) fn traffic_report(&self) -> TrafficRateReport {
@@ -255,47 +237,51 @@ impl Throughput {
 
     fn traffic_report_at(&self, now: Instant) -> TrafficRateReport {
         let mut report = self.traffic_rate_at(now);
-        report.estimated_tx_bps = self.estimated_tx_bps_at(now, &report);
+        report.estimated_tx_bps = self.estimated_tx_bps_at(now);
         report
     }
 
-    /// The live transport's sending-window estimate, in bit/s, paired with
-    /// that same transport's RTT rather than application-level Ping latency.
-    /// While traffic is flowing, the observed send rate caps the window value.
-    /// For transports without a window, only saturation-gated peer feedback is
-    /// used, so an idle UDP path remains unknown.
+    /// Upload capacity in bit/s: the recent maximum delivery rate the peer
+    /// reported, or, without delivery samples (an idle path, or a peer that
+    /// only sends v1 reports), the live transport's window over its own RTT.
+    /// Windowless transports without samples stay unknown.
     ///
-    /// When a CDN terminates the transport, its backhaul window remains
-    /// unobservable; this estimate only describes the measured transport leg.
+    /// When a CDN terminates the transport, the window describes only the
+    /// measured transport leg; delivery samples cover the whole path.
     pub fn estimated_tx_bps(&self) -> u64 {
-        let now = Instant::now();
-        let rates = self.traffic_rate_at(now);
-        self.estimated_tx_bps_at(now, &rates)
+        self.estimated_tx_bps_at(Instant::now())
     }
 
-    fn estimated_tx_bps_at(&self, now: Instant, rates: &TrafficRateReport) -> u64 {
-        let transport = self
-            .window_source
+    /// The upload rate measured from delivery alone; zero until the peer has
+    /// reported recent delivery of this path's traffic.
+    pub fn delivered_tx_bps(&self) -> u64 {
+        self.delivery.lock().unwrap().tx.estimate(Instant::now())
+    }
+
+    fn estimated_tx_bps_at(&self, now: Instant) -> u64 {
+        let delivered = self.delivery.lock().unwrap().tx.estimate(now);
+        if delivered > 0 {
+            return delivered;
+        }
+        self.window_source
             .lock()
             .unwrap()
             .as_ref()
             .and_then(|source| source.transmission_window())
             .and_then(|window| window.estimated_bps())
-            .unwrap_or_default();
-        let transport = if transport > 0 && rates.tx_bps > 0 {
-            transport.min(rates.tx_bps)
-        } else {
-            transport
-        };
-        min_positive(transport, self.saturation.lock().unwrap().tx.estimate(now))
+            .unwrap_or_default()
     }
 
+    /// Download capacity: the recent maximum rate this end received, or the
+    /// peer's own upload estimate while nothing was measured locally.
     pub fn estimated_rx_bps(&self) -> u64 {
         let now = Instant::now();
-        min_positive(
-            self.peer_estimate_at(now),
-            self.saturation.lock().unwrap().rx.estimate(now),
-        )
+        let delivered = self.delivery.lock().unwrap().rx.estimate(now);
+        if delivered > 0 {
+            delivered
+        } else {
+            self.peer_estimate_at(now)
+        }
     }
 
     fn peer_estimate_at(&self, now: Instant) -> u64 {
@@ -357,14 +343,6 @@ impl Throughput {
             report,
         });
         report
-    }
-}
-
-fn min_positive(left: u64, right: u64) -> u64 {
-    match (left, right) {
-        (0, right) => right,
-        (left, 0) => left,
-        (left, right) => left.min(right),
     }
 }
 
@@ -444,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn active_window_estimate_is_capped_by_observed_send_rate() {
+    fn delivery_samples_take_precedence_over_the_window() {
         let throughput = Throughput::new();
         throughput.set_window_source(Some(Arc::new(TestWindowSource(Mutex::new(Some(
             TransmissionWindow {
@@ -454,71 +432,71 @@ mod tests {
                 congestion_control: CongestionControl::LossBased,
             },
         ))))));
+        assert_eq!(throughput.estimated_tx_bps(), 160_000_000);
+        assert_eq!(throughput.delivered_tx_bps(), 0);
         let now = Instant::now();
-        let rates = seed_rates(&throughput, now, 40_000_000, 0);
-        assert_eq!(throughput.estimated_tx_bps_at(now, &rates), 40_000_000);
+        throughput
+            .delivery
+            .lock()
+            .unwrap()
+            .tx
+            .record(30_000_000, Duration::from_secs(1), now);
+        assert_eq!(throughput.estimated_tx_bps_at(now), 30_000_000);
+        assert_eq!(throughput.delivered_tx_bps(), 30_000_000);
+        // Stale samples fall back to the window.
+        assert_eq!(
+            throughput.estimated_tx_bps_at(now + DELIVERY_SAMPLE_TTL),
+            160_000_000
+        );
     }
 
     #[test]
-    fn repeated_saturated_reports_create_a_udp_upload_estimate() {
+    fn a_delivery_report_creates_an_upload_estimate() {
         let throughput = Throughput::new();
         throughput.record_tx_bytes(12_500_000);
         seed_rates(&throughput, Instant::now(), 100_000_000, 0);
-
-        for _ in 0..2 {
-            throughput.record_peer_traffic_report(2, 0, 10_000_000, 0, Duration::from_secs(1));
-        }
-
+        throughput.record_peer_traffic_report(2, 10_000_000, 0, Duration::from_secs(1));
         assert_eq!(throughput.estimated_tx_bps(), 10_000_000);
         assert_eq!(throughput.estimated_rx_bps(), 0);
     }
 
     #[test]
-    fn repeated_saturated_reports_create_a_udp_download_estimate() {
+    fn locally_received_traffic_creates_a_download_estimate() {
         let throughput = Throughput::new();
         throughput.record_rx_bytes(12_500_000);
         seed_rates(&throughput, Instant::now(), 0, 10_000_000);
-
-        for _ in 0..2 {
-            throughput.record_peer_traffic_report(2, 100_000_000, 0, 0, Duration::from_secs(1));
-        }
-
+        throughput.record_peer_window_estimate(80_000_000);
+        throughput.record_peer_traffic_report(2, 0, 0, Duration::from_secs(1));
         assert_eq!(throughput.estimated_rx_bps(), 10_000_000);
         assert_eq!(throughput.estimated_tx_bps(), 0);
     }
 
     #[test]
-    fn one_sample_or_insufficient_headroom_does_not_create_a_udp_estimate() {
-        let throughput = Throughput::new();
+    fn the_recent_maximum_survives_lighter_traffic() {
         let now = Instant::now();
-        seed_rates(&throughput, now, 11_000_000, 0);
-
-        throughput.record_peer_traffic_report(2, 0, 10_000_000, 0, Duration::from_secs(1));
-        assert_eq!(throughput.estimated_tx_bps(), 0);
-
-        throughput.record_peer_traffic_report(2, 0, 10_000_000, 0, Duration::from_secs(1));
-        assert_eq!(throughput.estimated_tx_bps(), 0);
+        let mut rate = DeliveryRate::default();
+        let second = Duration::from_secs(1);
+        rate.record(50_000_000, second, now);
+        rate.record(10_000_000, second, now + second);
+        assert_eq!(rate.estimate(now + second), 50_000_000);
+        // Too short a window, too little traffic or an overflowed value is
+        // not a sample.
+        rate.record(90_000_000, Duration::from_millis(100), now + second);
+        rate.record(DELIVERY_MIN_BPS - 1, second, now + second);
+        rate.record(u64::MAX, second, now + second);
+        assert_eq!(rate.estimate(now + second), 50_000_000);
+        assert_eq!(rate.estimate(now + DELIVERY_SAMPLE_TTL), 10_000_000);
+        assert_eq!(rate.estimate(now + second + DELIVERY_SAMPLE_TTL), 0);
     }
 
     #[test]
-    fn stale_saturation_samples_become_unknown() {
+    fn v1_reports_only_carry_the_peer_window() {
         let throughput = Throughput::new();
-        let now = Instant::now();
-        let rates = seed_rates(&throughput, now, 100_000_000, 0);
-        for _ in 0..2 {
-            throughput.saturation.lock().unwrap().tx.record(
-                100_000_000,
-                10_000_000,
-                rates.sample_window,
-                now,
-            );
-        }
-
-        assert_eq!(throughput.estimated_tx_bps_at(now, &rates), 10_000_000);
-        assert_eq!(
-            throughput.estimated_tx_bps_at(now + SATURATION_SAMPLE_TTL, &rates),
-            0
-        );
+        throughput.record_rx_bytes(12_500_000);
+        seed_rates(&throughput, Instant::now(), 100_000_000, 10_000_000);
+        throughput.record_peer_traffic_report(1, 10_000_000, 40_000_000, Duration::from_secs(1));
+        assert_eq!(throughput.delivered_tx_bps(), 0);
+        assert_eq!(throughput.estimated_rx_bps(), 40_000_000);
     }
 
     #[test]

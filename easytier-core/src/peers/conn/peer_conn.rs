@@ -1466,7 +1466,6 @@ impl PeerConn {
                         {
                             throughput.record_peer_traffic_report(
                                 remote_report.version,
-                                remote_report.report.tx_bps,
                                 remote_report.report.rx_bps,
                                 remote_report.report.estimated_tx_bps,
                                 remote_report.report.sample_window,
@@ -1548,6 +1547,12 @@ impl PeerConn {
         &mut self,
         receiver: Arc<super::parallel::ParallelReceiver>,
     ) {
+        receiver.register_lane(
+            self.conn_id,
+            self.tunnel_info
+                .as_ref()
+                .is_some_and(|tunnel| super::parallel::ordered_transport(&tunnel.tunnel_type)),
+        );
         self.parallel_receiver = Some(receiver);
     }
 
@@ -1631,6 +1636,12 @@ impl PeerConn {
             .and_then(|policy| policy.remote())
             .unwrap_or(handshake_offer);
         self.local_parallel_offer().target(remote)
+    }
+
+    /// Upload rate measured from what the peer reported receiving; zero
+    /// until this connection has carried enough recent traffic.
+    pub(crate) fn delivered_tx_bps(&self) -> u64 {
+        self.throughput.delivered_tx_bps()
     }
 
     pub(crate) fn try_send_owned(
