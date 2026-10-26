@@ -314,6 +314,28 @@ describe('dashboard topology', () => {
     expect(topology.nodes[0].publicIp).toBe('1.1.1.1')
   })
 
+  it('locates peers that are not connected to the console from route-table addresses', () => {
+    const a = device('a', ['mesh'])
+    const current = snapshot(a, 'mesh', 1, [route(2, 'remote')], [peer(2)])
+    current.detail.peer_locations = [{
+      peer_id: 2,
+      location: { public_ip: '8.8.8.8', country: 'United States', city: 'Mountain View', region: '', latitude: 37.39, longitude: -122.08 },
+    }]
+    const topology = buildTopology([a], [current])
+    const remote = topology.nodes.find(node => node.peerId === 2)!
+    expect(remote.managed).toBe(false)
+    expect(remote.country).toBe('United States')
+    expect(remote.latitude).toBe(37.39)
+    expect(remote.publicIp).toBe('8.8.8.8')
+    // A managed snapshot of the same peer stays authoritative.
+    const b = device('b', ['mesh-b'])
+    const own = snapshot(b, 'mesh-b', 2, [], [])
+    own.detail.node_location = { public_ip: '1.1.1.1', country: 'Australia', latitude: -33.86, longitude: 151.21 }
+    const merged = buildTopology([a, b], [current, own]).nodes.find(node => node.peerId === 2)!
+    expect(merged.managed).toBe(true)
+    expect(merged.country).toBe('Australia')
+  })
+
   it('uses valid GeoIP coordinates and explicitly approximate country locations', () => {
     const node = {
       id: 'a',

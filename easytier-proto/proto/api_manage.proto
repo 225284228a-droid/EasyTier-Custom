@@ -225,6 +225,13 @@ message NodeLocation {
   optional double longitude = 50006;
 }
 
+// Location of a mesh peer seen in this node's route table, resolved by the
+// console from the peer's advertised public address.
+message PeerNodeLocation {
+  uint32 peer_id = 50001;
+  NodeLocation location = 50002;
+}
+
 message NetworkInstanceRunningInfo {
   string dev_name = 1;
   MyNodeInfo my_node_info = 2;
@@ -237,6 +244,7 @@ message NetworkInstanceRunningInfo {
   peer_rpc.RouteForeignNetworkSummary foreign_network_summary = 9;
   NodeLocation node_location = 50010;
   string network_name = 50011;
+  repeated PeerNodeLocation peer_locations = 50012;
 }
 
 message NetworkInstanceRunningInfoMap {

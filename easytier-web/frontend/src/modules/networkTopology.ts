@@ -145,8 +145,7 @@ function ipv4(value: unknown): string | undefined {
   return Utils.ipv4ToString(value as { addr: number })
 }
 
-function snapshotLocation(snapshot: NetworkSnapshot): Utils.Location | undefined {
-  const location = snapshot.detail.node_location
+function toLocation(location: NetworkTypes.NodeLocation | undefined): Utils.Location | undefined {
   if (location) {
     return {
       country: location.country,
@@ -156,9 +155,22 @@ function snapshotLocation(snapshot: NetworkSnapshot): Utils.Location | undefined
       longitude: location.longitude,
     }
   }
+  return undefined
+}
+
+function snapshotLocation(snapshot: NetworkSnapshot): Utils.Location | undefined {
   // Never fall back to the console session location here. That address may
   // be a CDN/FRP endpoint and is unrelated to the running mesh node.
-  return undefined
+  return toLocation(snapshot.detail.node_location)
+}
+
+/**
+ * Location of a remote peer as seen by this snapshot's node. It comes from
+ * the peer's own public address in the route table, so peers whose machines
+ * are not connected to the console can still be placed on the globe.
+ */
+function peerLocation(snapshot: NetworkSnapshot, peerId: number): NetworkTypes.NodeLocation | undefined {
+  return snapshot.detail.peer_locations?.find(item => item.peer_id === peerId)?.location
 }
 
 function snapshotNode(snapshot: NetworkSnapshot, network: string, peerId: number): TopologyNode {
@@ -272,11 +284,18 @@ export function buildTopology(
         continue
 
       const route = routeForPeer(snapshot, peerId)
+      const reported = peerLocation(snapshot, peerId)
+      const location = toLocation(reported)
       const placeholder: TopologyNode = {
         id: target,
         label: cleanText(route?.hostname) ?? `Peer ${peerId}`,
         networkIdentity: identity.network,
         peerId,
+        country: location?.country,
+        latitude: location?.latitude,
+        longitude: location?.longitude,
+        nodeLocation: location,
+        publicIp: cleanText(reported?.public_ip),
         managed: false,
         stale: snapshot.stale || undefined,
       }

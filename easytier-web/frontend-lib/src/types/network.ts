@@ -480,7 +480,14 @@ export interface NetworkInstanceRunningInfo {
   running: boolean
   error_msg?: string
   node_location?: NodeLocation
+  /** Console-resolved locations of remote peers in this node's route table. */
+  peer_locations?: PeerNodeLocation[]
   network_name?: string
+}
+
+export interface PeerNodeLocation {
+  peer_id: number
+  location?: NodeLocation
 }
 
 export interface NodeLocation {

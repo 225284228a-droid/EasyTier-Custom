@@ -105,6 +105,7 @@ interface ArchivedDetail {
     latitude?: number
     longitude?: number
   }
+  peer_locations: { peer_id: number, location: NonNullable<ArchivedDetail['node_location']> }[]
   peers: { peer_id: number, conns: ArchivedConnection[] }[]
   routes: { peer_id: number, inst_id: string, hostname: string }[]
 }
@@ -179,10 +180,18 @@ function detail(value: unknown): ArchivedDetail | undefined {
       })
     }
   }
+  const peerLocations: ArchivedDetail['peer_locations'] = []
+  for (const value of (Array.isArray(input.peer_locations) ? input.peer_locations : []).slice(0, 512)) {
+    const item = record(value)
+    const location = nodeLocation(item?.location)
+    if (item && peerId(item.peer_id) && location)
+      peerLocations.push({ peer_id: item.peer_id, location })
+  }
   return {
     network_name: text(input.network_name),
     my_node_info: { peer_id: info.peer_id, hostname: text(info.hostname, 256) ?? '' },
     node_location: nodeLocation(input.node_location),
+    peer_locations: peerLocations,
     peers,
     routes,
   }

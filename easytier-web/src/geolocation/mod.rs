@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use easytier::proto::api::manage::MyNodeInfo;
+use easytier::proto::{api::manage::MyNodeInfo, common::StunInfo};
 use provider::{Provider, ProviderError};
 use store::{ProviderPermit, Store};
 use tokio::{sync::Notify, task::JoinSet};
@@ -214,33 +214,41 @@ pub(crate) fn node_public_ip(node: &MyNodeInfo) -> Option<IpAddr> {
 }
 
 pub(crate) fn node_public_ips(node: &MyNodeInfo) -> Vec<IpAddr> {
-    let stun: BTreeSet<_> = node
-        .stun_info
-        .as_ref()
+    let mut declared = Vec::new();
+    if let Some(ips) = &node.ips {
+        declared.extend(
+            ips.public_ipv4
+                .map(std::net::Ipv4Addr::from)
+                .map(IpAddr::V4),
+        );
+        declared.extend(
+            ips.public_ipv6
+                .map(std::net::Ipv6Addr::from)
+                .map(IpAddr::V6),
+        );
+    }
+    public_ips(node.stun_info.as_ref(), declared)
+}
+
+/// Public addresses, at most one per family with IPv4 first. STUN results
+/// are authoritative; `fallback` supplies addresses observed elsewhere, such
+/// as a node's declared public IPs or the peer end of a direct connection.
+pub(crate) fn public_ips(
+    stun: Option<&StunInfo>,
+    fallback: impl IntoIterator<Item = IpAddr>,
+) -> Vec<IpAddr> {
+    let stun: BTreeSet<_> = stun
         .into_iter()
         .flat_map(|stun| &stun.public_ip)
         .filter_map(|value| value.parse::<IpAddr>().ok())
         .map(|ip| ip.to_canonical())
         .filter(usable_node_ip)
         .collect();
-    let mut declared = BTreeSet::new();
-    if let Some(ips) = &node.ips {
-        for ip in [
-            ips.public_ipv4
-                .map(std::net::Ipv4Addr::from)
-                .map(IpAddr::V4),
-            ips.public_ipv6
-                .map(std::net::Ipv6Addr::from)
-                .map(IpAddr::V6),
-        ]
+    let fallback: BTreeSet<_> = fallback
         .into_iter()
-        .flatten()
         .map(|ip| ip.to_canonical())
         .filter(usable_node_ip)
-        {
-            declared.insert(ip);
-        }
-    }
+        .collect();
     // Keep STUN authoritative within each family, but never let a reported
     // IPv6 address hide an available IPv4 address.
     [false, true]
@@ -248,7 +256,7 @@ pub(crate) fn node_public_ips(node: &MyNodeInfo) -> Vec<IpAddr> {
         .filter_map(|ipv6| {
             stun.iter()
                 .find(|ip| ip.is_ipv6() == ipv6)
-                .or_else(|| declared.iter().find(|ip| ip.is_ipv6() == ipv6))
+                .or_else(|| fallback.iter().find(|ip| ip.is_ipv6() == ipv6))
                 .copied()
         })
         .collect()

@@ -266,23 +266,72 @@ impl NetworkApi {
             let Some(node) = detail.my_node_info.as_ref() else {
                 continue;
             };
-            let Some((ip, location)) = client_mgr.resolve_node_location(node).await else {
-                continue;
-            };
-            if !primary_cached {
-                client_mgr
-                    .cache_network_location(user_id, machine_id, node, location.clone())
-                    .await;
-                primary_cached = true;
+            if let Some((ip, location)) = client_mgr.resolve_node_location(node).await {
+                if !primary_cached {
+                    client_mgr
+                        .cache_network_location(user_id, machine_id, node, location.clone())
+                        .await;
+                    primary_cached = true;
+                }
+                detail.node_location = Some(Self::node_location_pb(ip, location));
             }
-            detail.node_location = Some(NodeLocation {
-                public_ip: ip.to_string(),
-                country: location.country,
-                city: location.city.unwrap_or_default(),
-                region: location.region.unwrap_or_default(),
-                latitude: location.latitude,
-                longitude: location.longitude,
+            detail.peer_locations = Self::resolve_peer_locations(client_mgr, detail).await;
+        }
+    }
+
+    /// Locate every remote peer in the route table, including peers whose
+    /// machines are not connected to this console.
+    async fn resolve_peer_locations(
+        client_mgr: &ClientManager,
+        detail: &NetworkInstanceRunningInfo,
+    ) -> Vec<PeerNodeLocation> {
+        let local_peer_id = detail.my_node_info.as_ref().map(|node| node.peer_id);
+        let lookups = detail
+            .routes
+            .iter()
+            .filter(|route| route.peer_id != 0 && Some(route.peer_id) != local_peer_id)
+            .map(|route| {
+                let conn_ips = detail
+                    .peers
+                    .iter()
+                    .filter(|peer| peer.peer_id == route.peer_id)
+                    .flat_map(|peer| &peer.conns)
+                    .filter(|conn| !conn.is_closed)
+                    .filter_map(|conn| Self::url_ip(conn.tunnel.as_ref()?.remote_addr.as_ref()?));
+                let ips = crate::geolocation::public_ips(route.stun_info.as_ref(), conn_ips);
+                let peer_id = route.peer_id;
+                async move {
+                    let ip = *ips.first()?;
+                    let location = client_mgr.resolve_ips_location(&ips).await?;
+                    Some(PeerNodeLocation {
+                        peer_id,
+                        location: Some(Self::node_location_pb(ip, location)),
+                    })
+                }
             });
+        futures::future::join_all(lookups)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    fn url_ip(url: &easytier::proto::common::Url) -> Option<std::net::IpAddr> {
+        match url::Url::parse(&url.url).ok()?.host()? {
+            url::Host::Ipv4(ip) => Some(ip.into()),
+            url::Host::Ipv6(ip) => Some(ip.into()),
+            url::Host::Domain(_) => None,
+        }
+    }
+
+    fn node_location_pb(ip: std::net::IpAddr, location: Location) -> NodeLocation {
+        NodeLocation {
+            public_ip: ip.to_string(),
+            country: location.country,
+            city: location.city.unwrap_or_default(),
+            region: location.region.unwrap_or_default(),
+            latitude: location.latitude,
+            longitude: location.longitude,
         }
     }
 

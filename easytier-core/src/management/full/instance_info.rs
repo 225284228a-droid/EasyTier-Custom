@@ -91,6 +91,7 @@ where
         foreign_network_summary: Some(instance.foreign_network_route_summary().await),
         // GeoIP is resolved by the web server from this node's observed IP.
         node_location: None,
+        peer_locations: Vec::new(),
         network_name,
     })
 }

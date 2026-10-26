@@ -147,6 +147,7 @@
 
 - 保留带宽 Ping/Pong 扩展、双向流量统计、城市缓存及地球展示，组合到官方导航、主题、设备和网络页面。界面列名改为“带宽参考”，并明确 UDP 等无窗口传输在空闲或缺少饱和样本时显示未知。
 - 带宽窗口、v2 双向速率报告与估计值的中性类型放在 `easytier-core/src/foundation/bandwidth.rs`，socket 与 tunnel 共用基础类型；ETBW v1/v2 线格式编解码仍由 tunnel 负责。
+- 未接入网页控制台的节点也会显示位置：控制台按受管节点路由表中该节点的 STUN 公网 IP（缺失时用直连连接的对端 IP 字面量）解析位置，随运行信息以 `peer_locations` 返回；同一节点若也接入控制台，以其自身快照为准。
 - 地球为独立 `NetworkTopologyGlobe.vue` 组件，采集使用共享 `useMeshTopology.ts`；展示合并官方别名、网络归属、NAT、丢包率和 VPN Portal，采集与在线数量过滤离线设备。
 - Web 持久化按实际绝对 API 地址和账号隔离；后台刷新不会覆盖未保存的表单输入，目录版本变化时提示重新读取。
 
