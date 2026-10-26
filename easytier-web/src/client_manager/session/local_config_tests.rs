@@ -7,8 +7,7 @@ use std::{
 
 use easytier::proto::{
     api::manage::{
-        NetworkConfig, ObserveConfigsResponse, PersistedConfigApplyMode,
-        PersistedConfigServiceServer, WebClientServiceServer,
+        NetworkConfig, ObserveConfigsResponse, PersistedConfigServiceServer, WebClientServiceServer,
     },
     web::WebServerServiceClientFactory,
 };
@@ -211,7 +210,6 @@ async fn core_patch_diagnostics_and_not_found_survive_the_console_rpc() {
             inst_id: Some(id.into()),
             config: Some(NetworkConfig::default()),
             field_mask: vec!["enable_vpn_portal".into()],
-            apply_mode: PersistedConfigApplyMode::PersistOnly as i32,
             ..Default::default()
         })
         .await
@@ -228,7 +226,7 @@ async fn core_patch_diagnostics_and_not_found_survive_the_console_rpc() {
             expected_revision: "removed-config-revision".into(),
             config: Some(NetworkConfig::default()),
             field_mask: vec!["hostname".into()],
-            apply_mode: PersistedConfigApplyMode::PersistOnly as i32,
+            toml: None,
         })
         .await
         .unwrap_err();
@@ -303,7 +301,7 @@ async fn independent_servers_share_node_cas_and_observe_manual_edits() {
             ..Default::default()
         }),
         field_mask: vec!["hostname".into()],
-        apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
+        toml: None,
     };
     let (a, b) = tokio::join!(
         first.patch_local_config(patch("first")),
@@ -645,31 +643,6 @@ fn malformed_urls_name_the_selected_field_without_echoing_values() {
     assert!(!format!("{error:?}").contains("private-invalid-url-value"));
 }
 
-#[test]
-fn apply_only_requires_its_capability_without_blocking_existing_patches() {
-    let mut request = PatchPersistedConfigRequest {
-        config: Some(NetworkConfig::default()),
-        apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
-        ..Default::default()
-    };
-    assert!(matches!(
-        validate_capability_mask(&request, &[REVISION_CAPABILITY.into()]),
-        Err(LocalConfigError::Unsupported)
-    ));
-    assert!(
-        validate_capability_mask(
-            &request,
-            &[REVISION_CAPABILITY.into(), APPLY_CAPABILITY.into()],
-        )
-        .is_ok()
-    );
-    request.field_mask = vec!["hostname".into()];
-    assert!(validate_capability_mask(&request, &[REVISION_CAPABILITY.into()]).is_ok());
-    request.field_mask.clear();
-    request.apply_mode = PersistedConfigApplyMode::PersistOnly as i32;
-    assert!(validate_capability_mask(&request, &[REVISION_CAPABILITY.into()]).is_ok());
-}
-
 #[derive(Clone)]
 struct UnfinishedWrite {
     calls: Arc<std::sync::atomic::AtomicUsize>,
@@ -747,17 +720,6 @@ async fn timed_out_write_observes_again_without_resending_the_mutation() {
     let (web, node) = create_ring_tunnel_pair();
     session.serve(web).await;
     rpc.run_with_tunnel(node);
-    let rejected = session
-        .patch_local_config(PatchPersistedConfigRequest {
-            inst_id: Some(uuid::Uuid::new_v4().into()),
-            expected_revision: "base-revision".into(),
-            config: Some(NetworkConfig::default()),
-            field_mask: Vec::new(),
-            apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
-        })
-        .await;
-    assert!(matches!(rejected, Err(LocalConfigError::Unsupported)));
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     let result = tokio::time::timeout(
         Duration::from_secs(12),
         session.patch_local_config(PatchPersistedConfigRequest {

@@ -437,8 +437,9 @@ impl<F: InstanceFactory> InstanceManager<F> {
         let mut capabilities = self.factory.management_capabilities();
         #[cfg(feature = "management")]
         if self.local_config_catalog.supports_revision() {
-            capabilities.push("management:persisted-config-revision-v1".into());
-            capabilities.push("management:persisted-config-apply-v1".into());
+            // v2: revisions identify file contents only, and every write is
+            // applied to an enabled network (no persist-only or apply-only).
+            capabilities.push("management:persisted-config-revision-v2".into());
         }
         capabilities.sort();
         capabilities.dedup();

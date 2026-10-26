@@ -85,7 +85,6 @@ pub struct ActiveInstanceForStart {
 #[derive(Default)]
 pub(super) struct InstanceRunPersistence<'a> {
     pub contents: Option<&'a [u8]>,
-    pub apply_only: bool,
     pub expected_revision: Option<&'a str>,
 }
 
@@ -701,7 +700,6 @@ where
     ) -> anyhow::Result<uuid::Uuid> {
         let InstanceRunPersistence {
             contents: persisted_contents,
-            apply_only,
             expected_revision,
         } = persistence;
         let remote_managed = self.hooks.manages_remote_config_instances();
@@ -723,9 +721,7 @@ where
             }
             self.ensure_overwritable(instance_id, &control, remote_managed)
                 .await?;
-            if !apply_only {
-                config.set_network_config_source(requested_source.or(existing_source));
-            }
+            config.set_network_config_source(requested_source.or(existing_source));
             replacing = true;
             restore_instance = self
                 .instances
@@ -735,22 +731,16 @@ where
         } else if let Some(control) = self.instances.managed_config_control(instance_id) {
             self.ensure_overwritable(instance_id, &control, remote_managed)
                 .await?;
-            if !apply_only {
-                config.set_network_config_source(requested_source);
-            }
+            config.set_network_config_source(requested_source);
             control
         } else if let Some(config_dir) = self.instances.config_dir() {
-            if !apply_only {
-                config.set_network_config_source(requested_source);
-            }
+            config.set_network_config_source(requested_source);
             ConfigFileControl::new(
                 Some(config_dir.join(format!("{instance_id}.toml"))),
                 ConfigFilePermission::default(),
             )
         } else {
-            if !apply_only {
-                config.set_network_config_source(requested_source);
-            }
+            config.set_network_config_source(requested_source);
             ConfigFileControl::new(None, ConfigFilePermission::default())
         };
 
@@ -849,7 +839,6 @@ where
             if let Some(contents) = persisted_contents {
                 written = contents.to_vec();
             }
-            let unchanged = matches!(&original, Ok(Some(contents)) if contents == &written);
             let cleanup = match original {
                 Ok(Some(contents)) => Some(ConfigFileCleanup::Restore {
                     path: path.to_owned(),
@@ -870,21 +859,16 @@ where
                     ));
                 }
             };
-            if apply_only && !unchanged {
-                return Err(LocalConfigMutationError::RevisionConflict.into());
-            }
-            if !apply_only {
-                if let Err(error) = self.storage.write(path, &written).await {
-                    if !replacing {
-                        self.restore_enabled_state(instance_id, previous_enabled)?;
-                    }
-                    return Err(anyhow::anyhow!(
-                        "failed to write config file {}: {error}",
-                        path.display()
-                    ));
-                } else {
-                    file_cleanup = cleanup;
+            if let Err(error) = self.storage.write(path, &written).await {
+                if !replacing {
+                    self.restore_enabled_state(instance_id, previous_enabled)?;
                 }
+                return Err(anyhow::anyhow!(
+                    "failed to write config file {}: {error}",
+                    path.display()
+                ));
+            } else {
+                file_cleanup = cleanup;
             }
         }
 

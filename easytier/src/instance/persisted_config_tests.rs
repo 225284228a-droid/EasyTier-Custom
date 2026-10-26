@@ -16,9 +16,9 @@ use easytier_core::management::{
 use easytier_proto::{
     api::manage::{
         DeleteNetworkInstanceRequest, ListNetworkInstanceRequest, NetworkConfig, NetworkingMethod,
-        ObserveConfigsRequest, PatchPersistedConfigRequest, PersistedConfigApplyMode,
-        PersistedConfigMutationStatus, PersistedConfigService, RemoveNetworkInstanceConfigRequest,
-        RunNetworkInstanceRequest, SetNetworkInstanceEnabledRequest, WebClientService,
+        ObserveConfigsRequest, PatchPersistedConfigRequest, PersistedConfigMutationStatus,
+        PersistedConfigService, RemoveNetworkInstanceConfigRequest, RunNetworkInstanceRequest,
+        SetNetworkInstanceEnabledRequest, WebClientService,
     },
     rpc_types::controller::BaseController,
 };
@@ -284,7 +284,7 @@ async fn frontend_created_config_can_be_edited_enabled_stopped_and_reloaded() {
                 ..Default::default()
             }),
             field_mask: vec!["no_tun".into(), "disable_upnp".into(), "bind_device".into()],
-            apply_mode: PersistedConfigApplyMode::PersistOnly as i32,
+            toml: None,
         },
     )
     .await
@@ -468,12 +468,7 @@ async fn repeated_native_list_refreshes_keep_order_revisions_and_lifecycle_actio
     let edited = PersistedConfigService::patch_config(
         &rpc,
         BaseController::default(),
-        patch(
-            ids[1],
-            revision(ids[1]),
-            "edited",
-            PersistedConfigApplyMode::PersistOnly,
-        ),
+        patch(ids[1], revision(ids[1]), "edited"),
     )
     .await
     .unwrap();
@@ -534,12 +529,7 @@ async fn retiring_file_owner_drains_queued_scans_before_the_next_mode_starts() {
             PersistedConfigService::patch_config(
                 queued_rpc.as_ref(),
                 BaseController::default(),
-                patch(
-                    id,
-                    revision,
-                    "stale-edit",
-                    PersistedConfigApplyMode::PersistOnly,
-                ),
+                patch(id, revision, "stale-edit"),
             )
             .await
         });
@@ -726,7 +716,7 @@ async fn live_native_scan_reaps_offline_deletions_and_preserves_existing_pauses(
 }
 
 #[tokio::test]
-async fn live_native_files_preserve_explicit_pause_and_persist_only_but_reap_deleted_state() {
+async fn live_native_files_apply_console_saves_preserve_explicit_pause_and_reap_deleted_state() {
     use super::config_storage::NativeConfigFileStorage;
     let directory = tempfile::tempdir().unwrap();
     let manager = Arc::new(native_instance_manager_with_config_dir(Some(
@@ -747,28 +737,24 @@ async fn live_native_files_preserve_explicit_pause_and_persist_only_but_reap_del
         .await
         .unwrap();
     wait_for_live_config(&manager, id, Some("active")).await;
-    let original = manager.instance(id).unwrap();
     let revision = observe(&rpc).await.entries[0].revision.clone();
     let saved = PersistedConfigService::patch_config(
         &rpc,
         BaseController::default(),
-        patch(
-            id,
-            revision,
-            "persist-only",
-            PersistedConfigApplyMode::PersistOnly,
-        ),
+        patch(id, revision, "saved"),
     )
     .await
     .unwrap();
     assert_eq!(saved.status, PersistedConfigMutationStatus::Success as i32);
-    assert!(saved.entry.unwrap().pending_apply);
+    // A console save is applied exactly like a local edit of the file.
+    assert_eq!(manager.config(id).unwrap().get_hostname(), "saved");
+    let applied = manager.instance(id).unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(
-        Arc::ptr_eq(&original, &manager.instance(id).unwrap()),
-        "our own PersistOnly write must not trigger auto-apply"
+        Arc::ptr_eq(&applied, &manager.instance(id).unwrap()),
+        "the watcher must not restart a network for its own console save"
     );
-    let persist_only_contents = std::fs::read(&path).unwrap();
+    let saved_contents = std::fs::read(&path).unwrap();
     storage
         .write(&path, live_config(id, "external").as_bytes())
         .await
@@ -776,8 +762,8 @@ async fn live_native_files_preserve_explicit_pause_and_persist_only_but_reap_del
     wait_for_live_config(&manager, id, Some("external")).await;
     // A later manual revert to previously acknowledged RPC bytes is still a
     // fresh external edit. Acknowledgements must be consumed only once.
-    storage.write(&path, &persist_only_contents).await.unwrap();
-    wait_for_live_config(&manager, id, Some("persist-only")).await;
+    storage.write(&path, &saved_contents).await.unwrap();
+    wait_for_live_config(&manager, id, Some("saved")).await;
     WebClientService::set_network_instance_enabled(
         &rpc,
         BaseController::default(),
@@ -916,7 +902,7 @@ async fn live_native_files_keep_the_previous_runtime_when_host_apply_fails() {
     )));
     let failed = Arc::new(Notify::new());
     let storage = Arc::new(NativeConfigFileStorage::new(true));
-    let rpc = ProcessManagementRpc::new(
+    let _rpc = ProcessManagementRpc::new(
         manager.clone(),
         Arc::new(RejectApply(Arc::downgrade(&manager), failed.clone())),
         storage.clone(),
@@ -941,7 +927,6 @@ async fn live_native_files_keep_the_previous_runtime_when_host_apply_fails() {
         std::fs::read_to_string(&path).unwrap(),
         live_config(id, "rejected")
     );
-    assert!(observe(&rpc).await.entries[0].pending_apply);
     storage
         .write(&path, live_config(id, "fixed").as_bytes())
         .await
@@ -961,12 +946,7 @@ async fn observe(
     .unwrap()
 }
 
-fn patch(
-    id: uuid::Uuid,
-    revision: String,
-    hostname: &str,
-    mode: PersistedConfigApplyMode,
-) -> PatchPersistedConfigRequest {
+fn patch(id: uuid::Uuid, revision: String, hostname: &str) -> PatchPersistedConfigRequest {
     PatchPersistedConfigRequest {
         inst_id: Some(id.into()),
         expected_revision: revision,
@@ -975,17 +955,7 @@ fn patch(
             ..Default::default()
         }),
         field_mask: vec!["hostname".into()],
-        apply_mode: mode as i32,
-    }
-}
-
-fn apply_persisted(id: uuid::Uuid, revision: String) -> PatchPersistedConfigRequest {
-    PatchPersistedConfigRequest {
-        inst_id: Some(id.into()),
-        expected_revision: revision,
-        config: Some(NetworkConfig::default()),
-        field_mask: Vec::new(),
-        apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
+        toml: None,
     }
 }
 
@@ -1031,17 +1001,12 @@ async fn two_consoles_cannot_overwrite_the_same_base_revision() {
         PersistedConfigService::patch_config(
             &first,
             BaseController::default(),
-            patch(
-                id,
-                revision.clone(),
-                "one",
-                PersistedConfigApplyMode::PersistOnly
-            )
+            patch(id, revision.clone(), "one")
         ),
         PersistedConfigService::patch_config(
             &second,
             BaseController::default(),
-            patch(id, revision, "two", PersistedConfigApplyMode::PersistOnly)
+            patch(id, revision, "two")
         ),
     );
     let mut statuses = vec![one.unwrap().status, two.unwrap().status];
@@ -1093,12 +1058,7 @@ async fn manual_edit_is_observed_and_stale_write_is_rejected() {
     let rejected = PersistedConfigService::patch_config(
         &rpc,
         BaseController::default(),
-        patch(
-            id,
-            baseline.entries[0].revision.clone(),
-            "stale",
-            PersistedConfigApplyMode::SaveAndApply,
-        ),
+        patch(id, baseline.entries[0].revision.clone(), "stale"),
     )
     .await
     .unwrap();
@@ -1121,12 +1081,7 @@ async fn request_cancellation_does_not_release_a_pending_write() {
     let revision = observe(&rpc).await.entries[0].revision.clone();
     files.block_next_write.store(true, Ordering::Release);
     let first_rpc = rpc.clone();
-    let first_request = patch(
-        id,
-        revision.clone(),
-        "first",
-        PersistedConfigApplyMode::PersistOnly,
-    );
+    let first_request = patch(id, revision.clone(), "first");
     let caller = tokio::spawn(async move {
         PersistedConfigService::patch_config(&first_rpc, BaseController::default(), first_request)
             .await
@@ -1138,12 +1093,7 @@ async fn request_cancellation_does_not_release_a_pending_write() {
         PersistedConfigService::patch_config(
             &second_rpc,
             BaseController::default(),
-            patch(
-                id,
-                revision,
-                "second",
-                PersistedConfigApplyMode::PersistOnly,
-            ),
+            patch(id, revision, "second"),
         )
         .await
     });
@@ -1197,12 +1147,7 @@ async fn protected_and_invalid_files_do_not_expose_configuration() {
     let response = PersistedConfigService::patch_config(
         &rpc,
         BaseController::default(),
-        patch(
-            invalid,
-            String::new(),
-            "replace",
-            PersistedConfigApplyMode::PersistOnly,
-        ),
+        patch(invalid, String::new(), "replace"),
     )
     .await
     .unwrap();
@@ -1217,59 +1162,7 @@ async fn protected_and_invalid_files_do_not_expose_configuration() {
 }
 
 #[tokio::test]
-async fn persist_only_keeps_the_running_instance_and_reports_pending_apply() {
-    let (manager, files, rpc) = fixture();
-    let id = uuid::Uuid::new_v4();
-    let mut raw = initial(id, "active");
-    // Native namespace adapters are not available in this portable test.
-    raw = raw.replace("netns = 'keep-netns'\n", "");
-    files
-        .files
-        .lock()
-        .unwrap()
-        .insert(path(id), raw.clone().into_bytes());
-    let config = TomlConfigLoader::new_from_str(&raw).unwrap();
-    let mut network = easytier_core::config::api::network_config_from_toml(&config);
-    network.networking_method = Some(NetworkingMethod::Standalone as i32);
-    WebClientService::run_network_instance(
-        &rpc,
-        BaseController::default(),
-        RunNetworkInstanceRequest {
-            inst_id: Some(id.into()),
-            config: Some(network),
-            overwrite: true,
-            source: 0,
-        },
-    )
-    .await
-    .unwrap();
-    let running = manager.instance(id).unwrap();
-    let baseline = observe(&rpc).await;
-    assert!(
-        !baseline.entries[0].pending_apply,
-        "formatting differences alone are not pending changes"
-    );
-    let result = PersistedConfigService::patch_config(
-        &rpc,
-        BaseController::default(),
-        patch(
-            id,
-            baseline.entries[0].revision.clone(),
-            "persisted",
-            PersistedConfigApplyMode::PersistOnly,
-        ),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
-    assert!(result.entry.unwrap().pending_apply);
-    assert!(Arc::ptr_eq(&running, &manager.instance(id).unwrap()));
-    assert_eq!(manager.config(id).unwrap().get_hostname(), "active");
-    manager.delete_network_instances([id]).await.unwrap();
-}
-
-#[tokio::test]
-async fn save_and_apply_of_a_disabled_config_does_not_enable_it() {
+async fn saving_a_disabled_config_does_not_enable_it() {
     use easytier_proto::api::manage::SetNetworkInstanceEnabledRequest;
     let (manager, files, rpc) = fixture();
     let id = uuid::Uuid::new_v4();
@@ -1294,12 +1187,7 @@ async fn save_and_apply_of_a_disabled_config_does_not_enable_it() {
     let response = PersistedConfigService::patch_config(
         &rpc,
         BaseController::default(),
-        patch(
-            id,
-            before.entries[0].revision.clone(),
-            "saved",
-            PersistedConfigApplyMode::SaveAndApply,
-        ),
+        patch(id, before.entries[0].revision.clone(), "saved"),
     )
     .await
     .unwrap();
@@ -1314,7 +1202,7 @@ async fn save_and_apply_of_a_disabled_config_does_not_enable_it() {
 }
 
 #[tokio::test]
-async fn save_and_apply_replaces_running_instance_and_keeps_original_non_form_fields() {
+async fn saving_replaces_running_instance_and_keeps_original_non_form_fields() {
     use easytier_core::instance::CoreInstanceState;
     let (manager, files, rpc) = fixture();
     let id = uuid::Uuid::new_v4();
@@ -1350,19 +1238,13 @@ async fn save_and_apply_replaces_running_instance_and_keeps_original_non_form_fi
     let result = PersistedConfigService::patch_config(
         &rpc,
         BaseController::default(),
-        patch(
-            id,
-            baseline.entries[0].revision.clone(),
-            "applied",
-            PersistedConfigApplyMode::SaveAndApply,
-        ),
+        patch(id, baseline.entries[0].revision.clone(), "applied"),
     )
     .await
     .unwrap();
     assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
     assert!(!Arc::ptr_eq(&running, &manager.instance(id).unwrap()));
     assert_eq!(manager.config(id).unwrap().get_hostname(), "applied");
-    assert!(!result.entry.unwrap().pending_apply);
     let raw = String::from_utf8(files.read(&path(id)).await.unwrap().unwrap()).unwrap();
     assert!(raw.starts_with("# keep this comment"));
     assert!(raw.contains("unmodeled = 'keep'"));
@@ -1370,141 +1252,20 @@ async fn save_and_apply_replaces_running_instance_and_keeps_original_non_form_fi
 }
 
 #[tokio::test]
-async fn apply_only_restarts_from_current_toml_without_writing_or_projecting_fields() {
-    use easytier_core::config::toml::ConfigSource;
-    let (manager, files, rpc) = fixture();
-    let id = uuid::Uuid::new_v4();
-    let raw = initial(id, "active").replace("netns = 'keep-netns'", "unmodeled = 'keep'");
-    files
-        .files
-        .lock()
-        .unwrap()
-        .insert(path(id), raw.into_bytes());
-    start_saved_instance(&manager, &rpc, id).await;
-    assert!(
-        manager
-            .management_capabilities()
-            .iter()
-            .any(|cap| { cap == "management:persisted-config-apply-v1" })
-    );
-    let before = observe(&rpc).await;
-    let saved = PersistedConfigService::patch_config(
-        &rpc,
-        BaseController::default(),
-        patch(
-            id,
-            before.entries[0].revision.clone(),
-            "pending",
-            PersistedConfigApplyMode::PersistOnly,
-        ),
-    )
-    .await
-    .unwrap();
-    assert_eq!(saved.status, PersistedConfigMutationStatus::Success as i32);
-    assert!(saved.entry.as_ref().unwrap().pending_apply);
-    let pending = String::from_utf8(files.read(&path(id)).await.unwrap().unwrap())
-        .unwrap()
-        .replace("no_tun = true", "no_tun = true\nmtu = 1337");
-    let pending = format!("{pending}\n[source]\nsource = 'web'\n");
-    files
-        .files
-        .lock()
-        .unwrap()
-        .insert(path(id), pending.clone().into_bytes());
-    let current = observe(&rpc).await.entries.remove(0);
-    let running = manager.instance(id).unwrap();
-    let writes = files.writes.load(Ordering::Acquire);
-    let stale = PersistedConfigService::patch_config(
-        &rpc,
-        BaseController::default(),
-        apply_persisted(id, saved.entry.unwrap().revision),
-    )
-    .await
-    .unwrap();
-    assert_eq!(stale.status, PersistedConfigMutationStatus::Conflict as i32);
-    assert!(Arc::ptr_eq(&running, &manager.instance(id).unwrap()));
-    let result = PersistedConfigService::patch_config(
-        &rpc,
-        BaseController::default(),
-        apply_persisted(id, current.revision.clone()),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
-    let applied = result.entry.unwrap();
-    assert!(!applied.pending_apply);
-    assert_ne!(applied.revision, current.revision);
-    assert!(!Arc::ptr_eq(&running, &manager.instance(id).unwrap()));
-    assert_eq!(manager.config(id).unwrap().get_hostname(), "pending");
-    assert_eq!(manager.config(id).unwrap().get_flags().mtu, 1337);
-    assert_eq!(manager.config_source(id), Some(ConfigSource::Web));
-    assert_eq!(files.writes.load(Ordering::Acquire), writes);
-    assert_eq!(
-        files.read(&path(id)).await.unwrap().unwrap(),
-        pending.as_bytes()
-    );
-    assert!(pending.contains("# keep this comment"));
-    assert!(pending.contains("unmodeled = 'keep'"));
-    let implicit_user = pending.replace("\n[source]\nsource = 'web'\n", "");
-    files
-        .files
-        .lock()
-        .unwrap()
-        .insert(path(id), implicit_user.clone().into_bytes());
-    let user_pending = observe(&rpc).await.entries.remove(0);
-    assert!(user_pending.pending_apply);
-    let result = PersistedConfigService::patch_config(
-        &rpc,
-        BaseController::default(),
-        apply_persisted(id, user_pending.revision),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
-    assert!(!result.entry.unwrap().pending_apply);
-    assert_eq!(manager.config_source(id), Some(ConfigSource::User));
-    assert_eq!(files.writes.load(Ordering::Acquire), writes);
-    assert_eq!(
-        files.read(&path(id)).await.unwrap().unwrap(),
-        implicit_user.as_bytes()
-    );
-    manager.delete_network_instances([id]).await.unwrap();
-}
-
-#[tokio::test]
-async fn empty_mask_only_applies_existing_configs_and_never_enables_stopped_instances() {
+async fn typed_patches_require_a_mask_and_replacements_carry_no_typed_fields() {
     let (manager, files, rpc) = fixture();
     let id = uuid::Uuid::new_v4();
     let raw = initial(id, "stopped").into_bytes();
     files.files.lock().unwrap().insert(path(id), raw.clone());
-    WebClientService::set_network_instance_enabled(
-        &rpc,
-        BaseController::default(),
-        SetNetworkInstanceEnabledRequest {
-            inst_id: Some(id.into()),
-            enabled: false,
-            expected_revision: None,
-        },
-    )
-    .await
-    .unwrap();
     let before = observe(&rpc).await;
-    let base_request = apply_persisted(id, before.entries[0].revision.clone());
-    let result =
-        PersistedConfigService::patch_config(&rpc, BaseController::default(), base_request.clone())
-            .await
-            .unwrap();
-    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
-    assert_eq!(result.entry.as_ref(), before.entries.first());
-    let mut persist_only = base_request.clone();
-    persist_only.apply_mode = PersistedConfigApplyMode::PersistOnly as i32;
-    let mut unmasked_edits = base_request;
-    unmasked_edits.config.as_mut().unwrap().hostname = Some("ignored-edit".into());
-    for request in [
-        persist_only,
-        unmasked_edits,
-        apply_persisted(uuid::Uuid::new_v4(), String::new()),
-    ] {
+    let revision = before.entries[0].revision.clone();
+    let mut unmasked = patch(id, revision.clone(), "ignored-edit");
+    unmasked.field_mask.clear();
+    let mut mixed = patch(id, revision.clone(), "ignored-edit");
+    mixed.toml = Some(initial(id, "replaced"));
+    let mut missing_config = patch(id, revision, "ignored-edit");
+    missing_config.config = None;
+    for request in [unmasked, mixed, missing_config] {
         let rejected =
             PersistedConfigService::patch_config(&rpc, BaseController::default(), request)
                 .await
@@ -1516,13 +1277,81 @@ async fn empty_mask_only_applies_existing_configs_and_never_enables_stopped_inst
     }
     assert_eq!(observe(&rpc).await, before);
     assert!(manager.instance_ids().is_empty());
-    assert_eq!(files.files.lock().unwrap().len(), 1);
     assert_eq!(files.read(&path(id)).await.unwrap().unwrap(), raw);
     assert_eq!(files.writes.load(Ordering::Acquire), 0);
 }
 
 #[tokio::test]
-async fn failed_apply_only_restores_active_config_and_keeps_pending_file_untouched() {
+async fn toml_replacement_writes_the_exact_document_and_applies_it() {
+    let (manager, files, rpc) = fixture();
+    let id = uuid::Uuid::new_v4();
+    let original = initial(id, "active").replace("netns = 'keep-netns'\n", "");
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), original.clone().into_bytes());
+    start_saved_instance(&manager, &rpc, id).await;
+    let revision = observe(&rpc).await.entries[0].revision.clone();
+    let document = original.replace(
+        "hostname = 'active'",
+        "hostname = 'replaced'\n# trailing note",
+    );
+    let result = PersistedConfigService::patch_config(
+        &rpc,
+        BaseController::default(),
+        PatchPersistedConfigRequest {
+            inst_id: Some(id.into()),
+            expected_revision: revision.clone(),
+            toml: Some(document.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status, PersistedConfigMutationStatus::Success as i32);
+    assert_eq!(
+        files.read(&path(id)).await.unwrap().unwrap(),
+        document.as_bytes()
+    );
+    assert_eq!(manager.config(id).unwrap().get_hostname(), "replaced");
+    let entry = result.entry.unwrap();
+    assert_eq!(entry.persisted_toml.as_deref(), Some(document.as_str()));
+    assert_ne!(entry.revision, revision);
+
+    for invalid in [
+        format!("{document}\nunknown_field = true\n"),
+        "hostname = [ broken".to_string(),
+        document.replace(&format!("instance_id = '{id}'\n"), ""),
+        initial(uuid::Uuid::new_v4(), "foreign"),
+    ] {
+        let rejected = PersistedConfigService::patch_config(
+            &rpc,
+            BaseController::default(),
+            PatchPersistedConfigRequest {
+                inst_id: Some(id.into()),
+                expected_revision: entry.revision.clone(),
+                toml: Some(invalid.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            rejected.status,
+            PersistedConfigMutationStatus::Invalid as i32,
+            "{invalid}"
+        );
+        assert_eq!(
+            files.read(&path(id)).await.unwrap().unwrap(),
+            document.as_bytes()
+        );
+    }
+    manager.delete_network_instances([id]).await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_save_restores_the_previous_file_and_runtime() {
     use easytier_core::management::InstanceMutationHooks;
     struct FailAfterRun;
     #[async_trait::async_trait]
@@ -1540,14 +1369,7 @@ async fn failed_apply_only_restores_active_config_and_keeps_pending_file_untouch
         .unwrap()
         .insert(path(id), original.clone().into_bytes());
     start_saved_instance(&manager, &first, id).await;
-    let pending = original.replace("hostname = 'active'", "hostname = 'pending'");
-    files
-        .files
-        .lock()
-        .unwrap()
-        .insert(path(id), pending.clone().into_bytes());
     let before = observe(&first).await.entries.remove(0);
-    assert!(before.pending_apply);
     let applying = ProcessManagementRpc::new(
         manager.clone(),
         Arc::new(FailAfterRun),
@@ -1557,7 +1379,7 @@ async fn failed_apply_only_restores_active_config_and_keeps_pending_file_untouch
     let result = PersistedConfigService::patch_config(
         &applying,
         BaseController::default(),
-        apply_persisted(id, before.revision),
+        patch(id, before.revision.clone(), "rejected"),
     )
     .await
     .unwrap();
@@ -1566,18 +1388,18 @@ async fn failed_apply_only_restores_active_config_and_keeps_pending_file_untouch
         PersistedConfigMutationStatus::ApplyFailed as i32
     );
     let entry = result.entry.unwrap();
-    assert!(entry.pending_apply && entry.running && entry.enabled);
+    assert!(entry.running);
+    assert_eq!(entry.revision, before.revision);
     assert_eq!(manager.config(id).unwrap().get_hostname(), "active");
     assert_eq!(
         files.read(&path(id)).await.unwrap().unwrap(),
-        pending.as_bytes()
+        original.as_bytes()
     );
-    assert_eq!(files.writes.load(Ordering::Acquire), 0);
     manager.delete_network_instances([id]).await.unwrap();
 }
 
 #[tokio::test]
-async fn legacy_hot_patch_preserves_pending_disk_fields_and_comments() {
+async fn legacy_hot_patch_preserves_unapplied_disk_fields_and_comments() {
     use easytier_core::{instance::CoreInstanceState, management::InstanceManagementRpc};
     use easytier_proto::api::config::{ConfigRpc, InstanceConfigPatch, PatchConfigRequest};
     let (manager, files, rpc) = fixture();
@@ -1649,7 +1471,6 @@ async fn legacy_hot_patch_preserves_pending_disk_fields_and_comments() {
             .disable_relay_data
     );
     assert_eq!(manager.config(id).unwrap().get_hostname(), "active");
-    assert!(observe(&rpc).await.entries[0].pending_apply);
     manager.delete_network_instances([id]).await.unwrap();
 }
 
@@ -1748,7 +1569,7 @@ async fn periodic_observation_refreshes_without_a_read_request_or_starting_insta
 }
 
 #[tokio::test]
-async fn lifecycle_mutations_reject_revisions_from_before_enabled_state_changed() {
+async fn lifecycle_revisions_survive_runtime_state_changes_but_not_file_edits() {
     use easytier_proto::api::manage::{
         RemoveNetworkInstanceConfigRequest, SetNetworkInstanceEnabledRequest,
     };
@@ -1771,22 +1592,17 @@ async fn lifecycle_mutations_reject_revisions_from_before_enabled_state_changed(
     )
     .await
     .unwrap();
-    let stale_enable = WebClientService::set_network_instance_enabled(
-        &rpc,
-        BaseController::default(),
-        SetNetworkInstanceEnabledRequest {
-            inst_id: Some(id.into()),
-            enabled: true,
-            expected_revision: Some(revision.clone()),
-        },
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        stale_enable
-            .to_string()
-            .contains("local_config_revision_conflict")
+    let paused = observe(&rpc).await.entries.remove(0);
+    assert!(!paused.enabled);
+    assert_eq!(
+        paused.revision, revision,
+        "an open editor must not conflict with a pause"
     );
+    files
+        .files
+        .lock()
+        .unwrap()
+        .insert(path(id), initial(id, "edited").into_bytes());
     let stale_remove = WebClientService::remove_network_instance_config(
         &rpc,
         BaseController::default(),
@@ -1804,7 +1620,6 @@ async fn lifecycle_mutations_reject_revisions_from_before_enabled_state_changed(
     );
     assert!(files.read(&path(id)).await.unwrap().is_some());
     assert!(manager.instance_ids().is_empty());
-    assert!(!observe(&rpc).await.entries[0].enabled);
 }
 
 #[tokio::test]
@@ -2252,7 +2067,8 @@ async fn legacy_lifecycle_rechecks_duplicates_created_during_hooks_and_config_lo
 }
 
 #[tokio::test]
-async fn apply_capability_requires_observation_and_legacy_runtime_without_directory_still_works() {
+async fn revision_capability_requires_observation_and_legacy_runtime_without_directory_still_works()
+{
     use easytier_core::management::UnsupportedConfigFileStorage;
     for directory in [None, Some(PathBuf::from("virtual-configs"))] {
         let manager = Arc::new(native_instance_manager_with_config_dir(directory.clone()));
@@ -2267,10 +2083,12 @@ async fn apply_capability_requires_observation_and_legacy_runtime_without_direct
             storage,
             Arc::new(InstanceStateStore::in_memory()),
         );
-        assert!(!manager.management_capabilities().iter().any(|cap| {
-            cap == "management:persisted-config-apply-v1"
-                || cap == "management:persisted-config-revision-v1"
-        }));
+        assert!(
+            !manager
+                .management_capabilities()
+                .iter()
+                .any(|cap| cap.starts_with("management:persisted-config-revision"))
+        );
         if directory.is_some() {
             continue;
         }
@@ -2404,12 +2222,7 @@ async fn failed_apply_does_not_rollback_a_file_that_just_became_protected() {
     let result = PersistedConfigService::patch_config(
         &applying,
         BaseController::default(),
-        patch(
-            id,
-            revision,
-            "written",
-            PersistedConfigApplyMode::SaveAndApply,
-        ),
+        patch(id, revision, "written"),
     )
     .await
     .unwrap();
@@ -2457,7 +2270,7 @@ async fn empty_revision_creates_only_absent_configs_and_keeps_them_disabled() {
                 "networking_method".into(),
                 "no_tun".into(),
             ],
-            apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
+            toml: None,
         },
     )
     .await
@@ -2479,12 +2292,7 @@ async fn empty_revision_creates_only_absent_configs_and_keeps_them_disabled() {
     let retry = PersistedConfigService::patch_config(
         &rpc,
         BaseController::default(),
-        patch(
-            id,
-            String::new(),
-            "overwrite",
-            PersistedConfigApplyMode::PersistOnly,
-        ),
+        patch(id, String::new(), "overwrite"),
     )
     .await
     .unwrap();
@@ -2720,7 +2528,6 @@ async fn live_native_files_preserve_implicit_secure_identity_and_stable_observat
     let identity = manager.config(id).unwrap().get_secure_mode().unwrap();
     assert!(identity.local_private_key.is_some());
     let running = observe(&rpc).await;
-    assert!(!running.entries[0].pending_apply);
     assert_eq!(
         running,
         observe(&rpc).await,
@@ -2742,7 +2549,6 @@ async fn live_native_files_preserve_implicit_secure_identity_and_stable_observat
         manager.config(id).unwrap().get_secure_mode(),
         Some(identity.clone())
     );
-    assert!(!observe(&rpc).await.entries[0].pending_apply);
     storage
         .write(&path, secure("secure-updated").as_bytes())
         .await
@@ -2754,7 +2560,6 @@ async fn live_native_files_preserve_implicit_secure_identity_and_stable_observat
         Some(identity.clone())
     );
     let updated = observe(&rpc).await;
-    assert!(!updated.entries[0].pending_apply);
     assert_eq!(updated, observe(&rpc).await);
     assert!(
         !std::fs::read_to_string(&path)
@@ -2769,7 +2574,6 @@ async fn live_native_files_preserve_implicit_secure_identity_and_stable_observat
             id,
             updated.entries[0].revision.clone(),
             "secure-rpc-updated",
-            PersistedConfigApplyMode::SaveAndApply,
         ),
     )
     .await
@@ -2780,7 +2584,6 @@ async fn live_native_files_preserve_implicit_secure_identity_and_stable_observat
         manager.config(id).unwrap().get_secure_mode(),
         Some(identity)
     );
-    assert!(!observe(&rpc).await.entries[0].pending_apply);
     for blank in ["", " "] {
         let active = manager.instance(id).unwrap();
         let invalid = format!(

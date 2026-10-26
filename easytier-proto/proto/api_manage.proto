@@ -357,15 +357,11 @@ message PersistedConfigEntry {
   bool running = 50008;
   string persisted_raw_hash = 50009;
   optional string active_raw_hash = 50010;
-  bool pending_apply = 50011;
+  reserved 50011;
+  reserved "pending_apply";
   string status = 50012;
   string network_name = 50013;
   ConfigSource source = 50014;
-}
-
-enum PersistedConfigApplyMode {
-  SaveAndApply = 0;
-  PersistOnly = 1;
 }
 
 enum PersistedConfigMutationStatus {
@@ -378,6 +374,8 @@ enum PersistedConfigMutationStatus {
   Unsupported = 6;
 }
 
+// Every successful write is the new file. An enabled network applies it
+// before the response; if it cannot start, the previous file is restored.
 message PatchPersistedConfigRequest {
   common.UUID inst_id = 50001;
   // Empty permits creation only when both identity and target file are absent.
@@ -385,7 +383,10 @@ message PatchPersistedConfigRequest {
   NetworkConfig config = 50003;
   // Snake-case typed paths. Repeated fields are replaced atomically.
   repeated string field_mask = 50004;
-  PersistedConfigApplyMode apply_mode = 50005;
+  reserved 50005;
+  reserved "apply_mode";
+  // Replaces the whole document instead of merging typed fields.
+  optional string toml = 50006;
 }
 
 message PatchPersistedConfigResponse {

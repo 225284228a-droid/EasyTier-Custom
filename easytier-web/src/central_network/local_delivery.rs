@@ -4,9 +4,7 @@ use std::collections::BTreeMap;
 
 use easytier::{
     common::config::{NetworkConfigExt as _, TomlConfigLoader},
-    proto::api::manage::{
-        NetworkConfig, PatchPersistedConfigRequest, PersistedConfigApplyMode, PersistedConfigEntry,
-    },
+    proto::api::manage::{NetworkConfig, PatchPersistedConfigRequest, PersistedConfigEntry},
 };
 use easytier_core::config::api::network_config_from_toml;
 use uuid::Uuid;
@@ -22,41 +20,6 @@ use crate::{
 const CONFLICT: &str =
     "central configuration delivery conflicted with a local change; local files were preserved";
 const UNKNOWN: &str = "central configuration write outcome is unknown; local files were preserved";
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Baseline {
-    catalog_epoch: String,
-    persisted_raw_hash: String,
-    active_raw_hash: Option<String>,
-    config_permission: u32,
-    enabled: bool,
-    running: bool,
-    pending_apply: bool,
-}
-
-impl Baseline {
-    fn new(catalog_epoch: &str, entry: &PersistedConfigEntry) -> Self {
-        Self {
-            catalog_epoch: catalog_epoch.to_owned(),
-            persisted_raw_hash: entry.persisted_raw_hash.clone(),
-            active_raw_hash: entry.active_raw_hash.clone(),
-            config_permission: entry.config_permission,
-            enabled: entry.enabled,
-            running: entry.running,
-            pending_apply: entry.pending_apply,
-        }
-    }
-
-    fn equivalent_after_restart(&self, catalog_epoch: &str, entry: &PersistedConfigEntry) -> bool {
-        self.catalog_epoch != catalog_epoch
-            && self.persisted_raw_hash == entry.persisted_raw_hash
-            && self.active_raw_hash == entry.active_raw_hash
-            && self.config_permission == entry.config_permission
-            && self.enabled == entry.enabled
-            && self.running == entry.running
-            && self.pending_apply == entry.pending_apply
-    }
-}
 
 pub(super) fn canonical(config: &NetworkConfig) -> anyhow::Result<NetworkConfig> {
     let mut canonical = network_config_from_toml(&config.gen_config()?);
@@ -104,28 +67,15 @@ fn entry(
 }
 
 /// Never adopt the latest node revision to retry a conflicting publication.
-/// An unknown write can retry only after a fresh observation proves that its
-/// original baseline still exists (or that the initial identity is absent).
+/// Revisions identify file contents and survive node restarts, so any other
+/// revision is a local or foreign edit (or an unknown outcome of our write).
 fn check_baseline(
     row: &CentralLocalDelivery,
     observed: Option<&PersistedConfigEntry>,
-    catalog_epoch: &str,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<()> {
     match (row.revision.as_deref(), observed) {
-        (Some(revision), Some(entry)) if entry.revision == revision => Ok(false),
-        (Some(_), Some(entry))
-            if row
-                .baseline
-                .as_deref()
-                .map(serde_json::from_str::<Baseline>)
-                .transpose()?
-                .is_some_and(|baseline| {
-                    baseline.equivalent_after_restart(catalog_epoch, entry)
-                }) =>
-        {
-            Ok(true)
-        }
-        (None, None) => Ok(false),
+        (Some(revision), Some(entry)) if entry.revision == revision => Ok(()),
+        (None, None) => Ok(()),
         _ if row.pending_operation => anyhow::bail!("{UNKNOWN}"),
         _ => anyhow::bail!("{CONFLICT}"),
     }
@@ -180,13 +130,9 @@ async fn save_revision(
     device_id: Uuid,
     row: &mut CentralLocalDelivery,
     observed: &PersistedConfigEntry,
-    catalog_epoch: &str,
 ) -> anyhow::Result<()> {
     row.revision = Some(observed.revision.clone());
-    row.baseline = Some(serde_json::to_string(&Baseline::new(
-        catalog_epoch,
-        observed,
-    ))?);
+    row.baseline = None;
     row.pending_operation = false;
     row.error = None;
     store(db, user_id, device_id, row).await?;
@@ -224,19 +170,7 @@ async fn deliver(
             .await?;
         return Ok(());
     }
-    if check_baseline(row, observed.as_ref(), &mirror.snapshot.catalog_epoch)? {
-        // Revisions are scoped to a node process. Only an identical persisted
-        // and active snapshot can re-establish the baseline after a restart.
-        save_revision(
-            db,
-            user_id,
-            device_id,
-            row,
-            observed.as_ref().unwrap(),
-            &mirror.snapshot.catalog_epoch,
-        )
-        .await?;
-    }
+    check_baseline(row, observed.as_ref())?;
     if row.desired_config.is_none() {
         let revision = row
             .revision
@@ -260,7 +194,7 @@ async fn deliver(
         .unwrap_or_else(|| creation_baseline(instance_id))?;
     preserve_node_identity(&mut desired, &baseline);
     let mask = field_mask(&baseline, &desired)?;
-    if !mask.is_empty() || observed.as_ref().is_some_and(|entry| entry.pending_apply) {
+    if !mask.is_empty() {
         row.pending_operation = true;
         store(db, user_id, device_id, row).await?;
         let mirror = manager
@@ -270,13 +204,9 @@ async fn deliver(
                 PatchPersistedConfigRequest {
                     inst_id: Some(instance_id.into()),
                     expected_revision: row.revision.clone().unwrap_or_default(),
-                    config: Some(if mask.is_empty() {
-                        NetworkConfig::default()
-                    } else {
-                        desired
-                    }),
+                    config: Some(desired),
                     field_mask: mask,
-                    apply_mode: PersistedConfigApplyMode::SaveAndApply as i32,
+                    toml: None,
                 },
             )
             .await?;
@@ -289,7 +219,6 @@ async fn deliver(
             observed
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("{UNKNOWN}"))?,
-            &mirror.snapshot.catalog_epoch,
         )
         .await?;
     }
@@ -316,23 +245,14 @@ async fn deliver(
             observed.persisted_raw_hash == enabled.persisted_raw_hash
                 && observed.config_permission == enabled.config_permission
                 && enabled.enabled
-                && enabled.running
-                && !enabled.pending_apply,
+                && enabled.running,
             "{CONFLICT}"
         );
         observed = enabled;
-        save_revision(
-            db,
-            user_id,
-            device_id,
-            row,
-            &observed,
-            &mirror.snapshot.catalog_epoch,
-        )
-        .await?;
+        save_revision(db, user_id, device_id, row, &observed).await?;
     }
     anyhow::ensure!(
-        observed.running && !observed.pending_apply,
+        observed.running,
         "central configuration could not be applied"
     );
     row.delivered_config = row.desired_config.clone();
@@ -416,57 +336,25 @@ mod tests {
             revision: "node-v2".into(),
             ..Default::default()
         };
-        assert!(check_baseline(&row, None, "node-epoch").is_ok());
+        assert!(check_baseline(&row, None).is_ok());
         assert!(
-            check_baseline(&row, Some(&entry), "node-epoch")
+            check_baseline(&row, Some(&entry))
                 .unwrap_err()
                 .to_string()
                 .contains("conflicted")
         );
         row.revision = Some("node-v1".into());
-        assert!(check_baseline(&row, None, "node-epoch").is_err());
-        assert!(check_baseline(&row, Some(&entry), "node-epoch").is_err());
+        assert!(check_baseline(&row, None).is_err());
+        assert!(check_baseline(&row, Some(&entry)).is_err());
         row.pending_operation = true;
         assert!(
-            check_baseline(&row, Some(&entry), "node-epoch")
+            check_baseline(&row, Some(&entry))
                 .unwrap_err()
                 .to_string()
                 .contains("unknown")
         );
         row.revision = Some("node-v2".into());
-        assert!(check_baseline(&row, Some(&entry), "node-epoch").is_ok());
-    }
-
-    #[test]
-    fn restart_baselines_require_equivalent_persisted_and_active_state() {
-        let mut entry = PersistedConfigEntry {
-            revision: "old-revision".into(),
-            persisted_raw_hash: "saved-hash".into(),
-            active_raw_hash: Some("active-hash".into()),
-            enabled: true,
-            running: true,
-            ..Default::default()
-        };
-        let row = CentralLocalDelivery {
-            instance_id: Uuid::new_v4().to_string(),
-            desired_config: Some("{}".into()),
-            delivered_config: Some("{}".into()),
-            revision: Some(entry.revision.clone()),
-            baseline: Some(serde_json::to_string(&Baseline::new("old-epoch", &entry)).unwrap()),
-            pending_operation: false,
-            error: None,
-        };
-        entry.revision = "new-revision".into();
-        assert!(check_baseline(&row, Some(&entry), "old-epoch").is_err());
-        assert!(check_baseline(&row, Some(&entry), "new-epoch").unwrap());
-        entry.pending_apply = true;
-        assert!(check_baseline(&row, Some(&entry), "new-epoch").is_err());
-        entry.pending_apply = false;
-        entry.active_raw_hash = Some("different-active-hash".into());
-        assert!(check_baseline(&row, Some(&entry), "new-epoch").is_err());
-        entry.active_raw_hash = Some("active-hash".into());
-        entry.persisted_raw_hash = "manual-edit".into();
-        assert!(check_baseline(&row, Some(&entry), "new-epoch").is_err());
+        assert!(check_baseline(&row, Some(&entry)).is_ok());
     }
 
     #[test]

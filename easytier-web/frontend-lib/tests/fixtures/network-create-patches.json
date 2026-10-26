@@ -130,8 +130,7 @@
         "p2p_prefer_protocol",
         "close_redundant_conns_when_disguised",
         "vpn"
-      ],
-      "apply_mode": 1
+      ]
     }
   },
   {
@@ -264,8 +263,7 @@
         "dhcpv6",
         "dhcp_ipv6_cidr",
         "close_redundant_conns_when_disguised"
-      ],
-      "apply_mode": 1
+      ]
     }
   },
   {
@@ -392,8 +390,7 @@
         "dhcp_ipv4_cidr",
         "dhcpv6",
         "dhcp_ipv6_cidr"
-      ],
-      "apply_mode": 1
+      ]
     }
   },
   {
@@ -507,8 +504,7 @@
         "dhcp_ipv4_cidr",
         "dhcpv6",
         "dhcp_ipv6_cidr"
-      ],
-      "apply_mode": 1
+      ]
     }
   }
 ]

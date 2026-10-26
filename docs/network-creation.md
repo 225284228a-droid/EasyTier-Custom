@@ -4,8 +4,8 @@ The GUI and device-management Web console use the shared `RemoteManagement`
 component. Official Web nodes retain `save_config` and Web-database ownership
 of saved network configurations; their legacy save does not write node TOML.
 Fork nodes advertising persisted revision management receive a `PatchConfig`
-request with an empty expected revision and `PersistOnly`; creation saves a
-disabled instance and never starts a network implicitly.
+request with an empty expected revision; creation saves a disabled instance
+and never starts a network implicitly.
 
 The frontend compiler reads standard Protobuf field descriptors to exclude
 deprecated fields from both creation masks and edit diffs. Protobuf-ts's runtime

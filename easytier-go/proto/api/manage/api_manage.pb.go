@@ -123,52 +123,6 @@ func (ConfigSource) EnumDescriptor() ([]byte, []int) {
 	return file_api_manage_proto_rawDescGZIP(), []int{1}
 }
 
-type PersistedConfigApplyMode int32
-
-const (
-	PersistedConfigApplyMode_SaveAndApply PersistedConfigApplyMode = 0
-	PersistedConfigApplyMode_PersistOnly  PersistedConfigApplyMode = 1
-)
-
-// Enum value maps for PersistedConfigApplyMode.
-var (
-	PersistedConfigApplyMode_name = map[int32]string{
-		0: "SaveAndApply",
-		1: "PersistOnly",
-	}
-	PersistedConfigApplyMode_value = map[string]int32{
-		"SaveAndApply": 0,
-		"PersistOnly":  1,
-	}
-)
-
-func (x PersistedConfigApplyMode) Enum() *PersistedConfigApplyMode {
-	p := new(PersistedConfigApplyMode)
-	*p = x
-	return p
-}
-
-func (x PersistedConfigApplyMode) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (PersistedConfigApplyMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_manage_proto_enumTypes[2].Descriptor()
-}
-
-func (PersistedConfigApplyMode) Type() protoreflect.EnumType {
-	return &file_api_manage_proto_enumTypes[2]
-}
-
-func (x PersistedConfigApplyMode) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use PersistedConfigApplyMode.Descriptor instead.
-func (PersistedConfigApplyMode) EnumDescriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{2}
-}
-
 type PersistedConfigMutationStatus int32
 
 const (
@@ -214,11 +168,11 @@ func (x PersistedConfigMutationStatus) String() string {
 }
 
 func (PersistedConfigMutationStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_api_manage_proto_enumTypes[3].Descriptor()
+	return file_api_manage_proto_enumTypes[2].Descriptor()
 }
 
 func (PersistedConfigMutationStatus) Type() protoreflect.EnumType {
-	return &file_api_manage_proto_enumTypes[3]
+	return &file_api_manage_proto_enumTypes[2]
 }
 
 func (x PersistedConfigMutationStatus) Number() protoreflect.EnumNumber {
@@ -227,7 +181,7 @@ func (x PersistedConfigMutationStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PersistedConfigMutationStatus.Descriptor instead.
 func (PersistedConfigMutationStatus) EnumDescriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{3}
+	return file_api_manage_proto_rawDescGZIP(), []int{2}
 }
 
 type NetworkConfig struct {
@@ -1609,6 +1563,60 @@ func (x *NodeLocation) GetLongitude() float64 {
 	return 0
 }
 
+// Location of a mesh peer seen in this node's route table, resolved by the
+// console from the peer's advertised public address.
+type PeerNodeLocation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        uint32                 `protobuf:"varint,50001,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	Location      *NodeLocation          `protobuf:"bytes,50002,opt,name=location,proto3" json:"location,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PeerNodeLocation) Reset() {
+	*x = PeerNodeLocation{}
+	mi := &file_api_manage_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PeerNodeLocation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PeerNodeLocation) ProtoMessage() {}
+
+func (x *PeerNodeLocation) ProtoReflect() protoreflect.Message {
+	mi := &file_api_manage_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PeerNodeLocation.ProtoReflect.Descriptor instead.
+func (*PeerNodeLocation) Descriptor() ([]byte, []int) {
+	return file_api_manage_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *PeerNodeLocation) GetPeerId() uint32 {
+	if x != nil {
+		return x.PeerId
+	}
+	return 0
+}
+
+func (x *PeerNodeLocation) GetLocation() *NodeLocation {
+	if x != nil {
+		return x.Location
+	}
+	return nil
+}
+
 type NetworkInstanceRunningInfo struct {
 	state                 protoimpl.MessageState               `protogen:"open.v1"`
 	DevName               string                               `protobuf:"bytes,1,opt,name=dev_name,json=devName,proto3" json:"dev_name,omitempty"`
@@ -1622,13 +1630,14 @@ type NetworkInstanceRunningInfo struct {
 	ForeignNetworkSummary *peer_rpc.RouteForeignNetworkSummary `protobuf:"bytes,9,opt,name=foreign_network_summary,json=foreignNetworkSummary,proto3" json:"foreign_network_summary,omitempty"`
 	NodeLocation          *NodeLocation                        `protobuf:"bytes,50010,opt,name=node_location,json=nodeLocation,proto3" json:"node_location,omitempty"`
 	NetworkName           string                               `protobuf:"bytes,50011,opt,name=network_name,json=networkName,proto3" json:"network_name,omitempty"`
+	PeerLocations         []*PeerNodeLocation                  `protobuf:"bytes,50012,rep,name=peer_locations,json=peerLocations,proto3" json:"peer_locations,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
 
 func (x *NetworkInstanceRunningInfo) Reset() {
 	*x = NetworkInstanceRunningInfo{}
-	mi := &file_api_manage_proto_msgTypes[11]
+	mi := &file_api_manage_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1640,7 +1649,7 @@ func (x *NetworkInstanceRunningInfo) String() string {
 func (*NetworkInstanceRunningInfo) ProtoMessage() {}
 
 func (x *NetworkInstanceRunningInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[11]
+	mi := &file_api_manage_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1653,7 +1662,7 @@ func (x *NetworkInstanceRunningInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkInstanceRunningInfo.ProtoReflect.Descriptor instead.
 func (*NetworkInstanceRunningInfo) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{11}
+	return file_api_manage_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *NetworkInstanceRunningInfo) GetDevName() string {
@@ -1733,6 +1742,13 @@ func (x *NetworkInstanceRunningInfo) GetNetworkName() string {
 	return ""
 }
 
+func (x *NetworkInstanceRunningInfo) GetPeerLocations() []*PeerNodeLocation {
+	if x != nil {
+		return x.PeerLocations
+	}
+	return nil
+}
+
 type NetworkInstanceRunningInfoMap struct {
 	state         protoimpl.MessageState                 `protogen:"open.v1"`
 	Map           map[string]*NetworkInstanceRunningInfo `protobuf:"bytes,1,rep,name=map,proto3" json:"map,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -1742,7 +1758,7 @@ type NetworkInstanceRunningInfoMap struct {
 
 func (x *NetworkInstanceRunningInfoMap) Reset() {
 	*x = NetworkInstanceRunningInfoMap{}
-	mi := &file_api_manage_proto_msgTypes[12]
+	mi := &file_api_manage_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1754,7 +1770,7 @@ func (x *NetworkInstanceRunningInfoMap) String() string {
 func (*NetworkInstanceRunningInfoMap) ProtoMessage() {}
 
 func (x *NetworkInstanceRunningInfoMap) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[12]
+	mi := &file_api_manage_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1767,7 +1783,7 @@ func (x *NetworkInstanceRunningInfoMap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkInstanceRunningInfoMap.ProtoReflect.Descriptor instead.
 func (*NetworkInstanceRunningInfoMap) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{12}
+	return file_api_manage_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *NetworkInstanceRunningInfoMap) GetMap() map[string]*NetworkInstanceRunningInfo {
@@ -1790,7 +1806,7 @@ type NetworkMeta struct {
 
 func (x *NetworkMeta) Reset() {
 	*x = NetworkMeta{}
-	mi := &file_api_manage_proto_msgTypes[13]
+	mi := &file_api_manage_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1802,7 +1818,7 @@ func (x *NetworkMeta) String() string {
 func (*NetworkMeta) ProtoMessage() {}
 
 func (x *NetworkMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[13]
+	mi := &file_api_manage_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1815,7 +1831,7 @@ func (x *NetworkMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkMeta.ProtoReflect.Descriptor instead.
 func (*NetworkMeta) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{13}
+	return file_api_manage_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *NetworkMeta) GetInstId() *common.UUID {
@@ -1862,7 +1878,7 @@ type ValidateConfigRequest struct {
 
 func (x *ValidateConfigRequest) Reset() {
 	*x = ValidateConfigRequest{}
-	mi := &file_api_manage_proto_msgTypes[14]
+	mi := &file_api_manage_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1874,7 +1890,7 @@ func (x *ValidateConfigRequest) String() string {
 func (*ValidateConfigRequest) ProtoMessage() {}
 
 func (x *ValidateConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[14]
+	mi := &file_api_manage_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1887,7 +1903,7 @@ func (x *ValidateConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateConfigRequest.ProtoReflect.Descriptor instead.
 func (*ValidateConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{14}
+	return file_api_manage_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ValidateConfigRequest) GetConfig() *NetworkConfig {
@@ -1906,7 +1922,7 @@ type ValidateConfigResponse struct {
 
 func (x *ValidateConfigResponse) Reset() {
 	*x = ValidateConfigResponse{}
-	mi := &file_api_manage_proto_msgTypes[15]
+	mi := &file_api_manage_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1918,7 +1934,7 @@ func (x *ValidateConfigResponse) String() string {
 func (*ValidateConfigResponse) ProtoMessage() {}
 
 func (x *ValidateConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[15]
+	mi := &file_api_manage_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1931,7 +1947,7 @@ func (x *ValidateConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateConfigResponse.ProtoReflect.Descriptor instead.
 func (*ValidateConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{15}
+	return file_api_manage_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ValidateConfigResponse) GetTomlConfig() string {
@@ -1953,7 +1969,7 @@ type RunNetworkInstanceRequest struct {
 
 func (x *RunNetworkInstanceRequest) Reset() {
 	*x = RunNetworkInstanceRequest{}
-	mi := &file_api_manage_proto_msgTypes[16]
+	mi := &file_api_manage_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1965,7 +1981,7 @@ func (x *RunNetworkInstanceRequest) String() string {
 func (*RunNetworkInstanceRequest) ProtoMessage() {}
 
 func (x *RunNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[16]
+	mi := &file_api_manage_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1978,7 +1994,7 @@ func (x *RunNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunNetworkInstanceRequest.ProtoReflect.Descriptor instead.
 func (*RunNetworkInstanceRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{16}
+	return file_api_manage_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RunNetworkInstanceRequest) GetInstId() *common.UUID {
@@ -2018,7 +2034,7 @@ type RunNetworkInstanceResponse struct {
 
 func (x *RunNetworkInstanceResponse) Reset() {
 	*x = RunNetworkInstanceResponse{}
-	mi := &file_api_manage_proto_msgTypes[17]
+	mi := &file_api_manage_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2030,7 +2046,7 @@ func (x *RunNetworkInstanceResponse) String() string {
 func (*RunNetworkInstanceResponse) ProtoMessage() {}
 
 func (x *RunNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[17]
+	mi := &file_api_manage_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2043,7 +2059,7 @@ func (x *RunNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunNetworkInstanceResponse.ProtoReflect.Descriptor instead.
 func (*RunNetworkInstanceResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{17}
+	return file_api_manage_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RunNetworkInstanceResponse) GetInstId() *common.UUID {
@@ -2062,7 +2078,7 @@ type RetainNetworkInstanceRequest struct {
 
 func (x *RetainNetworkInstanceRequest) Reset() {
 	*x = RetainNetworkInstanceRequest{}
-	mi := &file_api_manage_proto_msgTypes[18]
+	mi := &file_api_manage_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2074,7 +2090,7 @@ func (x *RetainNetworkInstanceRequest) String() string {
 func (*RetainNetworkInstanceRequest) ProtoMessage() {}
 
 func (x *RetainNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[18]
+	mi := &file_api_manage_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2087,7 +2103,7 @@ func (x *RetainNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetainNetworkInstanceRequest.ProtoReflect.Descriptor instead.
 func (*RetainNetworkInstanceRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{18}
+	return file_api_manage_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *RetainNetworkInstanceRequest) GetInstIds() []*common.UUID {
@@ -2106,7 +2122,7 @@ type RetainNetworkInstanceResponse struct {
 
 func (x *RetainNetworkInstanceResponse) Reset() {
 	*x = RetainNetworkInstanceResponse{}
-	mi := &file_api_manage_proto_msgTypes[19]
+	mi := &file_api_manage_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2118,7 +2134,7 @@ func (x *RetainNetworkInstanceResponse) String() string {
 func (*RetainNetworkInstanceResponse) ProtoMessage() {}
 
 func (x *RetainNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[19]
+	mi := &file_api_manage_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2131,7 +2147,7 @@ func (x *RetainNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetainNetworkInstanceResponse.ProtoReflect.Descriptor instead.
 func (*RetainNetworkInstanceResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{19}
+	return file_api_manage_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RetainNetworkInstanceResponse) GetRemainInstIds() []*common.UUID {
@@ -2150,7 +2166,7 @@ type CollectNetworkInfoRequest struct {
 
 func (x *CollectNetworkInfoRequest) Reset() {
 	*x = CollectNetworkInfoRequest{}
-	mi := &file_api_manage_proto_msgTypes[20]
+	mi := &file_api_manage_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2162,7 +2178,7 @@ func (x *CollectNetworkInfoRequest) String() string {
 func (*CollectNetworkInfoRequest) ProtoMessage() {}
 
 func (x *CollectNetworkInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[20]
+	mi := &file_api_manage_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2175,7 +2191,7 @@ func (x *CollectNetworkInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectNetworkInfoRequest.ProtoReflect.Descriptor instead.
 func (*CollectNetworkInfoRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{20}
+	return file_api_manage_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CollectNetworkInfoRequest) GetInstIds() []*common.UUID {
@@ -2194,7 +2210,7 @@ type CollectNetworkInfoResponse struct {
 
 func (x *CollectNetworkInfoResponse) Reset() {
 	*x = CollectNetworkInfoResponse{}
-	mi := &file_api_manage_proto_msgTypes[21]
+	mi := &file_api_manage_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2206,7 +2222,7 @@ func (x *CollectNetworkInfoResponse) String() string {
 func (*CollectNetworkInfoResponse) ProtoMessage() {}
 
 func (x *CollectNetworkInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[21]
+	mi := &file_api_manage_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2219,7 +2235,7 @@ func (x *CollectNetworkInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectNetworkInfoResponse.ProtoReflect.Descriptor instead.
 func (*CollectNetworkInfoResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{21}
+	return file_api_manage_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CollectNetworkInfoResponse) GetInfo() *NetworkInstanceRunningInfoMap {
@@ -2237,7 +2253,7 @@ type ListNetworkInstanceRequest struct {
 
 func (x *ListNetworkInstanceRequest) Reset() {
 	*x = ListNetworkInstanceRequest{}
-	mi := &file_api_manage_proto_msgTypes[22]
+	mi := &file_api_manage_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2249,7 +2265,7 @@ func (x *ListNetworkInstanceRequest) String() string {
 func (*ListNetworkInstanceRequest) ProtoMessage() {}
 
 func (x *ListNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[22]
+	mi := &file_api_manage_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2262,7 +2278,7 @@ func (x *ListNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkInstanceRequest.ProtoReflect.Descriptor instead.
 func (*ListNetworkInstanceRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{22}
+	return file_api_manage_proto_rawDescGZIP(), []int{23}
 }
 
 type ListNetworkInstanceResponse struct {
@@ -2277,7 +2293,7 @@ type ListNetworkInstanceResponse struct {
 
 func (x *ListNetworkInstanceResponse) Reset() {
 	*x = ListNetworkInstanceResponse{}
-	mi := &file_api_manage_proto_msgTypes[23]
+	mi := &file_api_manage_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2289,7 +2305,7 @@ func (x *ListNetworkInstanceResponse) String() string {
 func (*ListNetworkInstanceResponse) ProtoMessage() {}
 
 func (x *ListNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[23]
+	mi := &file_api_manage_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2302,7 +2318,7 @@ func (x *ListNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkInstanceResponse.ProtoReflect.Descriptor instead.
 func (*ListNetworkInstanceResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{23}
+	return file_api_manage_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListNetworkInstanceResponse) GetInstIds() []*common.UUID {
@@ -2343,7 +2359,7 @@ type DeleteNetworkInstanceRequest struct {
 
 func (x *DeleteNetworkInstanceRequest) Reset() {
 	*x = DeleteNetworkInstanceRequest{}
-	mi := &file_api_manage_proto_msgTypes[24]
+	mi := &file_api_manage_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2355,7 +2371,7 @@ func (x *DeleteNetworkInstanceRequest) String() string {
 func (*DeleteNetworkInstanceRequest) ProtoMessage() {}
 
 func (x *DeleteNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[24]
+	mi := &file_api_manage_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2368,7 +2384,7 @@ func (x *DeleteNetworkInstanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkInstanceRequest.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkInstanceRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{24}
+	return file_api_manage_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DeleteNetworkInstanceRequest) GetInstIds() []*common.UUID {
@@ -2394,7 +2410,7 @@ type DeleteNetworkInstanceResponse struct {
 
 func (x *DeleteNetworkInstanceResponse) Reset() {
 	*x = DeleteNetworkInstanceResponse{}
-	mi := &file_api_manage_proto_msgTypes[25]
+	mi := &file_api_manage_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2406,7 +2422,7 @@ func (x *DeleteNetworkInstanceResponse) String() string {
 func (*DeleteNetworkInstanceResponse) ProtoMessage() {}
 
 func (x *DeleteNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[25]
+	mi := &file_api_manage_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2419,7 +2435,7 @@ func (x *DeleteNetworkInstanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNetworkInstanceResponse.ProtoReflect.Descriptor instead.
 func (*DeleteNetworkInstanceResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{25}
+	return file_api_manage_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DeleteNetworkInstanceResponse) GetRemainInstIds() []*common.UUID {
@@ -2438,7 +2454,7 @@ type GetNetworkInstanceConfigRequest struct {
 
 func (x *GetNetworkInstanceConfigRequest) Reset() {
 	*x = GetNetworkInstanceConfigRequest{}
-	mi := &file_api_manage_proto_msgTypes[26]
+	mi := &file_api_manage_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2450,7 +2466,7 @@ func (x *GetNetworkInstanceConfigRequest) String() string {
 func (*GetNetworkInstanceConfigRequest) ProtoMessage() {}
 
 func (x *GetNetworkInstanceConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[26]
+	mi := &file_api_manage_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2463,7 +2479,7 @@ func (x *GetNetworkInstanceConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkInstanceConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetNetworkInstanceConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{26}
+	return file_api_manage_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetNetworkInstanceConfigRequest) GetInstId() *common.UUID {
@@ -2483,7 +2499,7 @@ type GetNetworkInstanceConfigResponse struct {
 
 func (x *GetNetworkInstanceConfigResponse) Reset() {
 	*x = GetNetworkInstanceConfigResponse{}
-	mi := &file_api_manage_proto_msgTypes[27]
+	mi := &file_api_manage_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2495,7 +2511,7 @@ func (x *GetNetworkInstanceConfigResponse) String() string {
 func (*GetNetworkInstanceConfigResponse) ProtoMessage() {}
 
 func (x *GetNetworkInstanceConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[27]
+	mi := &file_api_manage_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2508,7 +2524,7 @@ func (x *GetNetworkInstanceConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNetworkInstanceConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetNetworkInstanceConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{27}
+	return file_api_manage_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetNetworkInstanceConfigResponse) GetConfig() *NetworkConfig {
@@ -2534,7 +2550,7 @@ type ListNetworkInstanceMetaRequest struct {
 
 func (x *ListNetworkInstanceMetaRequest) Reset() {
 	*x = ListNetworkInstanceMetaRequest{}
-	mi := &file_api_manage_proto_msgTypes[28]
+	mi := &file_api_manage_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2546,7 +2562,7 @@ func (x *ListNetworkInstanceMetaRequest) String() string {
 func (*ListNetworkInstanceMetaRequest) ProtoMessage() {}
 
 func (x *ListNetworkInstanceMetaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[28]
+	mi := &file_api_manage_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2559,7 +2575,7 @@ func (x *ListNetworkInstanceMetaRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkInstanceMetaRequest.ProtoReflect.Descriptor instead.
 func (*ListNetworkInstanceMetaRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{28}
+	return file_api_manage_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListNetworkInstanceMetaRequest) GetInstIds() []*common.UUID {
@@ -2578,7 +2594,7 @@ type ListNetworkInstanceMetaResponse struct {
 
 func (x *ListNetworkInstanceMetaResponse) Reset() {
 	*x = ListNetworkInstanceMetaResponse{}
-	mi := &file_api_manage_proto_msgTypes[29]
+	mi := &file_api_manage_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2590,7 +2606,7 @@ func (x *ListNetworkInstanceMetaResponse) String() string {
 func (*ListNetworkInstanceMetaResponse) ProtoMessage() {}
 
 func (x *ListNetworkInstanceMetaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[29]
+	mi := &file_api_manage_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2603,7 +2619,7 @@ func (x *ListNetworkInstanceMetaResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNetworkInstanceMetaResponse.ProtoReflect.Descriptor instead.
 func (*ListNetworkInstanceMetaResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{29}
+	return file_api_manage_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListNetworkInstanceMetaResponse) GetMetas() []*NetworkMeta {
@@ -2624,7 +2640,7 @@ type SaveNetworkInstanceConfigRequest struct {
 
 func (x *SaveNetworkInstanceConfigRequest) Reset() {
 	*x = SaveNetworkInstanceConfigRequest{}
-	mi := &file_api_manage_proto_msgTypes[30]
+	mi := &file_api_manage_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2636,7 +2652,7 @@ func (x *SaveNetworkInstanceConfigRequest) String() string {
 func (*SaveNetworkInstanceConfigRequest) ProtoMessage() {}
 
 func (x *SaveNetworkInstanceConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[30]
+	mi := &file_api_manage_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2649,7 +2665,7 @@ func (x *SaveNetworkInstanceConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveNetworkInstanceConfigRequest.ProtoReflect.Descriptor instead.
 func (*SaveNetworkInstanceConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{30}
+	return file_api_manage_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SaveNetworkInstanceConfigRequest) GetInstId() *common.UUID {
@@ -2681,7 +2697,7 @@ type SaveNetworkInstanceConfigResponse struct {
 
 func (x *SaveNetworkInstanceConfigResponse) Reset() {
 	*x = SaveNetworkInstanceConfigResponse{}
-	mi := &file_api_manage_proto_msgTypes[31]
+	mi := &file_api_manage_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2693,7 +2709,7 @@ func (x *SaveNetworkInstanceConfigResponse) String() string {
 func (*SaveNetworkInstanceConfigResponse) ProtoMessage() {}
 
 func (x *SaveNetworkInstanceConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[31]
+	mi := &file_api_manage_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2706,7 +2722,7 @@ func (x *SaveNetworkInstanceConfigResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SaveNetworkInstanceConfigResponse.ProtoReflect.Descriptor instead.
 func (*SaveNetworkInstanceConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{31}
+	return file_api_manage_proto_rawDescGZIP(), []int{32}
 }
 
 type SetNetworkInstanceEnabledRequest struct {
@@ -2720,7 +2736,7 @@ type SetNetworkInstanceEnabledRequest struct {
 
 func (x *SetNetworkInstanceEnabledRequest) Reset() {
 	*x = SetNetworkInstanceEnabledRequest{}
-	mi := &file_api_manage_proto_msgTypes[32]
+	mi := &file_api_manage_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2732,7 +2748,7 @@ func (x *SetNetworkInstanceEnabledRequest) String() string {
 func (*SetNetworkInstanceEnabledRequest) ProtoMessage() {}
 
 func (x *SetNetworkInstanceEnabledRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[32]
+	mi := &file_api_manage_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2745,7 +2761,7 @@ func (x *SetNetworkInstanceEnabledRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNetworkInstanceEnabledRequest.ProtoReflect.Descriptor instead.
 func (*SetNetworkInstanceEnabledRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{32}
+	return file_api_manage_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SetNetworkInstanceEnabledRequest) GetInstId() *common.UUID {
@@ -2777,7 +2793,7 @@ type SetNetworkInstanceEnabledResponse struct {
 
 func (x *SetNetworkInstanceEnabledResponse) Reset() {
 	*x = SetNetworkInstanceEnabledResponse{}
-	mi := &file_api_manage_proto_msgTypes[33]
+	mi := &file_api_manage_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2789,7 +2805,7 @@ func (x *SetNetworkInstanceEnabledResponse) String() string {
 func (*SetNetworkInstanceEnabledResponse) ProtoMessage() {}
 
 func (x *SetNetworkInstanceEnabledResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[33]
+	mi := &file_api_manage_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2802,7 +2818,7 @@ func (x *SetNetworkInstanceEnabledResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SetNetworkInstanceEnabledResponse.ProtoReflect.Descriptor instead.
 func (*SetNetworkInstanceEnabledResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{33}
+	return file_api_manage_proto_rawDescGZIP(), []int{34}
 }
 
 type RemoveNetworkInstanceConfigRequest struct {
@@ -2815,7 +2831,7 @@ type RemoveNetworkInstanceConfigRequest struct {
 
 func (x *RemoveNetworkInstanceConfigRequest) Reset() {
 	*x = RemoveNetworkInstanceConfigRequest{}
-	mi := &file_api_manage_proto_msgTypes[34]
+	mi := &file_api_manage_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2827,7 +2843,7 @@ func (x *RemoveNetworkInstanceConfigRequest) String() string {
 func (*RemoveNetworkInstanceConfigRequest) ProtoMessage() {}
 
 func (x *RemoveNetworkInstanceConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[34]
+	mi := &file_api_manage_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2840,7 +2856,7 @@ func (x *RemoveNetworkInstanceConfigRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use RemoveNetworkInstanceConfigRequest.ProtoReflect.Descriptor instead.
 func (*RemoveNetworkInstanceConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{34}
+	return file_api_manage_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *RemoveNetworkInstanceConfigRequest) GetInstIds() []*common.UUID {
@@ -2866,7 +2882,7 @@ type RemoveNetworkInstanceConfigResponse struct {
 
 func (x *RemoveNetworkInstanceConfigResponse) Reset() {
 	*x = RemoveNetworkInstanceConfigResponse{}
-	mi := &file_api_manage_proto_msgTypes[35]
+	mi := &file_api_manage_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2878,7 +2894,7 @@ func (x *RemoveNetworkInstanceConfigResponse) String() string {
 func (*RemoveNetworkInstanceConfigResponse) ProtoMessage() {}
 
 func (x *RemoveNetworkInstanceConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[35]
+	mi := &file_api_manage_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2891,7 +2907,7 @@ func (x *RemoveNetworkInstanceConfigResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use RemoveNetworkInstanceConfigResponse.ProtoReflect.Descriptor instead.
 func (*RemoveNetworkInstanceConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{35}
+	return file_api_manage_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *RemoveNetworkInstanceConfigResponse) GetRemainInstIds() []*common.UUID {
@@ -2909,7 +2925,7 @@ type ObserveConfigsRequest struct {
 
 func (x *ObserveConfigsRequest) Reset() {
 	*x = ObserveConfigsRequest{}
-	mi := &file_api_manage_proto_msgTypes[36]
+	mi := &file_api_manage_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2921,7 +2937,7 @@ func (x *ObserveConfigsRequest) String() string {
 func (*ObserveConfigsRequest) ProtoMessage() {}
 
 func (x *ObserveConfigsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[36]
+	mi := &file_api_manage_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2934,7 +2950,7 @@ func (x *ObserveConfigsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObserveConfigsRequest.ProtoReflect.Descriptor instead.
 func (*ObserveConfigsRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{36}
+	return file_api_manage_proto_rawDescGZIP(), []int{37}
 }
 
 type ObserveConfigsResponse struct {
@@ -2948,7 +2964,7 @@ type ObserveConfigsResponse struct {
 
 func (x *ObserveConfigsResponse) Reset() {
 	*x = ObserveConfigsResponse{}
-	mi := &file_api_manage_proto_msgTypes[37]
+	mi := &file_api_manage_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2960,7 +2976,7 @@ func (x *ObserveConfigsResponse) String() string {
 func (*ObserveConfigsResponse) ProtoMessage() {}
 
 func (x *ObserveConfigsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[37]
+	mi := &file_api_manage_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2973,7 +2989,7 @@ func (x *ObserveConfigsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObserveConfigsResponse.ProtoReflect.Descriptor instead.
 func (*ObserveConfigsResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{37}
+	return file_api_manage_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ObserveConfigsResponse) GetCatalogEpoch() string {
@@ -3011,7 +3027,6 @@ type PersistedConfigEntry struct {
 	Running          bool                   `protobuf:"varint,50008,opt,name=running,proto3" json:"running,omitempty"`
 	PersistedRawHash string                 `protobuf:"bytes,50009,opt,name=persisted_raw_hash,json=persistedRawHash,proto3" json:"persisted_raw_hash,omitempty"`
 	ActiveRawHash    *string                `protobuf:"bytes,50010,opt,name=active_raw_hash,json=activeRawHash,proto3,oneof" json:"active_raw_hash,omitempty"`
-	PendingApply     bool                   `protobuf:"varint,50011,opt,name=pending_apply,json=pendingApply,proto3" json:"pending_apply,omitempty"`
 	Status           string                 `protobuf:"bytes,50012,opt,name=status,proto3" json:"status,omitempty"`
 	NetworkName      string                 `protobuf:"bytes,50013,opt,name=network_name,json=networkName,proto3" json:"network_name,omitempty"`
 	Source           ConfigSource           `protobuf:"varint,50014,opt,name=source,proto3,enum=api.manage.ConfigSource" json:"source,omitempty"`
@@ -3021,7 +3036,7 @@ type PersistedConfigEntry struct {
 
 func (x *PersistedConfigEntry) Reset() {
 	*x = PersistedConfigEntry{}
-	mi := &file_api_manage_proto_msgTypes[38]
+	mi := &file_api_manage_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3033,7 +3048,7 @@ func (x *PersistedConfigEntry) String() string {
 func (*PersistedConfigEntry) ProtoMessage() {}
 
 func (x *PersistedConfigEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[38]
+	mi := &file_api_manage_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3046,7 +3061,7 @@ func (x *PersistedConfigEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistedConfigEntry.ProtoReflect.Descriptor instead.
 func (*PersistedConfigEntry) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{38}
+	return file_api_manage_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *PersistedConfigEntry) GetEntryKey() string {
@@ -3119,13 +3134,6 @@ func (x *PersistedConfigEntry) GetActiveRawHash() string {
 	return ""
 }
 
-func (x *PersistedConfigEntry) GetPendingApply() bool {
-	if x != nil {
-		return x.PendingApply
-	}
-	return false
-}
-
 func (x *PersistedConfigEntry) GetStatus() string {
 	if x != nil {
 		return x.Status
@@ -3147,6 +3155,8 @@ func (x *PersistedConfigEntry) GetSource() ConfigSource {
 	return ConfigSource_ConfigSourceUnspecified
 }
 
+// Every successful write is the new file. An enabled network applies it
+// before the response; if it cannot start, the previous file is restored.
 type PatchPersistedConfigRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	InstId *common.UUID           `protobuf:"bytes,50001,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
@@ -3154,15 +3164,16 @@ type PatchPersistedConfigRequest struct {
 	ExpectedRevision string         `protobuf:"bytes,50002,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
 	Config           *NetworkConfig `protobuf:"bytes,50003,opt,name=config,proto3" json:"config,omitempty"`
 	// Snake-case typed paths. Repeated fields are replaced atomically.
-	FieldMask     []string                 `protobuf:"bytes,50004,rep,name=field_mask,json=fieldMask,proto3" json:"field_mask,omitempty"`
-	ApplyMode     PersistedConfigApplyMode `protobuf:"varint,50005,opt,name=apply_mode,json=applyMode,proto3,enum=api.manage.PersistedConfigApplyMode" json:"apply_mode,omitempty"`
+	FieldMask []string `protobuf:"bytes,50004,rep,name=field_mask,json=fieldMask,proto3" json:"field_mask,omitempty"`
+	// Replaces the whole document instead of merging typed fields.
+	Toml          *string `protobuf:"bytes,50006,opt,name=toml,proto3,oneof" json:"toml,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PatchPersistedConfigRequest) Reset() {
 	*x = PatchPersistedConfigRequest{}
-	mi := &file_api_manage_proto_msgTypes[39]
+	mi := &file_api_manage_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3174,7 +3185,7 @@ func (x *PatchPersistedConfigRequest) String() string {
 func (*PatchPersistedConfigRequest) ProtoMessage() {}
 
 func (x *PatchPersistedConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[39]
+	mi := &file_api_manage_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3187,7 +3198,7 @@ func (x *PatchPersistedConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatchPersistedConfigRequest.ProtoReflect.Descriptor instead.
 func (*PatchPersistedConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{39}
+	return file_api_manage_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *PatchPersistedConfigRequest) GetInstId() *common.UUID {
@@ -3218,11 +3229,11 @@ func (x *PatchPersistedConfigRequest) GetFieldMask() []string {
 	return nil
 }
 
-func (x *PatchPersistedConfigRequest) GetApplyMode() PersistedConfigApplyMode {
-	if x != nil {
-		return x.ApplyMode
+func (x *PatchPersistedConfigRequest) GetToml() string {
+	if x != nil && x.Toml != nil {
+		return *x.Toml
 	}
-	return PersistedConfigApplyMode_SaveAndApply
+	return ""
 }
 
 type PatchPersistedConfigResponse struct {
@@ -3238,7 +3249,7 @@ type PatchPersistedConfigResponse struct {
 
 func (x *PatchPersistedConfigResponse) Reset() {
 	*x = PatchPersistedConfigResponse{}
-	mi := &file_api_manage_proto_msgTypes[40]
+	mi := &file_api_manage_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3250,7 +3261,7 @@ func (x *PatchPersistedConfigResponse) String() string {
 func (*PatchPersistedConfigResponse) ProtoMessage() {}
 
 func (x *PatchPersistedConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_manage_proto_msgTypes[40]
+	mi := &file_api_manage_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3263,7 +3274,7 @@ func (x *PatchPersistedConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatchPersistedConfigResponse.ProtoReflect.Descriptor instead.
 func (*PatchPersistedConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_manage_proto_rawDescGZIP(), []int{40}
+	return file_api_manage_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *PatchPersistedConfigResponse) GetStatus() PersistedConfigMutationStatus {
@@ -3525,7 +3536,10 @@ const file_api_manage_proto_rawDesc = "" +
 	"\tlongitude\x18ֆ\x03 \x01(\x01H\x01R\tlongitude\x88\x01\x01B\v\n" +
 	"\t_latitudeB\f\n" +
 	"\n" +
-	"_longitude\"\xb9\x04\n" +
+	"_longitude\"e\n" +
+	"\x10PeerNodeLocation\x12\x19\n" +
+	"\apeer_id\x18ц\x03 \x01(\rR\x06peerId\x126\n" +
+	"\blocation\x18҆\x03 \x01(\v2\x18.api.manage.NodeLocationR\blocation\"\x80\x05\n" +
 	"\x1aNetworkInstanceRunningInfo\x12\x19\n" +
 	"\bdev_name\x18\x01 \x01(\tR\adevName\x128\n" +
 	"\fmy_node_info\x18\x02 \x01(\v2\x16.api.manage.MyNodeInfoR\n" +
@@ -3538,7 +3552,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\terror_msg\x18\b \x01(\tH\x00R\berrorMsg\x88\x01\x01\x12\\\n" +
 	"\x17foreign_network_summary\x18\t \x01(\v2$.peer_rpc.RouteForeignNetworkSummaryR\x15foreignNetworkSummary\x12?\n" +
 	"\rnode_location\x18چ\x03 \x01(\v2\x18.api.manage.NodeLocationR\fnodeLocation\x12#\n" +
-	"\fnetwork_name\x18ۆ\x03 \x01(\tR\vnetworkNameB\f\n" +
+	"\fnetwork_name\x18ۆ\x03 \x01(\tR\vnetworkName\x12E\n" +
+	"\x0epeer_locations\x18܆\x03 \x03(\v2\x1c.api.manage.PeerNodeLocationR\rpeerLocationsB\f\n" +
 	"\n" +
 	"_error_msg\"\xc5\x01\n" +
 	"\x1dNetworkInstanceRunningInfoMap\x12D\n" +
@@ -3615,7 +3630,7 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x16ObserveConfigsResponse\x12%\n" +
 	"\rcatalog_epoch\x18ц\x03 \x01(\tR\fcatalogEpoch\x12/\n" +
 	"\x12catalog_generation\x18҆\x03 \x01(\x04R\x11catalogGeneration\x12<\n" +
-	"\aentries\x18ӆ\x03 \x03(\v2 .api.manage.PersistedConfigEntryR\aentries\"\xe6\x04\n" +
+	"\aentries\x18ӆ\x03 \x03(\v2 .api.manage.PersistedConfigEntryR\aentries\"\xd8\x04\n" +
 	"\x14PersistedConfigEntry\x12\x1d\n" +
 	"\tentry_key\x18ц\x03 \x01(\tR\bentryKey\x12'\n" +
 	"\ainst_id\x18҆\x03 \x01(\v2\f.common.UUIDR\x06instId\x12\x1c\n" +
@@ -3626,21 +3641,21 @@ const file_api_manage_proto_rawDesc = "" +
 	"\aenabled\x18׆\x03 \x01(\bR\aenabled\x12\x1a\n" +
 	"\arunning\x18؆\x03 \x01(\bR\arunning\x12.\n" +
 	"\x12persisted_raw_hash\x18ن\x03 \x01(\tR\x10persistedRawHash\x12-\n" +
-	"\x0factive_raw_hash\x18چ\x03 \x01(\tH\x01R\ractiveRawHash\x88\x01\x01\x12%\n" +
-	"\rpending_apply\x18ۆ\x03 \x01(\bR\fpendingApply\x12\x18\n" +
+	"\x0factive_raw_hash\x18چ\x03 \x01(\tH\x01R\ractiveRawHash\x88\x01\x01\x12\x18\n" +
 	"\x06status\x18܆\x03 \x01(\tR\x06status\x12#\n" +
 	"\fnetwork_name\x18݆\x03 \x01(\tR\vnetworkName\x122\n" +
 	"\x06source\x18ކ\x03 \x01(\x0e2\x18.api.manage.ConfigSourceR\x06sourceB\x11\n" +
 	"\x0f_persisted_tomlB\x12\n" +
-	"\x10_active_raw_hash\"\x92\x02\n" +
+	"\x10_active_raw_hashJ\b\bۆ\x03\x10܆\x03R\rpending_apply\"\x85\x02\n" +
 	"\x1bPatchPersistedConfigRequest\x12'\n" +
 	"\ainst_id\x18ц\x03 \x01(\v2\f.common.UUIDR\x06instId\x12-\n" +
 	"\x11expected_revision\x18҆\x03 \x01(\tR\x10expectedRevision\x123\n" +
 	"\x06config\x18ӆ\x03 \x01(\v2\x19.api.manage.NetworkConfigR\x06config\x12\x1f\n" +
 	"\n" +
-	"field_mask\x18Ԇ\x03 \x03(\tR\tfieldMask\x12E\n" +
-	"\n" +
-	"apply_mode\x18Ն\x03 \x01(\x0e2$.api.manage.PersistedConfigApplyModeR\tapplyMode\"\xa2\x02\n" +
+	"field_mask\x18Ԇ\x03 \x03(\tR\tfieldMask\x12\x19\n" +
+	"\x04toml\x18ֆ\x03 \x01(\tH\x00R\x04toml\x88\x01\x01B\a\n" +
+	"\x05_tomlJ\b\bՆ\x03\x10ֆ\x03R\n" +
+	"apply_mode\"\xa2\x02\n" +
 	"\x1cPatchPersistedConfigResponse\x12C\n" +
 	"\x06status\x18ц\x03 \x01(\x0e2).api.manage.PersistedConfigMutationStatusR\x06status\x12\x1f\n" +
 	"\amessage\x18҆\x03 \x01(\tH\x00R\amessage\x88\x01\x01\x128\n" +
@@ -3658,10 +3673,7 @@ const file_api_manage_proto_rawDesc = "" +
 	"\fConfigSource\x12\x1b\n" +
 	"\x17ConfigSourceUnspecified\x10\x00\x12\x14\n" +
 	"\x10ConfigSourceUser\x10\x01\x12\x13\n" +
-	"\x0fConfigSourceWeb\x10\x02*=\n" +
-	"\x18PersistedConfigApplyMode\x12\x10\n" +
-	"\fSaveAndApply\x10\x00\x12\x0f\n" +
-	"\vPersistOnly\x10\x01*\x86\x01\n" +
+	"\x0fConfigSourceWeb\x10\x02*\x86\x01\n" +
 	"\x1dPersistedConfigMutationStatus\x12\v\n" +
 	"\aSuccess\x10\x00\x12\f\n" +
 	"\bConflict\x10\x01\x12\r\n" +
@@ -3698,24 +3710,24 @@ func file_api_manage_proto_rawDescGZIP() []byte {
 	return file_api_manage_proto_rawDescData
 }
 
-var file_api_manage_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_api_manage_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_api_manage_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_api_manage_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_api_manage_proto_goTypes = []any{
 	(NetworkingMethod)(0),                       // 0: api.manage.NetworkingMethod
 	(ConfigSource)(0),                           // 1: api.manage.ConfigSource
-	(PersistedConfigApplyMode)(0),               // 2: api.manage.PersistedConfigApplyMode
-	(PersistedConfigMutationStatus)(0),          // 3: api.manage.PersistedConfigMutationStatus
-	(*NetworkConfig)(nil),                       // 4: api.manage.NetworkConfig
-	(*VpnRuleConfig)(nil),                       // 5: api.manage.VpnRuleConfig
-	(*VpnConfig)(nil),                           // 6: api.manage.VpnConfig
-	(*ManagedCredentialConfig)(nil),             // 7: api.manage.ManagedCredentialConfig
-	(*ManagedCredentialSet)(nil),                // 8: api.manage.ManagedCredentialSet
-	(*VpnPortalClientConfig)(nil),               // 9: api.manage.VpnPortalClientConfig
-	(*VpnPortalConfig)(nil),                     // 10: api.manage.VpnPortalConfig
-	(*NetworkPeerConfig)(nil),                   // 11: api.manage.NetworkPeerConfig
-	(*PortForwardConfig)(nil),                   // 12: api.manage.PortForwardConfig
-	(*MyNodeInfo)(nil),                          // 13: api.manage.MyNodeInfo
-	(*NodeLocation)(nil),                        // 14: api.manage.NodeLocation
+	(PersistedConfigMutationStatus)(0),          // 2: api.manage.PersistedConfigMutationStatus
+	(*NetworkConfig)(nil),                       // 3: api.manage.NetworkConfig
+	(*VpnRuleConfig)(nil),                       // 4: api.manage.VpnRuleConfig
+	(*VpnConfig)(nil),                           // 5: api.manage.VpnConfig
+	(*ManagedCredentialConfig)(nil),             // 6: api.manage.ManagedCredentialConfig
+	(*ManagedCredentialSet)(nil),                // 7: api.manage.ManagedCredentialSet
+	(*VpnPortalClientConfig)(nil),               // 8: api.manage.VpnPortalClientConfig
+	(*VpnPortalConfig)(nil),                     // 9: api.manage.VpnPortalConfig
+	(*NetworkPeerConfig)(nil),                   // 10: api.manage.NetworkPeerConfig
+	(*PortForwardConfig)(nil),                   // 11: api.manage.PortForwardConfig
+	(*MyNodeInfo)(nil),                          // 12: api.manage.MyNodeInfo
+	(*NodeLocation)(nil),                        // 13: api.manage.NodeLocation
+	(*PeerNodeLocation)(nil),                    // 14: api.manage.PeerNodeLocation
 	(*NetworkInstanceRunningInfo)(nil),          // 15: api.manage.NetworkInstanceRunningInfo
 	(*NetworkInstanceRunningInfoMap)(nil),       // 16: api.manage.NetworkInstanceRunningInfoMap
 	(*NetworkMeta)(nil),                         // 17: api.manage.NetworkMeta
@@ -3763,96 +3775,97 @@ var file_api_manage_proto_goTypes = []any{
 }
 var file_api_manage_proto_depIdxs = []int32{
 	0,  // 0: api.manage.NetworkConfig.networking_method:type_name -> api.manage.NetworkingMethod
-	12, // 1: api.manage.NetworkConfig.port_forwards:type_name -> api.manage.PortForwardConfig
+	11, // 1: api.manage.NetworkConfig.port_forwards:type_name -> api.manage.PortForwardConfig
 	46, // 2: api.manage.NetworkConfig.data_compress_algo:type_name -> common.CompressionAlgoPb
 	47, // 3: api.manage.NetworkConfig.secure_mode:type_name -> common.SecureModeConfig
 	48, // 4: api.manage.NetworkConfig.acl:type_name -> acl.Acl
-	11, // 5: api.manage.NetworkConfig.peers:type_name -> api.manage.NetworkPeerConfig
-	10, // 6: api.manage.NetworkConfig.vpn_portal_config:type_name -> api.manage.VpnPortalConfig
-	7,  // 7: api.manage.NetworkConfig.managed_credentials:type_name -> api.manage.ManagedCredentialConfig
-	6,  // 8: api.manage.NetworkConfig.vpn:type_name -> api.manage.VpnConfig
-	5,  // 9: api.manage.VpnConfig.rules:type_name -> api.manage.VpnRuleConfig
-	7,  // 10: api.manage.ManagedCredentialSet.entries:type_name -> api.manage.ManagedCredentialConfig
-	9,  // 11: api.manage.VpnPortalConfig.clients:type_name -> api.manage.VpnPortalClientConfig
+	10, // 5: api.manage.NetworkConfig.peers:type_name -> api.manage.NetworkPeerConfig
+	9,  // 6: api.manage.NetworkConfig.vpn_portal_config:type_name -> api.manage.VpnPortalConfig
+	6,  // 7: api.manage.NetworkConfig.managed_credentials:type_name -> api.manage.ManagedCredentialConfig
+	5,  // 8: api.manage.NetworkConfig.vpn:type_name -> api.manage.VpnConfig
+	4,  // 9: api.manage.VpnConfig.rules:type_name -> api.manage.VpnRuleConfig
+	6,  // 10: api.manage.ManagedCredentialSet.entries:type_name -> api.manage.ManagedCredentialConfig
+	8,  // 11: api.manage.VpnPortalConfig.clients:type_name -> api.manage.VpnPortalClientConfig
 	49, // 12: api.manage.MyNodeInfo.virtual_ipv4:type_name -> common.Ipv4Inet
 	50, // 13: api.manage.MyNodeInfo.ips:type_name -> peer_rpc.GetIpListResponse
 	51, // 14: api.manage.MyNodeInfo.stun_info:type_name -> common.StunInfo
 	52, // 15: api.manage.MyNodeInfo.listeners:type_name -> common.Url
 	53, // 16: api.manage.MyNodeInfo.virtual_ipv6:type_name -> common.Ipv6Inet
-	13, // 17: api.manage.NetworkInstanceRunningInfo.my_node_info:type_name -> api.manage.MyNodeInfo
-	54, // 18: api.manage.NetworkInstanceRunningInfo.routes:type_name -> api.instance.Route
-	55, // 19: api.manage.NetworkInstanceRunningInfo.peers:type_name -> api.instance.PeerInfo
-	56, // 20: api.manage.NetworkInstanceRunningInfo.peer_route_pairs:type_name -> api.instance.PeerRoutePair
-	57, // 21: api.manage.NetworkInstanceRunningInfo.foreign_network_summary:type_name -> peer_rpc.RouteForeignNetworkSummary
-	14, // 22: api.manage.NetworkInstanceRunningInfo.node_location:type_name -> api.manage.NodeLocation
-	45, // 23: api.manage.NetworkInstanceRunningInfoMap.map:type_name -> api.manage.NetworkInstanceRunningInfoMap.MapEntry
-	58, // 24: api.manage.NetworkMeta.inst_id:type_name -> common.UUID
-	1,  // 25: api.manage.NetworkMeta.source:type_name -> api.manage.ConfigSource
-	4,  // 26: api.manage.ValidateConfigRequest.config:type_name -> api.manage.NetworkConfig
-	58, // 27: api.manage.RunNetworkInstanceRequest.inst_id:type_name -> common.UUID
-	4,  // 28: api.manage.RunNetworkInstanceRequest.config:type_name -> api.manage.NetworkConfig
-	1,  // 29: api.manage.RunNetworkInstanceRequest.source:type_name -> api.manage.ConfigSource
-	58, // 30: api.manage.RunNetworkInstanceResponse.inst_id:type_name -> common.UUID
-	58, // 31: api.manage.RetainNetworkInstanceRequest.inst_ids:type_name -> common.UUID
-	58, // 32: api.manage.RetainNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
-	58, // 33: api.manage.CollectNetworkInfoRequest.inst_ids:type_name -> common.UUID
-	16, // 34: api.manage.CollectNetworkInfoResponse.info:type_name -> api.manage.NetworkInstanceRunningInfoMap
-	58, // 35: api.manage.ListNetworkInstanceResponse.inst_ids:type_name -> common.UUID
-	58, // 36: api.manage.ListNetworkInstanceResponse.disabled_inst_ids:type_name -> common.UUID
-	58, // 37: api.manage.DeleteNetworkInstanceRequest.inst_ids:type_name -> common.UUID
-	58, // 38: api.manage.DeleteNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
-	58, // 39: api.manage.GetNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
-	4,  // 40: api.manage.GetNetworkInstanceConfigResponse.config:type_name -> api.manage.NetworkConfig
-	1,  // 41: api.manage.GetNetworkInstanceConfigResponse.source:type_name -> api.manage.ConfigSource
-	58, // 42: api.manage.ListNetworkInstanceMetaRequest.inst_ids:type_name -> common.UUID
-	17, // 43: api.manage.ListNetworkInstanceMetaResponse.metas:type_name -> api.manage.NetworkMeta
-	58, // 44: api.manage.SaveNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
-	4,  // 45: api.manage.SaveNetworkInstanceConfigRequest.config:type_name -> api.manage.NetworkConfig
-	1,  // 46: api.manage.SaveNetworkInstanceConfigRequest.source:type_name -> api.manage.ConfigSource
-	58, // 47: api.manage.SetNetworkInstanceEnabledRequest.inst_id:type_name -> common.UUID
-	58, // 48: api.manage.RemoveNetworkInstanceConfigRequest.inst_ids:type_name -> common.UUID
-	58, // 49: api.manage.RemoveNetworkInstanceConfigResponse.remain_inst_ids:type_name -> common.UUID
-	42, // 50: api.manage.ObserveConfigsResponse.entries:type_name -> api.manage.PersistedConfigEntry
-	58, // 51: api.manage.PersistedConfigEntry.inst_id:type_name -> common.UUID
-	4,  // 52: api.manage.PersistedConfigEntry.config:type_name -> api.manage.NetworkConfig
-	1,  // 53: api.manage.PersistedConfigEntry.source:type_name -> api.manage.ConfigSource
-	58, // 54: api.manage.PatchPersistedConfigRequest.inst_id:type_name -> common.UUID
-	4,  // 55: api.manage.PatchPersistedConfigRequest.config:type_name -> api.manage.NetworkConfig
-	2,  // 56: api.manage.PatchPersistedConfigRequest.apply_mode:type_name -> api.manage.PersistedConfigApplyMode
-	3,  // 57: api.manage.PatchPersistedConfigResponse.status:type_name -> api.manage.PersistedConfigMutationStatus
-	42, // 58: api.manage.PatchPersistedConfigResponse.entry:type_name -> api.manage.PersistedConfigEntry
-	15, // 59: api.manage.NetworkInstanceRunningInfoMap.MapEntry.value:type_name -> api.manage.NetworkInstanceRunningInfo
-	40, // 60: api.manage.PersistedConfigService.ObserveConfigs:input_type -> api.manage.ObserveConfigsRequest
-	43, // 61: api.manage.PersistedConfigService.PatchConfig:input_type -> api.manage.PatchPersistedConfigRequest
-	18, // 62: api.manage.WebClientService.ValidateConfig:input_type -> api.manage.ValidateConfigRequest
-	20, // 63: api.manage.WebClientService.RunNetworkInstance:input_type -> api.manage.RunNetworkInstanceRequest
-	22, // 64: api.manage.WebClientService.RetainNetworkInstance:input_type -> api.manage.RetainNetworkInstanceRequest
-	24, // 65: api.manage.WebClientService.CollectNetworkInfo:input_type -> api.manage.CollectNetworkInfoRequest
-	26, // 66: api.manage.WebClientService.ListNetworkInstance:input_type -> api.manage.ListNetworkInstanceRequest
-	28, // 67: api.manage.WebClientService.DeleteNetworkInstance:input_type -> api.manage.DeleteNetworkInstanceRequest
-	30, // 68: api.manage.WebClientService.GetNetworkInstanceConfig:input_type -> api.manage.GetNetworkInstanceConfigRequest
-	32, // 69: api.manage.WebClientService.ListNetworkInstanceMeta:input_type -> api.manage.ListNetworkInstanceMetaRequest
-	34, // 70: api.manage.WebClientService.SaveNetworkInstanceConfig:input_type -> api.manage.SaveNetworkInstanceConfigRequest
-	36, // 71: api.manage.WebClientService.SetNetworkInstanceEnabled:input_type -> api.manage.SetNetworkInstanceEnabledRequest
-	38, // 72: api.manage.WebClientService.RemoveNetworkInstanceConfig:input_type -> api.manage.RemoveNetworkInstanceConfigRequest
-	41, // 73: api.manage.PersistedConfigService.ObserveConfigs:output_type -> api.manage.ObserveConfigsResponse
-	44, // 74: api.manage.PersistedConfigService.PatchConfig:output_type -> api.manage.PatchPersistedConfigResponse
-	19, // 75: api.manage.WebClientService.ValidateConfig:output_type -> api.manage.ValidateConfigResponse
-	21, // 76: api.manage.WebClientService.RunNetworkInstance:output_type -> api.manage.RunNetworkInstanceResponse
-	23, // 77: api.manage.WebClientService.RetainNetworkInstance:output_type -> api.manage.RetainNetworkInstanceResponse
-	25, // 78: api.manage.WebClientService.CollectNetworkInfo:output_type -> api.manage.CollectNetworkInfoResponse
-	27, // 79: api.manage.WebClientService.ListNetworkInstance:output_type -> api.manage.ListNetworkInstanceResponse
-	29, // 80: api.manage.WebClientService.DeleteNetworkInstance:output_type -> api.manage.DeleteNetworkInstanceResponse
-	31, // 81: api.manage.WebClientService.GetNetworkInstanceConfig:output_type -> api.manage.GetNetworkInstanceConfigResponse
-	33, // 82: api.manage.WebClientService.ListNetworkInstanceMeta:output_type -> api.manage.ListNetworkInstanceMetaResponse
-	35, // 83: api.manage.WebClientService.SaveNetworkInstanceConfig:output_type -> api.manage.SaveNetworkInstanceConfigResponse
-	37, // 84: api.manage.WebClientService.SetNetworkInstanceEnabled:output_type -> api.manage.SetNetworkInstanceEnabledResponse
-	39, // 85: api.manage.WebClientService.RemoveNetworkInstanceConfig:output_type -> api.manage.RemoveNetworkInstanceConfigResponse
-	73, // [73:86] is the sub-list for method output_type
-	60, // [60:73] is the sub-list for method input_type
-	60, // [60:60] is the sub-list for extension type_name
-	60, // [60:60] is the sub-list for extension extendee
-	0,  // [0:60] is the sub-list for field type_name
+	13, // 17: api.manage.PeerNodeLocation.location:type_name -> api.manage.NodeLocation
+	12, // 18: api.manage.NetworkInstanceRunningInfo.my_node_info:type_name -> api.manage.MyNodeInfo
+	54, // 19: api.manage.NetworkInstanceRunningInfo.routes:type_name -> api.instance.Route
+	55, // 20: api.manage.NetworkInstanceRunningInfo.peers:type_name -> api.instance.PeerInfo
+	56, // 21: api.manage.NetworkInstanceRunningInfo.peer_route_pairs:type_name -> api.instance.PeerRoutePair
+	57, // 22: api.manage.NetworkInstanceRunningInfo.foreign_network_summary:type_name -> peer_rpc.RouteForeignNetworkSummary
+	13, // 23: api.manage.NetworkInstanceRunningInfo.node_location:type_name -> api.manage.NodeLocation
+	14, // 24: api.manage.NetworkInstanceRunningInfo.peer_locations:type_name -> api.manage.PeerNodeLocation
+	45, // 25: api.manage.NetworkInstanceRunningInfoMap.map:type_name -> api.manage.NetworkInstanceRunningInfoMap.MapEntry
+	58, // 26: api.manage.NetworkMeta.inst_id:type_name -> common.UUID
+	1,  // 27: api.manage.NetworkMeta.source:type_name -> api.manage.ConfigSource
+	3,  // 28: api.manage.ValidateConfigRequest.config:type_name -> api.manage.NetworkConfig
+	58, // 29: api.manage.RunNetworkInstanceRequest.inst_id:type_name -> common.UUID
+	3,  // 30: api.manage.RunNetworkInstanceRequest.config:type_name -> api.manage.NetworkConfig
+	1,  // 31: api.manage.RunNetworkInstanceRequest.source:type_name -> api.manage.ConfigSource
+	58, // 32: api.manage.RunNetworkInstanceResponse.inst_id:type_name -> common.UUID
+	58, // 33: api.manage.RetainNetworkInstanceRequest.inst_ids:type_name -> common.UUID
+	58, // 34: api.manage.RetainNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
+	58, // 35: api.manage.CollectNetworkInfoRequest.inst_ids:type_name -> common.UUID
+	16, // 36: api.manage.CollectNetworkInfoResponse.info:type_name -> api.manage.NetworkInstanceRunningInfoMap
+	58, // 37: api.manage.ListNetworkInstanceResponse.inst_ids:type_name -> common.UUID
+	58, // 38: api.manage.ListNetworkInstanceResponse.disabled_inst_ids:type_name -> common.UUID
+	58, // 39: api.manage.DeleteNetworkInstanceRequest.inst_ids:type_name -> common.UUID
+	58, // 40: api.manage.DeleteNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
+	58, // 41: api.manage.GetNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
+	3,  // 42: api.manage.GetNetworkInstanceConfigResponse.config:type_name -> api.manage.NetworkConfig
+	1,  // 43: api.manage.GetNetworkInstanceConfigResponse.source:type_name -> api.manage.ConfigSource
+	58, // 44: api.manage.ListNetworkInstanceMetaRequest.inst_ids:type_name -> common.UUID
+	17, // 45: api.manage.ListNetworkInstanceMetaResponse.metas:type_name -> api.manage.NetworkMeta
+	58, // 46: api.manage.SaveNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
+	3,  // 47: api.manage.SaveNetworkInstanceConfigRequest.config:type_name -> api.manage.NetworkConfig
+	1,  // 48: api.manage.SaveNetworkInstanceConfigRequest.source:type_name -> api.manage.ConfigSource
+	58, // 49: api.manage.SetNetworkInstanceEnabledRequest.inst_id:type_name -> common.UUID
+	58, // 50: api.manage.RemoveNetworkInstanceConfigRequest.inst_ids:type_name -> common.UUID
+	58, // 51: api.manage.RemoveNetworkInstanceConfigResponse.remain_inst_ids:type_name -> common.UUID
+	42, // 52: api.manage.ObserveConfigsResponse.entries:type_name -> api.manage.PersistedConfigEntry
+	58, // 53: api.manage.PersistedConfigEntry.inst_id:type_name -> common.UUID
+	3,  // 54: api.manage.PersistedConfigEntry.config:type_name -> api.manage.NetworkConfig
+	1,  // 55: api.manage.PersistedConfigEntry.source:type_name -> api.manage.ConfigSource
+	58, // 56: api.manage.PatchPersistedConfigRequest.inst_id:type_name -> common.UUID
+	3,  // 57: api.manage.PatchPersistedConfigRequest.config:type_name -> api.manage.NetworkConfig
+	2,  // 58: api.manage.PatchPersistedConfigResponse.status:type_name -> api.manage.PersistedConfigMutationStatus
+	42, // 59: api.manage.PatchPersistedConfigResponse.entry:type_name -> api.manage.PersistedConfigEntry
+	15, // 60: api.manage.NetworkInstanceRunningInfoMap.MapEntry.value:type_name -> api.manage.NetworkInstanceRunningInfo
+	40, // 61: api.manage.PersistedConfigService.ObserveConfigs:input_type -> api.manage.ObserveConfigsRequest
+	43, // 62: api.manage.PersistedConfigService.PatchConfig:input_type -> api.manage.PatchPersistedConfigRequest
+	18, // 63: api.manage.WebClientService.ValidateConfig:input_type -> api.manage.ValidateConfigRequest
+	20, // 64: api.manage.WebClientService.RunNetworkInstance:input_type -> api.manage.RunNetworkInstanceRequest
+	22, // 65: api.manage.WebClientService.RetainNetworkInstance:input_type -> api.manage.RetainNetworkInstanceRequest
+	24, // 66: api.manage.WebClientService.CollectNetworkInfo:input_type -> api.manage.CollectNetworkInfoRequest
+	26, // 67: api.manage.WebClientService.ListNetworkInstance:input_type -> api.manage.ListNetworkInstanceRequest
+	28, // 68: api.manage.WebClientService.DeleteNetworkInstance:input_type -> api.manage.DeleteNetworkInstanceRequest
+	30, // 69: api.manage.WebClientService.GetNetworkInstanceConfig:input_type -> api.manage.GetNetworkInstanceConfigRequest
+	32, // 70: api.manage.WebClientService.ListNetworkInstanceMeta:input_type -> api.manage.ListNetworkInstanceMetaRequest
+	34, // 71: api.manage.WebClientService.SaveNetworkInstanceConfig:input_type -> api.manage.SaveNetworkInstanceConfigRequest
+	36, // 72: api.manage.WebClientService.SetNetworkInstanceEnabled:input_type -> api.manage.SetNetworkInstanceEnabledRequest
+	38, // 73: api.manage.WebClientService.RemoveNetworkInstanceConfig:input_type -> api.manage.RemoveNetworkInstanceConfigRequest
+	41, // 74: api.manage.PersistedConfigService.ObserveConfigs:output_type -> api.manage.ObserveConfigsResponse
+	44, // 75: api.manage.PersistedConfigService.PatchConfig:output_type -> api.manage.PatchPersistedConfigResponse
+	19, // 76: api.manage.WebClientService.ValidateConfig:output_type -> api.manage.ValidateConfigResponse
+	21, // 77: api.manage.WebClientService.RunNetworkInstance:output_type -> api.manage.RunNetworkInstanceResponse
+	23, // 78: api.manage.WebClientService.RetainNetworkInstance:output_type -> api.manage.RetainNetworkInstanceResponse
+	25, // 79: api.manage.WebClientService.CollectNetworkInfo:output_type -> api.manage.CollectNetworkInfoResponse
+	27, // 80: api.manage.WebClientService.ListNetworkInstance:output_type -> api.manage.ListNetworkInstanceResponse
+	29, // 81: api.manage.WebClientService.DeleteNetworkInstance:output_type -> api.manage.DeleteNetworkInstanceResponse
+	31, // 82: api.manage.WebClientService.GetNetworkInstanceConfig:output_type -> api.manage.GetNetworkInstanceConfigResponse
+	33, // 83: api.manage.WebClientService.ListNetworkInstanceMeta:output_type -> api.manage.ListNetworkInstanceMetaResponse
+	35, // 84: api.manage.WebClientService.SaveNetworkInstanceConfig:output_type -> api.manage.SaveNetworkInstanceConfigResponse
+	37, // 85: api.manage.WebClientService.SetNetworkInstanceEnabled:output_type -> api.manage.SetNetworkInstanceEnabledResponse
+	39, // 86: api.manage.WebClientService.RemoveNetworkInstanceConfig:output_type -> api.manage.RemoveNetworkInstanceConfigResponse
+	74, // [74:87] is the sub-list for method output_type
+	61, // [61:74] is the sub-list for method input_type
+	61, // [61:61] is the sub-list for extension type_name
+	61, // [61:61] is the sub-list for extension extendee
+	0,  // [0:61] is the sub-list for field type_name
 }
 
 func init() { file_api_manage_proto_init() }
@@ -3866,20 +3879,21 @@ func file_api_manage_proto_init() {
 	file_api_manage_proto_msgTypes[7].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[9].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[10].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[11].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[23].OneofWrappers = []any{}
+	file_api_manage_proto_msgTypes[12].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[24].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[32].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[34].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[38].OneofWrappers = []any{}
+	file_api_manage_proto_msgTypes[25].OneofWrappers = []any{}
+	file_api_manage_proto_msgTypes[33].OneofWrappers = []any{}
+	file_api_manage_proto_msgTypes[35].OneofWrappers = []any{}
+	file_api_manage_proto_msgTypes[39].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[40].OneofWrappers = []any{}
+	file_api_manage_proto_msgTypes[41].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_manage_proto_rawDesc), len(file_api_manage_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   42,
+			NumEnums:      3,
+			NumMessages:   43,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

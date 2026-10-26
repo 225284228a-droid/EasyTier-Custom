@@ -3,8 +3,7 @@
 use easytier_proto::{
     api::manage::{
         ObserveConfigsRequest, ObserveConfigsResponse, PatchPersistedConfigRequest,
-        PatchPersistedConfigResponse, PersistedConfigApplyMode, PersistedConfigMutationStatus,
-        PersistedConfigService,
+        PatchPersistedConfigResponse, PersistedConfigMutationStatus, PersistedConfigService,
     },
     rpc_types::{self, controller::BaseController},
 };
@@ -153,14 +152,28 @@ where
                 Some("configuration does not exist"),
             ));
         }
-        let Some(values) = request.config.as_ref() else {
+        // A typed patch merges its masked fields into the document; a TOML
+        // replacement is the whole document, as if edited on the node.
+        let replacement = request.toml.as_deref();
+        let default_values = Default::default();
+        let values = request.config.as_ref().unwrap_or(&default_values);
+        if replacement.is_some() {
+            if !request.field_mask.is_empty() || request.config.is_some() {
+                return Ok(response(
+                    snapshot,
+                    id,
+                    PersistedConfigMutationStatus::Invalid,
+                    Some("a TOML replacement cannot carry typed fields"),
+                ));
+            }
+        } else if request.config.is_none() || request.field_mask.is_empty() {
             return Ok(response(
                 snapshot,
                 id,
                 PersistedConfigMutationStatus::Invalid,
-                Some("config is required"),
+                Some("config and field mask are required"),
             ));
-        };
+        }
         if values
             .instance_id
             .as_ref()
@@ -171,30 +184,6 @@ where
                 id,
                 PersistedConfigMutationStatus::Invalid,
                 Some("instance identity cannot be changed"),
-            ));
-        }
-        let Ok(mode) = PersistedConfigApplyMode::try_from(request.apply_mode) else {
-            return Ok(response(
-                snapshot,
-                id,
-                PersistedConfigMutationStatus::Invalid,
-                Some("invalid apply mode"),
-            ));
-        };
-        let apply_only = request.field_mask.is_empty();
-        if apply_only
-            && (mode != PersistedConfigApplyMode::SaveAndApply
-                || existing.is_none()
-                || request.expected_revision.is_empty()
-                || values != &Default::default())
-        {
-            return Ok(response(
-                snapshot,
-                id,
-                PersistedConfigMutationStatus::Invalid,
-                Some(
-                    "applying persisted configuration requires an existing revision and no edited values",
-                ),
             ));
         }
         let capabilities = self.instances.management_capabilities();
@@ -233,10 +222,9 @@ where
                 )
             }
         };
-        let merged = match if apply_only {
-            Ok(original)
-        } else {
-            merge_persisted_config(&original, values, &request.field_mask)
+        let merged = match match replacement {
+            Some(document) => Ok(document.to_owned()),
+            None => merge_persisted_config(&original, values, &request.field_mask),
         } {
             Ok(merged) => merged,
             Err(error) => {
@@ -249,9 +237,29 @@ where
                 ));
             }
         };
-        let config = TomlConfig::new_from_str(&merged)
-            .map_err(|_| anyhow::anyhow!("invalid resulting configuration"))?;
-        if config.get_id() != id {
+        let config = match TomlConfig::new_from_str(&merged) {
+            Ok(config) => config,
+            Err(error) => {
+                let message = public_patch_error(&error);
+                return Ok(response(
+                    snapshot,
+                    id,
+                    PersistedConfigMutationStatus::Invalid,
+                    Some(&message),
+                ));
+            }
+        };
+        // Only documents that declare their identity are editable entries.
+        let declared_id = toml::from_str::<toml::Table>(&merged)
+            .ok()
+            .and_then(|table| {
+                table
+                    .get("instance_id")?
+                    .as_str()?
+                    .parse::<uuid::Uuid>()
+                    .ok()
+            });
+        if declared_id != Some(id) || config.get_id() != id {
             return Ok(response(
                 snapshot,
                 id,
@@ -305,8 +313,10 @@ where
                 ));
             }
         }
-        let apply =
-            mode == PersistedConfigApplyMode::SaveAndApply && self.instances.instance(id).is_some();
+        // Saving is applying: a running network restarts with the new file
+        // (as official save_config does), and a failed start restores the
+        // previous file and runtime. Stopped networks only persist it.
+        let apply = self.instances.instance(id).is_some();
         let outcome = if apply {
             self.run_network_instance_locked_with_contents(
                 config,
@@ -315,16 +325,11 @@ where
                 None,
                 InstanceRunPersistence {
                     contents: Some(merged.as_bytes()),
-                    apply_only,
                     expected_revision: Some(&request.expected_revision),
                 },
             )
             .await
             .map(|_| ())
-        } else if apply_only {
-            // Applying saved configuration never enables a stopped instance or
-            // rewrites its file. The checks above still fence the observation.
-            Ok(())
         } else {
             let previous_enabled = self.state_store.enabled_state(&id);
             if existing.is_none() {
@@ -359,7 +364,7 @@ where
             } else if outcome.is_ok() {
                 None
             } else {
-                Some("configuration could not be applied; observe its persisted and active state")
+                Some("configuration could not be applied; the previous configuration was restored")
             },
         ))
     }

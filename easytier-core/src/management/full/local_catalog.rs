@@ -3,11 +3,10 @@
 //! publish the projection back to the node as desired state.
 
 use std::{
-    any::Any,
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -39,15 +38,9 @@ pub struct LocalConfigCatalog {
     observer_started: AtomicBool,
     refresh_requested: tokio::sync::Notify,
     observer_cancel: tokio_util::sync::CancellationToken,
-    runtime_identities: Mutex<(u64, BTreeMap<uuid::Uuid, RuntimeIdentity>)>,
     state_store: OnceLock<Arc<InstanceStateStore>>,
     pub(super) reconciled_files: Mutex<BTreeMap<PathBuf, super::local_reconcile::ReconciledFile>>,
     acknowledged_files: Mutex<BTreeMap<PathBuf, String>>,
-}
-
-struct RuntimeIdentity {
-    instance: Option<Weak<dyn Any + Send + Sync>>,
-    generation: u64,
 }
 
 pub(crate) struct MutationRefreshGuard(Arc<LocalConfigCatalog>);
@@ -69,7 +62,6 @@ impl Default for LocalConfigCatalog {
             observer_started: AtomicBool::new(false),
             refresh_requested: tokio::sync::Notify::new(),
             observer_cancel: tokio_util::sync::CancellationToken::new(),
-            runtime_identities: Mutex::new((0, BTreeMap::new())),
             state_store: OnceLock::new(),
             reconciled_files: Mutex::new(BTreeMap::new()),
             acknowledged_files: Mutex::new(BTreeMap::new()),
@@ -107,8 +99,8 @@ impl LocalConfigCatalog {
         self.observer_cancel.is_cancelled()
     }
 
-    /// A coordinated write already applied its chosen lifecycle semantics.
-    /// Do not let a filesystem notification turn PersistOnly into SaveAndApply.
+    /// The writer of these contents already applied them (or the network is
+    /// disabled). Its own filesystem notification must not restart it again.
     pub fn acknowledge_file(&self, path: &Path, contents: &[u8]) {
         self.acknowledged_files
             .lock()
@@ -137,40 +129,6 @@ impl LocalConfigCatalog {
 
     pub(crate) fn refresh_after_mutation(self: &Arc<Self>) -> MutationRefreshGuard {
         MutationRefreshGuard(self.clone())
-    }
-
-    /// Retain a weak allocation identity so a same-config restart also fences
-    /// stale edits, including allocator address reuse after an instance stops.
-    fn active_generation<T: Any + Send + Sync>(
-        &self,
-        id: uuid::Uuid,
-        instance: Option<Arc<T>>,
-    ) -> u64 {
-        let current = instance.map(|instance| {
-            let instance: Arc<dyn Any + Send + Sync> = instance;
-            Arc::downgrade(&instance)
-        });
-        let mut identities = self.runtime_identities.lock().unwrap();
-        if let Some(previous) = identities.1.get(&id) {
-            let same = match (&previous.instance, &current) {
-                (None, None) => true,
-                (Some(previous), Some(current)) => Weak::ptr_eq(previous, current),
-                _ => false,
-            };
-            if same {
-                return previous.generation;
-            }
-        }
-        identities.0 = identities.0.saturating_add(1);
-        let generation = identities.0;
-        identities.1.insert(
-            id,
-            RuntimeIdentity {
-                instance: current,
-                generation,
-            },
-        );
-        generation
     }
 
     pub fn version(&self) -> (String, u64) {
@@ -278,60 +236,14 @@ pub(super) fn configs_equivalent(left: &TomlConfig, right: &TomlConfig) -> bool 
         .is_some_and(|(left, right)| left == right)
 }
 
-fn has_pending_config_change(contents: &str, active: Option<&TomlConfig>) -> bool {
-    let persisted = TomlConfig::new_from_str(contents).ok();
-    if let Some(persisted) = persisted.as_ref() {
-        reuse_implicit_identity(contents.as_bytes(), persisted, active);
-    }
-    persisted.as_ref().and_then(config_semantic_hash) != active.and_then(config_semantic_hash)
-}
-
-/// The revision fences file contents, permissions, enabled state and the
-/// active generation. It is scoped to this node lifetime, never a DB intent.
-fn entry_revision(epoch: &str, entry: &PersistedConfigEntry, active_generation: u64) -> String {
+/// The revision identifies the file a client edited: its name, contents
+/// and permissions. Runtime state never invalidates an open editor, and the
+/// same file keeps its revision across node restarts and consoles.
+fn entry_revision(entry: &PersistedConfigEntry) -> String {
     raw_hash(
         format!(
-            "{epoch}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{active_generation}",
-            entry.entry_key,
-            entry.persisted_raw_hash,
-            entry.config_permission,
-            entry.enabled,
-            entry.running,
-            entry.active_raw_hash.as_deref().unwrap_or_default(),
-            entry.status
-        )
-        .as_bytes(),
-    )
-}
-
-fn revision_for<F, H>(
-    manager: &Arc<InstanceManager<F>>,
-    epoch: &str,
-    entry: &PersistedConfigEntry,
-) -> String
-where
-    F: InstanceFactory<Instance = CoreInstance<H>>,
-    H: CoreInstanceHost,
-{
-    let generation = entry
-        .inst_id
-        .map(uuid::Uuid::from)
-        .map(|id| {
-            manager
-                .local_config_catalog()
-                .active_generation(id, manager.instance(id))
-        })
-        .unwrap_or_default();
-    let known_state = entry.inst_id.map(uuid::Uuid::from).and_then(|id| {
-        manager
-            .local_config_catalog()
-            .state_store()
-            .map(|state| state.enabled_state(&id))
-    });
-    raw_hash(
-        format!(
-            "{}\0{known_state:?}",
-            entry_revision(epoch, entry, generation)
+            "{}\0{}\0{}\0{}",
+            entry.entry_key, entry.persisted_raw_hash, entry.config_permission, entry.status
         )
         .as_bytes(),
     )
@@ -360,7 +272,6 @@ where
     if !storage.supports_catalog() {
         anyhow::bail!("persisted config observation is unavailable");
     }
-    let (epoch, _) = manager.local_config_catalog().version();
     let paths = storage.list_configs(directory).await?;
     let mut entries = BTreeMap::<String, PersistedConfigEntry>::new();
     let mut owners = BTreeMap::<uuid::Uuid, Vec<String>>::new();
@@ -396,7 +307,7 @@ where
                     entry.enabled = state.is_enabled(&id);
                     owners.entry(id).or_default().push(key.clone());
                 }
-                entry.revision = revision_for(manager, &epoch, &entry);
+                entry.revision = entry_revision(&entry);
                 entries.insert(key, entry);
                 continue;
             }
@@ -477,8 +388,6 @@ where
             entry.status = "ready".into();
             entry.network_name = config.get_network_identity().network_name;
             entry.source = config_source_to_rpc(config.get_network_config_source());
-            entry.pending_apply =
-                entry.running && has_pending_config_change(text, active_config.as_ref());
             entry.config = Some(network_config_from_toml(&config));
             entry.persisted_toml = Some(text.to_owned());
             if manager
@@ -490,7 +399,7 @@ where
                 entry.persisted_toml = None;
             }
         }
-        entry.revision = revision_for(manager, &epoch, &entry);
+        entry.revision = entry_revision(&entry);
         entries.insert(key, entry);
     }
     for keys in owners.values().filter(|keys| keys.len() > 1) {
@@ -501,7 +410,7 @@ where
             entry.persisted_toml = None;
             entry.config_permission |=
                 u32::from(ConfigFilePermission::READ_ONLY | ConfigFilePermission::NO_DELETE);
-            entry.revision = revision_for(manager, &epoch, entry);
+            entry.revision = entry_revision(entry);
         }
     }
     // Keep a metadata-only record for a running instance whose file was
@@ -540,7 +449,7 @@ where
             entry.config_permission |=
                 u32::from(ConfigFilePermission::READ_ONLY | ConfigFilePermission::NO_DELETE);
         }
-        entry.revision = revision_for(manager, &epoch, &entry);
+        entry.revision = entry_revision(&entry);
         entries.insert(entry.entry_key.clone(), entry);
     }
     // Catalog membership is independent of runtime membership. Removal of a
@@ -695,38 +604,25 @@ mod tests {
     }
 
     #[test]
-    fn revision_fences_runtime_state_permissions_and_node_lifetime() {
+    fn revision_fences_file_contents_and_permissions_but_not_runtime_state() {
         let entry = PersistedConfigEntry {
             entry_key: "one.toml".into(),
             persisted_raw_hash: raw_hash(b"config"),
             status: "ready".into(),
             ..Default::default()
         };
-        let base = entry_revision("boot-one", &entry, 1);
-        let mut changed = entry.clone();
-        changed.enabled = true;
-        assert_ne!(base, entry_revision("boot-one", &changed, 1));
+        let base = entry_revision(&entry);
         let mut changed = entry.clone();
         changed.config_permission = 1;
-        assert_ne!(base, entry_revision("boot-one", &changed, 1));
+        assert_ne!(base, entry_revision(&changed));
         let mut changed = entry.clone();
-        changed.active_raw_hash = Some("active-generation".into());
-        assert_ne!(base, entry_revision("boot-one", &changed, 1));
-        assert_ne!(base, entry_revision("boot-two", &entry, 1));
-        assert_ne!(base, entry_revision("boot-one", &entry, 2));
-    }
-
-    #[test]
-    fn runtime_generation_changes_only_when_the_instance_allocation_changes() {
-        let catalog = LocalConfigCatalog::default();
-        let id = uuid::Uuid::new_v4();
-        let one = Arc::new(1u8);
-        let first = catalog.active_generation(id, Some(one.clone()));
-        assert_eq!(first, catalog.active_generation(id, Some(one)));
-        let stopped = catalog.active_generation::<u8>(id, None);
-        assert_ne!(first, stopped);
-        assert_eq!(stopped, catalog.active_generation::<u8>(id, None));
-        assert_ne!(stopped, catalog.active_generation(id, Some(Arc::new(1u8))));
+        changed.entry_key = "two.toml".into();
+        assert_ne!(base, entry_revision(&changed));
+        let mut runtime = entry.clone();
+        runtime.enabled = true;
+        runtime.running = true;
+        runtime.active_raw_hash = Some("active".into());
+        assert_eq!(base, entry_revision(&runtime));
     }
 
     #[test]
@@ -744,9 +640,9 @@ mod tests {
             persisted_raw_hash: raw_hash(one.as_bytes()),
             ..Default::default()
         };
-        let revision = entry_revision("boot", &entry, 1);
+        let revision = entry_revision(&entry);
         entry.persisted_raw_hash = raw_hash(two.as_bytes());
-        assert_ne!(revision, entry_revision("boot", &entry, 1));
+        assert_ne!(revision, entry_revision(&entry));
     }
 
     #[test]
@@ -788,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn disguise_policy_spelling_does_not_create_a_pending_configuration_change() {
+    fn disguise_policy_spelling_does_not_change_the_runtime_configuration() {
         let base = "instance_id='11111111-1111-1111-1111-111111111111'\n";
         for (mode, legacy) in [
             ("prefer", ""),
@@ -799,14 +695,6 @@ mod tests {
             let active = TomlConfig::new_from_str(&legacy).unwrap();
             let persisted = TomlConfig::new_from_str(&unified).unwrap();
             assert!(configs_equivalent(&active, &persisted), "{mode}");
-            assert!(
-                !has_pending_config_change(&unified, Some(&active)),
-                "{mode}"
-            );
-            assert!(
-                !has_pending_config_change(&legacy, Some(&persisted)),
-                "{mode}"
-            );
             assert_eq!(
                 persisted.get_flags_patch().p2p_disguise_mode.as_deref(),
                 Some(mode)
@@ -831,12 +719,12 @@ mod tests {
         assert_eq!(
             semantic_hash(contents),
             config_semantic_hash(&active),
-            "pending-apply compares both configurations after resolving defaults"
+            "equivalence compares both configurations after resolving defaults"
         );
-        assert!(!has_pending_config_change(contents, Some(&active)));
+        assert!(configs_equivalent(&persisted, &active));
         for changed in ["close_redundant_conns_when_disguised = false", "mtu = 0"] {
-            let changed = format!("{contents}{changed}\n");
-            assert!(has_pending_config_change(&changed, Some(&active)));
+            let changed = TomlConfig::new_from_str(&format!("{contents}{changed}\n")).unwrap();
+            assert!(!configs_equivalent(&changed, &active));
         }
         assert_eq!(before_patch, persisted.get_flags_patch());
         assert_eq!(before_dump, persisted.dump());

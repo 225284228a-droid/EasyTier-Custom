@@ -6,7 +6,7 @@ use std::{sync::Weak, time::Duration};
 use easytier::proto::{
     api::manage::{
         DeleteNetworkInstanceRequest, ObserveConfigsRequest, PatchPersistedConfigRequest,
-        PersistedConfigApplyMode, PersistedConfigService, PersistedConfigServiceClientFactory,
+        PersistedConfigService, PersistedConfigServiceClientFactory,
         SetNetworkInstanceEnabledRequest, WebClientServiceClientFactory,
     },
     rpc_types::controller::BaseController,
@@ -28,8 +28,7 @@ pub(crate) struct LocalConfigView {
     pub stale: bool,
 }
 
-pub(crate) const REVISION_CAPABILITY: &str = "management:persisted-config-revision-v1";
-pub(crate) const APPLY_CAPABILITY: &str = "management:persisted-config-apply-v1";
+pub(crate) const REVISION_CAPABILITY: &str = "management:persisted-config-revision-v2";
 pub(super) type PersistedClient =
     Box<dyn PersistedConfigService<Controller = BaseController> + Send + Sync>;
 
@@ -416,12 +415,6 @@ fn validate_capability_mask(
     request: &PatchPersistedConfigRequest,
     caps: &[String],
 ) -> Result<(), LocalConfigError> {
-    if request.field_mask.is_empty()
-        && request.apply_mode == PersistedConfigApplyMode::SaveAndApply as i32
-        && !caps.iter().any(|cap| cap == APPLY_CAPABILITY)
-    {
-        return Err(LocalConfigError::Unsupported);
-    }
     const EXTENSIONS: &[&str] = &[
         "sni",
         "p2p_prefer_protocol",
