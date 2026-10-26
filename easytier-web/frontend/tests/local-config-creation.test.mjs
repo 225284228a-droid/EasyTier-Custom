@@ -174,7 +174,11 @@ test('embedded console creates a default network and Core restores it as disable
         await stop(core);
         core = startCore();
         await waitFor(async () => {
-            const mirror = await api(`/machines/${machine}/local-configs`);
+            assert.equal(core.child.exitCode, null, core.logs());
+            // The catalog is read live, so it is unavailable until Core reconnects.
+            const response = await context.request.get(`/api/v1/machines/${machine}/local-configs`);
+            if (!response.ok()) return false;
+            const mirror = await response.json();
             return mirror.online && !mirror.stale && mirror.catalog_epoch !== snapshot.catalog_epoch && mirror.entries.length === fixtures.length + 1;
         }, 'Core catalog after restart');
         const restored = (await api(`/machines/${machine}/local-configs`)).entries;
