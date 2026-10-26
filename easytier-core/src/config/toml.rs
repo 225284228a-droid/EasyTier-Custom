@@ -18,7 +18,6 @@ use crate::proto::{acl::Acl, common::SecureModeConfig};
 
 pub use crate::proto::common::{Flags, FlagsPatch};
 
-
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
 }

@@ -602,8 +602,13 @@ impl ClientManager {
 
     /// Location for a set of public addresses of one node, IPv4 first.
     pub async fn resolve_ips_location(&self, ips: &[std::net::IpAddr]) -> Option<Location> {
-        Self::resolve_node_ips(ips, self.city_geo_cache.as_ref(), self.geoip_db.clone(), true)
-            .await
+        Self::resolve_node_ips(
+            ips,
+            self.city_geo_cache.as_ref(),
+            self.geoip_db.clone(),
+            true,
+        )
+        .await
     }
 
     async fn resolve_location(
