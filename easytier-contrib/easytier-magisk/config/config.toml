@@ -9,7 +9,6 @@ listeners = [
     "wss://0.0.0.0:11012/",
 ]
 mapped_listeners = []
-exit_nodes = []
 rpc_portal = "0.0.0.0:15888"
 
 [network_identity]
@@ -26,7 +25,6 @@ enable_encryption = true
 enable_ipv6 = true
 mtu = 1380
 latency_first = false
-enable_exit_node = false
 no_tun = false
 use_smoltcp = false
 relay_network_whitelist = "*"
