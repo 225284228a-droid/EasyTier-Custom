@@ -161,7 +161,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
       await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
         while (pending.length && isCurrent()) {
           const device = pending.shift()!
-          let batched = batch[device.machine_id]
+          let batched: (typeof batch)[string] | undefined = batch[device.machine_id]
           try {
             const snapshots = await collectTopologySnapshotsWithRetry(
               device,
