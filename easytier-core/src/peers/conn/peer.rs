@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use arc_swap::ArcSwapOption;
 use crossbeam_utils::atomic::AtomicCell;
@@ -44,6 +50,81 @@ impl Default for ParallelSendState {
             sent_bytes: HashMap::new(),
             pool_anchor: None,
         }
+    }
+}
+
+/// What `send_msg` needs for every packet. Computing it walks every
+/// connection and copies connection info, so it is cached and recomputed only
+/// after the generation changes: on connection admission and removal, and on
+/// the maintenance tick, which picks up latency verification and renegotiated
+/// parallel targets.
+struct SendPlan {
+    generation: u64,
+    target: u32,
+    members: Vec<ArcPeerConn>,
+    /// Stripe packets across `members` instead of using the default connection.
+    stripe: bool,
+    my_peer_id: PeerId,
+}
+
+/// Invalidation also drops the cached plan: it holds its members, and a removed
+/// connection must be released so its tunnel closes. The generation rejects a
+/// plan that a concurrent sender computed before the change.
+#[derive(Default)]
+struct SendPlanCache {
+    plan: ArcSwapOption<SendPlan>,
+    generation: AtomicU64,
+}
+
+impl SendPlanCache {
+    fn invalidate(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.plan.store(None);
+    }
+}
+
+fn compute_send_plan(
+    conns: &ConnMap,
+    flags: &Flags,
+    generation: u64,
+    parallel_send: &Mutex<ParallelSendState>,
+    receiver: &super::parallel::ParallelReceiver,
+) -> SendPlan {
+    let (target, members) = parallel_members(conns, flags);
+    let first_info = members.first().map(|conn| conn.get_conn_info());
+    let capable = first_info.as_ref().is_some_and(|info| {
+        super::parallel::remote_offer(&info.features).is_some()
+            && super::parallel::tx_epoch(&info.features).is_some()
+    });
+    let mut state = parallel_send.lock();
+    // Once striping has started it continues on a single member, so the
+    // receiver keeps one ordered sequence.
+    let stripe = capable && !members.is_empty() && (target > 1 || state.sequence > 0);
+    if stripe {
+        receiver.set_max_rtt_us(
+            members
+                .iter()
+                .map(|c| c.get_stats().latency_us)
+                .max()
+                .unwrap_or(0),
+        );
+        state
+            .sent_bytes
+            .retain(|id, _| members.iter().any(|c| c.get_conn_id() == *id));
+        let baseline = state.sent_bytes.values().copied().min().unwrap_or(0);
+        for conn in &members {
+            state
+                .sent_bytes
+                .entry(conn.get_conn_id())
+                .or_insert(baseline);
+        }
+    }
+    SendPlan {
+        generation,
+        target,
+        members,
+        stripe,
+        my_peer_id: first_info.map_or(0, |info| info.my_peer_id),
     }
 }
 
@@ -500,6 +581,7 @@ pub struct Peer {
     #[allow(dead_code)]
     conn_maintenance_task: AbortOnDropHandle<()>,
     parallel_send: Arc<Mutex<ParallelSendState>>,
+    send_plan: Arc<SendPlanCache>,
     parallel_reservations: Arc<super::parallel::ParallelReservations>,
     parallel_receiver: Arc<super::parallel::ParallelReceiver>,
     parallel_policy: Arc<super::parallel::ParallelPolicy>,
@@ -526,6 +608,7 @@ impl Peer {
         let negotiated_disguise = Arc::new(AtomicCell::new(None));
         let remote_cleanup_requested = Arc::new(AtomicCell::new(false));
         let parallel_send = Arc::new(Mutex::new(ParallelSendState::default()));
+        let send_plan = Arc::new(SendPlanCache::default());
         let parallel_receiver = super::parallel::ParallelReceiver::new(packet_recv_chan.clone());
         let parallel_policy = Arc::new(super::parallel::ParallelPolicy::default());
         let conn_lifecycle = Arc::new(tokio::sync::Mutex::new(()));
@@ -557,6 +640,7 @@ impl Peer {
         let negotiated_disguise_copy = negotiated_disguise.clone();
         let remote_cleanup_requested_copy = remote_cleanup_requested.clone();
         let conn_lifecycle_copy = conn_lifecycle.clone();
+        let send_plan_copy = send_plan.clone();
         let close_event_listener = AbortOnDropHandle::new(tokio::spawn(
             async move {
                 loop {
@@ -580,6 +664,7 @@ impl Peer {
                                 let Some(conn_id) = ret.removable_id(&conns_copy, &context_copy.flags(), negotiated_disguise_copy.load()) else { continue };
                                 let removed_conn = conns_copy.remove(&conn_id);
                                 if let Some((_, conn)) = removed_conn.as_ref() {
+                                    send_plan_copy.invalidate();
                                     let cached_conn = default_conn_copy.load();
                                     if cached_conn
                                         .as_ref()
@@ -632,9 +717,11 @@ impl Peer {
         let negotiated_disguise_copy = negotiated_disguise.clone();
         let parallel_policy_copy = parallel_policy.clone();
         let parallel_send_maintenance = parallel_send.clone();
+        let send_plan_copy = send_plan.clone();
         let conn_maintenance_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
                 crate::foundation::time::sleep(std::time::Duration::from_millis(250)).await;
+                send_plan_copy.invalidate();
                 reconcile_parallel_anchor(
                     &conns_copy,
                     &parallel_send_maintenance,
@@ -696,6 +783,7 @@ impl Peer {
             peer_public_key,
             conn_maintenance_task,
             parallel_send,
+            send_plan,
             parallel_reservations: Arc::new(super::parallel::ParallelReservations::default()),
             parallel_receiver,
             parallel_policy,
@@ -790,6 +878,7 @@ impl Peer {
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
         self.conns.insert(conn.get_conn_id(), Arc::new(conn));
+        self.send_plan.invalidate();
         // Close queue backpressure, callbacks and reconciliation must run after
         // releasing this guard: the close listener needs it to drain the queue.
         drop(lifecycle);
@@ -852,19 +941,42 @@ impl Peer {
         selected
     }
 
+    fn send_plan(&self) -> Arc<SendPlan> {
+        let generation = self.send_plan.generation.load(Ordering::Acquire);
+        if let Some(plan) = self.send_plan.plan.load().as_ref()
+            && plan.generation == generation
+        {
+            return plan.clone();
+        }
+        let plan = Arc::new(compute_send_plan(
+            &self.conns,
+            &self.context.flags(),
+            generation,
+            &self.parallel_send,
+            &self.parallel_receiver,
+        ));
+        self.send_plan.plan.store(Some(plan.clone()));
+        // An invalidation raced with this computation: do not keep its
+        // members alive in the cache.
+        if self.send_plan.generation.load(Ordering::Acquire) != generation {
+            self.send_plan.plan.store(None);
+        }
+        plan
+    }
+
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         if super::parallel::stripeable(&msg) {
-            let (mut target, mut members) = parallel_members(&self.conns, &self.context.flags());
-            if target > 1 && members.is_empty() {
+            let mut plan = self.send_plan();
+            if plan.target > 1 && plan.members.is_empty() {
                 let ready = tokio::time::timeout(std::time::Duration::from_secs(7), async {
                     loop {
                         if self.conns.iter().all(|conn| conn.value().is_closed()) {
                             return None;
                         }
-                        let (target, members) =
-                            parallel_members(&self.conns, &self.context.flags());
-                        if target == 1 || !members.is_empty() {
-                            return Some((target, members));
+                        self.send_plan.invalidate();
+                        let plan = self.send_plan();
+                        if plan.target == 1 || !plan.members.is_empty() {
+                            return Some(plan);
                         }
                         crate::foundation::time::sleep(std::time::Duration::from_millis(5)).await;
                     }
@@ -873,92 +985,10 @@ impl Peer {
                 let Ok(Some(ready)) = ready else {
                     return Err(Error::PeerNoConnectionError(self.peer_node_id));
                 };
-                (target, members) = ready;
+                plan = ready;
             }
-            let capable = members.first().is_some_and(|conn| {
-                let info = conn.get_conn_info();
-                super::parallel::remote_offer(&info.features).is_some()
-                    && super::parallel::tx_epoch(&info.features).is_some()
-            });
-            if (target > 1 || self.parallel_send.lock().sequence > 0)
-                && capable
-                && !members.is_empty()
-            {
-                self.parallel_receiver.set_max_rtt_us(
-                    members
-                        .iter()
-                        .map(|c| c.get_stats().latency_us)
-                        .max()
-                        .unwrap_or(0),
-                );
-                let (epoch, sequence) = {
-                    let mut state = self.parallel_send.lock();
-                    state
-                        .sent_bytes
-                        .retain(|id, _| members.iter().any(|c| c.get_conn_id() == *id));
-                    let baseline = state.sent_bytes.values().copied().min().unwrap_or(0);
-                    for conn in &members {
-                        state
-                            .sent_bytes
-                            .entry(conn.get_conn_id())
-                            .or_insert(baseline);
-                    }
-                    members.sort_by_key(|c| {
-                        (
-                            state.sent_bytes.get(&c.get_conn_id()).copied().unwrap_or(0),
-                            c.cleanup_policy().shared_connection_key(),
-                        )
-                    });
-                    let sequence = state.sequence;
-                    state.sequence = state.sequence.wrapping_add(1);
-                    (state.epoch, sequence)
-                };
-                let info = members[0].get_conn_info();
-                let mut packet =
-                    super::parallel::wrap(msg, info.my_peer_id, self.peer_node_id, epoch, sequence);
-                let bytes = packet.tunnel_payload().len() as u64;
-                for conn in &members {
-                    match conn.try_send_owned(packet) {
-                        Ok(()) => {
-                            *self
-                                .parallel_send
-                                .lock()
-                                .sent_bytes
-                                .entry(conn.get_conn_id())
-                                .or_default() += bytes;
-                            return Ok(());
-                        }
-                        Err(
-                            tokio::sync::mpsc::error::TrySendError::Full(p)
-                            | tokio::sync::mpsc::error::TrySendError::Closed(p),
-                        ) => {
-                            packet = p;
-                        }
-                    }
-                }
-                // Backpressure waits for any member to become writable; a
-                // stalled first member cannot block the other paths.
-                use futures::StreamExt;
-                let mut ready = futures::stream::FuturesUnordered::new();
-                for conn in members {
-                    ready.push(async move {
-                        let permit = conn.reserve_send().await;
-                        (conn, permit)
-                    });
-                }
-                while let Some((conn, permit)) = ready.next().await {
-                    if let Ok(permit) = permit {
-                        permit.send(packet);
-                        *self
-                            .parallel_send
-                            .lock()
-                            .sent_bytes
-                            .entry(conn.get_conn_id())
-                            .or_default() += bytes;
-                        return Ok(());
-                    }
-                }
-                return Err(Error::PeerNoConnectionError(self.peer_node_id));
+            if plan.stripe {
+                return self.send_striped(msg, &plan).await;
             }
         }
         let default_conn = self.default_conn.load();
@@ -974,6 +1004,67 @@ impl Peer {
         conn.send_msg(msg).await?;
 
         Ok(())
+    }
+
+    async fn send_striped(&self, msg: ZCPacket, plan: &SendPlan) -> Result<(), Error> {
+        let mut members: Vec<&ArcPeerConn> = plan.members.iter().collect();
+        let (epoch, sequence) = {
+            let mut state = self.parallel_send.lock();
+            members.sort_by_key(|c| {
+                (
+                    state.sent_bytes.get(&c.get_conn_id()).copied().unwrap_or(0),
+                    c.cleanup_policy().shared_connection_key(),
+                )
+            });
+            let sequence = state.sequence;
+            state.sequence = state.sequence.wrapping_add(1);
+            (state.epoch, sequence)
+        };
+        let mut packet =
+            super::parallel::wrap(msg, plan.my_peer_id, self.peer_node_id, epoch, sequence);
+        let bytes = packet.tunnel_payload().len() as u64;
+        let record_sent = |conn: &ArcPeerConn| {
+            *self
+                .parallel_send
+                .lock()
+                .sent_bytes
+                .entry(conn.get_conn_id())
+                .or_default() += bytes;
+        };
+        for &conn in &members {
+            match conn.try_send_owned(packet) {
+                Ok(()) => {
+                    record_sent(conn);
+                    return Ok(());
+                }
+                Err(
+                    tokio::sync::mpsc::error::TrySendError::Full(p)
+                    | tokio::sync::mpsc::error::TrySendError::Closed(p),
+                ) => {
+                    packet = p;
+                }
+            }
+        }
+        // Backpressure waits for any member to become writable; a stalled
+        // first member cannot block the other paths.
+        use futures::StreamExt;
+        let mut ready = futures::stream::FuturesUnordered::new();
+        for conn in members {
+            ready.push(async move {
+                let permit = conn.reserve_send().await;
+                (conn, permit)
+            });
+        }
+        while let Some((conn, permit)) = ready.next().await {
+            if let Ok(permit) = permit {
+                permit.send(packet);
+                record_sent(conn);
+                return Ok(());
+            }
+        }
+        // Every member is closed: recompute for the next packet.
+        self.send_plan.invalidate();
+        Err(Error::PeerNoConnectionError(self.peer_node_id))
     }
 
     pub async fn close_peer_conn(&self, conn_id: &PeerConnId) -> Result<(), Error> {
