@@ -171,10 +171,8 @@ fn schema_transport_flags_validate_environment_values() {
     let mut config = NamedTempFile::new().unwrap();
     writeln!(config, "instance_name = 'environment-flags'").unwrap();
     let variables = [
-        "ET_ONLY_USE_WSS_HTTP3_FOR_HOLE_PUNCHING",
-        "ET_PREFER_WSS_HTTP3_FOR_P2P",
-        "ET_DISABLE_WSS_HTTP3_FOR_P2P",
-        "ET_CLOSE_REDUNDANT_CONNS_WHEN_DISGUISED",
+        ("ET_P2P_DISGUISE_MODE", "off"),
+        ("ET_CLOSE_REDUNDANT_CONNS_WHEN_DISGUISED", "false"),
     ];
 
     let mut command = check_config_command();
@@ -184,12 +182,12 @@ fn schema_transport_flags_validate_environment_values() {
         .env("ET_SNI", "front.example.com")
         .env("ET_CONFIG_DIR", "custom-configs")
         .env("ET_STATE_DIR", "machine-state");
-    for variable in variables {
-        command.env(variable, "false");
+    for (variable, valid) in variables {
+        command.env(variable, valid);
     }
     stderr_on_success(command.output().unwrap());
 
-    for variable in variables {
+    for (variable, _) in variables {
         let output = check_config_command()
             .arg("--config-file")
             .arg(config.path())

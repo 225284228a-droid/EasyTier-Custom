@@ -2294,14 +2294,6 @@ enabled = true
             assert_eq!(patch.p2p_disguise_mode.as_deref(), Some(mode));
         }
         assert!(parse_flags(&["easytier", "--p2p-disguise-mode", "disable"]).is_err());
-        assert!(
-            parse_flags(&[
-                "easytier",
-                "--disable-wss-http3-for-p2p",
-                "--only-use-wss-http3-for-hole-punching",
-            ])
-            .is_err()
-        );
     }
 
     #[test]
