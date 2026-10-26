@@ -45,7 +45,6 @@ export interface SaveContext {
  * Saving always writes the configuration; a running network applies it.
  */
 export interface ConfigStore {
-  readonly kind: 'revision' | 'legacy'
   /** The file editor edits the node's original file rather than a generated one. */
   readonly editsOriginalFile: boolean
   load(instanceId: string): Promise<ConfigDocument>
@@ -64,7 +63,7 @@ export function supportsRevisionStore(api: RemoteClient, capabilities: readonly 
 }
 
 export function createConfigStore(api: RemoteClient, capabilities: readonly string[], revision: boolean): ConfigStore {
-  return revision ? new RevisionConfigStore(api, capabilities) : new LegacyConfigStore(api)
+  return revision ? new RevisionConfigStore(api, capabilities) : new PlainConfigStore(api)
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -91,7 +90,6 @@ function documentOf(entry: LocalConfigEntry): ConfigDocument {
 }
 
 class RevisionConfigStore implements ConfigStore {
-  readonly kind = 'revision'
   readonly editsOriginalFile = true
 
   constructor(private readonly api: RemoteClient, private readonly capabilities: readonly string[]) {}
@@ -172,9 +170,12 @@ class RevisionConfigStore implements ConfigStore {
   }
 }
 
-/** Official EasyTier nodes: no revisions and no access to the original file. */
-class LegacyConfigStore implements ConfigStore {
-  readonly kind = 'legacy'
+/**
+ * Nodes without revisioned config files (official EasyTier, or this kernel
+ * run without a config directory): no revisions and no access to the
+ * original file.
+ */
+class PlainConfigStore implements ConfigStore {
   readonly editsOriginalFile = false
 
   constructor(private readonly api: RemoteClient) {}

@@ -715,25 +715,25 @@ mod tests {
     }
 
     #[test]
-    fn classify_chain_type_treats_public_ipv6_lease_as_inbound() {
-        let leased_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
-        let packet_info = packet_info(IpAddr::V6(leased_ipv6));
+    fn classify_chain_type_treats_local_ipv6_as_inbound() {
+        let local_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
+        let packet_info = packet_info(IpAddr::V6(local_ipv6));
 
         let chain =
-            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
+            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == local_ipv6);
 
         assert_eq!(chain, ChainType::Inbound);
     }
 
     #[test]
     fn classify_chain_type_keeps_non_local_ipv6_as_forward() {
-        let leased_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
+        let local_ipv6 = Ipv6Addr::new(0x2001, 0xdb8, 0x100, 0, 0, 0, 0, 0x123);
         let packet_info = packet_info(IpAddr::V6(Ipv6Addr::new(
             0x2001, 0xdb8, 0xffff, 2, 0, 0, 0, 0x100,
         )));
 
         let chain =
-            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == leased_ipv6);
+            AclFilter::classify_chain_type(true, &packet_info, None, |ip| ip == local_ipv6);
 
         assert_eq!(chain, ChainType::Forward);
     }

@@ -102,7 +102,6 @@ fn field_semantic_type(field: &FieldDescriptor) -> Option<String> {
         "proxy_cidrs" => Some("cidr[]".to_string()),
         "listener_urls" => Some("listener[]".to_string()),
         "routes" => Some("route[]".to_string()),
-        "exit_nodes" => Some("ip[]".to_string()),
         "relay_network_whitelist" => Some("network_name[]".to_string()),
         "mapped_listeners" => Some("mapped_listener[]".to_string()),
         "port_forwards" => Some("port_forward[]".to_string()),

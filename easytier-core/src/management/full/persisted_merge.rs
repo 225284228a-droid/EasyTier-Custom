@@ -469,9 +469,10 @@ pub(crate) fn merge_active_changes(
     Ok(original.to_string())
 }
 
-/// Legacy clients provide an entire form without a dirty mask. Retain their
-/// established form semantics while preserving original non-form TOML and
-/// comments that neither typed form projection contains.
+/// Saves through the official run/save API (official consoles, nodes without
+/// revisioned files) carry an entire form without a dirty mask. Retain their
+/// form semantics while preserving original non-form TOML and comments that
+/// neither typed form projection contains.
 pub(super) fn merge_legacy_form_changes(
     original: &str,
     candidate: &TomlConfig,
