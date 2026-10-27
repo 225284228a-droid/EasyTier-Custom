@@ -441,7 +441,6 @@ web:
     details: "详细信息"
     more_details: "更多详情"
     items: "共 {count} 项"
-    automatic_refresh: "每 2 秒自动更新"
     online_members: "在线 / 总成员"
     back_networks: "返回网络列表"
     all_details: "展开全部详情"

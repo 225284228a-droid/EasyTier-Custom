@@ -169,7 +169,6 @@ const stats = computed(() => [
                     :persistence-key="persistenceKey" @refresh="loadTopology(true)" />
             </div>
         </section>
-        <p class="page-footnote"><i class="pi pi-sync" aria-hidden="true"></i>{{ t('web.console.automatic_refresh') }}</p>
     </div>
 </template>
 

@@ -333,6 +333,8 @@ test('dashboard topology shares the panel heading inset and documentation links 
     assert.equal(await page.locator('.console-docs').getAttribute('href'), repository);
     assert.equal(await page.locator('.overview-columns .console-empty-state a.entity-link').getAttribute('href'), repository);
     await page.locator('.dashboard .topology-header').waitFor();
+    assert.equal(await page.locator('.globe-legend').count(), 0, 'the globe legend is removed');
+    assert.equal(await page.locator('.page-footnote').count(), 0, 'the automatic refresh footnote is removed');
     for (const width of [1440, 390]) {
         await page.setViewportSize({ width, height: 960 });
         const bounds = await page.locator('.dashboard').evaluate(panel => {
@@ -370,6 +372,11 @@ test('dashboard globe cards zoom without scrolling and load only complete rows',
     await page.waitForFunction(() => Number(document.querySelector('.globe-stage canvas')?.dataset.globeDistance) > 0);
     await page.getByRole('button', { name: 'Pause Rotation', exact: true }).click();
     await page.locator('.node-row').first().click();
+    const nodeKind = page.locator('.node-detail .node-kind');
+    await nodeKind.waitFor();
+    assert.equal((await nodeKind.innerText()).trim(), 'Managed', 'selected node detail shows its kind');
+    assert.ok(await nodeKind.locator('i').evaluate(element => getComputedStyle(element).backgroundColor !== 'rgba(0, 0, 0, 0)'),
+        'selected node kind keeps its colored marker');
     await page.evaluate(() => {
         const stage = document.querySelector('.globe-stage').getBoundingClientRect();
         window.scrollTo(0, stage.top + window.scrollY - 400);

@@ -104,7 +104,6 @@
 .preview-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-secondary { margin-top: 3px; color: var(--console-muted); font-size: 12px; font-weight: 400; }
 .preview-number { text-align: right; white-space: nowrap; font-size: 13px; }
-.page-footnote { font-size: 12px; color: var(--console-muted); display: flex; align-items: center; gap: 7px; }
 .network-tabs > .p-tabpanels { padding: 24px; }
 .network-tabs .p-tablist-tab-list { padding: 0 12px; }
 .network-tabs .p-tab { font-size: 13px; padding: 16px; }

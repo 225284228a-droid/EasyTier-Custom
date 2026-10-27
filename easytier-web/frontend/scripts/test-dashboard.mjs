@@ -231,7 +231,6 @@ async function assertLightGlobeLabels(page) {
     return {
       stage: rgba(getComputedStyle(stage).backgroundColor),
       node: read('.globe-node-label'), traffic: read('.globe-traffic-label'),
-      legend: read('.globe-legend'), managed: read('.globe-legend .managed-dot'), peer: read('.globe-legend .peer-dot'),
     }
   })
   const luminance = color => color.slice(0, 3).map(value => {
@@ -249,9 +248,13 @@ async function assertLightGlobeLabels(page) {
     assert.ok(luminance(background) > 0.65, `light mode: ${name} label kept its dark background`)
     assert.ok(contrast(label.color, background) >= 4.5, `light mode: ${name} label text lacks contrast`)
   }
-  assert.ok(contrast(colors.legend.color, colors.stage) >= 4.5, 'light mode: legend text lacks contrast')
-  for (const name of ['managed', 'peer'])
-    assert.ok(contrast(colors[name].background, colors.stage) >= 3, `light mode: ${name} marker lacks contrast`)
+  assert.equal(await page.locator('.globe-legend').count(), 0, 'light mode: the globe legend was not removed')
+  assert.equal(await page.locator('.page-footnote').count(), 0, 'light mode: the automatic refresh footnote was not removed')
+  const nodeKind = page.locator('.node-detail .node-kind')
+  await nodeKind.waitFor()
+  assert.match((await nodeKind.innerText()).trim(), /Managed/, 'light mode: selected node detail lost its kind')
+  assert.ok(await nodeKind.locator('i').evaluate(element =>
+    getComputedStyle(element).backgroundColor !== 'rgba(0, 0, 0, 0)'), 'light mode: node kind marker lost its color')
 }
 
 let previewServer
@@ -348,6 +351,8 @@ try {
       Math.cos(initialAzimuth - defaultLongitude))) < 0.08,
     `${name}: default globe view is not centered near Hong Kong (${initialAzimuth})`)
     await page.locator('.node-row').first().waitFor()
+    assert.equal(await page.locator('.globe-legend').count(), 0, `${name}: the globe legend was not removed`)
+    assert.equal(await page.locator('.page-footnote').count(), 0, `${name}: the automatic refresh footnote was not removed`)
     const summaries = await page.locator('.dashboard-summary strong').allTextContents()
     assert.deepEqual(summaries, ['1', '6'], `${name}: machines sharing a mesh must count as one network`)
     assert.deepEqual(await page.locator('.summary-strip .summary-value').allTextContents().then(values => values.map(value => value.trim())), ['4', '4', '4'], `${name}: official summary retains device and instance counts`)

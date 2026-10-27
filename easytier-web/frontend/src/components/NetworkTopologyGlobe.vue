@@ -13,7 +13,7 @@ import { linkLocationGroup, nodeLocationGroup } from '../modules/globeLabelGroup
 import { loadGeographyLayer, type GeographyLevel } from '../modules/globeMapDetail'
 import type { GeographyLayer } from '../modules/globeGeographyLayer'
 import { readGlobePreferences, saveGlobePreferences } from '../modules/dashboardPersistence'
-import { topologyNodeKind, type TopologyLink, type TopologyNode, type TopologyNodeKind } from '../modules/networkTopology'
+import { topologyNodeKind, type TopologyLink, type TopologyNode } from '../modules/networkTopology'
 
 const props = defineProps<{
   nodes: TopologyNode[]
@@ -34,9 +34,9 @@ const locatedNodes = computed(() => props.nodes.flatMap(node => {
   return located ? [located] : []
 }))
 const selectedNode = computed(() => props.nodes.find(node => node.id === selectedId.value))
+const selectedNodeKind = computed(() => selectedNode.value ? topologyNodeKind(selectedNode.value) : undefined)
 const selectedLocation = computed(() => selectedNode.value && locateNode(selectedNode.value))
 const unmappedCount = computed(() => props.nodes.length - locatedNodes.value.length)
-const nodeKinds: TopologyNodeKind[] = ['managed', 'external', 'unmanaged']
 
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
@@ -394,8 +394,8 @@ function updateLabels() {
   const distance = camera.position.distanceTo(controls.target)
   const nodesVisible = distance <= NODE_LABEL_MAX_DISTANCE
   const trafficVisible = distance <= TRAFFIC_LABEL_MAX_DISTANCE
-  // Aspect-ratio layouts can have fractional sizes; rounded clientHeight lets
-  // bottom-aligned labels encroach on the legend after a viewport resize.
+  // Aspect-ratio layouts can have fractional sizes; rounded clientHeight keeps
+  // bottom-aligned labels inside the stage after a viewport resize.
   const { width, height } = renderer.domElement.getBoundingClientRect()
   labelLayer.value.dataset.detailVisible = String(nodesVisible)
   labelLayer.value.dataset.nodeLabelsVisible = String(nodesVisible)
@@ -881,9 +881,6 @@ onUnmounted(() => {
       <div ref="stage" class="globe-stage">
         <div ref="labelLayer" class="globe-labels" />
         <div v-if="unavailable" class="globe-fallback">{{ t('web.dashboard.webgl_unavailable') }}</div>
-        <div class="globe-legend">
-          <span v-for="kind in nodeKinds" :key="kind"><i :class="`${kind}-dot`" />{{ t(`web.dashboard.${kind}`) }}</span>
-        </div>
       </div>
       <aside class="node-panel" :style="{ height: `${stageHeight}px` }">
         <div v-if="!nodes.length" class="node-empty">{{ t('web.dashboard.no_nodes') }}</div>
@@ -907,6 +904,9 @@ onUnmounted(() => {
           <span v-if="selectedLocation">≈ {{ selectedLocation.latitude.toFixed(2) }},
             {{ selectedLocation.longitude.toFixed(2) }}</span>
           <span v-else>{{ t('web.device.unknown_location') }}</span>
+          <span v-if="selectedNodeKind" class="node-kind">
+            <i :class="`${selectedNodeKind}-dot`" />{{ t(`web.dashboard.${selectedNodeKind}`) }}
+          </span>
           <span v-if="selectedNode.stale">{{ t('web.dashboard.retrying') }}</span>
         </div>
       </aside>
@@ -934,7 +934,6 @@ onUnmounted(() => {
   --globe-label-border: rgba(82, 107, 117, 0.22);
   --globe-leader: rgba(68, 101, 110, 0.46);
   --globe-traffic-leader: rgba(68, 101, 110, 0.82);
-  --globe-legend-text: #37515d;
   min-width: 0;
 }
 .topology:where(.app-dark *) {
@@ -956,7 +955,6 @@ onUnmounted(() => {
   --globe-label-border: rgba(164, 188, 192, 0.18);
   --globe-leader: rgba(187, 215, 213, 0.4);
   --globe-traffic-leader: rgba(187, 215, 213, 0.82);
-  --globe-legend-text: #d5e0df;
 }
 .topology-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
@@ -986,8 +984,6 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .globe-labels :deep(.globe-label-leader) { position: absolute; height: 1px; background: var(--globe-leader); transform-origin: left center; }
 .globe-labels :deep(.globe-traffic-leader) { height: 2px; margin-top: -1px; background: var(--globe-traffic-leader); }
 .globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--globe-muted-text); padding: 24px; text-align: center; }
-.globe-legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 16px; color: var(--globe-legend-text); font-size: 12px; pointer-events: none; }
-.globe-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .managed-dot, .external-dot, .unmanaged-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--globe-managed); }
 .external-dot { background: var(--globe-external); }
 .unmanaged-dot { background: var(--globe-unmanaged); }
@@ -999,6 +995,7 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .node-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .node-country { grid-column: 2; font-size: 11px; color: var(--p-text-muted-color); overflow-wrap: anywhere; }
 .node-detail { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; max-height: 45%; overflow: auto; box-sizing: border-box; border-top: 1px solid var(--p-content-border-color); padding: 12px; font-size: 12px; overflow-wrap: anywhere; }
+.node-kind { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; color: var(--p-text-muted-color); }
 .node-empty, .unmapped-count { flex-shrink: 0; padding: 12px; font-size: 12px; color: var(--p-text-muted-color); }
 @media (max-width: 900px) {
   .topology-body { grid-template-columns: minmax(0, 1fr); }

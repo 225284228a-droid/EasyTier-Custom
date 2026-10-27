@@ -441,7 +441,6 @@ web:
     details: "Details"
     more_details: "More details"
     items: "{count} items"
-    automatic_refresh: "Updates automatically every 2 seconds"
     online_members: "Online / total members"
     back_networks: "Back to networks"
     all_details: "Expand all details"
