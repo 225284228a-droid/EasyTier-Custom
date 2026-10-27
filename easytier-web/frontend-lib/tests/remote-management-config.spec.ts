@@ -231,6 +231,11 @@ async function submit(wrapper: Wrapper) {
   await flushPromises()
 }
 
+async function saveWithoutStarting(wrapper: Wrapper) {
+  await button(wrapper, 'web.device_management.save_config').trigger('click')
+  await flushPromises()
+}
+
 async function poll(ms = 2_000) {
   await vi.advanceTimersByTimeAsync(ms)
   await flushPromises()
@@ -297,15 +302,46 @@ describe('creating networks', () => {
   })
 })
 
+describe('creating networks without starting them', () => {
+  it('saves an official network without running it', async () => {
+    const { api, entry } = legacy(revisionApi())
+    api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [], runtime_capabilities: [] })
+    const wrapper = await mountManagement(api, null, () => cloneConfig(entry.config))
+    try {
+      await button(wrapper, 'web.device_management.create_network').trigger('click')
+      await flushPromises()
+      await saveWithoutStarting(wrapper)
+      expect(api.save_config).toHaveBeenCalledOnce()
+      expect(api.run_network).not.toHaveBeenCalled()
+      expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
+    } finally { wrapper.unmount() }
+  })
+
+  it('creates a disabled node file without starting it', async () => {
+    const { api, entry } = revisionApi()
+    api.list_network_instance_ids.mockResolvedValue({ disabled_inst_ids: [], running_inst_ids: [], runtime_capabilities: [REVISION] })
+    const wrapper = await mountManagement(api, null, () => cloneConfig(entry.config))
+    try {
+      await button(wrapper, 'web.device_management.create_network').trigger('click')
+      await flushPromises()
+      await saveWithoutStarting(wrapper)
+      expect(api.patch_local_config).toHaveBeenCalledWith(expect.objectContaining({ inst_id: INSTANCE_ID, expected_revision: '' }))
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+})
+
 describe('saving official networks', () => {
   it('saves a stopped network without dropping boolean fields or starting it', async () => {
     const { api, entry } = legacy(revisionApi())
     const expected = snapshotBooleanConfigFields(entry.config)
     const wrapper = await mountManagement(api)
     try {
-      expect(form(wrapper).props('actionLabel')).toBe('web.local_configs.save')
+      expect(form(wrapper).props('actionLabel')).toBe('web.local_configs.apply')
+      expect(button(wrapper, 'web.device_management.save_config').attributes('disabled')).toBeDefined()
       form(wrapper).props('curNetwork').hostname = 'saved-host'
-      await submit(wrapper)
+      await nextTick()
+      await saveWithoutStarting(wrapper)
       expect(api.save_config).toHaveBeenCalledOnce()
       const saved = api.save_config.mock.calls[0][0] as NetworkConfig
       expect(saved.hostname).toBe('saved-host')
@@ -313,6 +349,19 @@ describe('saving official networks', () => {
       expect(api.update_network_instance_state).not.toHaveBeenCalled()
       expect(api.run_network).not.toHaveBeenCalled()
       expect(form(wrapper).exists()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+
+  it('applies a stopped network by saving it and then starting it', async () => {
+    const { api } = legacy(revisionApi())
+    const wrapper = await mountManagement(api)
+    try {
+      form(wrapper).props('curNetwork').hostname = 'applied-host'
+      await submit(wrapper)
+      expect(api.save_config).toHaveBeenCalledWith(expect.objectContaining({ hostname: 'applied-host' }))
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false)
+      expect(api.save_config.mock.invocationCallOrder[0]).toBeLessThan(api.update_network_instance_state.mock.invocationCallOrder[0])
+      expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({ detail: 'web.local_configs.saved_applied' }))
     } finally { wrapper.unmount() }
   })
 
@@ -339,7 +388,8 @@ describe('saving node configuration files', () => {
     try {
       expect(form(wrapper).props('curNetwork').hostname).toBe('original-host')
       form(wrapper).props('curNetwork').hostname = 'edited-valid-host'
-      await submit(wrapper)
+      await nextTick()
+      await saveWithoutStarting(wrapper)
       expect(api.patch_local_config).toHaveBeenCalledWith({
         inst_id: INSTANCE_ID, expected_revision: 'revision-a', field_mask: ['hostname'],
         config: { hostname: 'edited-valid-host' },
@@ -351,6 +401,18 @@ describe('saving node configuration files', () => {
       await confirmSpy.require.mock.calls[0][0].accept()
       expect(api.delete_network).toHaveBeenCalledWith(INSTANCE_ID, 'revision-a')
       expect(toastSpy.add.mock.calls.filter(call => call[0].severity === 'error')).toEqual([])
+    } finally { wrapper.unmount() }
+  })
+
+  it('applies a stopped node file by patching it and then starting it', async () => {
+    const { api } = revisionApi()
+    const wrapper = await mountManagement(api)
+    try {
+      form(wrapper).props('curNetwork').hostname = 'applied-host'
+      await submit(wrapper)
+      expect(api.patch_local_config).toHaveBeenCalledOnce()
+      expect(api.update_network_instance_state).toHaveBeenCalledWith(INSTANCE_ID, false, 'revision-a')
+      expect(api.patch_local_config.mock.invocationCallOrder[0]).toBeLessThan(api.update_network_instance_state.mock.invocationCallOrder[0])
     } finally { wrapper.unmount() }
   })
 

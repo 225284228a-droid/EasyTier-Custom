@@ -374,7 +374,7 @@ event:
 
 web:
   local_configs:
-    save: Save
+    apply: Apply
     saved_applied: Configuration saved and applied
     create_and_start: Create and start
     enable: Enable network

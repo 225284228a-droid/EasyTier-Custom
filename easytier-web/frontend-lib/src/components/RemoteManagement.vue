@@ -208,7 +208,9 @@ watch([() => selectedInstanceId.value?.uuid, networkIsDisabled], async ([selecte
 
 const persist = () => currentNetworkControl.remoteSave.value;
 
-const saveNetwork = async () => {
+// Applying runs the network with the edits: a running network restarts with
+// them and a stopped one starts. Saving alone never starts a network.
+const saveNetwork = async (start: boolean) => {
     const selected = editor.base.value?.instanceId;
     if (!selected || busy.value) return;
     const running = isRunning(selected);
@@ -228,30 +230,33 @@ const saveNetwork = async () => {
         toast.add({ severity: 'warn', summary: t('web.common.error'), detail: t('web.local_configs.changed_elsewhere'), life: 5000 });
         return;
     }
+    const starting = start && !running;
+    if (starting && !await setNetworkEnabled(true)) return;
     if (outcome !== 'saved') return;
-    toast.add({ severity: 'success', summary: t('web.common.success'), detail: t(running ? 'web.local_configs.saved_applied' : 'web.device_management.config_saved'), life: 2000 });
+    toast.add({ severity: 'success', summary: t('web.common.success'), detail: t(running || starting ? 'web.local_configs.saved_applied' : 'web.device_management.config_saved'), life: 2000 });
     if (running) closeEditor();
     await Promise.all([reloadNetworkMeta(selected), loadNetworkInstanceIds()]);
     await loadCurrentNetworkInfo();
 };
 
-const setNetworkEnabled = async (enabled: boolean) => {
+const setNetworkEnabled = async (enabled: boolean): Promise<boolean> => {
     const selected = selectedInstanceId.value?.uuid;
-    if (!selected || busy.value) return;
+    if (!selected || busy.value) return false;
     const context = requestContext();
     lifecycleBusy.value = true;
     try {
         await configStore().setEnabled(selected, enabled);
     } catch (e: any) {
-        if (!context.current()) return;
+        if (!context.current()) return false;
         console.error(e);
         showError(t(enabled ? 'web.local_configs.enable_failed' : 'web.device_management.disable_network_failed', { error: formatError(e) }));
-        return;
+        return false;
     } finally {
         if (context.current()) lifecycleBusy.value = false;
     }
     if (enabled) closeEditor();
     await loadNetworkInstanceIds();
+    return true;
 }
 
 const confirm = useConfirm();
@@ -295,14 +300,14 @@ const newNetwork = () => {
     creating.value = true;
 }
 
-const createNetwork = async () => {
+const createNetwork = async (start: boolean) => {
     const config = newNetworkConfig.value;
     if (!config || busy.value) return;
     const context = requestContext();
     lifecycleBusy.value = true;
     try {
-        // Creation writes the network and starts it; it never replaces an existing one.
-        await configStore().create(NetworkTypes.normalizeNetworkConfig(config), true, true);
+        // Creation writes the network and optionally starts it; it never replaces an existing one.
+        await configStore().create(NetworkTypes.normalizeNetworkConfig(config), start, true);
     } catch (e: any) {
         if (!context.current()) return;
         console.error(e);
@@ -314,6 +319,7 @@ const createNetwork = async () => {
     if (!context.current()) return;
     creating.value = false;
     newNetworkConfig.value = undefined;
+    if (!start) toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('web.device_management.config_saved'), life: 2000 });
     await loadNetworkInstanceIds();
     if (!context.current()) return;
     selectedInstanceId.value = config.instance_id;
@@ -504,8 +510,9 @@ const saveConfigFile = async (tomlConfig: string): Promise<void> => {
     replaceFormConfig(resp.config);
 }
 
-const formActionLabel = computed(() => creating.value ? t('web.local_configs.create_and_start') : t('web.local_configs.save'));
-const submitForm = () => creating.value ? createNetwork() : saveNetwork();
+const formActionLabel = computed(() => creating.value ? t('web.local_configs.create_and_start') : t('web.local_configs.apply'));
+const submitForm = () => creating.value ? createNetwork(true) : saveNetwork(true);
+const saveWithoutStarting = () => creating.value ? createNetwork(false) : saveNetwork(false);
 
 // 响应式屏幕宽度
 const screenWidth = ref(window.innerWidth);
@@ -692,6 +699,9 @@ const editorMerged = editor.merged;
                         :disabled="fileEditorDisabled" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" :disabled="busy || !formConfig" />
+                    <Button v-if="creating || networkIsDisabled" @click="saveWithoutStarting" icon="pi pi-save"
+                        :label="t('web.device_management.save_config')" severity="secondary"
+                        :disabled="busy || !formConfig || !!editorRemote || (!creating && !editorDirty)" />
                     <Button v-if="!creating && networkIsDisabled && editorDirty" @click="cancelEdit" icon="pi pi-undo"
                         :label="t('web.local_configs.discard')" severity="secondary" :disabled="busy" />
                     <Button v-if="!creating && networkIsDisabled" @click="setNetworkEnabled(true)" icon="pi pi-play"

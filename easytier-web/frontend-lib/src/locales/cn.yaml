@@ -374,7 +374,7 @@ event:
 
 web:
   local_configs:
-    save: 保存
+    apply: 应用
     saved_applied: 配置已保存并应用
     create_and_start: 创建并启动
     enable: 启用网络

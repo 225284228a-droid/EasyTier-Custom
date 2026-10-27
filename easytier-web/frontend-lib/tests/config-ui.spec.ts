@@ -507,7 +507,8 @@ describe('Config.vue network config projection', () => {
     const { curNetwork, wrapper } = mountConfig(config, ['config:vpn-subnet-exit-v1'])
     await nextTick()
     expect(input(wrapper, '#vpn_exit_enabled').checked).toBe(true)
-    expect(curNetwork.vpn?.exit_enabled).toBe(true)
+    // Showing the defaults must not write a VPN section the user never edited.
+    expect(curNetwork.vpn).toBeUndefined()
     await wrapper.find('#vpn_exit_enabled').setValue(false)
     expect(curNetwork.vpn?.exit_enabled).toBe(false)
     wrapper.unmount()
@@ -773,6 +774,17 @@ describe('Config.vue network config projection', () => {
     await wrapper.find('button[aria-label="vpn_rule_remove"]').trigger('click')
     expect(curNetwork.vpn?.rules).toEqual([])
     expect(wrapper.find('#vpn_exit_enabled').exists()).toBe(true)
+  })
+
+  it('writes a VPN section only when the first rule is added', async () => {
+    const config = DEFAULT_NETWORK_CONFIG()
+    config.advanced_settings = true
+    const { curNetwork, wrapper } = mountConfig(config)
+    await nextTick()
+    expect(curNetwork.vpn).toBeUndefined()
+    await wrapper.find('button[data-label="vpn_add_rule"]').trigger('click')
+    expect(curNetwork.vpn).toEqual({ exit_enabled: true, rules: [{ cidr: '', exit_addr: '' }] })
+    expect(wrapper.findAll('[data-testid="vpn-rule-card"]')).toHaveLength(1)
   })
 
   it('round-trips single-exit configuration and rejects removed JSON fields', () => {
