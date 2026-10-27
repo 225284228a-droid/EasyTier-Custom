@@ -546,6 +546,8 @@ for (const [apiHost, hostname] of [
 
 test('device search, sort, expansion and routed drawer survive reload and history', async t => {
     const { page } = await open(t, '/h/deviceList');
+    await page.locator('.device-card').first().waitFor();
+    await page.locator('.view-toggle .pi-table').click();
     const table = page.locator('.desktop-list');
     await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).waitFor();
     await page.getByRole('textbox', { name: 'Search name or address' }).fill('192.0.2.10');
@@ -584,6 +586,8 @@ test('switching the viewed network and device preserves the list and open drawer
         [id(101)]: { network_name: 'Home lab', config_permission: 7 },
     } } }));
     const table = page.locator('.desktop-list');
+    await page.locator('.device-card').first().waitFor();
+    await page.locator('.view-toggle .pi-table').click();
     await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).click();
     const drawer = page.locator('.console-device-drawer');
     await drawer.waitFor();
@@ -605,21 +609,26 @@ test('switching the viewed network and device preserves the list and open drawer
     assert.ok(await drawerElement.evaluate(element => element === document.querySelector('.console-device-drawer')), 'history navigation preserves the open drawer');
 });
 
-test('device list card view toggle renders cards and persists across reload', async t => {
+test('device list defaults to cards and persists both view modes across reload', async t => {
     const { page } = await open(t, '/h/deviceList');
+    const cards = page.locator('.device-card');
+    await cards.first().waitFor();
+    assert.equal(await cards.count(), 6);
+    assert.equal(await page.locator('.desktop-list').count(), 0, 'device list defaults to cards');
+    await page.locator('.view-toggle .pi-table').click();
     const table = page.locator('.desktop-list');
     await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).waitFor();
-    assert.equal(await page.locator('.device-card').count(), 0);
-    await page.locator('.view-toggle .pi-th-large').click();
-    await page.locator('.device-card').first().waitFor();
-    assert.equal(await page.locator('.device-card').count(), 6);
-    assert.equal(await table.count(), 0);
-    await page.reload();
-    await page.locator('.device-card').first().waitFor();
-    assert.equal(await page.locator('.device-card').count(), 6);
-    await page.locator('.view-toggle .pi-table').click();
-    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).waitFor();
     assert.equal(await table.locator('tbody > tr').count(), 6);
+    await page.reload();
+    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).waitFor();
+    assert.equal(await cards.count(), 0, 'table selection survives a reload');
+    await page.locator('.view-toggle .pi-th-large').click();
+    await cards.first().waitFor();
+    assert.equal(await cards.count(), 6);
+    await page.reload();
+    await cards.first().waitFor();
+    assert.equal(await cards.count(), 6);
+    assert.equal(await table.count(), 0, 'card selection survives a reload');
 });
 
 test('network creation retains gateway and advanced standalone modes', async t => {

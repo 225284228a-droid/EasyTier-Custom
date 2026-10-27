@@ -30,8 +30,8 @@ const refreshing = ref(false);
 let requestInFlight = false;
 const expandedRows = ref({});
 
-// 桌面端可在表格与卡片视图之间切换，选择持久化；移动端始终使用紧凑列表
-const viewMode = ref<'table' | 'card'>(localStorage.getItem('deviceList.viewMode') === 'card' ? 'card' : 'table');
+// 桌面端默认卡片视图，可切换到表格；选择持久化；移动端始终使用紧凑列表
+const viewMode = ref<'table' | 'card'>(localStorage.getItem('deviceList.viewMode') === 'table' ? 'table' : 'card');
 const viewModeOptions = [
     { value: 'table', icon: 'pi pi-table' },
     { value: 'card', icon: 'pi pi-th-large' },
