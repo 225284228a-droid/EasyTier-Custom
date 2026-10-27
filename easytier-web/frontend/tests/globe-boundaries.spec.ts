@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { URL as NodeURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { spherePosition, sphericalArc } from '../src/modules/globeBoundaryGeometry'
+import { appendSphericalArcSegments } from '../src/modules/globeGeographyLayer'
 
 function sourceVertices(filename: string) {
   const data = JSON.parse(readFileSync(new NodeURL(`../src/assets/${filename}`, import.meta.url), 'utf8'))
@@ -50,5 +51,31 @@ describe('globe boundary detail', () => {
     for (const point of close)
       expect(point.length()).toBeCloseTo(1.003, 12)
     expect(close.at(-1)!.distanceTo(to.clone().multiplyScalar(1.003))).toBeLessThan(1e-10)
+  })
+
+  it.each([
+    [[0, 90], [0.0005, 90], 0.003],
+    [[89.9, 30], [89.91, 32], 0.003],
+    [[0, 90], [90, 0], 0.045],
+    [[-33.9, 151.2], [51.5, -0.1], 0.012],
+  ])('subdivides %j to %j like the vector arc', (start, end, step) => {
+    const from = spherePosition(start[0], start[1])
+    const to = spherePosition(end[0], end[1])
+    const expected = sphericalArc(from, to, 1.003, step)
+    const segments: number[] = []
+    appendSphericalArcSegments(segments, [from.x, from.y, from.z], [to.x, to.y, to.z], 1.003, step)
+    expect(segments).toHaveLength((expected.length - 1) * 6)
+    for (let index = 0; index < expected.length - 1; index++) {
+      const [a, b] = [expected[index], expected[index + 1]]
+      const actual = segments.slice(index * 6, index * 6 + 6)
+      ;[a.x, a.y, a.z, b.x, b.y, b.z].forEach((value, axis) => expect(actual[axis]).toBeCloseTo(value, 9))
+    }
+  })
+
+  it('emits nothing for a repeated vertex', () => {
+    const point = spherePosition(10, 20)
+    const segments: number[] = []
+    appendSphericalArcSegments(segments, [point.x, point.y, point.z], [point.x, point.y, point.z], 1.003, 0.003)
+    expect(segments).toEqual([])
   })
 })

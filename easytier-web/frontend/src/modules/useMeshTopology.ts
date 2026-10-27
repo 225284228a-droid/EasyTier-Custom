@@ -2,7 +2,7 @@ import { computed, type Ref, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Utils } from 'easytier-frontend-lib'
 import ApiClient from './api'
-import { buildTopology, collectTopologySnapshotsWithRetry, isTopologyAuthError, TopologySnapshotCache } from './networkTopology'
+import { buildTopology, collectTopologySnapshotsWithRetry, isTopologyAuthError, TopologySnapshotCache, type NetworkSnapshot } from './networkTopology'
 import { TrafficTracker } from './topologyTraffic'
 import { TopologyAvailability } from './topologyAvailability'
 import { PersistentTopologyArchive } from './dashboardPersistence'
@@ -136,6 +136,8 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
       }
       const pending = devices.filter(device => device.online !== false && device.running_network_count > 0)
       const freshMachines = new Set<string>()
+      // Archived once per refresh: each write re-reads the whole archive.
+      const archived: NetworkSnapshot[] = []
       // One request collects every machine; the server shares each device
       // collection with other viewers. Retries go to the single machine.
       let batch: Awaited<ReturnType<ApiClient['collect_topology_network_info']>> = {}
@@ -186,7 +188,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
               if (accepted) {
                 freshMachines.add(device.machine_id)
                 availability.report(device.machine_id, collectedAt)
-                archive?.update(authorizedDevices, snapshots)
+                archived.push(...snapshots)
                 updateWarning()
               }
             }
@@ -207,6 +209,8 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
       if (isCurrent()) {
         const time = performance.now()
         lastFreshMachines = new Set(freshMachines)
+        if (archived.length)
+          archive?.update(authorizedDevices, archived)
         bufferedTopology(time, true)
         updateWarning()
         scheduleExpiry()

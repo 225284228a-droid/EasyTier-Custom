@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildTopology, collectTopologySnapshotsWithRetry, TopologySnapshotCache } from '../src/modules/networkTopology'
+import { buildTopology, collectTopologySnapshotsWithRetry, TopologySnapshotCache, topologyNodeKind } from '../src/modules/networkTopology'
 import { TrafficTracker } from '../src/modules/topologyTraffic'
 import { locateNode } from '../src/modules/globeGeography'
 
@@ -334,6 +334,20 @@ describe('dashboard topology', () => {
     const merged = buildTopology([a, b], [current, own]).nodes.find(node => node.peerId === 2)!
     expect(merged.managed).toBe(true)
     expect(merged.country).toBe('Australia')
+  })
+
+  it('treats only public servers as external nodes', () => {
+    const a = device('a', ['mesh'])
+    const server = { ...route(3, 'server'), hostname: 'PublicServer_relay', feature_flag: { is_public_server: true } }
+    const current = snapshot(a, 'mesh', 1, [route(2, 'member'), server], [peer(2), peer(3)])
+    const kinds = Object.fromEntries(buildTopology([a], [current]).nodes
+      .map(node => [node.peerId, topologyNodeKind(node)]))
+    expect(kinds).toEqual({ 1: 'managed', 2: 'unmanaged', 3: 'external' })
+    // Another snapshot without the route still keeps the public server flag.
+    const b = device('b', ['mesh-b'])
+    const other = snapshot(b, 'mesh-b', 4, [], [peer(3)])
+    const merged = buildTopology([a, b], [other, current]).nodes.find(node => node.peerId === 3)!
+    expect(topologyNodeKind(merged)).toBe('external')
   })
 
   it('uses valid GeoIP coordinates and explicitly approximate country locations', () => {

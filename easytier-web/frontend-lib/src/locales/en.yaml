@@ -493,7 +493,8 @@ web:
     node_count: '{count} nodes'
     link_count: '{count} links'
     managed: Managed
-    peer: External
+    external: External (public server)
+    unmanaged: Not in this console
     pause: Pause Rotation
     rotate: Auto Rotate
     reset: Reset View

@@ -21,9 +21,21 @@ export interface TopologyNode {
   /** Public address reported by EasyTier's running node info. */
   publicIp?: string
   managed: boolean
+  /** The node is a public server hosting this network, not a member of it. */
+  publicServer?: boolean
   machineId?: string
   /** This node only has a cached observation in the current refresh. */
   stale?: boolean
+}
+
+/**
+ * Managed nodes are connected to this console. Only public servers are
+ * external; other members of the network simply are not connected here.
+ */
+export type TopologyNodeKind = 'managed' | 'external' | 'unmanaged'
+
+export function topologyNodeKind(node: Pick<TopologyNode, 'managed' | 'publicServer'>): TopologyNodeKind {
+  return node.managed ? 'managed' : node.publicServer ? 'external' : 'unmanaged'
 }
 
 export interface TopologyLink {
@@ -220,6 +232,7 @@ function mergeNode(existing: TopologyNode | undefined, incoming: TopologyNode): 
     nodeLocation: primary.nodeLocation ?? secondary.nodeLocation,
     publicIp: primary.publicIp ?? secondary.publicIp,
     managed: existing.managed || incoming.managed,
+    publicServer: existing.publicServer || incoming.publicServer || undefined,
     machineId: primary.machineId ?? secondary.machineId,
     stale: stale || undefined,
   }
@@ -297,6 +310,7 @@ export function buildTopology(
         nodeLocation: location,
         publicIp: cleanText(reported?.public_ip),
         managed: false,
+        publicServer: route?.feature_flag?.is_public_server || undefined,
         stale: snapshot.stale || undefined,
       }
       nodes.set(target, mergeNode(nodes.get(target), placeholder))

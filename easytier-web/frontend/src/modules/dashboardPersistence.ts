@@ -107,7 +107,7 @@ interface ArchivedDetail {
   }
   peer_locations: { peer_id: number, location: NonNullable<ArchivedDetail['node_location']> }[]
   peers: { peer_id: number, conns: ArchivedConnection[] }[]
-  routes: { peer_id: number, inst_id: string, hostname: string }[]
+  routes: { peer_id: number, inst_id: string, hostname: string, feature_flag?: { is_public_server: true } }[]
 }
 
 interface ArchivedSnapshot {
@@ -177,6 +177,7 @@ function detail(value: unknown): ArchivedDetail | undefined {
         peer_id: route.peer_id,
         inst_id: text(route.inst_id) ?? '',
         hostname: text(route.hostname, 256) ?? '',
+        feature_flag: record(route.feature_flag)?.is_public_server === true ? { is_public_server: true } : undefined,
       })
     }
   }

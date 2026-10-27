@@ -493,7 +493,8 @@ web:
     node_count: '{count} 个节点'
     link_count: '{count} 条链路'
     managed: 已管理节点
-    peer: 外部节点
+    external: 外部节点（公共服务器）
+    unmanaged: 未接入控制台
     pause: 暂停旋转
     rotate: 自动旋转
     reset: 重置视角

@@ -319,7 +319,7 @@ impl NetworkApi {
                     .filter(|peer| peer.peer_id == route.peer_id)
                     .flat_map(|peer| &peer.conns)
                     .filter(|conn| !conn.is_closed)
-                    .filter_map(|conn| Self::url_ip(conn.tunnel.as_ref()?.remote_addr.as_ref()?));
+                    .filter_map(|conn| Self::conn_remote_ip(conn.tunnel.as_ref()?));
                 let ips = crate::geolocation::public_ips(route.stun_info.as_ref(), conn_ips);
                 let peer_id = route.peer_id;
                 async move {
@@ -338,11 +338,22 @@ impl NetworkApi {
             .collect()
     }
 
+    /// The address a connection actually reached. A peer added by domain
+    /// name, typically a public server, only has an IP in the resolved
+    /// address; older nodes do not report one.
+    fn conn_remote_ip(tunnel: &easytier::proto::common::TunnelInfo) -> Option<std::net::IpAddr> {
+        [&tunnel.resolved_remote_addr, &tunnel.remote_addr]
+            .into_iter()
+            .find_map(|url| Self::url_ip(url.as_ref()?))
+    }
+
     fn url_ip(url: &easytier::proto::common::Url) -> Option<std::net::IpAddr> {
         match url::Url::parse(&url.url).ok()?.host()? {
             url::Host::Ipv4(ip) => Some(ip.into()),
             url::Host::Ipv6(ip) => Some(ip.into()),
-            url::Host::Domain(_) => None,
+            // Hosts of non-special schemes such as tcp:// and udp:// are
+            // opaque to the URL parser, so an IPv4 address arrives here.
+            url::Host::Domain(host) => host.parse().ok(),
         }
     }
 
@@ -1556,6 +1567,39 @@ mod tests {
         assert_eq!(location.city, "Auckland");
         assert_eq!(location.latitude, Some(-36.85));
         assert_eq!(location.longitude, Some(174.76));
+    }
+
+    #[test]
+    fn conn_remote_ip_prefers_the_resolved_address_of_a_domain_peer() {
+        let tunnel = |remote: &str, resolved: Option<&str>| easytier::proto::common::TunnelInfo {
+            remote_addr: Some(remote.parse::<url::Url>().unwrap().into()),
+            resolved_remote_addr: resolved.map(|url| url.parse::<url::Url>().unwrap().into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            NetworkApi::conn_remote_ip(&tunnel(
+                "tcp://public.example.com:11010",
+                Some("tcp://203.0.113.7:11010"),
+            )),
+            Some("203.0.113.7".parse().unwrap())
+        );
+        // Inbound connections and older nodes only report the observed address.
+        assert_eq!(
+            NetworkApi::conn_remote_ip(&tunnel("tcp://198.51.100.4:50000", None)),
+            Some("198.51.100.4".parse().unwrap())
+        );
+        assert_eq!(
+            NetworkApi::conn_remote_ip(&tunnel("udp://[2001:db8::1]:11010", None)),
+            Some("2001:db8::1".parse().unwrap())
+        );
+        assert_eq!(
+            NetworkApi::conn_remote_ip(&tunnel("wss://203.0.113.9:443/ws", None)),
+            Some("203.0.113.9".parse().unwrap())
+        );
+        assert_eq!(
+            NetworkApi::conn_remote_ip(&tunnel("wss://public.example.com/ws", None)),
+            None
+        );
     }
 
     #[test]

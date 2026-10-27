@@ -2,19 +2,18 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Button } from 'primevue'
 import { useI18n } from 'vue-i18n'
-import { geoEquirectangular, geoPath } from 'd3-geo'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { locateNode, worldGeography, type LocatedNode } from '../modules/globeGeography'
-import { spherePosition as position, sphericalArc } from '../modules/globeBoundaryGeometry'
+import { locateNode, type LocatedNode } from '../modules/globeGeography'
+import { spherePosition as position } from '../modules/globeBoundaryGeometry'
 import { FlowEmitter, flowEmissionsPerSecond, flowTravelSeconds, MAX_FLOW_PARTICLES } from '../modules/globeFlow'
 import { createFlowLabel, updateFlowLabel, type FlowLabelInput } from '../modules/globeFlowLabel'
 import { arrangeGlobeLabels, LABEL_STACK_GAP, type LabelChoice, type LayoutLabel } from '../modules/globeLabelLayout'
 import { linkLocationGroup, nodeLocationGroup } from '../modules/globeLabelGroups'
-import { loadGlobeMapDetail } from '../modules/globeMapDetail'
-import { buildCloudPointPositions } from '../modules/globePointCloud'
+import { loadGeographyLayer, type GeographyLevel } from '../modules/globeMapDetail'
+import type { GeographyLayer } from '../modules/globeGeographyLayer'
 import { readGlobePreferences, saveGlobePreferences } from '../modules/dashboardPersistence'
-import type { TopologyLink, TopologyNode } from '../modules/networkTopology'
+import { topologyNodeKind, type TopologyLink, type TopologyNode, type TopologyNodeKind } from '../modules/networkTopology'
 
 const props = defineProps<{
   nodes: TopologyNode[]
@@ -37,6 +36,7 @@ const locatedNodes = computed(() => props.nodes.flatMap(node => {
 const selectedNode = computed(() => props.nodes.find(node => node.id === selectedId.value))
 const selectedLocation = computed(() => selectedNode.value && locateNode(selectedNode.value))
 const unmappedCount = computed(() => props.nodes.length - locatedNodes.value.length)
+const nodeKinds: TopologyNodeKind[] = ['managed', 'external', 'unmanaged']
 
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera
@@ -55,7 +55,6 @@ const cloudLevels: { group?: THREE.Group, maxDistance: number, count: number, an
 const boundaryLevels: (THREE.LineSegments | undefined)[] = []
 const detailRequests: (Promise<void> | undefined)[] = []
 const detailRetryAt: number[] = []
-let baseGeographyReady = false
 let disposed = false
 let restoringView = false
 let viewSaveTimer: ReturnType<typeof setTimeout> | undefined
@@ -121,7 +120,7 @@ const controlsConfig = {
   autoRotateSpeed: 0.21,
 }
 
-const globeColorRoles = ['surface', 'land', 'ocean', 'boundary', 'managed', 'peer', 'link', 'flow-forward', 'flow-reverse'] as const
+const globeColorRoles = ['surface', 'land', 'ocean', 'boundary', 'managed', 'external', 'unmanaged', 'link', 'flow-forward', 'flow-reverse'] as const
 type GlobeColorRole = typeof globeColorRoles[number]
 type GlobeMaterial = THREE.Material & { color: THREE.Color }
 let globeColors: Record<GlobeColorRole, string>
@@ -163,130 +162,42 @@ function disposeGroup(group: THREE.Object3D) {
   })
 }
 
-function buildCountryBoundaries(geography: typeof worldGeography, angularStep: number) {
-  const features = (geography as unknown as {
-    features?: { geometry?: { type?: string, coordinates?: unknown } }[]
-  }).features ?? []
-  const points: number[] = []
-  let sourceVertices = 0
-  for (const feature of features) {
-    const geometry = feature.geometry
-    if (!geometry?.coordinates)
-      continue
-    const polygons = geometry.type === 'Polygon'
-      ? [geometry.coordinates]
-      : geometry.type === 'MultiPolygon' ? geometry.coordinates : []
-    for (const polygon of polygons as unknown[]) {
-      if (!Array.isArray(polygon))
-        continue
-      for (const ring of polygon as unknown[]) {
-        if (!Array.isArray(ring))
-          continue
-        const coordinates = ring.filter((coordinate): coordinate is [number, number] =>
-          Array.isArray(coordinate)
-          && typeof coordinate[0] === 'number'
-          && typeof coordinate[1] === 'number'
-          && Number.isFinite(coordinate[0])
-          && Number.isFinite(coordinate[1]))
-        if (coordinates.length < 2)
-          continue
-        sourceVertices += coordinates.length
-        for (let index = 0; index < coordinates.length - 1; index++) {
-          const [sourceLongitude, sourceLatitude] = coordinates[index]
-          const [targetLongitude, targetLatitude] = coordinates[index + 1]
-          const arc = sphericalArc(
-            position(sourceLatitude, sourceLongitude),
-            position(targetLatitude, targetLongitude),
-            1.003,
-            angularStep,
-          )
-          for (let segment = 0; segment < arc.length - 1; segment++) {
-            const from = arc[segment]
-            const to = arc[segment + 1]
-            points.push(from.x, from.y, from.z, to.x, to.y, to.z)
-          }
-        }
-      }
-    }
-  }
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
-  const lines = new THREE.LineSegments(geometry, boundaryMaterial)
-  lines.userData.sourceVertices = sourceVertices
-  lines.userData.angularStep = angularStep
-  return lines
-}
-
-function buildPointCloud(
-  map: HTMLCanvasElement,
-  pixels: Uint8ClampedArray,
-  count: number,
-) {
-  const { land, ocean } = buildCloudPointPositions(count, (lat, lon) => {
-    const x = Math.min(map.width - 1, Math.floor((lon + 180) / 360 * map.width))
-    const y = Math.min(map.height - 1, Math.floor((90 - lat) / 180 * map.height))
-    return pixels[(y * map.width + x) * 4 + 3] > 100
-  })
+function buildGeographyLevel(level: GeographyLevel, layer: GeographyLayer) {
   const group = new THREE.Group()
+  const count = cloudLevels[level].count
   for (const [points, role, size] of [
-    [land, 'land', count > 100_000 ? 0.0035 : count > 60_000 ? 0.006 : 0.008],
-    [ocean, 'ocean', count > 100_000 ? 0.002 : count > 60_000 ? 0.0035 : 0.0045],
+    [layer.land, 'land', count > 100_000 ? 0.0035 : count > 60_000 ? 0.006 : 0.008],
+    [layer.ocean, 'ocean', count > 100_000 ? 0.002 : count > 60_000 ? 0.0035 : 0.0045],
   ] as const) {
     const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+    // Shared with the per-page layer cache; the arrays are never modified.
+    geometry.setAttribute('position', new THREE.BufferAttribute(points, 3))
     group.add(new THREE.Points(geometry, themedMaterial(new THREE.PointsMaterial({
       size,
       sizeAttenuation: true,
     }), role)))
   }
-  return group
-}
-
-function buildGeographyLevel(level: number, geography: typeof worldGeography, scale = level === 2 ? '10m' : '50m') {
-  const map = document.createElement('canvas')
-  map.width = 2048
-  map.height = 1024
-  const context = map.getContext('2d')
-  if (!context)
-    return
-  const projection = geoEquirectangular().scale(map.width / (2 * Math.PI))
-    .translate([map.width / 2, map.height / 2])
-  context.fillStyle = '#ffffff'
-  context.beginPath()
-  geoPath(projection, context)(geography)
-  context.fill()
-  const pixels = context.getImageData(0, 0, map.width, map.height).data
-  const config = cloudLevels[level]
-  const cloud = buildPointCloud(map, pixels, config.count)
-  cloud.visible = level === activeCloudLevel
-  if (config.group) {
-    scene.remove(config.group)
-    disposeGroup(config.group)
-  }
-  config.group = cloud
-  const boundaries = buildCountryBoundaries(geography, config.angularStep)
+  group.visible = level === activeCloudLevel
+  cloudLevels[level].group = group
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(layer.boundaries, 3))
+  const boundaries = new THREE.LineSegments(geometry, boundaryMaterial)
+  boundaries.userData.sourceVertices = layer.sourceVertices
+  boundaries.userData.angularStep = cloudLevels[level].angularStep
+  boundaries.userData.sourceScale = ['110m', '50m', '10m'][level]
   boundaries.visible = level === activeBoundaryLevel
-  boundaries.userData.sourceScale = scale
-  const previousBoundaries = boundaryLevels[level]
-  if (previousBoundaries) {
-    scene.remove(previousBoundaries)
-    previousBoundaries.geometry.dispose()
-  }
   boundaryLevels[level] = boundaries
-  scene.add(cloud, boundaries)
+  scene.add(group, boundaries)
 }
 
-function requestGeographyLevel(level: 0 | 1 | 2) {
-  if ((level === 0 ? baseGeographyReady : cloudLevels[level].group)
-    || detailRequests[level] || performance.now() < (detailRetryAt[level] ?? 0))
+function requestGeographyLevel(level: GeographyLevel) {
+  if (cloudLevels[level].group || detailRequests[level] || performance.now() < (detailRetryAt[level] ?? 0))
     return
-  detailRequests[level] = loadGlobeMapDetail(level === 0 ? 1 : level)
-    .then(geography => {
-      if (!disposed) {
-        buildGeographyLevel(level, geography)
-        if (level === 0)
-          baseGeographyReady = true
-      }
+  const { count, angularStep } = cloudLevels[level]
+  detailRequests[level] = loadGeographyLayer(level, count, angularStep)
+    .then(layer => {
+      if (!disposed)
+        buildGeographyLevel(level, layer)
     })
     .catch(error => {
       detailRetryAt[level] = performance.now() + 30_000
@@ -303,8 +214,8 @@ function buildCloud() {
     opacity: 0.38,
     depthWrite: false,
   }), 'boundary')
-  // Draw immediately, then replace the coarse fallback with the 50m map.
-  buildGeographyLevel(0, worldGeography, '110m')
+  // The coarse map follows shortly, then the 50m map replaces it.
+  requestGeographyLevel(0)
   globeSurface = new THREE.Mesh(
     new THREE.SphereGeometry(0.994, 64, 32),
     themedMaterial(new THREE.MeshBasicMaterial(), 'surface'),
@@ -648,7 +559,7 @@ function rebuildTopology() {
       themedMaterial(new THREE.MeshBasicMaterial({
         transparent: !!node.stale,
         opacity: node.stale ? 0.5 : 1,
-      }), node.managed ? 'managed' : 'peer'),
+      }), topologyNodeKind(node)),
     )
     mesh.position.copy(position(node.latitude, node.longitude, 1.018))
     mesh.userData.nodeId = node.id
@@ -971,8 +882,7 @@ onUnmounted(() => {
         <div ref="labelLayer" class="globe-labels" />
         <div v-if="unavailable" class="globe-fallback">{{ t('web.dashboard.webgl_unavailable') }}</div>
         <div class="globe-legend">
-          <span><i class="managed-dot" />{{ t('web.dashboard.managed') }}</span>
-          <span><i class="peer-dot" />{{ t('web.dashboard.peer') }}</span>
+          <span v-for="kind in nodeKinds" :key="kind"><i :class="`${kind}-dot`" />{{ t(`web.dashboard.${kind}`) }}</span>
         </div>
       </div>
       <aside class="node-panel" :style="{ height: `${stageHeight}px` }">
@@ -984,7 +894,7 @@ onUnmounted(() => {
           <button v-for="node in nodes" :key="node.id" type="button" class="node-row"
             :class="{ selected: selectedId === node.id, stale: node.stale }"
             :aria-pressed="selectedId === node.id" @click="selectNode(node.id)">
-            <i :class="node.managed ? 'managed-dot' : 'peer-dot'" />
+            <i :class="`${topologyNodeKind(node)}-dot`" />
             <span class="node-name" :title="node.label">{{ node.label }}</span>
             <span class="node-country">{{ [node.nodeLocation?.city, node.country].filter(Boolean).join(', ') || t('web.device.unknown_location') }}</span>
           </button>
@@ -1011,7 +921,8 @@ onUnmounted(() => {
   --globe-ocean: #a3bcc6;
   --globe-boundary: #526e76;
   --globe-managed: #b66a09;
-  --globe-peer: #ad3974;
+  --globe-external: #ad3974;
+  --globe-unmanaged: #5f7882;
   --globe-link: #237aaf;
   --globe-flow-forward: #0b456b;
   --globe-flow-reverse: #0c7169;
@@ -1032,7 +943,8 @@ onUnmounted(() => {
   --globe-ocean: #465f65;
   --globe-boundary: #9bb7b5;
   --globe-managed: #ffcf67;
-  --globe-peer: #e99fc4;
+  --globe-external: #e99fc4;
+  --globe-unmanaged: #a9bfc6;
   --globe-link: #77bce6;
   --globe-flow-forward: #ffffff;
   --globe-flow-reverse: #daf1ff;
@@ -1076,8 +988,9 @@ h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
 .globe-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--globe-muted-text); padding: 24px; text-align: center; }
 .globe-legend { position: absolute; bottom: 16px; left: 16px; display: flex; gap: 16px; color: var(--globe-legend-text); font-size: 12px; pointer-events: none; }
 .globe-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.managed-dot, .peer-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--globe-managed); }
-.peer-dot { background: var(--globe-peer); }
+.managed-dot, .external-dot, .unmanaged-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--globe-managed); }
+.external-dot { background: var(--globe-external); }
+.unmanaged-dot { background: var(--globe-unmanaged); }
 .node-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--p-content-border-color); }
 .node-list { flex: 1; min-height: 0; overflow: auto; }
 .node-row { display: grid; grid-template-columns: 8px minmax(0, 1fr); width: 100%; align-items: center; gap: 4px 8px; border: 0; border-bottom: 1px solid var(--p-content-border-color); padding: 12px; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }

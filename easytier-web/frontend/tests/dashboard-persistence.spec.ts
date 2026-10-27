@@ -202,6 +202,15 @@ describe('persistent topology archive', () => {
     })
   })
 
+  it('keeps only the public server flag of a route', () => {
+    const archive = new PersistentTopologyArchive('server-a')
+    const original = snapshot()
+    original.detail.routes[0].feature_flag = { is_public_server: true, secret: 'ROUTE_SECRET' }
+    archive.update([device()], [original], 1_000)
+    expect([...storage.values()][0]).not.toMatch(/SECRET/)
+    expect(archive.read([device()], 2_000)[0].detail.routes[0].feature_flag).toEqual({ is_public_server: true })
+  })
+
   it('isolates server scopes and clears only its own archive', () => {
     const a = new PersistentTopologyArchive('server-a')
     const b = new PersistentTopologyArchive('server-b')

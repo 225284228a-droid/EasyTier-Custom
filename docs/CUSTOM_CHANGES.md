@@ -149,6 +149,7 @@
 - 带宽窗口、v2 双向速率报告与估计值的中性类型放在 `easytier-core/src/foundation/bandwidth.rs`，socket 与 tunnel 共用基础类型；ETBW v1/v2 线格式编解码仍由 tunnel 负责。
 - 未接入网页控制台的节点也会显示位置：控制台按受管节点路由表中该节点的 STUN 公网 IP（缺失时用直连连接的对端 IP 字面量）解析位置，随运行信息以 `peer_locations` 返回；同一节点若也接入控制台，以其自身快照为准。
 - 地球为独立 `NetworkTopologyGlobe.vue` 组件，采集使用共享 `useMeshTopology.ts`；展示合并官方别名、网络归属、NAT、丢包率和 VPN Portal，采集与在线数量过滤离线设备。每次刷新用一个 `POST /api/v1/topology/networks` 请求取回全部在线设备的网络信息，单台失败时单独重试。服务端按“用户 + 设备”共享采集：并发请求只向设备发起一次 RPC，1.5 秒内的结果直接复用（含位置标注），所以设备负载不随打开的标签页和查看者数量增长；设备详情的整机采集也走同一缓存。联网查询位置的默认设置不变。
+- 地球节点分三类：已接入控制台的为“已管理”，路由带 `is_public_server` 标志的为“外部节点（公共服务器）”，其余同网成员为“未接入控制台”。未接入控制台的节点按直连连接的对端地址定位，先用解析后的地址（`resolved_remote_addr`），所以用域名添加的公共服务器也能定位；`tcp://`、`udp://` 地址里的 IPv4 也会识别。地图细节（点云和国界）在 Web Worker 里生成，每页只生成一次，缩放时不再阻塞页面；浏览器不支持 Worker 或 OffscreenCanvas 时退回主线程。
 - Web 持久化按实际绝对 API 地址和账号隔离；后台刷新不会覆盖未保存的表单输入，目录版本变化时提示重新读取。
 
 详细流量说明见 [network-telemetry.md](network-telemetry.md)。
