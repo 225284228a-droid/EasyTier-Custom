@@ -66,7 +66,8 @@ main 推送时由 EasyTier Build 正式编译这些目标，省去重复预检�
 | `easytier-mobile-android-aarch64.apk` | ARM64 Android 安装程序 |
 
 命令行包只需解压一次，tar 保留 Unix 可执行权限。EXE、DMG、APK 下载即为安装文件。
-Web 面板和配置生成器内嵌在命令行包的 `easytier-web-embed` 中，不另提供 Web 包。
+Web 面板和配置生成器内嵌在命令行包的 `easytier-web-embed` 中，不另提供 Web 包，
+也不构建独立的 `easytier-web` 二进制。
 每个文件的 SHA-256 和源提交记录显示在任务摘要中；手动 Release 根据 GitHub 记录
 的产物摘要校验下载字节，直接复用原文件，另生成统一 `COMMIT.txt`、`SHA256SUMS`。
 

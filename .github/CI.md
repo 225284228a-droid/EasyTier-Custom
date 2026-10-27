@@ -81,7 +81,8 @@ unarchived uploads (`actions/upload-artifact@v7`, `archive: false`):
 Command-line archives need one extraction and preserve Unix executable modes.
 EXE, DMG and APK downloads are the installer itself, without an additional ZIP.
 The dashboard and configuration generator ship inside `easytier-web-embed` in
-the command-line packages; there is no separate Web download. Per-file SHA-256
+the command-line packages; there is no separate Web download and no standalone
+`easytier-web` binary. Per-file SHA-256
 and the source commit appear in the job summary. The manual Release validates
 the downloaded bytes against GitHub's recorded artifact digests, preserves each
 file and produces combined `COMMIT.txt` and `SHA256SUMS`.
