@@ -1,11 +1,6 @@
 use std::{
-    mem::MaybeUninit,
     net::{IpAddr, Ipv4Addr, SocketAddrV4},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+    sync::Arc,
 };
 
 use easytier_core::{
@@ -13,9 +8,11 @@ use easytier_core::{
     socket::SocketContext,
 };
 use socket2::Socket;
+use tokio::net::UdpSocket;
+use tokio_util::sync::CancellationToken;
 
 use crate::common::netns::NetNS;
-use crate::socket_protector::SocketRegistration;
+use crate::socket_protector::{ProtectedSocket, SocketRegistration};
 
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeIcmpProxyHost;
@@ -42,6 +39,7 @@ impl RuntimeIcmpProxyHost {
                 Ipv4Addr::UNSPECIFIED,
                 0,
             )))?;
+            socket.set_nonblocking(true)?;
             socket
         };
         let registration = crate::socket_protector::protect_native_socket(&socket, true).await?;
@@ -51,88 +49,39 @@ impl RuntimeIcmpProxyHost {
 
 #[derive(Debug)]
 struct RuntimeIcmpSocket {
-    socket: Arc<Socket>,
-    registration: Option<Arc<SocketRegistration>>,
-    closed: Arc<AtomicBool>,
-}
-
-impl RuntimeIcmpSocket {
-    fn new(socket: Socket, registration: Option<Arc<SocketRegistration>>) -> std::io::Result<Self> {
-        // shutdown() does not reliably interrupt recv_from() on an unconnected
-        // raw socket (notably on Windows). Bound each blocking read so close
-        // also releases Tokio's blocking worker when no ICMP traffic arrives.
-        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
-        Ok(Self {
-            socket: Arc::new(socket),
-            registration,
-            closed: Arc::new(AtomicBool::new(false)),
-        })
-    }
-}
-
-impl Drop for RuntimeIcmpSocket {
-    fn drop(&mut self) {
-        self.close();
-    }
+    // The registration lives as long as the socket. Sends are scoped through
+    // it so an active VPN lease steers them out a physical interface instead
+    // of the captured route; Linux is a passthrough with its persistent mark.
+    socket: ProtectedSocket<UdpSocket>,
+    cancel: CancellationToken,
 }
 
 #[async_trait::async_trait]
 impl IcmpProxySocket for RuntimeIcmpSocket {
     async fn send(&self, destination: Ipv4Addr, packet: &[u8]) -> Result<(), ProxyRuntimeError> {
-        let remote = SocketAddrV4::new(destination, 0);
-        // Scope the datagram through the protection system so an active VPN
-        // lease steers it out a physical interface instead of the captured
-        // route. Linux is a passthrough here: its bypass mark is persistent.
-        crate::socket_protector::with_udp_scope(
-            self.registration.as_ref(),
-            &self.socket,
-            None,
-            remote.into(),
-            || {
-                self.socket
-                    .send_to(packet, &socket2::SockAddr::from(remote))
-            },
-        )??;
+        tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into()),
+            result = self.socket.send_to(packet, SocketAddrV4::new(destination, 0).into()) => { result?; }
+        }
         Ok(())
     }
 
     async fn recv(&self) -> Result<(IpAddr, Vec<u8>), ProxyRuntimeError> {
-        let socket = self.socket.clone();
-        let closed = self.closed.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut buffer = vec![0_u8; 8192];
-            loop {
-                if closed.load(Ordering::Acquire) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::ConnectionAborted,
-                        "ICMP socket closed",
-                    )
-                    .into());
-                }
-                let uninitialized: &mut [MaybeUninit<u8>] =
-                    unsafe { std::mem::transmute(&mut buffer[..]) };
-                match socket_recv(&socket, uninitialized) {
-                    Ok((length, peer_ip)) if !closed.load(Ordering::Acquire) => {
-                        buffer.truncate(length);
-                        return Ok((peer_ip, buffer));
-                    }
-                    Ok(_) => continue,
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        })
-        .await
-        .map_err(|error| ProxyRuntimeError::Other(error.into()))?
+        let mut buffer = vec![0_u8; 8192];
+        let (length, peer) = tokio::select! {
+            biased;
+            // The proxy receive loop terminates on an empty packet. A permanent
+            // error would be retried immediately and could prevent task abortion.
+            _ = self.cancel.cancelled() => return Ok((IpAddr::V4(Ipv4Addr::UNSPECIFIED), Vec::new())),
+            result = self.socket.recv_from(&mut buffer) => result?,
+        };
+        buffer.truncate(length);
+        Ok((peer.ip(), buffer))
     }
 
     fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        self.cancel.cancel();
     }
 }
 
@@ -148,60 +97,71 @@ impl IcmpProxyHost for RuntimeIcmpProxyHost {
                 .inspect_err(|error| {
                     tracing::warn!(?error, "create ICMP socket failed");
                 })?;
-        Ok(Arc::new(RuntimeIcmpSocket::new(socket, registration)?))
+        // Tokio only supplies readiness and recvfrom/sendto here; the underlying
+        // socket remains raw ICMP, including the IPv4 header on received packets.
+        Ok(Arc::new(RuntimeIcmpSocket {
+            socket: ProtectedSocket::new(UdpSocket::from_std(socket.into())?, registration),
+            cancel: CancellationToken::new(),
+        }))
     }
-}
-
-fn socket_recv(
-    socket: &Socket,
-    buffer: &mut [MaybeUninit<u8>],
-) -> Result<(usize, IpAddr), std::io::Error> {
-    let (size, address) = socket.recv_from(buffer)?;
-    let peer_ip = address
-        .as_socket()
-        .map(|address| address.ip())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-    Ok((size, peer_ip))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
-    // UDP exercises the same unconnected blocking recv_from/close behavior
-    // without requiring raw-socket privileges or modifying host routes.
-    fn socket() -> Arc<RuntimeIcmpSocket> {
-        Arc::new(
-            RuntimeIcmpSocket::new(
-                std::net::UdpSocket::bind("127.0.0.1:0").unwrap().into(),
+    #[tokio::test]
+    async fn close_ends_receivers_and_rejects_further_sends() {
+        let socket = RuntimeIcmpSocket {
+            socket: ProtectedSocket::new(
+                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
                 None,
-            )
-            .unwrap(),
-        )
+            ),
+            cancel: CancellationToken::new(),
+        };
+        let mut first = Box::pin(socket.recv());
+        let mut second = Box::pin(socket.recv());
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+
+        socket.close();
+        socket.close();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            assert!(first.await.unwrap().1.is_empty());
+            assert!(second.await.unwrap().1.is_empty());
+            assert!(socket.recv().await.unwrap().1.is_empty());
+            assert!(socket.send(Ipv4Addr::LOCALHOST, &[0; 8]).await.is_err());
+        })
+        .await
+        .unwrap();
     }
 
-    #[test]
-    fn close_releases_pending_receive_without_traffic() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+    #[tokio::test]
+    async fn cancelled_receive_does_not_consume_the_next_packet() {
+        let socket = RuntimeIcmpSocket {
+            socket: ProtectedSocket::new(
+                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
+                None,
+            ),
+            cancel: CancellationToken::new(),
+        };
+        let mut receive = Box::pin(socket.recv());
+        assert!(futures::poll!(&mut receive).is_pending());
+        drop(receive);
+
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        sender
+            .send_to(b"after cancellation", socket.socket.local_addr().unwrap())
+            .await
             .unwrap();
-        let socket = socket();
-        let result = runtime.block_on(async {
-            let receiving = socket.clone();
-            let task = tokio::spawn(async move { receiving.recv().await });
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            socket.close();
-            tokio::time::timeout(Duration::from_secs(2), task).await
-        });
-        // Keep the regression test bounded even if a blocking worker leaks.
-        runtime.shutdown_timeout(Duration::from_secs(2));
-        assert!(
-            result
-                .expect("receive must finish after close")
-                .unwrap()
-                .is_err()
-        );
+        let (peer, packet) = tokio::time::timeout(Duration::from_secs(1), socket.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(peer, IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(packet, b"after cancellation");
     }
 
     #[tokio::test]
@@ -219,5 +179,77 @@ mod tests {
             assert!(registration.is_some(), "ICMP socket must be registered");
         }
         drop(socket);
+    }
+
+    // Raw ICMP requires CAP_NET_RAW; run this test in the privileged test container.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn raw_echo_fanout_does_not_start_blocking_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let threads = Arc::new(AtomicUsize::new(0));
+        let started = threads.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .on_thread_start(move || {
+                started.fetch_add(1, Ordering::Relaxed);
+            })
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut sockets = Vec::new();
+                for _ in 0..30 {
+                    sockets.push(
+                        RuntimeIcmpProxyHost
+                            .open_icmp_v4(SocketContext::default())
+                            .await
+                            .unwrap(),
+                    );
+                }
+                let identifier = rand::random::<u16>().to_be_bytes();
+                for sequence in 0..16 {
+                    let mut request = vec![8, 0, 0, 0, identifier[0], identifier[1], 0, sequence];
+                    request.extend_from_slice(b"async ICMP");
+                    let mut checksum: u32 = request
+                        .chunks_exact(2)
+                        .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+                        .sum();
+                    while checksum >> 16 != 0 {
+                        checksum = (checksum & 0xffff) + (checksum >> 16);
+                    }
+                    request[2..4].copy_from_slice(&(!(checksum as u16)).to_be_bytes());
+                    let receivers = futures::future::join_all(sockets.iter().map(|socket| async {
+                        loop {
+                            let (peer, packet) = socket.recv().await.unwrap();
+                            let header_len = usize::from(packet[0] & 0x0f) * 4;
+                            let Some(reply) = packet.get(header_len..) else {
+                                continue;
+                            };
+                            if reply.len() == request.len()
+                                && reply[0] == 0
+                                && reply[4..] == request[4..]
+                            {
+                                assert_eq!(peer, IpAddr::V4(Ipv4Addr::LOCALHOST));
+                                break;
+                            }
+                        }
+                    }));
+                    tokio::join!(receivers, async {
+                        sockets[0]
+                            .send(Ipv4Addr::LOCALHOST, &request)
+                            .await
+                            .unwrap();
+                    });
+                }
+                for socket in sockets {
+                    socket.close();
+                }
+            })
+            .await
+        });
+        runtime.shutdown_timeout(Duration::from_secs(1));
+        result.unwrap();
+        assert_eq!(threads.load(Ordering::Relaxed), 0);
     }
 }

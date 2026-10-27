@@ -19,7 +19,7 @@ use crate::{
     connectivity::port_in_use_by_local_listener,
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
-        LocalListenerUrls, NoLocalListeners,
+        LocalListenerUrls,
         protocol::{ClientProtocolUpgrader, protocol_uses_udp},
         transport::{self, ConnectedTransport, IpTransport, UdpSessionMode},
     },
@@ -1054,10 +1054,10 @@ where
 {
     pub fn new_for_foreign_network_with_stun(
         host: Arc<H>,
+        running_listeners: Arc<dyn LocalListenerUrls>,
         socket_context: SocketContext,
         stun: Option<Arc<dyn StunInfoProvider>>,
     ) -> Self {
-        let running_listeners = Arc::new(NoLocalListeners);
         Self {
             host,
             peer_manager: None,
@@ -1136,14 +1136,23 @@ where
 {
     host: Arc<H>,
     stun: Arc<dyn StunInfoProvider>,
+    running_listeners: Arc<dyn LocalListenerUrls>,
 }
 
 impl<H> ForeignDirectConnectorRpcRegistrar<H>
 where
     H: DirectConnectorHost,
 {
-    pub fn new(host: Arc<H>, stun: Arc<dyn StunInfoProvider>) -> Self {
-        Self { host, stun }
+    pub fn new(
+        host: Arc<H>,
+        stun: Arc<dyn StunInfoProvider>,
+        running_listeners: Arc<dyn LocalListenerUrls>,
+    ) -> Self {
+        Self {
+            host,
+            stun,
+            running_listeners,
+        }
     }
 }
 
@@ -1161,6 +1170,7 @@ where
             GeneratedDirectConnectorRpcServer::new(
                 DirectConnectorRpcHandler::new_for_foreign_network_with_stun(
                     self.host.clone(),
+                    self.running_listeners.clone(),
                     socket_context,
                     Some(self.stun.clone()),
                 ),
@@ -1638,6 +1648,7 @@ mod tests {
         assert_eq!(decoded.listeners, official.listeners);
         assert!(decoded.udp_http3_listeners.is_empty());
     }
+    use crate::connectivity::NoLocalListeners;
 
     impl<H> DirectConnectorRpcHandler<H>
     where

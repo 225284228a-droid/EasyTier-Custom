@@ -136,6 +136,13 @@ struct Cli {
     )]
     config_dir: Option<PathBuf>,
 
+    #[arg(
+        long,
+        env = "ET_SHARED_RUNTIME",
+        help = t!("core_clap.shared_runtime").to_string()
+    )]
+    shared_runtime: bool,
+
     #[command(flatten)]
     network_options: NetworkOptions,
 
@@ -492,6 +499,26 @@ struct RpcPortalOptions {
 }
 
 impl Cli {
+    fn take_runtime_thread_count(&mut self) -> u32 {
+        let count = self
+            .network_options
+            .flags
+            .multi_thread_count
+            .unwrap_or_else(|| {
+                if self.shared_runtime {
+                    std::thread::available_parallelism().map_or(1, |count| count.get() as u32)
+                } else {
+                    Flags::defaults().multi_thread_count
+                }
+            });
+        if self.shared_runtime {
+            // Process runtime options must not make instance configs read-only.
+            self.network_options.flags.multi_thread = None;
+            self.network_options.flags.multi_thread_count = None;
+        }
+        count
+    }
+
     fn gen_listeners(addr: SocketAddr) -> impl Iterator<Item = String> {
         let dynamic = addr.port() == 0;
         IpScheme::VARIANTS.iter().map(move |proto| {
@@ -1356,7 +1383,7 @@ fn start_prepared_configs(
     Ok(create_cli_network)
 }
 
-async fn run_main(cli: Cli) -> anyhow::Result<()> {
+async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     log::init_with_default_console_targets(
         &cli.logging_options,
@@ -1377,7 +1404,10 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         log::info!(config_dir = %resolved_config_dir.display(), "Using managed config directory");
     }
 
-    let manager = Arc::new(native_cli_instance_manager().with_config_path(cli.config_dir.clone()));
+    let manager = Arc::new(
+        native_cli_instance_manager(cli.shared_runtime, cli.take_runtime_thread_count())?
+            .with_config_path(cli.config_dir.clone()),
+    );
     // RPC mutations wait until the initial catalog and enabled state are restored.
     let startup_lock = manager.mutation_lock();
     let startup_guard = startup_lock.lock().await;
@@ -1729,7 +1759,9 @@ mod tests {
             .unwrap();
         assert_eq!(startup.directory.config_dir_file_count, 3);
         assert_eq!(startup.files.len(), 2);
-        let manager = native_cli_instance_manager().with_config_path(Some(directory.clone()));
+        let manager = native_cli_instance_manager(false, 0)
+            .unwrap()
+            .with_config_path(Some(directory.clone()));
         assert!(
             !start_prepared_configs(
                 &mut startup,
@@ -1795,7 +1827,9 @@ mod tests {
         assert_eq!(startup.directory.config_dir_file_count, 5);
         assert_eq!(startup.files.len(), 1);
         assert_eq!(startup.files[0].config.get_id(), stopped);
-        let manager = native_cli_instance_manager().with_config_path(Some(directory));
+        let manager = native_cli_instance_manager(false, 0)
+            .unwrap()
+            .with_config_path(Some(directory));
         start_prepared_configs(
             &mut startup,
             &manager,
@@ -1866,7 +1900,9 @@ mod tests {
             .unwrap();
         assert!(config_document_identity(legacy.config.dump().as_bytes()).is_none());
         assert!(startup.directory.unidentified_config_dir_entry);
-        let manager = native_cli_instance_manager().with_config_path(Some(directory));
+        let manager = native_cli_instance_manager(false, 0)
+            .unwrap()
+            .with_config_path(Some(directory));
         start_prepared_configs(
             &mut startup,
             &manager,
@@ -1911,7 +1947,9 @@ mod tests {
             )
             .unwrap();
         }
-        let manager = native_cli_instance_manager().with_config_path(Some(directory.clone()));
+        let manager = native_cli_instance_manager(false, 0)
+            .unwrap()
+            .with_config_path(Some(directory.clone()));
         manager
             .register_managed_config(
                 register_conflict,
@@ -2075,6 +2113,64 @@ disable_p2p = true
             vec!["easytier-core", "--traffic-disguise", "invalid"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn shared_runtime_is_process_only_and_reuses_thread_count() {
+        let cpus = std::thread::available_parallelism().map_or(1, |count| count.get() as u32);
+        for (args, shared, expected_count) in [
+            (vec![], false, Flags::defaults().multi_thread_count),
+            (vec!["--shared-runtime"], true, cpus),
+            (vec!["--multi-thread-count", "4"], false, 4),
+            (
+                vec![
+                    "--shared-runtime",
+                    "--multi-thread-count",
+                    "1",
+                    "--multi-thread",
+                    "false",
+                ],
+                true,
+                1,
+            ),
+            (
+                vec![
+                    "--shared-runtime",
+                    "--multi-thread-count",
+                    "4",
+                    "-c",
+                    "a.toml",
+                    "b.toml",
+                ],
+                true,
+                4,
+            ),
+        ] {
+            let matches = cli_command()
+                .try_get_matches_from(std::iter::once("easytier-core").chain(args))
+                .unwrap();
+            let mut cli = Cli::from_arg_matches(&matches).unwrap();
+            cli.network_options.flags = flags_from(&matches).unwrap();
+            assert_eq!(cli.shared_runtime, shared);
+            assert_eq!(cli.take_runtime_thread_count(), expected_count);
+
+            let config = TomlConfigLoader::default();
+            if shared {
+                assert_eq!(cli.network_options.flags.multi_thread, None);
+                assert_eq!(cli.network_options.flags.multi_thread_count, None);
+                assert!(!cli.network_options.can_merge(
+                    &config,
+                    ConfigFileSource::CliConfigFile,
+                    1,
+                    0,
+                ));
+            }
+            cli.network_options.merge_into(&config).unwrap();
+            assert!(!config.dump().contains("shared_runtime"));
+            if cli.network_options.flags.multi_thread_count.is_none() {
+                assert_eq!(config.get_flags_patch().multi_thread_count, None);
+            }
         }
     }
 

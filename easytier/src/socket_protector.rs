@@ -16,7 +16,7 @@ use std::os::windows::io::AsRawSocket;
 mod desktop;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use desktop::interface_index;
-pub(crate) use desktop::with_udp_scope;
+
 pub(crate) use desktop::{DesktopProtectionLease, SocketRegistration, namespace_for};
 #[cfg(target_os = "linux")]
 pub(crate) use desktop::{active_bit, choose_bypass_bit, used_socket_marks};

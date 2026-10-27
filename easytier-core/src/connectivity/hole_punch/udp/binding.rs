@@ -703,7 +703,14 @@ mod tests {
                 .all(|(datagram, _)| datagram.len() == 4 && datagram[0] == 0x40)
         );
         drop(server);
-        assert!(server_weak.upgrade().is_none());
+        // The session's cleanup task releases the layer once the runtime drops it.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while server_weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the punched layer must be released with its session");
         assert_eq!(counter.get(), Some(0));
         drop(client);
         assert_eq!(client_layer.active_classified_session_count(), 0);

@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -308,6 +308,7 @@ pub struct PeerConn {
     ctrl_resp_sender: broadcast::Sender<ZCPacket>,
 
     latency_stats: Arc<WindowLatency>,
+    pub(super) fast_ping: Arc<AtomicBool>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
     liveness: PeerConnLiveness,
@@ -418,6 +419,7 @@ impl PeerConn {
             ctrl_resp_sender: ctrl_sender,
 
             latency_stats: Arc::new(WindowLatency::new(15)),
+            fast_ping: Arc::new(AtomicBool::new(false)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
             liveness,
@@ -1525,22 +1527,31 @@ impl PeerConn {
             self.liveness.clone(),
             self.max_ping_interval(),
         );
+        pingpong.fast_ping = self.fast_ping.clone();
 
         let close_event_notifier = self.close_event_notifier.clone();
+        let conn_id = self.conn_id;
 
-        self.tasks.spawn(async move {
-            pingpong.pingpong().await;
+        self.tasks.spawn(
+            async move {
+                pingpong.pingpong().await;
 
-            tracing::warn!(?pingpong, "pingpong task exit");
+                tracing::warn!(?pingpong, "pingpong task exit");
 
-            close_event_notifier.notify_close();
+                close_event_notifier.notify_close();
 
-            Ok(())
-        });
+                Ok(())
+            }
+            .instrument(tracing::info_span!("peer_conn_pingpong", ?conn_id)),
+        );
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        Ok(self.sink.send(msg).await?)
+        if let Err(error) = self.sink.send(msg).await {
+            self.close_event_notifier.notify_close();
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     pub(crate) fn set_parallel_receiver(
@@ -1711,6 +1722,11 @@ impl PeerConn {
 
     pub fn get_close_notifier(&self) -> Arc<PeerConnCloseNotify> {
         self.close_event_notifier.clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn record_latency_for_test(&self, latency_us: u32) {
+        self.latency_stats.record_latency(latency_us);
     }
 
     pub fn get_stats(&self) -> PeerConnStats {

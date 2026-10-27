@@ -176,7 +176,19 @@ const TCP_ENTRY: FlowKind = FlowKind::Tcp;
 const TCP_LISTEN_ENTRY: FlowKind = FlowKind::TcpListen;
 
 type FlowSet = Arc<FlowTable<FlowData>>;
-type DataPlaneTcpIo = Box<dyn TcpProxyStream>;
+pub(super) enum DataPlaneTcpIo {
+    Smoltcp(crate::gateway::smoltcp::TcpStream),
+    External(Box<dyn TcpProxyStream>),
+}
+
+impl DataPlaneTcpIo {
+    fn as_mut(&mut self) -> &mut dyn TcpProxyStream {
+        match self {
+            Self::Smoltcp(stream) => stream,
+            Self::External(stream) => &mut **stream,
+        }
+    }
+}
 
 pub(crate) struct DataPlaneRuntime<H>
 where
@@ -721,7 +733,7 @@ where
         generation.ensure_open()?;
 
         Ok(DataPlaneTcpStream::new(
-            Box::new(stream),
+            DataPlaneTcpIo::Smoltcp(stream),
             local_addr,
             Some(data_plane_ref),
             DataPlaneTcpStreamRoute::Outbound { _flow: flow },
@@ -743,7 +755,7 @@ where
             .await?;
         let local_addr = socket.local_addr().map_err(DataPlaneError::from)?;
         Ok(DataPlaneTcpStream::new(
-            Box::new(socket),
+            DataPlaneTcpIo::External(Box::new(socket)),
             local_addr,
             None,
             DataPlaneTcpStreamRoute::External,
@@ -781,7 +793,7 @@ where
             )))
             .await?;
         Ok(DataPlaneTcpStream::new(
-            stream,
+            DataPlaneTcpIo::External(stream),
             source_addr,
             None,
             DataPlaneTcpStreamRoute::External,

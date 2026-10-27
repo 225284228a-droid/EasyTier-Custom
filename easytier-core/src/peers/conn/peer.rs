@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -19,6 +19,7 @@ use tracing::Instrument;
 use super::{
     cleanup_policy::CleanupPolicyPair,
     peer_conn::{PeerConn, PeerConnId},
+    peer_flow::FlowBindings,
 };
 use crate::peers::{
     PacketRecvChan,
@@ -28,7 +29,7 @@ use crate::peers::{
 use crate::{
     config::{PeerId, p2p_protocol_rank},
     foundation::small_map_shard_amount,
-    packet::ZCPacket,
+    packet::{FlowKey, ZCPacket},
     peers::error::Error,
     proto::{common::Flags, core_peer::peer::PeerConnInfo, peer_rpc::PeerIdentityType},
 };
@@ -628,6 +629,8 @@ pub struct Peer {
     default_conn_update_lock: Arc<Mutex<()>>,
     negotiated_disguise: Arc<AtomicCell<Option<bool>>>,
     remote_cleanup_requested: Arc<AtomicCell<bool>>,
+    flow_bindings: Mutex<FlowBindings>,
+    data_active: Arc<AtomicBool>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
     #[allow(dead_code)]
@@ -683,6 +686,8 @@ impl Peer {
         let parallel_send_copy = parallel_send.clone();
         let parallel_receiver_copy = parallel_receiver.clone();
         let parallel_policy_copy = parallel_policy.clone();
+        let data_active = Arc::new(AtomicBool::new(false));
+        let flow_bindings = Mutex::new(FlowBindings::default());
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
@@ -771,7 +776,10 @@ impl Peer {
         let parallel_policy_copy = parallel_policy.clone();
         let parallel_send_maintenance = parallel_send.clone();
         let send_plan_copy = send_plan.clone();
+        let data_active_copy = data_active.clone();
         let conn_maintenance_task = AbortOnDropHandle::new(tokio::spawn(async move {
+            // Fast ping follows data activity over five-second windows.
+            let mut ticks = 0u32;
             loop {
                 crate::foundation::time::sleep(std::time::Duration::from_millis(250)).await;
                 send_plan_copy.invalidate();
@@ -814,6 +822,14 @@ impl Peer {
                     )
                     .await;
                 }
+                ticks = ticks.wrapping_add(1);
+                if ticks.is_multiple_of(20) {
+                    let active = data_active_copy.swap(false, Ordering::Relaxed);
+                    let fast_ping = conns_copy.len() > 1 && active;
+                    for conn in conns_copy.iter() {
+                        conn.fast_ping.store(fast_ping, Ordering::Relaxed);
+                    }
+                }
             }
         }));
 
@@ -832,6 +848,8 @@ impl Peer {
             default_conn_update_lock,
             negotiated_disguise,
             remote_cleanup_requested,
+            flow_bindings,
+            data_active,
             peer_identity_type,
             peer_public_key,
             conn_maintenance_task,
@@ -981,7 +999,9 @@ impl Peer {
 
     fn select_conn(&self) -> Option<ArcPeerConn> {
         let _update_guard = self.default_conn_update_lock.lock();
-        if let Some(conn) = self.default_conn.load_full() {
+        if let Some(conn) = self.default_conn.load_full()
+            && !conn.is_closed()
+        {
             return Some(conn);
         }
 
@@ -1020,7 +1040,32 @@ impl Peer {
         plan
     }
 
+    fn select_flow_conn(&self, key: FlowKey) -> Option<ArcPeerConn> {
+        let mut flows = self.flow_bindings.lock();
+        let bucket = flows.bucket(key);
+        if let Some(binding) = flows.buckets.get_mut(&bucket)
+            && binding.last_active.elapsed() < FlowBindings::IDLE_TIMEOUT
+        {
+            let bound = self
+                .conns
+                .get(&binding.conn_id)
+                .map(|conn| conn.value().clone());
+            if let Some(conn) = bound.filter(|conn| !conn.is_closed()) {
+                binding.last_active = Instant::now();
+                return Some(conn);
+            }
+        }
+        let conn = self.select_conn()?;
+        // A collision joins the bucket's active binding rather than evicting an
+        // existing flow. This bounds memory without migrating flows under load.
+        flows.bind(bucket, conn.get_conn_id(), Instant::now());
+        Some(conn)
+    }
+
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
+        if crate::peers::traffic_metrics::data_packet_payload_len(&msg).is_some() {
+            self.data_active.store(true, Ordering::Relaxed);
+        }
         if super::parallel::stripeable(&msg) {
             let mut plan = self.send_plan();
             if plan.target > 1 && plan.members.is_empty() {
@@ -1043,12 +1088,22 @@ impl Peer {
                 };
                 plan = ready;
             }
+            // Striping orders every packet on the receiver, so flows need no
+            // connection binding while it runs.
             if plan.stripe {
                 return self.send_striped(msg, &plan).await;
             }
         }
+        if let Some(key) = msg.flow_key {
+            let conn = self
+                .select_flow_conn(key)
+                .ok_or(Error::PeerNoConnectionError(self.peer_node_id))?;
+            return conn.send_msg(msg).await;
+        }
         let default_conn = self.default_conn.load();
-        if let Some(conn) = default_conn.as_ref() {
+        if let Some(conn) = default_conn.as_ref()
+            && !conn.is_closed()
+        {
             conn.send_msg(msg).await?;
             return Ok(());
         }
@@ -1438,6 +1493,8 @@ impl Drop for Peer {
     }
 }
 
+#[cfg(test)]
+mod flow_tests;
 #[cfg(test)]
 mod parallel_tests;
 #[cfg(test)]

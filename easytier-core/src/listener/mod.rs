@@ -165,7 +165,6 @@ impl<Accepted> ListenerFactory<Accepted> {
 
 #[derive(Debug, Clone)]
 pub struct ListenerManagerOptions {
-    pub max_listen_retries: usize,
     pub listen_retry_delay: Duration,
     pub accept_retry_delay: Duration,
 }
@@ -173,9 +172,8 @@ pub struct ListenerManagerOptions {
 impl Default for ListenerManagerOptions {
     fn default() -> Self {
         Self {
-            max_listen_retries: 5,
-            listen_retry_delay: Duration::from_secs(1),
-            accept_retry_delay: Duration::from_secs(1),
+            listen_retry_delay: Duration::from_millis(100),
+            accept_retry_delay: Duration::from_millis(100),
         }
     }
 }
@@ -381,7 +379,7 @@ async fn run_listener<Accepted, H>(
     Accepted: Send + 'static,
     H: AcceptedSocketHandler<Accepted> + ?Sized + 'static,
 {
-    let mut listen_error_count = 0;
+    let mut listen_error_count: usize = 0;
     loop {
         let registered_listener = match initial_listener.take() {
             Some(listener) => listener,
@@ -393,18 +391,15 @@ async fn run_listener<Accepted, H>(
                         RegisteredListener::new(listener, events.clone(), registry.clone())
                     }
                     Err(error) => {
-                        listen_error_count += 1;
-                        let will_retry = listen_error_count <= options.max_listen_retries;
+                        listen_error_count = listen_error_count.saturating_add(1);
                         events.emit(CoreEvent::ListenerAddFailed {
                             url: listener.local_url(),
                             error: format!("{error:?}"),
                             retry_count: listen_error_count,
-                            will_retry,
+                            will_retry: true,
                         });
                         tracing::error!(?error, ?listener, "listener listen error");
-                        if !will_retry {
-                            return;
-                        }
+                        drop(listener);
                         crate::foundation::time::sleep(options.listen_retry_delay).await;
                         continue;
                     }
@@ -412,7 +407,7 @@ async fn run_listener<Accepted, H>(
             }
         };
         let mut listener = registered_listener.listener;
-        let _registration = registered_listener.registration;
+        let registration = registered_listener.registration;
 
         loop {
             let listener_url = listener.local_url();
@@ -424,7 +419,6 @@ async fn run_listener<Accepted, H>(
                         error: format!("{error:?}"),
                     });
                     tracing::error!(?error, ?listener, "listener accept error");
-                    crate::foundation::time::sleep(options.accept_retry_delay).await;
                     break;
                 }
             };
@@ -443,6 +437,9 @@ async fn run_listener<Accepted, H>(
                 }
             });
         }
+        drop(listener);
+        drop(registration);
+        crate::foundation::time::sleep(options.accept_retry_delay).await;
     }
 }
 
@@ -688,7 +685,6 @@ mod tests {
             ListenerManagerOptions {
                 accept_retry_delay: Duration::from_millis(1),
                 listen_retry_delay: Duration::from_millis(1),
-                max_listen_retries: 0,
             },
         );
 
@@ -741,7 +737,6 @@ mod tests {
             ListenerManagerOptions {
                 accept_retry_delay: Duration::from_millis(1),
                 listen_retry_delay: Duration::from_millis(1),
-                max_listen_retries: 2,
             },
         );
 
@@ -788,7 +783,6 @@ mod tests {
             ListenerManagerOptions {
                 accept_retry_delay: Duration::from_millis(1),
                 listen_retry_delay: Duration::from_millis(1),
-                max_listen_retries: 0,
             },
         );
 
@@ -852,7 +846,6 @@ mod tests {
             ListenerManagerOptions {
                 accept_retry_delay: Duration::from_millis(1),
                 listen_retry_delay: Duration::from_millis(1),
-                max_listen_retries: 0,
             },
         );
 
@@ -973,7 +966,6 @@ mod tests {
             ListenerManagerOptions {
                 accept_retry_delay: Duration::from_millis(1),
                 listen_retry_delay: Duration::from_millis(1),
-                max_listen_retries: 0,
             },
         );
         let accepts = Arc::new(Mutex::new(VecDeque::from([Ok::<_, anyhow::Error>(
@@ -1036,12 +1028,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn listen_retry_exhaustion_keeps_in_flight_handler_tasks_until_manager_drop() {
+    async fn listen_recovery_keeps_in_flight_handler_tasks_until_manager_drop() {
         let (drop_tx, mut drop_rx) = tokio::sync::oneshot::channel();
-        let listen_results = Arc::new(Mutex::new(VecDeque::from([
-            Ok(()),
-            Err(anyhow::anyhow!("bind failed")),
-        ])));
+        let listen_results = Arc::new(Mutex::new(
+            std::iter::once(Ok(()))
+                .chain((0..8).map(|_| Err(anyhow::anyhow!("bind failed"))))
+                .collect::<VecDeque<_>>(),
+        ));
         let accepts = Arc::new(Mutex::new(VecDeque::from([
             Ok::<_, anyhow::Error>(DropSignal(Some(drop_tx))),
             Err(anyhow::anyhow!("accept failed")),
@@ -1053,7 +1046,6 @@ mod tests {
             ListenerManagerOptions {
                 accept_retry_delay: Duration::from_millis(1),
                 listen_retry_delay: Duration::from_millis(1),
-                max_listen_retries: 0,
             },
         );
         let listener_results = listen_results.clone();
@@ -1061,7 +1053,7 @@ mod tests {
         manager.add_listener(
             move || {
                 Box::new(DropSignalListener {
-                    url: "mock://retry-exhausted".parse().unwrap(),
+                    url: "mock://retrying".parse().unwrap(),
                     listen_results: listener_results.clone(),
                     accepts: listener_accepts.clone(),
                 })
@@ -1072,15 +1064,22 @@ mod tests {
         manager.run().await.unwrap();
         crate::foundation::time::timeout(Duration::from_secs(1), async {
             loop {
-                if events.events.lock().unwrap().iter().any(|event| {
-                    matches!(
+                let recovered = {
+                    let events = events.events.lock().unwrap();
+                    assert!(events.iter().all(|event| !matches!(
                         event,
                         CoreEvent::ListenerAddFailed {
                             will_retry: false,
                             ..
                         }
-                    )
-                }) {
+                    )));
+                    events
+                        .iter()
+                        .filter(|event| matches!(event, CoreEvent::ListenerAdded { .. }))
+                        .count()
+                        == 2
+                };
+                if recovered {
                     break;
                 }
                 crate::foundation::time::sleep(Duration::from_millis(1)).await;

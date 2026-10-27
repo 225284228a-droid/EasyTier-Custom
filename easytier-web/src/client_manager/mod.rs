@@ -324,15 +324,15 @@ impl ClientManager {
         self.tasks.spawn(async move {
             let _slot = ListenerCountGuard(listeners_cnt);
             let mut handshakes = JoinSet::new();
-            'accept: loop {
+            loop {
                 // Some listeners include a WebSocket upgrade in accept(). Keep
                 // that future alive while processing completed handshakes.
-                let accepting = listener.accept();
+                let accepting = easytier_core::socket::retry::accept_with_rebind(&mut listener);
                 tokio::pin!(accepting);
                 loop {
                     let result = tokio::select! {
                         accepted = &mut accepting, if handshakes.len() < MAX_PENDING_HANDSHAKES => {
-                            let Ok(tunnel) = accepted else { break 'accept };
+                            let tunnel = accepted;
                             handshakes.spawn(web_security::accept_or_upgrade_server_tunnel(tunnel));
                             break;
                         }
