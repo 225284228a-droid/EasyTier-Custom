@@ -187,13 +187,23 @@ async fn transfer_flow(
     receiver: &mut PacketRecvChanReceiver,
     packets: u32,
 ) -> Duration {
+    transfer_flow_between(peer, receiver, packets, 1, 2).await
+}
+
+async fn transfer_flow_between(
+    peer: &Peer,
+    receiver: &mut PacketRecvChanReceiver,
+    packets: u32,
+    from: PeerId,
+    to: PeerId,
+) -> Duration {
     let before = Instant::now();
     let send = async {
         for seq in 0..packets {
             let mut payload = [0u8; 128];
             payload[..4].copy_from_slice(&seq.to_be_bytes());
             let mut packet = ZCPacket::new_with_payload(&payload);
-            packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+            packet.fill_peer_manager_hdr(from, to, PacketType::Data as u8);
             peer.send_msg(packet).await.unwrap();
         }
     };
@@ -371,6 +381,39 @@ async fn new_bootstrap_authorizes_a_fresh_epoch_while_old_remote_connections_rem
         "the remote has not observed an empty pool"
     );
     transfer_flow(&restarted_left, &mut receiver, 8).await;
+}
+
+#[tokio::test]
+async fn remote_with_old_connections_reaches_a_restarted_peer() {
+    let (old_left, right, mut receiver) = make_pool(4, Duration::from_millis(1)).await;
+    transfer_flow(&old_left, &mut receiver, 8).await;
+    let context: ArcPeerContext = Arc::new(ParallelContext::new(4));
+    let (tx, mut restarted_rx) = create_packet_recv_chan();
+    let restarted_left = Peer::new(2, tx, context.clone());
+    add_connection(
+        &restarted_left,
+        &right,
+        context.clone(),
+        context,
+        None,
+        Duration::from_millis(1),
+    )
+    .await;
+    assert!(
+        right.conns.len() > 1,
+        "the remote has not observed an empty pool"
+    );
+    // The old connections fail only after the new one joined, so the remote
+    // never sees an empty pool and keeps its sending state.
+    drop(old_left);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while right.conns.len() > 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the remote should drop the failed connections");
+    transfer_flow_between(&right, &mut restarted_rx, 8, 2, 1).await;
 }
 
 #[tokio::test]

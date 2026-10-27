@@ -897,9 +897,12 @@ impl Peer {
                     ));
                 }
             } else {
-                if state.pool_anchor.is_none() {
-                    state.epoch = conn.parallel_tx_epoch();
-                }
+                // Restart the sequence under the epoch the remote authorizes in
+                // this handshake. The remote may have dropped every connection
+                // while ours stayed open; its reset receiver accepts no other
+                // epoch, so keeping the old one would silently lose all data.
+                state.epoch = conn.parallel_tx_epoch();
+                state.sequence = 0;
                 if let Some(anchor) = conn.cleanup_policy().shared_connection_key()
                     && state.pool_anchor.is_none_or(|previous| anchor < previous)
                 {
