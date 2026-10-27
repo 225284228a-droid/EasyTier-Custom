@@ -208,8 +208,8 @@ watch([() => selectedInstanceId.value?.uuid, networkIsDisabled], async ([selecte
 
 const persist = () => currentNetworkControl.remoteSave.value;
 
-// Applying runs the network with the edits: a running network restarts with
-// them and a stopped one starts. Saving alone never starts a network.
+// Saving keeps the network's state: a running network restarts with the edits
+// and a stopped one stays stopped. Applying also starts a stopped network.
 const saveNetwork = async (start: boolean) => {
     const selected = editor.base.value?.instanceId;
     if (!selected || busy.value) return;
@@ -512,7 +512,7 @@ const saveConfigFile = async (tomlConfig: string): Promise<void> => {
 
 const formActionLabel = computed(() => creating.value ? t('web.local_configs.create_and_start') : t('web.local_configs.apply'));
 const submitForm = () => creating.value ? createNetwork(true) : saveNetwork(true);
-const saveWithoutStarting = () => creating.value ? createNetwork(false) : saveNetwork(false);
+const saveKeepingState = () => creating.value ? createNetwork(false) : saveNetwork(false);
 
 // 响应式屏幕宽度
 const screenWidth = ref(window.innerWidth);
@@ -699,7 +699,7 @@ const editorMerged = editor.merged;
                         :disabled="fileEditorDisabled" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" :disabled="busy || !formConfig" />
-                    <Button v-if="creating || networkIsDisabled" @click="saveWithoutStarting" icon="pi pi-save"
+                    <Button @click="saveKeepingState" icon="pi pi-save"
                         :label="t('web.device_management.save_config')" severity="secondary"
                         :disabled="busy || !formConfig || !!editorRemote || (!creating && !editorDirty)" />
                     <Button v-if="!creating && networkIsDisabled && editorDirty" @click="cancelEdit" icon="pi pi-undo"

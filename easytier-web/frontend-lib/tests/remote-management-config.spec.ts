@@ -231,7 +231,7 @@ async function submit(wrapper: Wrapper) {
   await flushPromises()
 }
 
-async function saveWithoutStarting(wrapper: Wrapper) {
+async function saveConfig(wrapper: Wrapper) {
   await button(wrapper, 'web.device_management.save_config').trigger('click')
   await flushPromises()
 }
@@ -310,7 +310,7 @@ describe('creating networks without starting them', () => {
     try {
       await button(wrapper, 'web.device_management.create_network').trigger('click')
       await flushPromises()
-      await saveWithoutStarting(wrapper)
+      await saveConfig(wrapper)
       expect(api.save_config).toHaveBeenCalledOnce()
       expect(api.run_network).not.toHaveBeenCalled()
       expect(wrapper.emitted('update:instanceId')).toEqual([[INSTANCE_ID]])
@@ -324,7 +324,7 @@ describe('creating networks without starting them', () => {
     try {
       await button(wrapper, 'web.device_management.create_network').trigger('click')
       await flushPromises()
-      await saveWithoutStarting(wrapper)
+      await saveConfig(wrapper)
       expect(api.patch_local_config).toHaveBeenCalledWith(expect.objectContaining({ inst_id: INSTANCE_ID, expected_revision: '' }))
       expect(api.update_network_instance_state).not.toHaveBeenCalled()
     } finally { wrapper.unmount() }
@@ -341,7 +341,7 @@ describe('saving official networks', () => {
       expect(button(wrapper, 'web.device_management.save_config').attributes('disabled')).toBeDefined()
       form(wrapper).props('curNetwork').hostname = 'saved-host'
       await nextTick()
-      await saveWithoutStarting(wrapper)
+      await saveConfig(wrapper)
       expect(api.save_config).toHaveBeenCalledOnce()
       const saved = api.save_config.mock.calls[0][0] as NetworkConfig
       expect(saved.hostname).toBe('saved-host')
@@ -389,7 +389,7 @@ describe('saving node configuration files', () => {
       expect(form(wrapper).props('curNetwork').hostname).toBe('original-host')
       form(wrapper).props('curNetwork').hostname = 'edited-valid-host'
       await nextTick()
-      await saveWithoutStarting(wrapper)
+      await saveConfig(wrapper)
       expect(api.patch_local_config).toHaveBeenCalledWith({
         inst_id: INSTANCE_ID, expected_revision: 'revision-a', field_mask: ['hostname'],
         config: { hostname: 'edited-valid-host' },
@@ -426,6 +426,20 @@ describe('saving node configuration files', () => {
       expect(api.patch_local_config).toHaveBeenCalledOnce()
       expect(api.patch_local_config.mock.calls[0][0].field_mask).toEqual(['hostname'])
       expect(toastSpy.add).toHaveBeenCalledWith(expect.objectContaining({ detail: 'web.local_configs.saved_applied' }))
+      expect(wrapper.find('.network-status-container').exists()).toBe(true)
+    } finally { wrapper.unmount() }
+  })
+
+  it('saves a running network without stopping it from the save action', async () => {
+    const { api } = running(revisionApi())
+    const wrapper = await mountManagement(api)
+    try {
+      const editor = await editRunning(wrapper)
+      editor.props('curNetwork').hostname = 'saved-running-host'
+      await nextTick()
+      await saveConfig(wrapper)
+      expect(api.patch_local_config).toHaveBeenCalledOnce()
+      expect(api.update_network_instance_state).not.toHaveBeenCalled()
       expect(wrapper.find('.network-status-container').exists()).toBe(true)
     } finally { wrapper.unmount() }
   })
