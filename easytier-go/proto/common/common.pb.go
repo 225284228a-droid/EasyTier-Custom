@@ -266,6 +266,7 @@ type Flags struct {
 	EnableIpv6             bool   `protobuf:"varint,4,opt,name=enable_ipv6,json=enableIpv6,proto3" json:"enable_ipv6,omitempty"`
 	Mtu                    uint32 `protobuf:"varint,5,opt,name=mtu,proto3" json:"mtu,omitempty"`
 	LatencyFirst           bool   `protobuf:"varint,6,opt,name=latency_first,json=latencyFirst,proto3" json:"latency_first,omitempty"`
+	EnableExitNode         bool   `protobuf:"varint,7,opt,name=enable_exit_node,json=enableExitNode,proto3" json:"enable_exit_node,omitempty"`
 	NoTun                  bool   `protobuf:"varint,8,opt,name=no_tun,json=noTun,proto3" json:"no_tun,omitempty"`
 	UseSmoltcp             bool   `protobuf:"varint,9,opt,name=use_smoltcp,json=useSmoltcp,proto3" json:"use_smoltcp,omitempty"`
 	RelayNetworkWhitelist  string `protobuf:"bytes,10,opt,name=relay_network_whitelist,json=relayNetworkWhitelist,proto3" json:"relay_network_whitelist,omitempty"`
@@ -409,6 +410,13 @@ func (x *Flags) GetMtu() uint32 {
 func (x *Flags) GetLatencyFirst() bool {
 	if x != nil {
 		return x.LatencyFirst
+	}
+	return false
+}
+
+func (x *Flags) GetEnableExitNode() bool {
+	if x != nil {
+		return x.EnableExitNode
 	}
 	return false
 }
@@ -2239,7 +2247,7 @@ const file_common_proto_rawDesc = "" +
 	"\x06target\x18ц\x03 \x01(\rR\x06target\x12(\n" +
 	"\x0factive_conn_ids\x18҆\x03 \x03(\tR\ractiveConnIds\x12\x1c\n" +
 	"\bprotocol\x18ӆ\x03 \x01(\tR\bprotocol\x12)\n" +
-	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xb5\x15\n" +
+	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xec\x15\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2256,7 +2264,9 @@ const file_common_proto_rawDesc = "" +
 	"\x03mtu\x18\x05 \x01(\rB\f\x8a\xb5\x18\b\n" +
 	"\x041380\x18\x01R\x03mtu\x120\n" +
 	"\rlatency_first\x18\x06 \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\flatencyFirst\x12\"\n" +
+	"\x05falseR\flatencyFirst\x125\n" +
+	"\x10enable_exit_node\x18\a \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0eenableExitNode\x12\"\n" +
 	"\x06no_tun\x18\b \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\x05noTun\x12,\n" +
 	"\vuse_smoltcp\x18\t \x01(\bB\v\x8a\xb5\x18\a\n" +

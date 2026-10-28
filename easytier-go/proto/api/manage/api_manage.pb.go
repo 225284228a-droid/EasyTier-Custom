@@ -217,12 +217,14 @@ type NetworkConfig struct {
 	DisableP2P                  *bool    `protobuf:"varint,24,opt,name=disable_p2p,json=disableP2p,proto3,oneof" json:"disable_p2p,omitempty"`
 	BindDevice                  *bool    `protobuf:"varint,25,opt,name=bind_device,json=bindDevice,proto3,oneof" json:"bind_device,omitempty"`
 	NoTun                       *bool    `protobuf:"varint,26,opt,name=no_tun,json=noTun,proto3,oneof" json:"no_tun,omitempty"`
+	EnableExitNode              *bool    `protobuf:"varint,27,opt,name=enable_exit_node,json=enableExitNode,proto3,oneof" json:"enable_exit_node,omitempty"`
 	RelayAllPeerRpc             *bool    `protobuf:"varint,28,opt,name=relay_all_peer_rpc,json=relayAllPeerRpc,proto3,oneof" json:"relay_all_peer_rpc,omitempty"`
 	MultiThread                 *bool    `protobuf:"varint,29,opt,name=multi_thread,json=multiThread,proto3,oneof" json:"multi_thread,omitempty"`
 	EnableRelayNetworkWhitelist *bool    `protobuf:"varint,30,opt,name=enable_relay_network_whitelist,json=enableRelayNetworkWhitelist,proto3,oneof" json:"enable_relay_network_whitelist,omitempty"`
 	RelayNetworkWhitelist       []string `protobuf:"bytes,31,rep,name=relay_network_whitelist,json=relayNetworkWhitelist,proto3" json:"relay_network_whitelist,omitempty"`
 	EnableManualRoutes          *bool    `protobuf:"varint,32,opt,name=enable_manual_routes,json=enableManualRoutes,proto3,oneof" json:"enable_manual_routes,omitempty"`
 	Routes                      []string `protobuf:"bytes,33,rep,name=routes,proto3" json:"routes,omitempty"`
+	ExitNodes                   []string `protobuf:"bytes,34,rep,name=exit_nodes,json=exitNodes,proto3" json:"exit_nodes,omitempty"`
 	ProxyForwardBySystem        *bool    `protobuf:"varint,35,opt,name=proxy_forward_by_system,json=proxyForwardBySystem,proto3,oneof" json:"proxy_forward_by_system,omitempty"`
 	DisableEncryption           *bool    `protobuf:"varint,36,opt,name=disable_encryption,json=disableEncryption,proto3,oneof" json:"disable_encryption,omitempty"`
 	EnableSocks5                *bool    `protobuf:"varint,37,opt,name=enable_socks5,json=enableSocks5,proto3,oneof" json:"enable_socks5,omitempty"`
@@ -507,6 +509,13 @@ func (x *NetworkConfig) GetNoTun() bool {
 	return false
 }
 
+func (x *NetworkConfig) GetEnableExitNode() bool {
+	if x != nil && x.EnableExitNode != nil {
+		return *x.EnableExitNode
+	}
+	return false
+}
+
 func (x *NetworkConfig) GetRelayAllPeerRpc() bool {
 	if x != nil && x.RelayAllPeerRpc != nil {
 		return *x.RelayAllPeerRpc
@@ -545,6 +554,13 @@ func (x *NetworkConfig) GetEnableManualRoutes() bool {
 func (x *NetworkConfig) GetRoutes() []string {
 	if x != nil {
 		return x.Routes
+	}
+	return nil
+}
+
+func (x *NetworkConfig) GetExitNodes() []string {
+	if x != nil {
+		return x.ExitNodes
 	}
 	return nil
 }
@@ -899,10 +915,8 @@ func (x *VpnRuleConfig) GetExitAddr() string {
 }
 
 type VpnConfig struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// This node forwards and NATs exit traffic for peers.
-	ExitEnabled   bool             `protobuf:"varint,50002,opt,name=exit_enabled,json=exitEnabled,proto3" json:"exit_enabled,omitempty"`
-	Rules         []*VpnRuleConfig `protobuf:"bytes,50007,rep,name=rules,proto3" json:"rules,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Rules         []*VpnRuleConfig       `protobuf:"bytes,50007,rep,name=rules,proto3" json:"rules,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -935,13 +949,6 @@ func (x *VpnConfig) ProtoReflect() protoreflect.Message {
 // Deprecated: Use VpnConfig.ProtoReflect.Descriptor instead.
 func (*VpnConfig) Descriptor() ([]byte, []int) {
 	return file_api_manage_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *VpnConfig) GetExitEnabled() bool {
-	if x != nil {
-		return x.ExitEnabled
-	}
-	return false
 }
 
 func (x *VpnConfig) GetRules() []*VpnRuleConfig {
@@ -3292,7 +3299,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xfb'\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xde(\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3326,58 +3333,61 @@ const file_api_manage_proto_rawDesc = "" +
 	"disableP2p\x88\x01\x01\x12$\n" +
 	"\vbind_device\x18\x19 \x01(\bH\x15R\n" +
 	"bindDevice\x88\x01\x01\x12\x1a\n" +
-	"\x06no_tun\x18\x1a \x01(\bH\x16R\x05noTun\x88\x01\x01\x120\n" +
-	"\x12relay_all_peer_rpc\x18\x1c \x01(\bH\x17R\x0frelayAllPeerRpc\x88\x01\x01\x12&\n" +
-	"\fmulti_thread\x18\x1d \x01(\bH\x18R\vmultiThread\x88\x01\x01\x12H\n" +
-	"\x1eenable_relay_network_whitelist\x18\x1e \x01(\bH\x19R\x1benableRelayNetworkWhitelist\x88\x01\x01\x126\n" +
+	"\x06no_tun\x18\x1a \x01(\bH\x16R\x05noTun\x88\x01\x01\x12-\n" +
+	"\x10enable_exit_node\x18\x1b \x01(\bH\x17R\x0eenableExitNode\x88\x01\x01\x120\n" +
+	"\x12relay_all_peer_rpc\x18\x1c \x01(\bH\x18R\x0frelayAllPeerRpc\x88\x01\x01\x12&\n" +
+	"\fmulti_thread\x18\x1d \x01(\bH\x19R\vmultiThread\x88\x01\x01\x12H\n" +
+	"\x1eenable_relay_network_whitelist\x18\x1e \x01(\bH\x1aR\x1benableRelayNetworkWhitelist\x88\x01\x01\x126\n" +
 	"\x17relay_network_whitelist\x18\x1f \x03(\tR\x15relayNetworkWhitelist\x125\n" +
-	"\x14enable_manual_routes\x18  \x01(\bH\x1aR\x12enableManualRoutes\x88\x01\x01\x12\x16\n" +
-	"\x06routes\x18! \x03(\tR\x06routes\x12:\n" +
-	"\x17proxy_forward_by_system\x18# \x01(\bH\x1bR\x14proxyForwardBySystem\x88\x01\x01\x122\n" +
-	"\x12disable_encryption\x18$ \x01(\bH\x1cR\x11disableEncryption\x88\x01\x01\x12(\n" +
-	"\renable_socks5\x18% \x01(\bH\x1dR\fenableSocks5\x88\x01\x01\x12$\n" +
-	"\vsocks5_port\x18& \x01(\x05H\x1eR\n" +
+	"\x14enable_manual_routes\x18  \x01(\bH\x1bR\x12enableManualRoutes\x88\x01\x01\x12\x16\n" +
+	"\x06routes\x18! \x03(\tR\x06routes\x12\x1d\n" +
+	"\n" +
+	"exit_nodes\x18\" \x03(\tR\texitNodes\x12:\n" +
+	"\x17proxy_forward_by_system\x18# \x01(\bH\x1cR\x14proxyForwardBySystem\x88\x01\x01\x122\n" +
+	"\x12disable_encryption\x18$ \x01(\bH\x1dR\x11disableEncryption\x88\x01\x01\x12(\n" +
+	"\renable_socks5\x18% \x01(\bH\x1eR\fenableSocks5\x88\x01\x01\x12$\n" +
+	"\vsocks5_port\x18& \x01(\x05H\x1fR\n" +
 	"socks5Port\x88\x01\x01\x12>\n" +
-	"\x19disable_udp_hole_punching\x18' \x01(\bH\x1fR\x16disableUdpHolePunching\x88\x01\x01\x12\x15\n" +
-	"\x03mtu\x18( \x01(\x05H R\x03mtu\x88\x01\x01\x12)\n" +
+	"\x19disable_udp_hole_punching\x18' \x01(\bH R\x16disableUdpHolePunching\x88\x01\x01\x12\x15\n" +
+	"\x03mtu\x18( \x01(\x05H!R\x03mtu\x88\x01\x01\x12)\n" +
 	"\x10mapped_listeners\x18) \x03(\tR\x0fmappedListeners\x123\n" +
-	"\x13enable_private_mode\x18+ \x01(\bH!R\x11enablePrivateMode\x88\x01\x01\x12/\n" +
-	"\x11enable_quic_proxy\x18- \x01(\bH\"R\x0fenableQuicProxy\x88\x01\x01\x121\n" +
-	"\x12disable_quic_input\x18. \x01(\bH#R\x10disableQuicInput\x88\x01\x01\x121\n" +
-	"\x10quic_listen_port\x182 \x01(\x05B\x02\x18\x01H$R\x0equicListenPort\x88\x01\x01\x12B\n" +
+	"\x13enable_private_mode\x18+ \x01(\bH\"R\x11enablePrivateMode\x88\x01\x01\x12/\n" +
+	"\x11enable_quic_proxy\x18- \x01(\bH#R\x0fenableQuicProxy\x88\x01\x01\x121\n" +
+	"\x12disable_quic_input\x18. \x01(\bH$R\x10disableQuicInput\x88\x01\x01\x121\n" +
+	"\x10quic_listen_port\x182 \x01(\x05B\x02\x18\x01H%R\x0equicListenPort\x88\x01\x01\x12B\n" +
 	"\rport_forwards\x180 \x03(\v2\x1d.api.manage.PortForwardConfigR\fportForwards\x12>\n" +
-	"\x19disable_sym_hole_punching\x181 \x01(\bH%R\x16disableSymHolePunching\x88\x01\x01\x12\x1e\n" +
-	"\bp2p_only\x183 \x01(\bH&R\ap2pOnly\x88\x01\x01\x12L\n" +
-	"\x12data_compress_algo\x184 \x01(\x0e2\x19.common.CompressionAlgoPbH'R\x10dataCompressAlgo\x88\x01\x01\x126\n" +
-	"\x14encryption_algorithm\x185 \x01(\tH(R\x13encryptionAlgorithm\x88\x01\x01\x12>\n" +
-	"\x19disable_tcp_hole_punching\x186 \x01(\bH)R\x16disableTcpHolePunching\x88\x01\x01\x129\n" +
+	"\x19disable_sym_hole_punching\x181 \x01(\bH&R\x16disableSymHolePunching\x88\x01\x01\x12\x1e\n" +
+	"\bp2p_only\x183 \x01(\bH'R\ap2pOnly\x88\x01\x01\x12L\n" +
+	"\x12data_compress_algo\x184 \x01(\x0e2\x19.common.CompressionAlgoPbH(R\x10dataCompressAlgo\x88\x01\x01\x126\n" +
+	"\x14encryption_algorithm\x185 \x01(\tH)R\x13encryptionAlgorithm\x88\x01\x01\x12>\n" +
+	"\x19disable_tcp_hole_punching\x186 \x01(\bH*R\x16disableTcpHolePunching\x88\x01\x01\x129\n" +
 	"\vsecure_mode\x187 \x01(\v2\x18.common.SecureModeConfigR\n" +
 	"secureMode\x12\x1f\n" +
-	"\x03acl\x188 \x01(\v2\b.acl.AclH*R\x03acl\x88\x01\x01\x12,\n" +
-	"\x0fcredential_file\x189 \x01(\tH+R\x0ecredentialFile\x88\x01\x01\x12\x1e\n" +
-	"\blazy_p2p\x18: \x01(\bH,R\alazyP2p\x88\x01\x01\x12\x1e\n" +
-	"\bneed_p2p\x18; \x01(\bH-R\aneedP2p\x88\x01\x01\x12:\n" +
-	"\x17instance_recv_bps_limit\x18< \x01(\x04H.R\x14instanceRecvBpsLimit\x88\x01\x01\x12&\n" +
-	"\fdisable_upnp\x18= \x01(\bH/R\vdisableUpnp\x88\x01\x01\x121\n" +
-	"\x12disable_relay_data\x18A \x01(\bH0R\x10disableRelayData\x88\x01\x01\x12@\n" +
-	"\x1aenable_udp_broadcast_relay\x18B \x01(\bH1R\x17enableUdpBroadcastRelay\x88\x01\x01\x12$\n" +
-	"\vsocket_mark\x18C \x01(\rH2R\n" +
+	"\x03acl\x188 \x01(\v2\b.acl.AclH+R\x03acl\x88\x01\x01\x12,\n" +
+	"\x0fcredential_file\x189 \x01(\tH,R\x0ecredentialFile\x88\x01\x01\x12\x1e\n" +
+	"\blazy_p2p\x18: \x01(\bH-R\alazyP2p\x88\x01\x01\x12\x1e\n" +
+	"\bneed_p2p\x18; \x01(\bH.R\aneedP2p\x88\x01\x01\x12:\n" +
+	"\x17instance_recv_bps_limit\x18< \x01(\x04H/R\x14instanceRecvBpsLimit\x88\x01\x01\x12&\n" +
+	"\fdisable_upnp\x18= \x01(\bH0R\vdisableUpnp\x88\x01\x01\x121\n" +
+	"\x12disable_relay_data\x18A \x01(\bH1R\x10disableRelayData\x88\x01\x01\x12@\n" +
+	"\x1aenable_udp_broadcast_relay\x18B \x01(\bH2R\x17enableUdpBroadcastRelay\x88\x01\x01\x12$\n" +
+	"\vsocket_mark\x18C \x01(\rH3R\n" +
 	"socketMark\x88\x01\x01\x123\n" +
 	"\x05peers\x18D \x03(\v2\x1d.api.manage.NetworkPeerConfigR\x05peers\x12L\n" +
-	"\x11vpn_portal_config\x18E \x01(\v2\x1b.api.manage.VpnPortalConfigH3R\x0fvpnPortalConfig\x88\x01\x01\x12T\n" +
+	"\x11vpn_portal_config\x18E \x01(\v2\x1b.api.manage.VpnPortalConfigH4R\x0fvpnPortalConfig\x88\x01\x01\x12T\n" +
 	"\x13managed_credentials\x18G \x03(\v2#.api.manage.ManagedCredentialConfigR\x12managedCredentials\x12/\n" +
-	"\x11prefer_peer_relay\x18H \x01(\bH4R\x0fpreferPeerRelay\x88\x01\x01\x12)\n" +
-	"\x0edhcp_ipv4_cidr\x18J \x01(\tH5R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
-	"\x06dhcpv6\x18K \x01(\bH6R\x06dhcpv6\x88\x01\x01\x12)\n" +
-	"\x0edhcp_ipv6_cidr\x18L \x01(\tH7R\fdhcpIpv6Cidr\x88\x01\x01\x12\x17\n" +
-	"\x03sni\x18\x99\x87\x03 \x01(\tH8R\x03sni\x88\x01\x01\x125\n" +
-	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH9R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
-	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH:R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
-	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigH;R\x03vpn\x88\x01\x01\x121\n" +
-	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tH<R\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
-	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rH=R\x13parallelConnections\x88\x01\x01\x12G\n" +
-	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bH>R\x1adisableParallelConnections\x88\x01\x01\x120\n" +
-	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tH?R\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
+	"\x11prefer_peer_relay\x18H \x01(\bH5R\x0fpreferPeerRelay\x88\x01\x01\x12)\n" +
+	"\x0edhcp_ipv4_cidr\x18J \x01(\tH6R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
+	"\x06dhcpv6\x18K \x01(\bH7R\x06dhcpv6\x88\x01\x01\x12)\n" +
+	"\x0edhcp_ipv6_cidr\x18L \x01(\tH8R\fdhcpIpv6Cidr\x88\x01\x01\x12\x17\n" +
+	"\x03sni\x18\x99\x87\x03 \x01(\tH9R\x03sni\x88\x01\x01\x125\n" +
+	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH:R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
+	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH;R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
+	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigH<R\x03vpn\x88\x01\x01\x121\n" +
+	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tH=R\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
+	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rH>R\x13parallelConnections\x88\x01\x01\x12G\n" +
+	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bH?R\x1adisableParallelConnections\x88\x01\x01\x120\n" +
+	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tH@R\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3400,7 +3410,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x12_disable_kcp_inputB\x0e\n" +
 	"\f_disable_p2pB\x0e\n" +
 	"\f_bind_deviceB\t\n" +
-	"\a_no_tunB\x15\n" +
+	"\a_no_tunB\x13\n" +
+	"\x11_enable_exit_nodeB\x15\n" +
 	"\x13_relay_all_peer_rpcB\x0f\n" +
 	"\r_multi_threadB!\n" +
 	"\x1f_enable_relay_network_whitelistB\x17\n" +
@@ -3444,10 +3455,9 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x11_traffic_disguiseJ\x04\b*\x10+J\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R\x10enable_magic_dnsR$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
-	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xcd\x01\n" +
-	"\tVpnConfig\x12#\n" +
-	"\fexit_enabled\x18҆\x03 \x01(\bR\vexitEnabled\x121\n" +
-	"\x05rules\x18׆\x03 \x03(\v2\x19.api.manage.VpnRuleConfigR\x05rulesJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\b\x10\tR\aenabledR\vdns_protectR\fipv6_protectR\tfail_modeR\x05exitsR\x0eignore_private\"\xa3\x02\n" +
+	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xc0\x01\n" +
+	"\tVpnConfig\x121\n" +
+	"\x05rules\x18׆\x03 \x03(\v2\x19.api.manage.VpnRuleConfigR\x05rulesJ\x04\b\x01\x10\x02J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\b\x10\tJ\b\b҆\x03\x10ӆ\x03R\aenabledR\vdns_protectR\fipv6_protectR\tfail_modeR\x05exitsR\x0eignore_privateR\fexit_enabled\"\xa3\x02\n" +
 	"\x17ManagedCredentialConfig\x12#\n" +
 	"\rcredential_id\x18\x01 \x01(\tR\fcredentialId\x12+\n" +
 	"\x11credential_secret\x18\x02 \x01(\tR\x10credentialSecret\x12\x16\n" +

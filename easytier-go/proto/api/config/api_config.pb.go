@@ -83,6 +83,7 @@ type InstanceConfigPatch struct {
 	Acl                *AclPatch                    `protobuf:"bytes,5,opt,name=acl,proto3,oneof" json:"acl,omitempty"`
 	ProxyNetworks      []*ProxyNetworkPatch         `protobuf:"bytes,6,rep,name=proxy_networks,json=proxyNetworks,proto3" json:"proxy_networks,omitempty"`
 	Routes             []*RoutePatch                `protobuf:"bytes,7,rep,name=routes,proto3" json:"routes,omitempty"`
+	ExitNodes          []*ExitNodePatch             `protobuf:"bytes,8,rep,name=exit_nodes,json=exitNodes,proto3" json:"exit_nodes,omitempty"`
 	MappedListeners    []*UrlPatch                  `protobuf:"bytes,9,rep,name=mapped_listeners,json=mappedListeners,proto3" json:"mapped_listeners,omitempty"`
 	Connectors         []*UrlPatch                  `protobuf:"bytes,10,rep,name=connectors,proto3" json:"connectors,omitempty"`
 	DisableRelayData   *bool                        `protobuf:"varint,14,opt,name=disable_relay_data,json=disableRelayData,proto3,oneof" json:"disable_relay_data,omitempty"`
@@ -174,6 +175,13 @@ func (x *InstanceConfigPatch) GetProxyNetworks() []*ProxyNetworkPatch {
 func (x *InstanceConfigPatch) GetRoutes() []*RoutePatch {
 	if x != nil {
 		return x.Routes
+	}
+	return nil
+}
+
+func (x *InstanceConfigPatch) GetExitNodes() []*ExitNodePatch {
+	if x != nil {
+		return x.ExitNodes
 	}
 	return nil
 }
@@ -614,6 +622,58 @@ func (x *RoutePatch) GetCidr() *common.Ipv4Inet {
 	return nil
 }
 
+type ExitNodePatch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Action        ConfigPatchAction      `protobuf:"varint,1,opt,name=action,proto3,enum=api.config.ConfigPatchAction" json:"action,omitempty"`
+	Node          *common.IpAddr         `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExitNodePatch) Reset() {
+	*x = ExitNodePatch{}
+	mi := &file_api_config_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitNodePatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitNodePatch) ProtoMessage() {}
+
+func (x *ExitNodePatch) ProtoReflect() protoreflect.Message {
+	mi := &file_api_config_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitNodePatch.ProtoReflect.Descriptor instead.
+func (*ExitNodePatch) Descriptor() ([]byte, []int) {
+	return file_api_config_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ExitNodePatch) GetAction() ConfigPatchAction {
+	if x != nil {
+		return x.Action
+	}
+	return ConfigPatchAction_ADD
+}
+
+func (x *ExitNodePatch) GetNode() *common.IpAddr {
+	if x != nil {
+		return x.Node
+	}
+	return nil
+}
+
 type PatchConfigRequest struct {
 	state         protoimpl.MessageState       `protogen:"open.v1"`
 	Patch         *InstanceConfigPatch         `protobuf:"bytes,1,opt,name=patch,proto3" json:"patch,omitempty"`
@@ -624,7 +684,7 @@ type PatchConfigRequest struct {
 
 func (x *PatchConfigRequest) Reset() {
 	*x = PatchConfigRequest{}
-	mi := &file_api_config_proto_msgTypes[8]
+	mi := &file_api_config_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -636,7 +696,7 @@ func (x *PatchConfigRequest) String() string {
 func (*PatchConfigRequest) ProtoMessage() {}
 
 func (x *PatchConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[8]
+	mi := &file_api_config_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -649,7 +709,7 @@ func (x *PatchConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatchConfigRequest.ProtoReflect.Descriptor instead.
 func (*PatchConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{8}
+	return file_api_config_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PatchConfigRequest) GetPatch() *InstanceConfigPatch {
@@ -674,7 +734,7 @@ type PatchConfigResponse struct {
 
 func (x *PatchConfigResponse) Reset() {
 	*x = PatchConfigResponse{}
-	mi := &file_api_config_proto_msgTypes[9]
+	mi := &file_api_config_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -686,7 +746,7 @@ func (x *PatchConfigResponse) String() string {
 func (*PatchConfigResponse) ProtoMessage() {}
 
 func (x *PatchConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[9]
+	mi := &file_api_config_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -699,7 +759,7 @@ func (x *PatchConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatchConfigResponse.ProtoReflect.Descriptor instead.
 func (*PatchConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{9}
+	return file_api_config_proto_rawDescGZIP(), []int{10}
 }
 
 type GetConfigRequest struct {
@@ -711,7 +771,7 @@ type GetConfigRequest struct {
 
 func (x *GetConfigRequest) Reset() {
 	*x = GetConfigRequest{}
-	mi := &file_api_config_proto_msgTypes[10]
+	mi := &file_api_config_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -723,7 +783,7 @@ func (x *GetConfigRequest) String() string {
 func (*GetConfigRequest) ProtoMessage() {}
 
 func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[10]
+	mi := &file_api_config_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -736,7 +796,7 @@ func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetConfigRequest) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{10}
+	return file_api_config_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetConfigRequest) GetInstance() *instance.InstanceIdentifier {
@@ -756,7 +816,7 @@ type GetConfigResponse struct {
 
 func (x *GetConfigResponse) Reset() {
 	*x = GetConfigResponse{}
-	mi := &file_api_config_proto_msgTypes[11]
+	mi := &file_api_config_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -768,7 +828,7 @@ func (x *GetConfigResponse) String() string {
 func (*GetConfigResponse) ProtoMessage() {}
 
 func (x *GetConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_config_proto_msgTypes[11]
+	mi := &file_api_config_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -781,7 +841,7 @@ func (x *GetConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetConfigResponse) Descriptor() ([]byte, []int) {
-	return file_api_config_proto_rawDescGZIP(), []int{11}
+	return file_api_config_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetConfigResponse) GetConfig() *manage.NetworkConfig {
@@ -803,7 +863,7 @@ var File_api_config_proto protoreflect.FileDescriptor
 const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_config.proto\x12\n" +
-	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\xcc\a\n" +
+	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\x86\b\n" +
 	"\x13InstanceConfigPatch\x12\x1f\n" +
 	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01\x12)\n" +
 	"\x04ipv4\x18\x02 \x01(\v2\x10.common.Ipv4InetH\x01R\x04ipv4\x88\x01\x01\x12)\n" +
@@ -811,7 +871,9 @@ const file_api_config_proto_rawDesc = "" +
 	"\rport_forwards\x18\x04 \x03(\v2\x1c.api.config.PortForwardPatchR\fportForwards\x12+\n" +
 	"\x03acl\x18\x05 \x01(\v2\x14.api.config.AclPatchH\x03R\x03acl\x88\x01\x01\x12D\n" +
 	"\x0eproxy_networks\x18\x06 \x03(\v2\x1d.api.config.ProxyNetworkPatchR\rproxyNetworks\x12.\n" +
-	"\x06routes\x18\a \x03(\v2\x16.api.config.RoutePatchR\x06routes\x12?\n" +
+	"\x06routes\x18\a \x03(\v2\x16.api.config.RoutePatchR\x06routes\x128\n" +
+	"\n" +
+	"exit_nodes\x18\b \x03(\v2\x19.api.config.ExitNodePatchR\texitNodes\x12?\n" +
 	"\x10mapped_listeners\x18\t \x03(\v2\x14.api.config.UrlPatchR\x0fmappedListeners\x124\n" +
 	"\n" +
 	"connectors\x18\n" +
@@ -857,7 +919,10 @@ const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"RoutePatch\x125\n" +
 	"\x06action\x18\x01 \x01(\x0e2\x1d.api.config.ConfigPatchActionR\x06action\x12$\n" +
-	"\x04cidr\x18\x02 \x01(\v2\x10.common.Ipv4InetR\x04cidr\"\x89\x01\n" +
+	"\x04cidr\x18\x02 \x01(\v2\x10.common.Ipv4InetR\x04cidr\"j\n" +
+	"\rExitNodePatch\x125\n" +
+	"\x06action\x18\x01 \x01(\x0e2\x1d.api.config.ConfigPatchActionR\x06action\x12\"\n" +
+	"\x04node\x18\x02 \x01(\v2\x0e.common.IpAddrR\x04node\"\x89\x01\n" +
 	"\x12PatchConfigRequest\x125\n" +
 	"\x05patch\x18\x01 \x01(\v2\x1f.api.config.InstanceConfigPatchR\x05patch\x12<\n" +
 	"\binstance\x18\x02 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"\x15\n" +
@@ -890,7 +955,7 @@ func file_api_config_proto_rawDescGZIP() []byte {
 }
 
 var file_api_config_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_api_config_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_api_config_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_api_config_proto_goTypes = []any{
 	(ConfigPatchAction)(0),               // 0: api.config.ConfigPatchAction
 	(*InstanceConfigPatch)(nil),          // 1: api.config.InstanceConfigPatch
@@ -901,61 +966,66 @@ var file_api_config_proto_goTypes = []any{
 	(*AclPatch)(nil),                     // 6: api.config.AclPatch
 	(*ProxyNetworkPatch)(nil),            // 7: api.config.ProxyNetworkPatch
 	(*RoutePatch)(nil),                   // 8: api.config.RoutePatch
-	(*PatchConfigRequest)(nil),           // 9: api.config.PatchConfigRequest
-	(*PatchConfigResponse)(nil),          // 10: api.config.PatchConfigResponse
-	(*GetConfigRequest)(nil),             // 11: api.config.GetConfigRequest
-	(*GetConfigResponse)(nil),            // 12: api.config.GetConfigResponse
-	(*common.Ipv4Inet)(nil),              // 13: common.Ipv4Inet
-	(*common.Ipv6Inet)(nil),              // 14: common.Ipv6Inet
-	(*manage.ManagedCredentialSet)(nil),  // 15: api.manage.ManagedCredentialSet
-	(*manage.VpnConfig)(nil),             // 16: api.manage.VpnConfig
-	(*manage.VpnPortalClientConfig)(nil), // 17: api.manage.VpnPortalClientConfig
-	(*common.PortForwardConfigPb)(nil),   // 18: common.PortForwardConfigPb
-	(*common.Url)(nil),                   // 19: common.Url
-	(*acl.Acl)(nil),                      // 20: acl.Acl
-	(*instance.InstanceIdentifier)(nil),  // 21: api.instance.InstanceIdentifier
-	(*manage.NetworkConfig)(nil),         // 22: api.manage.NetworkConfig
+	(*ExitNodePatch)(nil),                // 9: api.config.ExitNodePatch
+	(*PatchConfigRequest)(nil),           // 10: api.config.PatchConfigRequest
+	(*PatchConfigResponse)(nil),          // 11: api.config.PatchConfigResponse
+	(*GetConfigRequest)(nil),             // 12: api.config.GetConfigRequest
+	(*GetConfigResponse)(nil),            // 13: api.config.GetConfigResponse
+	(*common.Ipv4Inet)(nil),              // 14: common.Ipv4Inet
+	(*common.Ipv6Inet)(nil),              // 15: common.Ipv6Inet
+	(*manage.ManagedCredentialSet)(nil),  // 16: api.manage.ManagedCredentialSet
+	(*manage.VpnConfig)(nil),             // 17: api.manage.VpnConfig
+	(*manage.VpnPortalClientConfig)(nil), // 18: api.manage.VpnPortalClientConfig
+	(*common.PortForwardConfigPb)(nil),   // 19: common.PortForwardConfigPb
+	(*common.Url)(nil),                   // 20: common.Url
+	(*acl.Acl)(nil),                      // 21: acl.Acl
+	(*common.IpAddr)(nil),                // 22: common.IpAddr
+	(*instance.InstanceIdentifier)(nil),  // 23: api.instance.InstanceIdentifier
+	(*manage.NetworkConfig)(nil),         // 24: api.manage.NetworkConfig
 }
 var file_api_config_proto_depIdxs = []int32{
-	13, // 0: api.config.InstanceConfigPatch.ipv4:type_name -> common.Ipv4Inet
-	14, // 1: api.config.InstanceConfigPatch.ipv6:type_name -> common.Ipv6Inet
+	14, // 0: api.config.InstanceConfigPatch.ipv4:type_name -> common.Ipv4Inet
+	15, // 1: api.config.InstanceConfigPatch.ipv6:type_name -> common.Ipv6Inet
 	3,  // 2: api.config.InstanceConfigPatch.port_forwards:type_name -> api.config.PortForwardPatch
 	6,  // 3: api.config.InstanceConfigPatch.acl:type_name -> api.config.AclPatch
 	7,  // 4: api.config.InstanceConfigPatch.proxy_networks:type_name -> api.config.ProxyNetworkPatch
 	8,  // 5: api.config.InstanceConfigPatch.routes:type_name -> api.config.RoutePatch
-	5,  // 6: api.config.InstanceConfigPatch.mapped_listeners:type_name -> api.config.UrlPatch
-	5,  // 7: api.config.InstanceConfigPatch.connectors:type_name -> api.config.UrlPatch
-	2,  // 8: api.config.InstanceConfigPatch.vpn_portal_clients:type_name -> api.config.VpnPortalClientPatch
-	15, // 9: api.config.InstanceConfigPatch.managed_credentials:type_name -> api.manage.ManagedCredentialSet
-	16, // 10: api.config.InstanceConfigPatch.vpn:type_name -> api.manage.VpnConfig
-	0,  // 11: api.config.VpnPortalClientPatch.action:type_name -> api.config.ConfigPatchAction
-	17, // 12: api.config.VpnPortalClientPatch.client:type_name -> api.manage.VpnPortalClientConfig
-	0,  // 13: api.config.PortForwardPatch.action:type_name -> api.config.ConfigPatchAction
-	18, // 14: api.config.PortForwardPatch.cfg:type_name -> common.PortForwardConfigPb
-	0,  // 15: api.config.StringPatch.action:type_name -> api.config.ConfigPatchAction
-	0,  // 16: api.config.UrlPatch.action:type_name -> api.config.ConfigPatchAction
-	19, // 17: api.config.UrlPatch.url:type_name -> common.Url
-	20, // 18: api.config.AclPatch.acl:type_name -> acl.Acl
-	4,  // 19: api.config.AclPatch.tcp_whitelist:type_name -> api.config.StringPatch
-	4,  // 20: api.config.AclPatch.udp_whitelist:type_name -> api.config.StringPatch
-	0,  // 21: api.config.ProxyNetworkPatch.action:type_name -> api.config.ConfigPatchAction
-	13, // 22: api.config.ProxyNetworkPatch.cidr:type_name -> common.Ipv4Inet
-	13, // 23: api.config.ProxyNetworkPatch.mapped_cidr:type_name -> common.Ipv4Inet
-	0,  // 24: api.config.RoutePatch.action:type_name -> api.config.ConfigPatchAction
-	13, // 25: api.config.RoutePatch.cidr:type_name -> common.Ipv4Inet
-	1,  // 26: api.config.PatchConfigRequest.patch:type_name -> api.config.InstanceConfigPatch
-	21, // 27: api.config.PatchConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
-	21, // 28: api.config.GetConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
-	22, // 29: api.config.GetConfigResponse.config:type_name -> api.manage.NetworkConfig
-	9,  // 30: api.config.ConfigRpc.PatchConfig:input_type -> api.config.PatchConfigRequest
-	11, // 31: api.config.ConfigRpc.GetConfig:input_type -> api.config.GetConfigRequest
-	10, // 32: api.config.ConfigRpc.PatchConfig:output_type -> api.config.PatchConfigResponse
-	12, // 33: api.config.ConfigRpc.GetConfig:output_type -> api.config.GetConfigResponse
-	32, // [32:34] is the sub-list for method output_type
-	30, // [30:32] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	9,  // 6: api.config.InstanceConfigPatch.exit_nodes:type_name -> api.config.ExitNodePatch
+	5,  // 7: api.config.InstanceConfigPatch.mapped_listeners:type_name -> api.config.UrlPatch
+	5,  // 8: api.config.InstanceConfigPatch.connectors:type_name -> api.config.UrlPatch
+	2,  // 9: api.config.InstanceConfigPatch.vpn_portal_clients:type_name -> api.config.VpnPortalClientPatch
+	16, // 10: api.config.InstanceConfigPatch.managed_credentials:type_name -> api.manage.ManagedCredentialSet
+	17, // 11: api.config.InstanceConfigPatch.vpn:type_name -> api.manage.VpnConfig
+	0,  // 12: api.config.VpnPortalClientPatch.action:type_name -> api.config.ConfigPatchAction
+	18, // 13: api.config.VpnPortalClientPatch.client:type_name -> api.manage.VpnPortalClientConfig
+	0,  // 14: api.config.PortForwardPatch.action:type_name -> api.config.ConfigPatchAction
+	19, // 15: api.config.PortForwardPatch.cfg:type_name -> common.PortForwardConfigPb
+	0,  // 16: api.config.StringPatch.action:type_name -> api.config.ConfigPatchAction
+	0,  // 17: api.config.UrlPatch.action:type_name -> api.config.ConfigPatchAction
+	20, // 18: api.config.UrlPatch.url:type_name -> common.Url
+	21, // 19: api.config.AclPatch.acl:type_name -> acl.Acl
+	4,  // 20: api.config.AclPatch.tcp_whitelist:type_name -> api.config.StringPatch
+	4,  // 21: api.config.AclPatch.udp_whitelist:type_name -> api.config.StringPatch
+	0,  // 22: api.config.ProxyNetworkPatch.action:type_name -> api.config.ConfigPatchAction
+	14, // 23: api.config.ProxyNetworkPatch.cidr:type_name -> common.Ipv4Inet
+	14, // 24: api.config.ProxyNetworkPatch.mapped_cidr:type_name -> common.Ipv4Inet
+	0,  // 25: api.config.RoutePatch.action:type_name -> api.config.ConfigPatchAction
+	14, // 26: api.config.RoutePatch.cidr:type_name -> common.Ipv4Inet
+	0,  // 27: api.config.ExitNodePatch.action:type_name -> api.config.ConfigPatchAction
+	22, // 28: api.config.ExitNodePatch.node:type_name -> common.IpAddr
+	1,  // 29: api.config.PatchConfigRequest.patch:type_name -> api.config.InstanceConfigPatch
+	23, // 30: api.config.PatchConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
+	23, // 31: api.config.GetConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
+	24, // 32: api.config.GetConfigResponse.config:type_name -> api.manage.NetworkConfig
+	10, // 33: api.config.ConfigRpc.PatchConfig:input_type -> api.config.PatchConfigRequest
+	12, // 34: api.config.ConfigRpc.GetConfig:input_type -> api.config.GetConfigRequest
+	11, // 35: api.config.ConfigRpc.PatchConfig:output_type -> api.config.PatchConfigResponse
+	13, // 36: api.config.ConfigRpc.GetConfig:output_type -> api.config.GetConfigResponse
+	35, // [35:37] is the sub-list for method output_type
+	33, // [33:35] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_api_config_proto_init() }
@@ -972,7 +1042,7 @@ func file_api_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_config_proto_rawDesc), len(file_api_config_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
