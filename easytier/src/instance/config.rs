@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use easytier_core::{
+    config::peers::HostRoutingPolicy,
     instance::{CoreConnectivityMode, CoreInstanceHostConfig},
     peers::credential_manager::CredentialStorage,
 };
@@ -21,6 +22,10 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
     CoreInstanceHostConfig {
         hostname_fallback: (!hostname.is_empty()).then_some(hostname),
+        host_routing: HostRoutingPolicy {
+            local_exit_node_fallback: cfg!(target_env = "ohos"),
+        },
+        force_exit_node: cfg!(target_env = "ohos"),
         allow_interface_bind: !cfg!(any(
             target_os = "android",
             target_os = "ios",
@@ -58,6 +63,8 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
 
 pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
     let mut config = runtime_core_host_config();
+    config.force_exit_node = false;
+    config.host_routing.local_exit_node_fallback = false;
     config.gateway_enabled = false;
     config.proxy_enabled = false;
     config.vpn_portal_enabled = false;

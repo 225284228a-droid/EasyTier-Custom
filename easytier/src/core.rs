@@ -336,6 +336,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_EXIT_NODES",
+        value_delimiter = ',',
+        help = t!("core_clap.exit_nodes").to_string(),
+        num_args = 0..
+    )]
+    exit_nodes: Vec<IpAddr>,
+
+    #[arg(
+        long,
         env = "ET_MANUAL_ROUTES",
         value_delimiter = ',',
         help = t!("core_clap.manual_routes").to_string(),
@@ -935,6 +944,10 @@ impl NetworkOptions {
             no_tun: Some(true),
             ..Default::default()
         });
+
+        if !self.exit_nodes.is_empty() {
+            cfg.set_exit_nodes(self.exit_nodes.clone());
+        }
 
         let mut old_tcp_whitelist = cfg.get_tcp_whitelist();
         old_tcp_whitelist.extend(self.tcp_whitelist.clone());

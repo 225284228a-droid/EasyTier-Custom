@@ -1293,17 +1293,12 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
                     .add_proxy_cidr("198.51.100.0/24".parse().unwrap(), None)
                     .unwrap();
                 let mut flags = config.get_flags();
+                flags.enable_exit_node = true;
                 flags.use_smoltcp = true;
                 config.set_flags(flags);
             }
             if config.get_inst_name() == "inst3" {
-                config.set_vpn(easytier_core::config::vpn::VpnConfig {
-                    rules: vec![easytier_core::config::vpn::VpnRuleConfig {
-                        cidr: "10.1.1.1/32".parse().unwrap(),
-                        exit: "10.144.144.1".parse().unwrap(),
-                    }],
-                    ..Default::default()
-                });
+                config.set_exit_nodes(vec!["10.144.144.1".parse().unwrap()]);
                 config.set_vpn_portal_config(VpnPortalConfig {
                     enabled: None,
                     wireguard_listen: "0.0.0.0:22121".parse().unwrap(),

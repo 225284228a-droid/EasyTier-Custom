@@ -129,7 +129,7 @@ pub(crate) struct TcpProxyPeerContext {
     /// This node's mesh IPv6 address, required to relay v6 exit traffic.
     pub local_ipv6: Option<Ipv6Addr>,
     pub local_port: u16,
-    pub vpn_exit: bool,
+    pub enable_exit_node: bool,
     pub no_tun: bool,
     pub smoltcp_enabled: bool,
 }
@@ -252,7 +252,7 @@ impl TcpProxyEngine {
         ctx: &TcpProxyPeerContext,
     ) -> bool {
         match mode {
-            TcpProxyMode::Tcp => !self.cidr_table.is_empty() || ctx.vpn_exit || ctx.no_tun,
+            TcpProxyMode::Tcp => !self.cidr_table.is_empty() || ctx.enable_exit_node || ctx.no_tun,
             TcpProxyMode::KcpSrc | TcpProxyMode::QuicSrc => true,
         }
     }
@@ -277,7 +277,7 @@ impl TcpProxyEngine {
         // The version nibble dispatches before the v4-only gates below: a
         // v6-only exit node has no local IPv4 inet but still relays v6.
         if packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
-            return self.try_handle_peer_packet_v6(packet, &ctx, hdr.is_vpn_exit());
+            return self.try_handle_peer_packet_v6(packet, &ctx, hdr.is_exit_node());
         }
 
         let Some(local_inet) = ctx.local_inet else {
@@ -308,7 +308,8 @@ impl TcpProxyEngine {
         }
         let origin_ip = ip_packet.dst_addr();
 
-        let Some(real_dst_ip) = self.real_dst_ip_for_mode(mode, origin_ip, hdr.is_vpn_exit(), &ctx)
+        let Some(real_dst_ip) =
+            self.real_dst_ip_for_mode(mode, origin_ip, hdr.is_exit_node(), &ctx)
         else {
             return TcpProxyPacketAction::Pass;
         };
@@ -384,9 +385,10 @@ impl TcpProxyEngine {
         &self,
         packet: &mut ZCPacket,
         ctx: &TcpProxyPeerContext,
-        is_vpn_exit: bool,
+        is_exit_node: bool,
     ) -> TcpProxyPacketAction {
-        if !ctx.vpn_exit || !is_vpn_exit || ctx.smoltcp_enabled || ctx.local_ipv6.is_none() {
+        if !ctx.enable_exit_node || !is_exit_node || ctx.smoltcp_enabled || ctx.local_ipv6.is_none()
+        {
             return TcpProxyPacketAction::Pass;
         }
         let v6_local_port = self.v6_local_port();
@@ -718,7 +720,7 @@ impl TcpProxyEngine {
         &self,
         mode: TcpProxyMode,
         origin_ip: Ipv4Addr,
-        is_vpn_exit: bool,
+        is_exit_node: bool,
         ctx: &TcpProxyPeerContext,
     ) -> Option<Ipv4Addr> {
         match mode {
@@ -727,7 +729,7 @@ impl TcpProxyEngine {
                     return Some(real_ip);
                 }
                 let no_tun_local_virtual_ip = ctx.no_tun && Some(origin_ip) == ctx.virtual_ipv4;
-                (is_vpn_exit || no_tun_local_virtual_ip).then_some(origin_ip)
+                (is_exit_node || no_tun_local_virtual_ip).then_some(origin_ip)
             }
             TcpProxyMode::KcpSrc | TcpProxyMode::QuicSrc => Some(origin_ip),
         }
@@ -789,7 +791,7 @@ mod tests {
             virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
             local_ipv6: Some("fd00:abcd::204".parse().unwrap()),
             local_port: 8899,
-            vpn_exit: false,
+            enable_exit_node: false,
             no_tun: false,
             smoltcp_enabled: false,
         }
@@ -921,9 +923,9 @@ mod tests {
         real_request
             .mut_peer_manager_header()
             .unwrap()
-            .set_vpn_exit(true);
+            .set_exit_node(true);
         let mut real_ctx = peer_ctx();
-        real_ctx.vpn_exit = true;
+        real_ctx.enable_exit_node = true;
         assert_eq!(
             engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut real_request, real_ctx),
             TcpProxyPacketAction::Handled { new_syn: true }
@@ -1294,7 +1296,7 @@ mod tests {
 
     fn v6_exit_peer_ctx() -> TcpProxyPeerContext {
         TcpProxyPeerContext {
-            vpn_exit: true,
+            enable_exit_node: true,
             ..peer_ctx()
         }
     }
@@ -1312,7 +1314,10 @@ mod tests {
         let client: SocketAddrV6 = "[fd00:abcd::1]:55555".parse().unwrap();
         let internet: SocketAddrV6 = "[2606:4700::1]:443".parse().unwrap();
         let mut packet = build_tcp_v6_packet(client, internet, true, false);
-        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_exit_node(true);
 
         let action =
             engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, v6_exit_peer_ctx());
@@ -1351,7 +1356,10 @@ mod tests {
         let client: SocketAddrV6 = "[fd00:abcd::1]:55555".parse().unwrap();
         let internet: SocketAddrV6 = "[2606:4700::1]:443".parse().unwrap();
         let mut packet = build_tcp_v6_packet(client, internet, true, false);
-        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_exit_node(true);
         let _ = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, v6_exit_peer_ctx());
 
         let translated_port = engine
@@ -1393,9 +1401,12 @@ mod tests {
         assert!(matches!(action, TcpProxyPacketAction::Pass));
         assert!(engine.flow_map.is_empty());
 
-        // the vpn-exit header flag alone is not enough without ctx.vpn_exit
+        // the vpn-exit header flag alone is not enough without ctx.enable_exit_node
         let mut packet = build_tcp_v6_packet(client, internet, true, false);
-        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_exit_node(true);
         let action = engine.try_handle_peer_packet(TcpProxyMode::Tcp, &mut packet, peer_ctx());
         assert!(matches!(action, TcpProxyPacketAction::Pass));
         assert!(engine.flow_map.is_empty());

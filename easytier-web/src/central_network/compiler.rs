@@ -1251,7 +1251,7 @@ mod tests {
     fn member_override_cannot_replace_central_identity_or_authorization() {
         let mut intent = intent();
         intent.members[1].config_override = Some(NetworkConfig {
-            latency_first: Some(true),
+            enable_exit_node: Some(true),
             mtu: Some(1300),
             network_name: Some("tampered".to_owned()),
             network_secret: Some("tampered".to_owned()),
@@ -1271,7 +1271,7 @@ mod tests {
             .iter()
             .find(|member| member.device_id == "device-a")
             .unwrap();
-        assert_eq!(permanent.network_config.latency_first, Some(true));
+        assert_eq!(permanent.network_config.enable_exit_node, Some(true));
         assert_eq!(permanent.network_config.mtu, Some(1300));
         assert_eq!(
             permanent.network_config.network_name.as_deref(),

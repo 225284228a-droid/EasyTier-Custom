@@ -17,7 +17,7 @@
 | --- | --- | --- | --- |
 | ICMP 代理 | `icmp_proxy_*`，判断 `enable_exit_node` 与包头 `EXIT_NODE` | 同一套代码，字段名 `vpn_exit`、包头 `VPN_EXIT`；增加 Windows/macOS 丢弃出口 ICMPv6、原生 socket 保护 | 改回官方命名，保留两处补丁 |
 | 出口节点（客户端） | `exit_nodes` 有序列表；非组网目的地址按顺序选第一个可达出口；`host_routing.local_exit_node_fallback` 本机兜底 | 删除；同一位置改为 `vpn_engine.resolve()`；兜底删除 | 恢复官方代码，规则作为前置钩子 |
-| 出口节点（出口端） | `flags.enable_exit_node`，默认关闭 | `[vpn] exit_enabled`，**默认开启** | 恢复官方开关，见“待决定 1” |
+| 出口节点（出口端） | `flags.enable_exit_node`，默认关闭 | `[vpn] exit_enabled`，**默认开启** | 恢复官方开关，默认关闭 |
 | Magic DNS | core `gateway/magic_dns`、原生 `instance/dns_server`、`magic_dns.proto`，字段 `accept_dns`(22) / `tld_dns_zone`(31) / `enable_magic_dns`(42) | 删除，字段编号已保留 | 取消保留，原样恢复 |
 | 公网 IPv6 | core `peers/public_ipv6`、原生 provider（Linux）、路由信息与管理 API 字段 | 删除，字段编号未被占用 | 原样恢复 |
 
@@ -73,7 +73,7 @@ ICMP、TCP、UDP 三个代理引擎和 `ProxyRuntimeConfig` 中 `vpn_exit` 全�
 ### 出口节点
 
 - 恢复：配置 `exit_nodes` 与 `flags.enable_exit_node`、管理 API 字段 27/34、CLI `--exit-nodes` / `--enable-exit-node`、Web/GUI 官方表单项、`host_routing.local_exit_node_fallback` 与 `force_exit_node`（官方只在鸿蒙宿主开启，本机自己充当出口）、Portal 继承、官方测试。
-- `[vpn]` 只保留 `rules`。`exit_enabled` 作为 `enable_exit_node` 的兼容别名读取，写回时改用官方字段，迁移方式见“待决定 1”。
+- `[vpn]` 只保留 `rules`，`exit_enabled` 删除，出口端改用官方 `enable_exit_node`（默认关闭）。
 - 能力标识 `config:vpn-subnet-exit-v1` 保持不变，规则结构没有变化。
 
 ### Magic DNS
@@ -85,18 +85,14 @@ ICMP、TCP、UDP 三个代理引擎和 `ProxyRuntimeConfig` 中 `vpn_exit` 全�
 ### 公网 IPv6
 
 - 从官方原样恢复 provider（Linux）、自动接收地址、租约 RPC、路由信息字段、管理 API、虚拟网卡地址更新和官方测试。本次合并时 `three_node.rs` 中官方更新过的公网 IPv6 测试也一起带回。
-- 选路顺序按官方：公网 IPv6 网关在出口查找之前。也就是说，节点拿到公网 IPv6 租约后，IPv6 非组网流量走提供者，不再经过 IPv6 网段规则。见“待决定 3”。
+- 选路顺序按官方：公网 IPv6 网关在出口查找之前。也就是说，节点拿到公网 IPv6 租约后，IPv6 非组网流量走提供者，不再经过 IPv6 网段规则。与官方一致。
 - Linux 出口 NAT66 与公网 IPv6 提供者可以共存：前者处理带出口标记的流量，后者处理租约地址的流量。
 
-## 待决定
+## 已定
 
-1. **出口开关的默认值。** 官方 `enable_exit_node` 默认关闭；我们 `exit_enabled` 默认开启，任何对端（包括官方节点用 `exit_nodes` 指过来）都能把我们的节点当出口。
-   - 建议：跟官方一致，默认关闭。
-   - 迁移方式二选一：
-     - 启动时对没有显式写 `exit_enabled = false` 的已有配置写回 `enable_exit_node = true`，保持现有出口可用。
-     - 只在发布说明里要求出口节点显式开启。
-2. **网段规则是否可以不写出口、改用 `exit_nodes` 列表。** 例如 `cidr = "0.0.0.0/0"` 不写 `exit` 时，按 `exit_nodes` 顺序故障切换。这样“全局走出口 + 多出口备份”可以完全复用官方列表，代价是规则语义多一种形态。不做也不影响恢复。
-3. **IPv6 网段规则与公网 IPv6 谁优先。** 官方顺序是公网 IPv6 网关优先，建议保持。如果希望显式 IPv6 规则压过公网 IPv6，需要在官方函数里调换顺序，会多一处差异。
+1. **出口开关默认关闭**，与官方一致。`[vpn] exit_enabled` 不再保留；升级时不为已有配置自动开启，出口节点需显式设置 `enable_exit_node = true`。
+2. **网段规则可以不写出口。** 不写 `exit` 的规则按官方 `exit_nodes` 顺序选第一个可达出口；写了 `exit` 的规则仍只用该出口，失联时丢弃。
+3. **公网 IPv6 网关优先**于 IPv6 网段规则，与官方选路顺序一致。
 
 ## 建议顺序
 

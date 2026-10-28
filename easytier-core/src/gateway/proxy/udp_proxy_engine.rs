@@ -120,7 +120,7 @@ impl UdpNatEntry {
 #[derive(Clone, Copy, Debug)]
 pub struct UdpProxyPeerContext {
     pub virtual_ipv4: Option<Ipv4Addr>,
-    pub vpn_exit: bool,
+    pub enable_exit_node: bool,
     pub no_tun: bool,
 }
 
@@ -197,14 +197,14 @@ impl UdpProxyEngine {
         ctx: UdpProxyPeerContext,
         runtime: &impl UdpProxyRuntime,
     ) -> UdpProxyAction {
-        if self.cidr_table.is_empty() && !ctx.vpn_exit && !ctx.no_tun {
+        if self.cidr_table.is_empty() && !ctx.enable_exit_node && !ctx.no_tun {
             return UdpProxyAction::Pass;
         }
 
         let Some(hdr) = packet.peer_manager_header() else {
             return UdpProxyAction::Pass;
         };
-        let is_vpn_exit = hdr.is_vpn_exit();
+        let is_exit_node = hdr.is_exit_node();
         if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
             return UdpProxyAction::Pass;
         };
@@ -212,7 +212,7 @@ impl UdpProxyEngine {
         // The version nibble dispatches before the v4-only gates below: a
         // v6-only exit node has no virtual IPv4 but still relays v6.
         if packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
-            return self.handle_peer_packet_v6(packet, ctx, runtime, is_vpn_exit);
+            return self.handle_peer_packet_v6(packet, ctx, runtime, is_exit_node);
         }
 
         let Some(virtual_ipv4) = ctx.virtual_ipv4 else {
@@ -232,7 +232,7 @@ impl UdpProxyEngine {
             ctx.no_tun && Some(origin_dst_ip) == ctx.virtual_ipv4.as_ref().copied();
         if let Some(mapped_real_ip) = self.cidr_table.lookup_v4(origin_dst_ip) {
             real_dst_ip = mapped_real_ip;
-        } else if !is_vpn_exit && !no_tun_local_virtual_ip {
+        } else if !is_exit_node && !no_tun_local_virtual_ip {
             return UdpProxyAction::Pass;
         }
 
@@ -314,9 +314,9 @@ impl UdpProxyEngine {
         packet: &ZCPacket,
         ctx: UdpProxyPeerContext,
         runtime: &impl UdpProxyRuntime,
-        is_vpn_exit: bool,
+        is_exit_node: bool,
     ) -> UdpProxyAction {
-        if !ctx.vpn_exit || !is_vpn_exit {
+        if !ctx.enable_exit_node || !is_exit_node {
             return UdpProxyAction::Pass;
         }
         let Some(hdr) = packet.peer_manager_header() else {
@@ -646,7 +646,7 @@ mod tests {
             &zc,
             UdpProxyPeerContext {
                 virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
-                vpn_exit: false,
+                enable_exit_node: false,
                 no_tun: false,
             },
             &TestRuntime,
@@ -705,7 +705,7 @@ mod tests {
     fn v6_exit_ctx() -> UdpProxyPeerContext {
         UdpProxyPeerContext {
             virtual_ipv4: Some("10.144.144.204".parse().unwrap()),
-            vpn_exit: true,
+            enable_exit_node: true,
             no_tun: false,
         }
     }
@@ -716,7 +716,10 @@ mod tests {
         let client: SocketAddrV6 = "[fd00:abcd::1]:53864".parse().unwrap();
         let internet: SocketAddrV6 = "[2606:4700:4700::1111]:53".parse().unwrap();
         let mut packet = build_udp_v6_packet(client, internet, b"query");
-        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_exit_node(true);
 
         let action = engine.handle_peer_packet(&packet, v6_exit_ctx(), &TestRuntime);
         let UdpProxyAction::ForwardToSocket {
@@ -756,17 +759,20 @@ mod tests {
         let client: SocketAddrV6 = "[fd00:abcd::1]:53864".parse().unwrap();
         let internet: SocketAddrV6 = "[2606:4700:4700::1111]:53".parse().unwrap();
         let client_ctx = UdpProxyPeerContext {
-            vpn_exit: false,
+            enable_exit_node: false,
             ..v6_exit_ctx()
         };
 
-        // without ctx.vpn_exit nothing is relayed, whatever the header says
+        // without ctx.enable_exit_node nothing is relayed, whatever the header says
         let mut packet = build_udp_v6_packet(client, internet, b"query");
         let action = engine.handle_peer_packet(&packet, client_ctx, &TestRuntime);
         assert!(matches!(action, UdpProxyAction::Pass));
         assert!(engine.nat_table.is_empty());
 
-        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_exit_node(true);
         let action = engine.handle_peer_packet(&packet, client_ctx, &TestRuntime);
         assert!(matches!(action, UdpProxyAction::Pass));
         assert!(engine.nat_table.is_empty());

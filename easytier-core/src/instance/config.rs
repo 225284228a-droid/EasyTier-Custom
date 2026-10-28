@@ -6,7 +6,7 @@ use crate::{
     config::{
         EncryptionAlgorithm, IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig,
         gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
-        peers::AclRuleConfig,
+        peers::{AclRuleConfig, HostRoutingPolicy},
         runtime::CoreRuntimeConfig,
         toml::{ConfigLoader as _, Flags, TomlConfig},
     },
@@ -41,6 +41,8 @@ const MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK: usize = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreInstanceHostConfig {
     pub hostname_fallback: Option<String>,
+    pub host_routing: HostRoutingPolicy,
+    pub force_exit_node: bool,
     pub allow_interface_bind: bool,
     pub smoltcp_available: bool,
     pub requires_smoltcp: bool,
@@ -67,6 +69,8 @@ impl Default for CoreInstanceHostConfig {
     fn default() -> Self {
         Self {
             hostname_fallback: None,
+            host_routing: HostRoutingPolicy::default(),
+            force_exit_node: false,
             allow_interface_bind: true,
             smoltcp_available: false,
             requires_smoltcp: false,
@@ -121,6 +125,9 @@ impl CoreInstanceHostConfig {
         if !self.smoltcp_available {
             flags.no_tun = false;
             flags.use_smoltcp = false;
+        }
+        if !self.proxy_enabled {
+            flags.enable_exit_node = false;
         }
         if !self.kcp_enabled {
             flags.enable_kcp_proxy = false;
@@ -253,6 +260,7 @@ impl CoreInstanceConfig {
                 parallel_connections: config.get_parallel_connections(),
                 disable_parallel_connections: config.get_disable_parallel_connections(),
                 secure_mode: config.get_secure_mode(),
+                host_routing: host.host_routing,
                 acl: acl.clone(),
                 easytier_version: host.easytier_version.clone(),
                 pinned_peers: peers
@@ -266,27 +274,19 @@ impl CoreInstanceConfig {
                     MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK,
                 hmac_secret_digest: false,
             });
-        let vpn = if host.ignore_unsupported_config && !host.proxy_enabled {
-            crate::config::vpn::VpnConfig {
-                exit_enabled: false,
-                rules: Vec::new(),
-            }
-        } else {
-            let mut vpn = config.get_vpn();
-            // Offering an exit is an implicit default, so builds/hosts without
-            // a packet proxy can still run ordinary networks. Explicit client
-            // rules retain capability validation instead of being discarded.
-            if (!cfg!(feature = "proxy-packet") || !host.proxy_enabled)
-                && vpn == crate::config::vpn::VpnConfig::default()
-            {
-                vpn.exit_enabled = false;
-            }
-            vpn
-        };
         let peer = PortablePeerManagerConfig {
             snapshot: peer_snapshot,
             route_algo: RouteAlgoType::Ospf,
-            vpn: vpn.clone(),
+            exit_nodes: if host.ignore_unsupported_config && !host.proxy_enabled {
+                Vec::new()
+            } else {
+                config.get_exit_nodes()
+            },
+            vpn: if host.ignore_unsupported_config && !host.proxy_enabled {
+                Default::default()
+            } else {
+                config.get_vpn()
+            },
             foreign_context_default_flags: host.runtime_flags(TomlConfig::default().get_flags()),
         };
 
@@ -342,7 +342,7 @@ impl CoreInstanceConfig {
                 .get_routes()
                 .map(|routes| routes.into_iter().collect::<BTreeSet<_>>()),
             proxy: ProxyRuntimeConfig {
-                vpn_exit: vpn.exit_enabled,
+                enable_exit_node: flags.enable_exit_node || host.force_exit_node,
                 no_tun: flags.no_tun,
                 forward_by_system: flags.proxy_forward_by_system,
                 force_smoltcp: host.smoltcp_available
@@ -429,16 +429,6 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 
     use super::*;
-
-    #[cfg(not(feature = "proxy-packet"))]
-    #[test]
-    fn default_exit_offer_does_not_require_unavailable_packet_proxy() {
-        let config = TomlConfig::default();
-        let normalized = CoreInstanceConfig::from_toml(&config).unwrap();
-        assert!(config.get_vpn().exit_enabled);
-        assert!(!normalized.connectivity.runtime.proxy.vpn_exit);
-        assert!(!normalized.peer.vpn.exit_enabled);
-    }
 
     #[test]
     fn runtime_normalization_rejects_invalid_programmatic_disguise_policy() {
@@ -692,6 +682,10 @@ disable_p2p = true
         let config = TomlConfig::default();
         let host = CoreInstanceHostConfig {
             hostname_fallback: Some("host-fallback".to_owned()),
+            host_routing: HostRoutingPolicy {
+                local_exit_node_fallback: true,
+            },
+            force_exit_node: true,
             allow_interface_bind: false,
             smoltcp_available: true,
             requires_smoltcp: true,
@@ -720,7 +714,16 @@ disable_p2p = true
             normalized.connectivity.startup_plan.connectivity,
             CoreConnectivityMode::InboundOnly
         );
+        assert!(
+            normalized
+                .peer
+                .snapshot
+                .runtime
+                .host_routing
+                .local_exit_node_fallback
+        );
         assert_eq!(normalized.peer.snapshot.easytier_version, "host-version");
+        assert!(normalized.connectivity.runtime.proxy.enable_exit_node);
         assert!(normalized.connectivity.runtime.proxy.force_smoltcp);
         assert!(normalized.connectivity.runtime.proxy.icmp_failure_is_fatal);
         assert!(!normalized.connectivity.startup_plan.gateway);
@@ -746,6 +749,7 @@ uri = "tcp://127.0.0.1:11010"
 uri = "quic://127.0.0.1:11011"
 
 [flags]
+enable_exit_node = true
 enable_kcp_proxy = true
 enable_quic_proxy = true
 encryption_algorithm = "chacha20"
@@ -753,6 +757,7 @@ data_compress_algo = "Zstd"
 "#,
         )
         .unwrap();
+        config.set_exit_nodes(vec!["10.144.144.2".parse().unwrap()]);
         config.get_id();
         let before = config.dump();
 
@@ -792,7 +797,8 @@ data_compress_algo = "Zstd"
                 .proxy_networks
                 .is_empty()
         );
-        assert!(!normalized.connectivity.runtime.proxy.vpn_exit);
+        assert!(normalized.peer.exit_nodes.is_empty());
+        assert!(!normalized.connectivity.runtime.proxy.enable_exit_node);
         let flags = &normalized.peer.snapshot.flags;
         assert!(!flags.enable_kcp_proxy);
         assert!(!flags.enable_quic_proxy);

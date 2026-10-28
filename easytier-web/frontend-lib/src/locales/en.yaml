@@ -878,8 +878,6 @@ prefer_peer_relay_help: Prefer a credential peer that already relays to a destin
 
 vpn_section: Subnet Exit VPN
 vpn_section_help: Route each destination subnet through one exit node. The longest prefix wins; mesh, subnet proxy and manual routes retain their paths. Matching traffic is dropped while its exit is unavailable.
-vpn_exit_enabled: Offer exit forwarding
-vpn_exit_enabled_help: Allow other nodes to use this node as an exit that forwards and NATs their traffic.
 vpn_rules: Subnet rules
 vpn_add_rule: Add rule
 vpn_no_rules: No rules

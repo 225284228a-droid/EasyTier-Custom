@@ -209,6 +209,7 @@ fn core_instance_config_round_trips_as_normalized_json() {
             stun_info: crate::proto::common::StunInfo::default(),
             feature_flags: crate::proto::common::PeerFeatureFlag::default(),
             secure_mode: None,
+            host_routing: crate::config::peers::HostRoutingPolicy::default(),
         },
     );
     let config = CoreInstanceConfig {
@@ -289,7 +290,7 @@ mod portable_runtime {
 
     use super::*;
     use crate::{
-        config::peers::PeerRuntimeConfig,
+        config::peers::{HostRoutingPolicy, PeerRuntimeConfig},
         config::runtime::CoreInstanceRuntimeConfig,
         config::{
             CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig, gateway::PortForwardConfig,
@@ -368,6 +369,7 @@ mod portable_runtime {
             stun_info: StunInfo::default(),
             feature_flags: Default::default(),
             secure_mode: None,
+            host_routing: HostRoutingPolicy::default(),
         });
         let connectivity = CoreConnectivityConfig::default();
         CoreInstanceConfig {
@@ -790,6 +792,7 @@ mod portable_runtime {
             ) -> Result<Arc<Self::Instance>, Self::Error> {
                 let (packet_sink, _packet_receiver) = tokio::sync::mpsc::channel(16);
                 let mut adapters = adapters(None, Arc::new(packet_sink));
+                adapters.config.force_exit_node = true;
                 adapters.config.easytier_version = "host-version".to_owned();
                 CoreInstance::from_toml(config, adapters)
             }
@@ -903,7 +906,7 @@ network_secret = "network-secret"
             }]
         );
         let runtime = instance.runtime_config.snapshot();
-        assert!(!runtime.services.proxy.vpn_exit);
+        assert!(runtime.services.proxy.enable_exit_node);
         assert_eq!(runtime.peer.easytier_version, "host-version");
     }
 
@@ -3907,7 +3910,7 @@ virtual_ip = "10.82.0.2/24"
     #[test]
     fn runtime_core_rejects_packet_proxy_requests_when_unavailable() {
         let mut config = test_config("packet-proxy-unavailable");
-        config.connectivity.runtime.proxy.vpn_exit = true;
+        config.connectivity.runtime.proxy.enable_exit_node = true;
 
         let error = match build_instance(config) {
             Ok(_) => panic!("packet proxy request unexpectedly succeeded"),

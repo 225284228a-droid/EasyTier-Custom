@@ -86,7 +86,7 @@ fn runtime_snapshot(
         virtual_ipv4: virtual_inet.map(|inet| inet.address()),
         local_ipv6,
         no_tun: config.services.proxy.no_tun,
-        vpn_exit: config.services.proxy.vpn_exit,
+        enable_exit_node: config.services.proxy.enable_exit_node,
         smoltcp_enabled,
         latency_first: config.peer.flags.latency_first && !config.peer.flags.p2p_only,
     }
@@ -471,6 +471,7 @@ mod tests {
                 stun_info: Default::default(),
                 feature_flags: Default::default(),
                 secure_mode: None,
+                host_routing: Default::default(),
             },
             Default::default(),
         );
@@ -478,7 +479,7 @@ mod tests {
         CoreInstanceRuntimeConfig {
             services: CoreRuntimeConfig {
                 proxy: ProxyRuntimeConfig {
-                    vpn_exit: true,
+                    enable_exit_node: true,
                     no_tun: true,
                     ..Default::default()
                 },
@@ -495,7 +496,7 @@ mod tests {
         let kernel = runtime_snapshot(&config, false);
         assert_eq!(kernel.local_inet.unwrap().to_string(), "10.1.2.3/24");
         assert_eq!(kernel.virtual_ipv4, Some(Ipv4Addr::new(10, 1, 2, 3)));
-        assert!(kernel.vpn_exit);
+        assert!(kernel.enable_exit_node);
         assert!(kernel.no_tun);
         assert!(kernel.latency_first);
 

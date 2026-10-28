@@ -130,7 +130,7 @@ impl<R: UdpProxyRuntime + 'static> UdpProxyService<R> {
             &packet,
             UdpProxyPeerContext {
                 virtual_ipv4: snapshot.virtual_ipv4,
-                vpn_exit: snapshot.vpn_exit,
+                enable_exit_node: snapshot.enable_exit_node,
                 no_tun: snapshot.no_tun,
             },
             self.runtime.as_ref(),

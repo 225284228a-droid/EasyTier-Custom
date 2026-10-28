@@ -22,7 +22,6 @@ import { p2pDisguiseMode, setP2pDisguiseMode, type P2pDisguiseMode } from '../mo
 import { createVpnPortalConfig } from '../modules/vpnPortal'
 import { isValidHostIp } from '../modules/ip'
 import type { VpnPortalClientConfig } from '../types/network'
-import type { VpnConfig as VpnConfigType } from '../generated/proto/api_manage'
 
 const props = defineProps<{
   actionLabel?: string
@@ -141,6 +140,14 @@ function searchInetSuggestions(e: { query: string }) {
   }
 }
 
+const exitNodesSuggestions = ref([''])
+
+function searchExitNodesSuggestions(e: { query: string }) {
+  const ret = []
+  ret.push(e.query)
+  exitNodesSuggestions.value = ret
+}
+
 const whitelistSuggestions = ref([''])
 
 function searchWhitelistSuggestions(e: { query: string }) {
@@ -208,25 +215,6 @@ function flagChecked(field: keyof NetworkConfig): boolean {
 function setFlag(field: keyof NetworkConfig, value: boolean) {
   Object.assign(curNetwork.value, { [field]: value })
 }
-
-function ensureVpnConfig(): VpnConfigType {
-  if (!curNetwork.value.vpn) {
-    curNetwork.value.vpn = {
-      exit_enabled: true,
-      rules: [],
-    }
-  }
-  const config = curNetwork.value.vpn
-  config.rules ??= []
-  return config
-}
-
-const vpnExitEnabled = computed({
-  get: () => curNetwork.value.vpn?.exit_enabled ?? true,
-  set: (enabled: boolean) => {
-    ensureVpnConfig().exit_enabled = enabled
-  },
-})
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
@@ -471,12 +459,6 @@ function removeVpnPortalClient(index: number) {
                       <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
                     </div>
 
-                    <div v-if="extensionSupported('vpn')" class="basis-[20rem] flex min-w-0 items-center">
-                      <Checkbox v-model="vpnExitEnabled" input-id="vpn_exit_enabled" :binary="true" />
-                      <label for="vpn_exit_enabled" class="ml-2">{{ t('vpn_exit_enabled') }}</label>
-                      <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('vpn_exit_enabled_help')"></span>
-                    </div>
-
                   </div>
                 </div>
               </div>
@@ -679,6 +661,18 @@ function removeVpnPortalClient(index: number) {
                         :format="false" :allow-empty="false" :min="0" :max="65535" class="w-full" />
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="exit_nodes">{{ t('exit_nodes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('exit_nodes_help')"></span>
+                  </div>
+                  <AutoComplete id="exit_nodes" v-model="curNetwork.exit_nodes"
+                    :placeholder="t('chips_placeholder', ['192.168.8.8'])" class="w-full" multiple fluid
+                    :suggestions="exitNodesSuggestions" @complete="searchExitNodesSuggestions" />
                 </div>
               </div>
 

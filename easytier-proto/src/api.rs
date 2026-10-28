@@ -20,6 +20,15 @@ pub mod config {
         }
     }
 
+    impl From<ExitNodePatch> for Patchable<std::net::IpAddr> {
+        fn from(value: ExitNodePatch) -> Self {
+            Patchable {
+                action: ConfigPatchAction::try_from(value.action).ok(),
+                value: value.node.map(Into::into),
+            }
+        }
+    }
+
     impl From<StringPatch> for Patchable<String> {
         fn from(value: StringPatch) -> Self {
             Patchable {

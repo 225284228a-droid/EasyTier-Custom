@@ -59,12 +59,14 @@ message NetworkConfig {
   optional bool bind_device = 25;
   optional bool no_tun = 26;
 
+  optional bool enable_exit_node = 27;
   optional bool relay_all_peer_rpc = 28;
   optional bool multi_thread = 29;
   optional bool enable_relay_network_whitelist = 30;
   repeated string relay_network_whitelist = 31;
   optional bool enable_manual_routes = 32;
   repeated string routes = 33;
+  repeated string exit_nodes = 34;
   optional bool proxy_forward_by_system = 35;
   optional bool disable_encryption = 36;
   optional bool enable_socks5 = 37;
@@ -154,10 +156,8 @@ message VpnRuleConfig {
 }
 
 message VpnConfig {
-  reserved 1, 3, 4, 5, 6, 8;
-  reserved "enabled", "dns_protect", "ipv6_protect", "fail_mode", "exits", "ignore_private";
-  // This node forwards and NATs exit traffic for peers.
-  bool exit_enabled = 50002;
+  reserved 1, 3, 4, 5, 6, 8, 50002;
+  reserved "enabled", "dns_protect", "ipv6_protect", "fail_mode", "exits", "ignore_private", "exit_enabled";
   repeated VpnRuleConfig rules = 50007;
 }
 

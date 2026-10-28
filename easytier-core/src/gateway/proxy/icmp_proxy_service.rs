@@ -203,7 +203,7 @@ impl<R: IcmpProxyRuntime + 'static> IcmpProxyService<R> {
             &packet,
             IcmpProxyContext {
                 virtual_ipv4: snapshot.virtual_ipv4,
-                vpn_exit: snapshot.vpn_exit,
+                enable_exit_node: snapshot.enable_exit_node,
                 no_tun: snapshot.no_tun,
             },
         ) {
@@ -365,12 +365,12 @@ mod tests {
         IcmpProxyService::new(peer_manager, runtime, table, Duration::from_secs(10))
     }
 
-    fn runtime(no_tun: bool, vpn_exit: bool) -> Arc<TestRuntime> {
+    fn runtime(no_tun: bool, enable_exit_node: bool) -> Arc<TestRuntime> {
         Arc::new(TestRuntime {
             snapshot: ProxyRuntimeSnapshot {
                 virtual_ipv4: Some("10.0.0.1".parse().unwrap()),
                 no_tun,
-                vpn_exit,
+                enable_exit_node,
                 ..Default::default()
             },
             ..Default::default()
@@ -500,7 +500,10 @@ mod tests {
         service.start().await.unwrap();
         assert_eq!(runtime.starts.load(Ordering::Acquire), 0);
         let mut packet = echo_request("192.0.2.42");
-        packet.mut_peer_manager_header().unwrap().set_vpn_exit(true);
+        packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_exit_node(true);
         assert!(service.clone().handle_peer_packet(packet).await.is_none());
         assert_eq!(runtime.starts.load(Ordering::Acquire), 1);
         assert_eq!(

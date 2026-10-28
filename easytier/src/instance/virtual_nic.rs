@@ -1571,7 +1571,7 @@ impl NicCtx {
     /// Linux) to match the current config, tracking what was installed so it
     /// can be removed again on disable and on shutdown.
     async fn sync_vpn_exit_forwarding(&self) {
-        let vpn = self.global_ctx.config.get_vpn();
+        let enabled = self.global_ctx.enable_exit_node();
         let Some(ifname) = self.backend.ifname().await else {
             return;
         };
@@ -1583,7 +1583,7 @@ impl NicCtx {
             .vpn_exit_active
             .lock()
             .await
-            .reconcile(&ifname, prefix, vpn.exit_enabled)
+            .reconcile(&ifname, prefix, enabled)
             .await
         {
             tracing::error!(?error, "VPN exit forwarding activation failed");
@@ -1620,14 +1620,9 @@ impl NicCtx {
                 ) {
                     continue;
                 }
-                let vpn = global_ctx.config.get_vpn();
+                let enabled = global_ctx.enable_exit_node();
                 let prefix = global_ctx.get_ipv6().map(|inet| inet.network().to_string());
-                if let Err(error) = state
-                    .lock()
-                    .await
-                    .reconcile(&ifname, prefix, vpn.exit_enabled)
-                    .await
-                {
+                if let Err(error) = state.lock().await.reconcile(&ifname, prefix, enabled).await {
                     tracing::error!(?error, "VPN exit forwarding update failed");
                 }
             }

@@ -15,7 +15,6 @@ const BrowserHarness = defineComponent({
     network.network_name = 'vpn-responsive-test'
     network.network_secret = 'browser-test-secret'
     network.vpn = {
-      exit_enabled: false,
       rules: [],
     }
 

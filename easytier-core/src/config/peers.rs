@@ -206,6 +206,14 @@ pub struct PeerRuntimeConfig {
     pub stun_info: StunInfo,
     pub feature_flags: PeerFeatureFlag,
     pub secure_mode: Option<SecureModeConfig>,
+    pub host_routing: HostRoutingPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostRoutingPolicy {
+    /// Route otherwise-unreachable external IPv4 traffic through this node and
+    /// keep self-delivered packets eligible for the host TUN/proxy path.
+    pub local_exit_node_fallback: bool,
 }
 
 /// One normalized peer configuration version submitted by a host.
@@ -260,6 +268,7 @@ impl Default for PeerRuntimeSnapshot {
                 stun_info: StunInfo::default(),
                 feature_flags: PeerFeatureFlag::default(),
                 secure_mode: None,
+                host_routing: HostRoutingPolicy::default(),
             },
             Flags::defaults(),
         )

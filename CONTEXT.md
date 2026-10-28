@@ -133,11 +133,15 @@ validations. Deletion does not introduce device generations or session fences.
 
 ## Subnet exit VPN
 
-One `[vpn]` TOML section (mirrored by `NetworkConfig.vpn`) contains
-`exit_enabled` (default true) and `rules`. Each rule assigns one IPv4 or IPv6
-destination CIDR to one exit node's virtual address. Nonempty rules enable
-client capture. Matching uses the longest prefix; duplicate CIDRs are rejected.
-The legacy exit-node list, public-IPv6 provider and Magic DNS remain removed.
+One `[vpn]` TOML section (mirrored by `NetworkConfig.vpn`) contains `rules`.
+Each rule assigns one IPv4 or IPv6 destination CIDR to one exit node's virtual
+address. Nonempty rules enable client capture. Matching uses the longest
+prefix; duplicate CIDRs are rejected. Rules sit in front of the official
+`exit_nodes` list in the outbound route lookup: a matching rule uses its exit
+or drops the packet when that exit is unreachable; other destinations follow
+the official exit-node path. Offering exit forwarding is the official
+`flags.enable_exit_node` (default false). Public IPv6 and Magic DNS remain
+removed.
 
 `VpnPolicyEngine` (`easytier-core/src/peers/vpn_policy.rs`) owns the compiled
 rules and exit liveness refreshed from peer route snapshots. An unreachable

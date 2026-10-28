@@ -878,8 +878,6 @@ prefer_peer_relay_help: 优先通过已经转发到目标节点的凭证节点�
 
 vpn_section: 网段出口 VPN
 vpn_section_help: 将指定目标网段交给单个出口节点。最长前缀优先；组网、子网代理和手动路由保留原路径。出口不可用时丢弃匹配流量。
-vpn_exit_enabled: 提供出口转发
-vpn_exit_enabled_help: 允许其他节点把本节点作为出口，转发并 NAT 它们的流量。
 vpn_rules: 分流规则
 vpn_add_rule: 添加规则
 vpn_no_rules: 暂无规则

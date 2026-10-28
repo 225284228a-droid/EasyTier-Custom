@@ -118,6 +118,10 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
         result.enable_manual_routes = Some(true);
         result.routes = routes.iter().map(ToString::to_string).collect();
     }
+    let exit_nodes = config.get_exit_nodes();
+    if !exit_nodes.is_empty() {
+        result.exit_nodes = exit_nodes.iter().map(ToString::to_string).collect();
+    }
     if let Some(socks5_portal) = config.get_socks5_portal() {
         result.enable_socks5 = Some(true);
         result.socks5_port = socks5_portal.port().map(|port| port as i32);

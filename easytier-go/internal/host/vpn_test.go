@@ -23,7 +23,6 @@ func TestEmbeddedSubnetExitConfigAndStatus(t *testing.T) {
 	}
 	instance, err := host.CreateInstanceTOML(ctx, "subnet-exit", "", base+`
 [vpn]
-exit_enabled = false
 [[vpn.rules]]
 cidr = "203.0.113.0/24"
 exit = "10.144.0.2"

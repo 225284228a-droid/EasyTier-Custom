@@ -397,10 +397,10 @@ pub fn runtime_instance_from_running_info(
 ) -> RuntimeInstanceState {
     let tun_attached = info.running && is_tun_attached(&config_id);
     let tun_required = info.running && (info.dev_name != "no_tun" || tun_attached);
-    let need_exit_node = config
-        .as_ref()
-        .and_then(|config| config.vpn.as_ref())
-        .is_some_and(|vpn| !vpn.rules.is_empty());
+    let need_exit_node = config.as_ref().is_some_and(|config| {
+        !config.exit_nodes.is_empty()
+            || config.vpn.as_ref().is_some_and(|vpn| !vpn.rules.is_empty())
+    });
     let manual_routes = config
         .as_ref()
         .map(|config| config.routes.clone())
@@ -454,7 +454,8 @@ pub fn runtime_instance_from_config_snapshot(
         running,
         tun_required,
         tun_attached,
-        need_exit_node: config.vpn.as_ref().is_some_and(|vpn| !vpn.rules.is_empty()),
+        need_exit_node: !config.exit_nodes.is_empty()
+            || config.vpn.as_ref().is_some_and(|vpn| !vpn.rules.is_empty()),
         error_message: None,
         my_node_info: Some(my_node_info),
         events: Vec::new(),

@@ -1,13 +1,12 @@
 # 网段出口 VPN
 
-每条规则将一个目标网段交给一个 EasyTier 出口节点。支持 IPv4、IPv6、默认网段和多个网段分别使用不同出口。出口节点的转发开关 `exit_enabled` 默认开启；规则为空时不会启动客户端，也不需要保存默认的 `[vpn]` 配置块。
+每条规则将一个目标网段交给一个 EasyTier 出口节点。支持 IPv4、IPv6、默认网段和多个网段分别使用不同出口。规则为空时不会启动客户端，也不需要保存 `[vpn]` 配置块。
+
+规则接在官方出口节点之前：命中规则的目的地址只走该规则的出口，出口失联时丢弃；未命中规则的目的地址按官方 `exit_nodes` 列表处理。出口节点需要开启官方的 `[flags] enable_exit_node`（默认关闭）。
 
 通过 WireGuard 接入 VPN Portal 的 IPv4 客户端继承 Portal 所属网络的 VPN 配置，并跟随规则的热更新及清空。每个客户端独立维护路由排除和出口可达状态，保留自身身份与 ACL；组网及代理子网继续优先，具体出口失联时不会改走宽泛规则。此继承仅处理已进入 Portal 的流量，不扩大生成的 WireGuard `AllowedIPs`，需要由客户端配置将目标网段送入隧道。
 
 ```toml
-[vpn]
-# exit_enabled 默认为 true；设为 false 可关闭本节点的出口转发。
-
 [[vpn.rules]]
 cidr = "203.0.113.0/24"
 exit = "10.144.144.2"
@@ -17,7 +16,7 @@ cidr = "2001:db8::/32"
 exit = "10.144.144.3"
 ```
 
-出口填写本网络节点的虚拟 IPv4 或 IPv6 地址，不能填写域名或节点代理子网内的普通地址。出口节点须保持 `exit_enabled = true`；省略该字段等同于开启，显式设置为 `false` 会保留关闭状态。Linux 自动管理所需 forwarding 和 NAT，其他平台沿用现有代理转发能力。
+出口填写本网络节点的虚拟 IPv4 或 IPv6 地址，不能填写域名或节点代理子网内的普通地址。出口节点须设置 `enable_exit_node = true`。Linux 自动管理所需 forwarding 和 NAT，其他平台沿用现有代理转发能力。
 
 ## 匹配与生命周期
 
@@ -45,7 +44,7 @@ Android 使用组网和出口路由的完整 `capture_routes`，通过 `policy_g
 
 升级前正常停止旧实例，使其释放拒绝表、OUTPUT 防护规则与旧捕获资源，再替换程序。新版本仅回收自己的单表租约，不扫描或迁移旧防护残留。
 
-新配置仅允许 `[vpn]` 的 `exit_enabled`、`rules`，以及每条规则的 `cidr`、`exit`。旧字段明确报错，不自动转换：
+新配置仅允许 `[vpn]` 的 `rules`，以及每条规则的 `cidr`、`exit`。早期的 `exit_enabled` 仍可读取但不再生效，出口端改用 `[flags] enable_exit_node`。其他旧字段明确报错，不自动转换：
 
 - 将确实需要的旧 `action = "exit"` 规则改写为单个 `exit` 地址，删除 `action`、`exits`、`priority`。
 - 删除备用出口、直连和阻断规则，以及 `dns_protect`、`ipv6_protect`、`ignore_private`。不要将它们继续保留在配置中。

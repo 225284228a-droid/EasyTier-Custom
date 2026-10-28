@@ -20,7 +20,7 @@ struct UdpFragmentKey {
     from_peer: u32,
     to_peer: u32,
     packet_type: u8,
-    vpn_exit: bool,
+    exit_node: bool,
     no_proxy: bool,
     not_send_to_tun: bool,
 }
@@ -135,7 +135,7 @@ impl UdpFragments {
             from_peer: header.from_peer_id.get(),
             to_peer: header.to_peer_id.get(),
             packet_type: header.packet_type,
-            vpn_exit: header.is_vpn_exit(),
+            exit_node: header.is_exit_node(),
             no_proxy: header.is_no_proxy(),
             not_send_to_tun: header.is_not_send_to_tun(),
         };

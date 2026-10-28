@@ -307,6 +307,10 @@ impl GlobalCtx {
         self.flags.load_full()
     }
 
+    pub fn enable_exit_node(&self) -> bool {
+        self.flags.load().enable_exit_node || cfg!(target_env = "ohos")
+    }
+
     pub fn proxy_forward_by_system(&self) -> bool {
         self.flags.load().proxy_forward_by_system
     }
@@ -447,7 +451,7 @@ pub mod tests {
         let config = TomlConfigLoader::default();
         let global_ctx = GlobalCtx::new(config.clone());
         let mut runtime_flags = global_ctx.get_flags();
-        runtime_flags.latency_first = true;
+        runtime_flags.enable_exit_node = true;
 
         global_ctx.set_ipv4(Some("10.144.144.7/24".parse().unwrap()));
         global_ctx.set_ipv6(Some("fd00::7/64".parse().unwrap()));
@@ -455,13 +459,13 @@ pub mod tests {
 
         assert_eq!(config.get_ipv4(), None);
         assert_eq!(config.get_ipv6(), None);
-        assert!(!config.get_flags().latency_first);
+        assert!(!config.get_flags().enable_exit_node);
         assert_eq!(
             global_ctx.get_ipv4(),
             Some("10.144.144.7/24".parse().unwrap())
         );
         assert_eq!(global_ctx.get_ipv6(), Some("fd00::7/64".parse().unwrap()));
-        assert!(global_ctx.get_flags().latency_first);
+        assert!(global_ctx.get_flags().enable_exit_node);
     }
 
     #[test]

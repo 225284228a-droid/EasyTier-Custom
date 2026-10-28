@@ -1,7 +1,7 @@
 //! Complete EasyTier TOML configuration model.
 
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -128,6 +128,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_flags_patch(&self) -> FlagsPatch;
     /// Apply only supplied fields, preserving absence and explicit defaults.
     fn patch_flags(&self, flags: FlagsPatch);
+
+    fn get_exit_nodes(&self) -> Vec<IpAddr>;
+    fn set_exit_nodes(&self, nodes: Vec<IpAddr>);
 
     fn get_vpn(&self) -> crate::config::vpn::VpnConfig;
     fn set_vpn(&self, vpn: crate::config::vpn::VpnConfig);
@@ -442,6 +445,7 @@ struct Config {
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
+    exit_nodes: Option<Vec<IpAddr>>,
     vpn: Option<crate::config::vpn::VpnConfig>,
 
     peer: Option<Vec<PeerConfig>>,
@@ -1112,6 +1116,19 @@ impl ConfigLoader for TomlConfig {
         let update = prost::Message::encode_to_vec(&flags);
         prost::Message::merge(&mut config.flags, update.as_slice())
             .expect("decoding the bytes just encoded cannot fail");
+    }
+
+    fn get_exit_nodes(&self) -> Vec<IpAddr> {
+        self.config
+            .lock()
+            .unwrap()
+            .exit_nodes
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_exit_nodes(&self, nodes: Vec<IpAddr>) {
+        self.config.lock().unwrap().exit_nodes = Some(nodes);
     }
 
     fn get_vpn(&self) -> crate::config::vpn::VpnConfig {

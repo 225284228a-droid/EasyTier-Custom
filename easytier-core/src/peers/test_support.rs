@@ -40,6 +40,7 @@ pub(crate) trait PeerContextTestExt: PeerContext {
             stun_info: self.stun_info(),
             feature_flags: self.feature_flags(),
             secure_mode: self.secure_mode(),
+            host_routing: self.host_routing_policy(),
         }
     }
 }

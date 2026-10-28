@@ -1,4 +1,4 @@
-use std::{any::Any, sync::Arc};
+use std::{any::Any, net::IpAddr, sync::Arc};
 
 use url::Url;
 
@@ -284,6 +284,10 @@ where
         self.peer_manager.close_peer_conn(peer_id, conn_id).await
     }
 
+    pub async fn update_exit_nodes(&self, exit_nodes: Vec<IpAddr>) {
+        self.peer_manager.update_exit_nodes(exit_nodes).await;
+    }
+
     pub async fn update_vpn_config(
         &self,
         vpn: crate::config::vpn::VpnConfig,
@@ -321,7 +325,7 @@ where
 
         GetVpnStatusResponse {
             enabled: config.client_active(),
-            exit_enabled: config.exit_enabled,
+            exit_enabled: runtime.services.proxy.enable_exit_node,
             capture_routes: plan
                 .capture_routes
                 .iter()

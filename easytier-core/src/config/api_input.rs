@@ -73,6 +73,7 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.bind_device = flags.bind_device;
     result.socket_mark = flags.socket_mark;
     result.no_tun = flags.no_tun;
+    result.enable_exit_node = flags.enable_exit_node;
     result.relay_all_peer_rpc = flags.relay_all_peer_rpc;
     result.need_p2p = flags.need_p2p;
     result.multi_thread = flags.multi_thread;
@@ -131,6 +132,7 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "network_identity",
     "listeners",
     "mapped_listeners",
+    "exit_nodes",
     "peer",
     "proxy_network",
     "vpn_portal_config",
@@ -455,6 +457,17 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_routes(Some(routes));
         }
 
+        if !self.exit_nodes.is_empty() {
+            let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
+            for node in self.exit_nodes.iter() {
+                exit_nodes.push(
+                    node.parse()
+                        .with_context(|| format!("failed to parse exit node: {}", node))?,
+                );
+            }
+            cfg.set_exit_nodes(exit_nodes);
+        }
+
         if let Some(vpn) = self.vpn.as_ref() {
             let vpn = crate::config::vpn::pb::from_pb(vpn.clone())
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -551,6 +564,7 @@ impl NetworkConfigExt for NetworkConfig {
             lazy_p2p: self.lazy_p2p,
             bind_device: self.bind_device,
             no_tun: self.no_tun,
+            enable_exit_node: self.enable_exit_node,
             relay_all_peer_rpc: self.relay_all_peer_rpc,
             need_p2p: self.need_p2p,
             multi_thread: self.multi_thread,
@@ -684,6 +698,11 @@ impl NetworkConfigExt for NetworkConfig {
         if let Some(routes) = config.get_routes() {
             result.enable_manual_routes = Some(true);
             result.routes = routes.iter().map(|r| r.to_string()).collect();
+        }
+
+        let exit_nodes = config.get_exit_nodes();
+        if !exit_nodes.is_empty() {
+            result.exit_nodes = exit_nodes.iter().map(|n| n.to_string()).collect();
         }
 
         if let Some(socks5_portal) = config.get_socks5_portal() {
@@ -940,10 +959,7 @@ mod tests {
     fn web_form_omits_defaults_without_changing_effective_flags() {
         let mut input = standalone_config();
         set_network_flags(&mut input, Flags::defaults().downgrade());
-        input.vpn = Some(manage::VpnConfig {
-            exit_enabled: true,
-            rules: vec![],
-        });
+        input.vpn = Some(manage::VpnConfig { rules: vec![] });
         input.hostname = Some(String::new());
         input.secure_mode = Some(Default::default());
 
@@ -958,13 +974,13 @@ mod tests {
         let restored = TomlConfigLoader::new_from_str(&generated.dump()).unwrap();
         assert_eq!(restored.get_flags(), Flags::defaults());
         assert!(restored.get_flags().private_mode);
-        assert!(restored.get_vpn().exit_enabled);
+        assert!(!restored.get_flags().enable_exit_node);
 
         input.enable_private_mode = Some(false);
         input.disable_encryption = Some(true);
         input.socket_mark = Some(0);
         input.instance_recv_bps_limit = Some(0);
-        input.vpn.as_mut().unwrap().exit_enabled = false;
+        input.enable_exit_node = Some(true);
         let generated = input.gen_config().unwrap();
         let document: toml::Table = toml::from_str(&generated.dump()).unwrap();
         assert_eq!(document["flags"]["private_mode"].as_bool(), Some(false));
@@ -973,8 +989,9 @@ mod tests {
             Some(false)
         );
         assert_eq!(document["flags"]["socket_mark"].as_integer(), Some(0));
-        assert_eq!(document["vpn"]["exit_enabled"].as_bool(), Some(false));
-        assert!(!generated.get_vpn().exit_enabled);
+        assert_eq!(document["flags"]["enable_exit_node"].as_bool(), Some(true));
+        assert!(!document.contains_key("vpn"));
+        assert!(generated.get_flags().enable_exit_node);
     }
 
     #[cfg(feature = "config-write")]

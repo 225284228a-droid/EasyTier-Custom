@@ -36,6 +36,7 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_p2p',
   'bind_device',
   'no_tun',
+  'enable_exit_node',
   'relay_all_peer_rpc',
   'multi_thread',
   'enable_relay_network_whitelist',
@@ -151,6 +152,7 @@ function allFieldFixture() {
     disable_p2p: true,
     bind_device: false,
     no_tun: true,
+    enable_exit_node: true,
     relay_all_peer_rpc: true,
     prefer_peer_relay: true,
     p2p_disguise_mode: 'prefer',
@@ -159,8 +161,8 @@ function allFieldFixture() {
     relay_network_whitelist: ['10.0.0.0/8', 'fd00::/8'],
     enable_manual_routes: true,
     routes: ['10.20.0.0/16', 'fd00:20::/64'],
+    exit_nodes: ['10.9.8.1', 'fd00::1'],
     vpn: {
-      exitEnabled: true,
       rules: [{
         cidr: '0.0.0.0/0',
         exitAddr: '10.144.144.2',
@@ -320,7 +322,6 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
   assert.equal(backend.prefer_peer_relay, true)
-  assert.equal(backend.vpn.exit_enabled, true)
   assert.equal(backend.vpn.rules[0].cidr, '0.0.0.0/0')
   assert.equal(backend.vpn.rules[0].exit_addr, '10.144.144.2')
   assert.equal(backend.managed_credentials[0].credential_id, input.managed_credentials[0].credential_id)

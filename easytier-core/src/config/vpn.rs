@@ -118,32 +118,34 @@ pub struct VpnRuleConfig {
     pub exit: IpAddr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Client rules only. Offering exit forwarding is the official
+/// `flags.enable_exit_node`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "VpnConfigFile")]
 pub struct VpnConfig {
-    #[serde(
-        default = "exit_forwarding_default",
-        skip_serializing_if = "exit_forwarding_enabled"
-    )]
-    pub exit_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<VpnRuleConfig>,
 }
 
-fn exit_forwarding_default() -> bool {
-    true
+/// Earlier releases stored `exit_enabled` in `[vpn]`. Reading it keeps those
+/// files loadable; it no longer enables anything.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VpnConfigFile {
+    #[serde(default)]
+    exit_enabled: Option<bool>,
+    #[serde(default)]
+    rules: Vec<VpnRuleConfig>,
 }
 
-fn exit_forwarding_enabled(enabled: &bool) -> bool {
-    *enabled
-}
-
-impl Default for VpnConfig {
-    fn default() -> Self {
-        Self {
-            exit_enabled: true,
-            rules: Vec::new(),
+impl From<VpnConfigFile> for VpnConfig {
+    fn from(file: VpnConfigFile) -> Self {
+        if file.exit_enabled.is_some() {
+            tracing::warn!(
+                "[vpn] exit_enabled is ignored; set flags.enable_exit_node to offer exit forwarding"
+            );
         }
+        Self { rules: file.rules }
     }
 }
 impl VpnConfig {
@@ -196,16 +198,12 @@ pub mod pb {
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let config = VpnConfig {
-            exit_enabled: vpn.exit_enabled,
-            rules,
-        };
+        let config = VpnConfig { rules };
         config.validate()?;
         Ok(config)
     }
     pub fn to_pb(vpn: &VpnConfig) -> easytier_proto::api::manage::VpnConfig {
         easytier_proto::api::manage::VpnConfig {
-            exit_enabled: vpn.exit_enabled,
             rules: vpn
                 .rules
                 .iter()
@@ -230,7 +228,7 @@ mod tests {
     #[test]
     fn defaults_and_toml_roundtrip() {
         let mut c: VpnConfig = toml::from_str("").unwrap();
-        assert!(!c.client_active() && c.exit_enabled);
+        assert!(!c.client_active());
         c.rules = vec![
             rule("0.0.0.0/0", "10.0.0.2"),
             rule("2001:db8::/32", "fd00::3"),
@@ -301,6 +299,15 @@ mod tests {
         assert!(toml::from_str::<VpnConfig>("[[rules]]\ncidr = '0.0.0.0/0'").is_err());
     }
     #[test]
+    fn legacy_exit_enabled_is_read_but_enables_nothing() {
+        for value in ["true", "false"] {
+            let c: VpnConfig = toml::from_str(&format!("exit_enabled = {value}")).unwrap();
+            assert_eq!(c, VpnConfig::default());
+            assert!(!toml::to_string(&c).unwrap().contains("exit_enabled"));
+        }
+        assert!(toml::from_str::<VpnConfig>("exit_forwarding = true").is_err());
+    }
+    #[test]
     fn config_loader_rejects_duplicate_rules_before_runtime_start() {
         let text = "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.0.0.2'\n[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.0.0.3'";
         let error = crate::config::toml::TomlConfigLoader::new_from_str(text)
@@ -312,7 +319,6 @@ mod tests {
     #[test]
     fn protobuf_roundtrip_and_legacy_json_rejection() {
         let c = VpnConfig {
-            exit_enabled: true,
             rules: vec![rule("203.0.113.0/24", "10.0.0.2")],
         };
         assert_eq!(pb::from_pb(pb::to_pb(&c)).unwrap(), c);

@@ -14,7 +14,7 @@ use super::{
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IcmpProxyContext {
     pub virtual_ipv4: Option<Ipv4Addr>,
-    pub vpn_exit: bool,
+    pub enable_exit_node: bool,
     pub no_tun: bool,
 }
 
@@ -70,8 +70,8 @@ impl IcmpProxyEngine {
     /// kernel NAT66 (Linux) forward it there, so only those without are
     /// dropped here to keep exit traffic from leaking un-NATed.
     /// TODO: relay ICMPv6 echo requests through a platform ICMPv6 socket.
-    fn handle_peer_packet_v6(context: IcmpProxyContext, is_vpn_exit: bool) -> IcmpProxyAction {
-        if cfg!(any(windows, target_os = "macos")) && context.vpn_exit && is_vpn_exit {
+    fn handle_peer_packet_v6(context: IcmpProxyContext, is_exit_node: bool) -> IcmpProxyAction {
+        if cfg!(any(windows, target_os = "macos")) && context.enable_exit_node && is_exit_node {
             return IcmpProxyAction::Drop;
         }
         IcmpProxyAction::Pass
@@ -82,7 +82,7 @@ impl IcmpProxyEngine {
         packet: &ZCPacket,
         context: IcmpProxyContext,
     ) -> IcmpProxyAction {
-        if self.cidr_table.is_empty() && !context.vpn_exit && !context.no_tun {
+        if self.cidr_table.is_empty() && !context.enable_exit_node && !context.no_tun {
             return IcmpProxyAction::Pass;
         }
         let Some(virtual_ipv4) = context.virtual_ipv4 else {
@@ -95,7 +95,7 @@ impl IcmpProxyEngine {
             return IcmpProxyAction::Pass;
         }
         if packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
-            return Self::handle_peer_packet_v6(context, header.is_vpn_exit());
+            return Self::handle_peer_packet_v6(context, header.is_exit_node());
         }
         let Ok(ipv4) = Ipv4Packet::new_checked(packet.payload()) else {
             return IcmpProxyAction::Pass;
@@ -110,7 +110,7 @@ impl IcmpProxyEngine {
         let mapped_destination = ipv4.dst_addr();
         let real_destination = self.cidr_table.lookup_v4(mapped_destination);
         let is_local_no_tun = context.no_tun && mapped_destination == virtual_ipv4;
-        if real_destination.is_none() && !header.is_vpn_exit() && !is_local_no_tun {
+        if real_destination.is_none() && !header.is_exit_node() && !is_local_no_tun {
             return IcmpProxyAction::Pass;
         }
 

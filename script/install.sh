@@ -247,6 +247,7 @@ listeners = [
     "ws://0.0.0.0:11011/",
     "wss://0.0.0.0:11012/",
 ]
+exit_nodes = []
 rpc_portal = "0.0.0.0:0"
 
 [[peer]]
@@ -263,6 +264,7 @@ enable_encryption = true
 enable_ipv6 = true
 mtu = 1380
 latency_first = false
+enable_exit_node = false
 no_tun = false
 use_smoltcp = false
 relay_network_whitelist = "*"

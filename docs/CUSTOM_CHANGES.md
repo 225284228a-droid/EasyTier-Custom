@@ -168,7 +168,6 @@
 | `[flags] private_mode` | 定制内核 `true`；官方内核保持官方默认 | 网页按能力显示默认值，默认不写入配置；官方节点没有定制能力标记时显示并沿用官方默认 `false` |
 | `[flags] p2p_disguise_mode` | `"prefer"` | 自动 P2P 伪装策略；取值为 `prefer`、`off`、`disabled`、`only`，默认策略可省略 |
 | `[flags] close_redundant_conns_when_disguised` | `true` | 双方协商并验证连接可用后，优先保留手动锚点及并发槽位；否则优先 WSS/HTTP3（显式禁止伪装除外），清理较低优先级自动连接 |
-| `[vpn].exit_enabled` | `true` | 允许本节点提供出口转发；没有规则时不会启动 VPN 客户端，默认空策略不需要写 `[vpn]` |
 
 这些策略受本机构建能力和对端能力影响。与原版混用时不要假定扩展功能全部可用；强制仅使用 WSS/HTTP3 可能减少可连接路径。启用互相冲突的策略可能使连接无法建立。
 
@@ -176,7 +175,7 @@
 
 定制内核以 `[flags].p2p_disguise_mode` 保存一个伪装策略：`prefer` 在双方都偏好或一方要求时协商伪装，并允许回退普通 TCP/UDP；`off` 不主动发起伪装，但仍接受对端要求；`disabled` 禁止自动伪装；`only` 要求自动 P2P 只使用伪装。默认 `prefer` 不写入 TOML。官方节点不会收到不支持的定制策略字段。GUI/Web 使用紧凑下拉框编辑这四种模式。早期版本的三个布尔字段（`prefer_wss_http3_for_p2p`、`disable_wss_http3_for_p2p`、`only_use_wss_http3_for_hole_punching`）已删除：TOML 文件仍含这些字段时，加载时换算为对应模式（文件已写模式时以模式为准），下次保存只写模式；`disable` 与 `only` 同时为 `true` 时加载报错。对应的 CLI 参数、管理 API 字段和 `config:` 能力标识不再提供，protobuf 编号保留占用；只认旧字段的早期定制节点需升级后才能在网页中编辑伪装策略。
 
-VPN 出口的 `exit_enabled` 默认 `true`，表示本节点允许提供出口转发；它本身不会启动客户端。`rules` 为空时没有客户端捕获规则，网页输出会省略默认的 `[vpn]`；显式关闭出口时仍保存 `exit_enabled = false`。缺少数据包转发能力的构建或主机会保持普通网络可运行，并在运行配置中关闭默认出口提供能力。`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。定制 protobuf 字段采用本轮高位清单中的编号；既有 CLI 参数和 `ET_*` 环境变量保持不变。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
+本节点是否提供出口转发由官方 `[flags] enable_exit_node` 决定，默认关闭；早期版本 `[vpn] exit_enabled` 仍可读取但不再生效，也不会在升级时自动开启出口。`rules` 为空时没有客户端捕获规则，网页输出会省略 `[vpn]`。`default_protocol` 的表单/API 名称仍为 `p2p_prefer_protocol`。定制 protobuf 字段采用本轮高位清单中的编号；既有 CLI 参数和 `ET_*` 环境变量保持不变。目录的“待应用”比较使用解析后的运行默认值，同时继续以原始文件内容保护 revision/CAS。
 
 已合入官方 UDP 绑定的虚拟端口所有权和分片缓存：未先发送的绑定 socket 可接收数据；关闭后重绑不会接收旧绑定的残留分片。`PeerPacketFilterResult::PassBatch` 中的包按原顺序从产生批次的下一个过滤器继续处理。本地实际监听端口的防回环检查与上述虚拟端口所有权共同生效。
 

@@ -217,6 +217,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     relay_network_whitelist: [],
     enable_manual_routes: false,
     routes: [],
+    exit_nodes: [],
     enable_socks5: false,
     socks5_port: 1080,
     mtu: null,
@@ -396,6 +397,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.listener_urls ??= []
   normalized.relay_network_whitelist ??= []
   normalized.routes ??= []
+  normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
   if (normalized.vpn) {

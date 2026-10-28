@@ -2,8 +2,8 @@ use std::{fmt::Debug, sync::Arc};
 
 use anyhow::Context as _;
 use easytier_proto::api::config::{
-    self, AclPatch, ConfigPatchAction, InstanceConfigPatch, Patchable, PortForwardPatch,
-    ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
+    self, AclPatch, ConfigPatchAction, ExitNodePatch, InstanceConfigPatch, Patchable,
+    PortForwardPatch, ProxyNetworkPatch, RoutePatch, UrlPatch, VpnPortalClientPatch,
 };
 use easytier_proto::common::FlagsPatch;
 use optionize::Optionized as _;
@@ -96,6 +96,15 @@ where
         let result = patch_routes(&candidate, patch.routes, patch.enable_manual_routes);
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;
+
+        let result = patch_exit_nodes_config(&candidate, patch.exit_nodes);
+        let normalized =
+            validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
+                .await?;
+        result?;
+        instance
+            .update_exit_nodes(normalized.peer.exit_nodes.clone())
+            .await;
 
         if let Some(vpn_pb) = patch.vpn {
             let vpn = crate::config::vpn::pb::from_pb(vpn_pb).map_err(anyhow::Error::msg)?;
@@ -459,6 +468,21 @@ fn patch_routes(
             .then_some(current),
     );
     Ok(())
+}
+
+fn patch_exit_nodes_config(
+    config: &TomlConfig,
+    patches: Vec<ExitNodePatch>,
+) -> anyhow::Result<Vec<std::net::IpAddr>> {
+    if patches.is_empty() {
+        return Ok(config.get_exit_nodes());
+    }
+    let mut current = config.get_exit_nodes();
+    let patches = patches.into_iter().map(Into::into).collect::<Vec<_>>();
+    trace_patchables(&patches);
+    config::patch_vec(&mut current, patches);
+    config.set_exit_nodes(current.clone());
+    Ok(current)
 }
 
 fn patch_mapped_listeners(config: &TomlConfig, patches: Vec<UrlPatch>) -> anyhow::Result<()> {

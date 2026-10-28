@@ -23,6 +23,7 @@ message Flags {
   bool enable_ipv6 = 4 [(easytier.flag) = { default: "true", api: { field: "disable_ipv6", negate: true } }];
   uint32 mtu = 5 [(easytier.flag) = { default: "1380", form: true }];
   bool latency_first = 6 [(easytier.flag) = { default: "false" }];
+  bool enable_exit_node = 7 [(easytier.flag) = { default: "false" }];
   bool no_tun = 8 [(easytier.flag) = { default: "false" }];
   bool use_smoltcp = 9 [(easytier.flag) = { default: "false" }];
   string relay_network_whitelist = 10 [(easytier.flag) = { default: "*", form: true }];

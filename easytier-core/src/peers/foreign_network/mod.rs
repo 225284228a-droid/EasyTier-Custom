@@ -115,6 +115,7 @@ fn build_foreign_peer_context(
         stun_info: parent_context_dyn.stun_info(),
         feature_flags,
         secure_mode: parent_context_dyn.secure_mode(),
+        host_routing: parent_context_dyn.host_routing_policy(),
     };
     let mut snapshot = PeerRuntimeSnapshot::new(runtime, flags);
     snapshot.easytier_version = parent_context_dyn.easytier_version();
@@ -1922,6 +1923,10 @@ mod tests {
             public_ip: vec!["198.51.100.1".to_owned()],
             ..Default::default()
         };
+        parent_snapshot
+            .runtime
+            .host_routing
+            .local_exit_node_fallback = true;
         parent_snapshot.flags.enable_relay_foreign_network_kcp = true;
         parent_snapshot.flags.enable_relay_foreign_network_quic = false;
         parent_snapshot.flags.socket_mark = Some(7);
@@ -1988,6 +1993,7 @@ mod tests {
         assert!(foreign.feature_flags().need_p2p);
         assert!(foreign.feature_flags().disable_p2p);
         assert_eq!(foreign.stun_info().public_ip, vec!["198.51.100.1"]);
+        assert!(foreign.host_routing_policy().local_exit_node_fallback);
         assert!(foreign.hmac_secret_digest());
 
         parent_snapshot.runtime.stun_info.public_ip = vec!["203.0.113.2".to_owned()];

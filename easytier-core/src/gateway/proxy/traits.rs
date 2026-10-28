@@ -18,7 +18,7 @@ pub(crate) struct ProxyRuntimeSnapshot {
     /// userspace NAT through it.
     pub local_ipv6: Option<std::net::Ipv6Addr>,
     pub no_tun: bool,
-    pub vpn_exit: bool,
+    pub enable_exit_node: bool,
     pub smoltcp_enabled: bool,
     pub latency_first: bool,
 }

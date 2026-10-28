@@ -21,7 +21,7 @@ use sha2::Sha256;
 
 pub use crate::config::{NetworkIdentity, NetworkSecretDigest};
 use crate::{
-    config::peers::{PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot},
+    config::peers::{HostRoutingPolicy, PeerGroupIdentity, PeerRuntimeConfig, PeerRuntimeSnapshot},
     config::runtime::CoreRuntimeConfigStore,
     config::{
         CoreConfig, IpPrefix, NodeConfig, PeerId, PeerPolicyConfig, ProxyNetworkConfig,
@@ -76,6 +76,7 @@ pub struct PeerRuntimeSnapshotInput {
     pub parallel_connections: u32,
     pub disable_parallel_connections: bool,
     pub secure_mode: Option<SecureModeConfig>,
+    pub host_routing: HostRoutingPolicy,
     pub acl: Option<Acl>,
     pub easytier_version: String,
     pub pinned_peers: Vec<(url::Url, Option<String>)>,
@@ -126,6 +127,7 @@ impl PeerRuntimeSnapshot {
             parallel_connections,
             disable_parallel_connections,
             secure_mode,
+            host_routing,
             acl,
             easytier_version,
             pinned_peers,
@@ -182,6 +184,7 @@ impl PeerRuntimeSnapshot {
                 stun_info,
                 feature_flags,
                 secure_mode,
+                host_routing,
             },
             easytier_version,
             avoid_relay_data_preference,
@@ -536,6 +539,10 @@ impl PeerPacketPolicy {
 }
 
 pub(crate) trait PeerContext: Send + Sync {
+    fn host_routing_policy(&self) -> HostRoutingPolicy {
+        HostRoutingPolicy::default()
+    }
+
     fn network_identity(&self) -> NetworkIdentity;
 
     fn parallel_connections(&self) -> u32 {
@@ -778,6 +785,10 @@ impl PeerContext for CorePeerContext {
     fn packet_policy(&self) -> PeerPacketPolicy {
         self.config
             .with_snapshot(|snapshot| PeerPacketPolicy::from_flags(&snapshot.peer.flags))
+    }
+
+    fn host_routing_policy(&self) -> HostRoutingPolicy {
+        self.snapshot().runtime.host_routing
     }
 
     fn secure_mode(&self) -> Option<SecureModeConfig> {
@@ -1131,6 +1142,7 @@ pub(crate) mod tests {
                 stun_info: StunInfo::default(),
                 feature_flags: PeerFeatureFlag::default(),
                 secure_mode: None,
+                host_routing: HostRoutingPolicy::default(),
             },
             flags,
         )
@@ -1154,6 +1166,9 @@ pub(crate) mod tests {
             parallel_connections: 1,
             disable_parallel_connections: false,
             secure_mode: None,
+            host_routing: HostRoutingPolicy {
+                local_exit_node_fallback: true,
+            },
             acl,
             easytier_version: "host-version".to_owned(),
             pinned_peers: vec![(
@@ -1245,6 +1260,7 @@ pub(crate) mod tests {
         assert_eq!(snapshot.ospf_update_my_foreign_network_interval_sec, 17);
         assert_eq!(snapshot.max_direct_conns_per_peer_in_foreign_network, 5);
         assert!(snapshot.hmac_secret_digest);
+        assert!(snapshot.runtime.host_routing.local_exit_node_fallback);
         assert_eq!(
             snapshot.acl_group_declarations,
             vec![
@@ -1595,6 +1611,9 @@ pub(crate) mod tests {
                 enabled: true,
                 ..Default::default()
             }),
+            host_routing: HostRoutingPolicy {
+                local_exit_node_fallback: true,
+            },
         };
         let mut flags = Flags::default();
         flags.p2p_only = true;
@@ -1630,6 +1649,7 @@ pub(crate) mod tests {
             ]
         );
         assert!(context.secure_mode().unwrap().enabled);
+        assert!(context.host_routing_policy().local_exit_node_fallback);
 
         let groups = context.peer_groups(7);
         assert_eq!(groups.len(), 1);
@@ -1721,6 +1741,7 @@ pub(crate) mod tests {
                 stun_info: StunInfo::default(),
                 feature_flags: PeerFeatureFlag::default(),
                 secure_mode: None,
+                host_routing: HostRoutingPolicy::default(),
             },
             Flags::default(),
             None,

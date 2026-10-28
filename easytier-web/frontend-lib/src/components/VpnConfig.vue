@@ -17,7 +17,7 @@ function ruleKey(rule: VpnRule): string {
   return ruleKeys.get(rule)!
 }
 function addRule() {
-  props.network.vpn ??= { exit_enabled: true, rules: [] }
+  props.network.vpn ??= { rules: [] }
   props.network.vpn.rules.push({ cidr: '', exit_addr: '' })
 }
 </script>

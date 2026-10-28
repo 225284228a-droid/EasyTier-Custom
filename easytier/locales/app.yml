@@ -150,6 +150,12 @@ core_clap:
   latency_first:
     en: "latency first mode, will try to relay traffic with lowest latency path, default is using shortest path"
     zh-CN: "延迟优先模式，将尝试使用最低延迟路径转发流量，默认使用最短路径"
+  exit_nodes:
+    en: "exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list"
+    zh-CN: "转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定"
+  enable_exit_node:
+    en: "allow this node to be an exit node"
+    zh-CN: "允许此节点成为出口节点"
   proxy_forward_by_system:
     en: "forward packet to proxy networks via system kernel, disable internal nat for network proxy"
     zh-CN: "通过系统内核转发子网代理数据包，禁用内置NAT"

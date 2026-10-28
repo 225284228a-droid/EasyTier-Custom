@@ -88,7 +88,7 @@ test('VPN configuration remains editable without horizontal overflow at mobile, 
       throw new Error(`${error}\nBrowser errors: ${consoleErrors.join('\n')}\nVite logs:\n${serverLogs}`);
     }
     await page.getByRole('button', { name: '高级设置', exact: true }).click();
-    await page.locator('#vpn_exit_enabled').waitFor({ state: 'visible' });
+    await page.locator('#enable_exit_node').waitFor({ state: 'visible' });
     await page.getByText('分流规则', { exact: true }).waitFor({ state: 'visible' });
 
     await page.getByRole('button', { name: '添加规则', exact: true }).click();
