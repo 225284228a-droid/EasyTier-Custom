@@ -439,11 +439,13 @@ endpoint-discovery = [
 system-certificates = ["endpoint-discovery", "easytier-core/system-certificates"]
 dhcp-ipv4 = ["easytier-core/dhcp-ipv4"]
 dhcp-ipv6 = ["easytier-core/dhcp-ipv6"]
+public-ipv6-provider = ["linux-netlink", "easytier-core/public-ipv6-provider"]
 vpn-portal = ["easytier-core/vpn-portal"]
 wrapped-transport = ["easytier-core/wrapped-transport"]
 extended-services = [
     "dhcp-ipv4",
     "dhcp-ipv6",
+    "public-ipv6-provider",
     "vpn-portal",
     "wrapped-transport",
     "proxy-cidr-monitor",

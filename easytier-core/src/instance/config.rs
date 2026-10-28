@@ -47,6 +47,7 @@ pub struct CoreInstanceHostConfig {
     pub smoltcp_available: bool,
     pub requires_smoltcp: bool,
     pub icmp_failure_is_fatal: bool,
+    pub public_ipv6_provider_supported: bool,
     pub gateway_enabled: bool,
     pub proxy_enabled: bool,
     pub vpn_portal_enabled: bool,
@@ -76,6 +77,7 @@ impl Default for CoreInstanceHostConfig {
             smoltcp_available: false,
             requires_smoltcp: false,
             icmp_failure_is_fatal: false,
+            public_ipv6_provider_supported: false,
             gateway_enabled: true,
             proxy_enabled: true,
             vpn_portal_enabled: true,
@@ -354,6 +356,17 @@ impl CoreInstanceConfig {
                     && (flags.use_smoltcp || flags.no_tun || host.requires_smoltcp),
                 icmp_failure_is_fatal: host.icmp_failure_is_fatal,
                 udp_response_ipv4_mtu: 1280,
+            },
+            public_ipv6_auto: config.get_ipv6_public_addr_auto()
+                && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
+            public_ipv6_provider: crate::config::peers::PublicIpv6ProviderConfig {
+                provider_enabled: config.get_ipv6_public_addr_provider()
+                    && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
+                configured_prefix: (!host.ignore_unsupported_config
+                    || host.public_ipv6_provider_supported)
+                    .then(|| config.get_ipv6_public_addr_prefix())
+                    .flatten(),
+                provider_supported: host.public_ipv6_provider_supported,
             },
         };
         let stun_servers = config.get_stun_servers();
@@ -695,6 +708,7 @@ disable_p2p = true
             smoltcp_available: true,
             requires_smoltcp: true,
             icmp_failure_is_fatal: true,
+            public_ipv6_provider_supported: true,
             gateway_enabled: false,
             connectivity: CoreConnectivityMode::InboundOnly,
             easytier_version: "host-version".to_owned(),
@@ -772,6 +786,7 @@ data_compress_algo = "Zstd"
             smoltcp_available: true,
             proxy_enabled: false,
             gateway_enabled: false,
+            public_ipv6_provider_supported: false,
             magic_dns_enabled: false,
             kcp_enabled: false,
             quic_enabled: false,

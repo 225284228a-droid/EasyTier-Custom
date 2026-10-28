@@ -56,6 +56,8 @@ where
         .toml_config()
         .ok_or_else(|| anyhow::anyhow!("shared TOML configuration is not available"))?;
     let candidate = config.detached_snapshot();
+    let parsed_prefix =
+        parse_ipv6_public_addr_prefix_patch(patch.ipv6_public_addr_prefix.as_deref())?;
     // Take the credential set out first so the host-facing copy below never
     // clones secret material.
     let mut patch = patch;
@@ -64,7 +66,7 @@ where
 
     // Preserve the existing ordered partial-commit contract: earlier valid
     // sub-patches remain applied if a later sub-patch fails.
-    let patch_result: anyhow::Result<bool> = async {
+    let patch_result: anyhow::Result<(bool, bool)> = async {
         if !patch.port_forwards.is_empty() {
             patch_port_forwards(&candidate, patch.port_forwards)?;
             // Port forwards have fallible host resources. Reserve them before the
@@ -121,6 +123,7 @@ where
 
         patch_connectors(instance, patch.connectors)?;
 
+        let mut provider_config_changed = false;
         if let Some(hostname) = patch.hostname {
             candidate.set_hostname(Some(hostname));
         }
@@ -139,6 +142,17 @@ where
             prefer_peer_relay: patch.prefer_peer_relay,
             ..Default::default()
         });
+        if let Some(enabled) = patch.ipv6_public_addr_provider {
+            candidate.set_ipv6_public_addr_provider(enabled);
+            provider_config_changed = true;
+        }
+        if let Some(enabled) = patch.ipv6_public_addr_auto {
+            candidate.set_ipv6_public_addr_auto(enabled);
+        }
+        if let Some(prefix) = parsed_prefix {
+            candidate.set_ipv6_public_addr_prefix(prefix);
+            provider_config_changed = true;
+        }
         let mut managed_credentials_changed = false;
 
         // Runs last so client validation sees the fully patched candidate,
@@ -229,14 +243,14 @@ where
                 .instance_runtime
                 .synchronize_config(&patch_for_host, &runtime);
         }
-        Ok(managed_credentials_changed)
+        Ok((provider_config_changed, managed_credentials_changed))
     }
     .await;
 
     instance
         .update_runtime_config_under_operation(runtime_config_from_toml(instance, &config)?)
         .await?;
-    let managed_credentials_changed = patch_result?;
+    let (provider_config_changed, managed_credentials_changed) = patch_result?;
     if patch_for_host != InstanceConfigPatch::default() {
         instance
             .instance_runtime
@@ -245,6 +259,12 @@ where
     if managed_credentials_changed {
         instance.notify_credential_changed();
     }
+    #[cfg(feature = "public-ipv6-provider")]
+    if provider_config_changed && instance.state() == CoreInstanceState::Running {
+        instance.reconcile_public_ipv6_provider().await;
+    }
+    #[cfg(not(feature = "public-ipv6-provider"))]
+    let _ = provider_config_changed;
     Ok(())
 }
 
@@ -263,6 +283,7 @@ where
 {
     let normalized = CoreInstanceConfig::from_toml_with_host(candidate, instance.host_config())?;
     let runtime = runtime_config_from_normalized(&normalized);
+    runtime.services.public_ipv6_provider.validate()?;
     instance.validate_runtime_config_capabilities(&runtime)?;
     Ok(normalized)
 }
@@ -321,6 +342,21 @@ pub(super) fn runtime_config_from_normalized(
         services: config.connectivity.runtime.clone(),
         peer: Arc::new(config.peer.snapshot.clone()),
     }
+}
+
+fn parse_ipv6_public_addr_prefix_patch(
+    prefix: Option<&str>,
+) -> anyhow::Result<Option<Option<cidr::Ipv6Cidr>>> {
+    let Some(prefix) = prefix else {
+        return Ok(None);
+    };
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return Ok(Some(None));
+    }
+    Ok(Some(Some(prefix.parse().with_context(|| {
+        format!("failed to parse ipv6 public address prefix: {prefix}")
+    })?)))
 }
 
 fn trace_patchables<T: Debug>(patches: &[Patchable<T>]) {

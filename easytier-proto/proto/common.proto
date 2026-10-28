@@ -286,6 +286,7 @@ message PeerFeatureFlag {
   bool is_credential_peer = 8;
   bool need_p2p = 9;
   bool disable_p2p = 10;
+  bool ipv6_public_addr_provider = 11;
   bool prefer_wss_http3_for_p2p = 50012;
   bool disable_wss_http3_for_p2p = 50013;
   bool only_use_wss_http3_for_p2p = 50014;

@@ -9,7 +9,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Inet};
+use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
 use dashmap::DashMap;
 use easytier_proto::{
     acl::Acl,
@@ -242,6 +242,23 @@ pub(crate) trait PeerStunInfoSource: Send + Sync {
 
 impl PeerStunInfoSource for () {}
 
+/// Supplies public-IPv6 state observed or leased by the host.
+pub(crate) trait PeerPublicIpv6State: Send + Sync {
+    fn public_ipv6_lease_contains(&self, _ip: &std::net::Ipv6Addr) -> bool {
+        false
+    }
+
+    fn public_ipv6_provider_enabled(&self) -> bool {
+        false
+    }
+
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
+        None
+    }
+}
+
+impl PeerPublicIpv6State for () {}
+
 /// Host adapters used to assemble the core-owned peer context. Each field stays
 /// narrow so peer modules cannot reach unrelated host state after construction.
 pub(crate) struct CorePeerContextAdapters {
@@ -259,6 +276,7 @@ pub(crate) struct CorePeerContext {
     parallel_parent_config: Option<CoreRuntimeConfigStore>,
     avoid_relay_data_preference: AtomicBool,
     stun_info_source: Option<Arc<dyn PeerStunInfoSource>>,
+    public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
     limiter_state: Mutex<CoreLimiterState>,
     stats_manager: Arc<StatsManager>,
     credentials: Arc<CredentialManager>,
@@ -268,8 +286,28 @@ pub(crate) struct CorePeerContext {
 }
 
 impl CorePeerContext {
+    #[cfg(test)]
     pub(crate) fn new(config: CoreRuntimeConfigStore, adapters: CorePeerContextAdapters) -> Self {
-        Self::new_with_stats_manager(config, adapters, Arc::new(StatsManager::new()))
+        Self::new_with_stats_manager(
+            config,
+            Arc::new(()),
+            adapters,
+            Arc::new(StatsManager::new()),
+        )
+    }
+
+    /// Builds a context that shares the instance's public-IPv6 state.
+    pub(crate) fn new_with_public_ipv6_state(
+        config: CoreRuntimeConfigStore,
+        public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
+        adapters: CorePeerContextAdapters,
+    ) -> Self {
+        Self::new_with_stats_manager(
+            config,
+            public_ipv6_state,
+            adapters,
+            Arc::new(StatsManager::new()),
+        )
     }
 
     /// Builds a foreign-network context that contributes to the same
@@ -280,7 +318,12 @@ impl CorePeerContext {
         adapters: CorePeerContextAdapters,
         parent: &CorePeerContext,
     ) -> Self {
-        let mut context = Self::new_with_stats_manager(config, adapters, parent.stats_manager());
+        let mut context = Self::new_with_stats_manager(
+            config,
+            Arc::new(()),
+            adapters,
+            parent.stats_manager(),
+        );
         context.is_foreign_context = true;
         context.parallel_dials = parent.parallel_dials.clone();
         context.parallel_parent_config = Some(parent.config.clone());
@@ -289,6 +332,7 @@ impl CorePeerContext {
 
     fn new_with_stats_manager(
         config: CoreRuntimeConfigStore,
+        public_ipv6_state: Arc<dyn PeerPublicIpv6State>,
         adapters: CorePeerContextAdapters,
         stats_manager: Arc<StatsManager>,
     ) -> Self {
@@ -306,6 +350,7 @@ impl CorePeerContext {
             parallel_parent_config: None,
             avoid_relay_data_preference,
             stun_info_source: adapters.stun_info_source,
+            public_ipv6_state,
             limiter_state: Mutex::new(CoreLimiterState::default()),
             stats_manager,
             credentials,
@@ -656,6 +701,10 @@ pub(crate) trait PeerContext: Send + Sync {
         false
     }
 
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
+        None
+    }
+
     fn is_ip_in_same_network(&self, _ip: &IpAddr) -> bool {
         false
     }
@@ -837,6 +886,7 @@ impl PeerContext for CorePeerContext {
 
     fn is_ip_local_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
         self.ipv6().is_some_and(|address| address.address() == *ip)
+            || self.public_ipv6_state.public_ipv6_lease_contains(ip)
     }
 
     fn proxy_cidrs(&self) -> Vec<Ipv4Cidr> {
@@ -869,6 +919,7 @@ impl PeerContext for CorePeerContext {
         let mut flags = snapshot.runtime.feature_flags;
         flags.avoid_relay_data = snapshot.flags.disable_relay_data
             || self.avoid_relay_data_preference.load(Ordering::Acquire);
+        flags.ipv6_public_addr_provider |= self.public_ipv6_state.public_ipv6_provider_enabled();
         flags
     }
 
@@ -893,6 +944,10 @@ impl PeerContext for CorePeerContext {
 
     fn hmac_secret_digest(&self) -> bool {
         self.snapshot().hmac_secret_digest
+    }
+
+    fn advertised_ipv6_public_addr_prefix(&self) -> Option<Ipv6Cidr> {
+        self.public_ipv6_state.advertised_ipv6_public_addr_prefix()
     }
 
     fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {

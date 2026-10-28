@@ -196,6 +196,12 @@ impl AttachedPeerRuntime {
         let services = build_attached_services(&network.services, credential_public_key.is_some());
         let runtime_config = CoreRuntimeConfigStore::new(services, Arc::new(peer_snapshot.clone()));
         let (packet_sender, packet_receiver) = host_packet_channel();
+        let public_ipv6_runtime =
+            crate::peers::public_ipv6::CorePublicIpv6Runtime::new(
+                runtime_config.clone(),
+                Arc::new(()),
+                Arc::new(()),
+            );
         let source_vpn = network_peer_manager.vpn_engine();
         let vpn_changes = source_vpn.subscribe_config_changes();
         let vpn = source_vpn.config();
@@ -213,6 +219,7 @@ impl AttachedPeerRuntime {
             runtime_config,
             Arc::new(()),
             packet_sender,
+            public_ipv6_runtime,
             vpn_engine,
             Arc::new(()),
             None,
@@ -604,6 +611,11 @@ mod tests {
         };
         let store = CoreRuntimeConfigStore::new(services, Arc::new(portable.snapshot.clone()));
         let (packet_sender, _packet_receiver) = host_packet_channel();
+        let public_ipv6_runtime = crate::peers::public_ipv6::CorePublicIpv6Runtime::new(
+            store.clone(),
+            Arc::new(()),
+            Arc::new(()),
+        );
         let vpn_engine =
             Arc::new(VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap());
         let peer_manager = Arc::new(
@@ -613,6 +625,7 @@ mod tests {
                 store.clone(),
                 Arc::new(()),
                 packet_sender,
+                public_ipv6_runtime,
                 vpn_engine,
                 Arc::new(()),
                 None,
@@ -647,6 +660,8 @@ mod tests {
         let store =
             CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot.clone()));
         let (sender, receiver) = host_packet_channel();
+        let public_ipv6_runtime =
+            crate::peers::public_ipv6::CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
         let vpn_engine = Arc::new(VpnPolicyEngine::new(Default::default()).unwrap());
         let peer = Arc::new(
             PeerManagerCore::new(
@@ -661,6 +676,7 @@ mod tests {
                 store,
                 Arc::new(()),
                 sender,
+                public_ipv6_runtime,
                 vpn_engine,
                 Arc::new(()),
                 None,

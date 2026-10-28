@@ -1,4 +1,7 @@
-#![cfg_attr(not(feature = "tun"), allow(dead_code))]
+#![cfg_attr(
+    not(any(feature = "public-ipv6-provider", feature = "tun")),
+    allow(dead_code)
+)]
 
 #[cfg(any(
     all(target_os = "macos", not(feature = "macos-ne")),
@@ -252,6 +255,42 @@ pub type IfConfiger = DummyIfConfiger;
 
 #[cfg(target_os = "windows")]
 pub use windows::RegistryManager;
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) use netlink_wire::RouteMessage;
+#[cfg(all(
+    target_os = "linux",
+    feature = "linux-netlink",
+    feature = "public-ipv6-provider"
+))]
+pub(crate) use netlink_wire::RouteType;
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
+    netlink::NetlinkIfConfiger::list_ipv6_route_messages()
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) fn get_interface_index(name: &str) -> Result<u32, Error> {
+    netlink::NetlinkIfConfiger::get_interface_index(name)
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) fn add_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
+    netlink::NetlinkIfConfiger::add_ipv6_ndp_proxy(name, address)
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) fn remove_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
+    netlink::NetlinkIfConfiger::remove_ipv6_ndp_proxy(name, address)
+}
+
+#[cfg(all(target_os = "linux", feature = "linux-netlink"))]
+pub(crate) fn list_ipv6_ndp_proxy(
+    name: &str,
+) -> Result<std::collections::BTreeSet<Ipv6Addr>, Error> {
+    netlink::NetlinkIfConfiger::list_ipv6_ndp_proxy(name)
+}
 
 #[cfg(test)]
 mod tests {

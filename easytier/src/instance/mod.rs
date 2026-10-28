@@ -22,6 +22,9 @@ pub(crate) mod udp_hole_punch;
 
 pub(crate) mod listeners;
 
+#[cfg(feature = "public-ipv6-provider")]
+pub(crate) mod public_ipv6_provider;
+
 #[cfg(feature = "tun")]
 pub mod shared_virtual_nic;
 

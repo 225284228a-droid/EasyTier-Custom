@@ -39,7 +39,7 @@ use crate::{
         compressor::{Compressor as _, DefaultCompressor},
     },
     proto::common::{Flags, PeerFeatureFlag, StunInfo, Url as ProtoUrl},
-    proto::core_peer::peer::{PeerConnInfo, Route as CoreRoute},
+    proto::core_peer::peer::{ListPublicIpv6InfoResponse, PeerConnInfo, Route as CoreRoute},
     tunnel::{
         Tunnel,
         encrypt::{
@@ -68,6 +68,7 @@ use super::{
     foreign_network::{ForeignNetworkEntryInfo, ForeignNetworkManager, ForeignNetworkRpcRegistrar},
     peer_center::instance::PeerCenterPeerManagerTrait,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
+    public_ipv6::{CorePublicIpv6Runtime, PublicIpv6Runtime},
     recv_packet_envelope_from_chan,
     relay_peer_map::RelayPeerMap,
     route::{
@@ -108,6 +109,8 @@ pub struct NodeSnapshot {
     pub version: String,
     pub feature_flags: PeerFeatureFlag,
     pub ip_list: GetIpListResponse,
+    pub public_ipv6_addr: Option<cidr::Ipv6Inet>,
+    pub ipv6_public_addr_prefix: Option<cidr::Ipv6Inet>,
 }
 
 struct RpcTransport {
@@ -348,12 +351,16 @@ impl RouteAlgoInst {
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
         context: ArcPeerContext,
+        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         peer_rpc_mgr: Arc<super::peer_rpc::PeerRpcManager>,
     ) -> Self {
         match route_algo {
-            RouteAlgoType::Ospf => {
-                RouteAlgoInst::Ospf(PeerRoute::new(my_peer_id, context, peer_rpc_mgr))
-            }
+            RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
+                my_peer_id,
+                context,
+                public_ipv6_runtime,
+                peer_rpc_mgr,
+            )),
             RouteAlgoType::None => RouteAlgoInst::None,
         }
     }
@@ -904,6 +911,7 @@ impl PeerManagerCore {
         runtime_config: CoreRuntimeConfigStore,
         stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: HostPacketSender,
+        public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
         vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
         events: Arc<dyn CoreEventSink>,
         credential_storage: Option<Arc<dyn CredentialStorage>>,
@@ -1004,8 +1012,11 @@ impl PeerManagerCore {
         runtime.feature_flags.disable_wss_http3_for_p2p = flags.p2p_disguise().forbids();
         runtime.feature_flags.only_use_wss_http3_for_p2p = flags.p2p_disguise().requires();
         runtime_config.update_peer(Arc::new(config.snapshot.clone()));
-        let context = Arc::new(CorePeerContext::new(
+        let public_ipv6_state = public_ipv6_runtime.clone();
+        let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> = public_ipv6_runtime;
+        let context = Arc::new(CorePeerContext::new_with_public_ipv6_state(
             runtime_config,
+            public_ipv6_state,
             CorePeerContextAdapters {
                 stun_info_source: Some(stun_info_source),
                 events: events.clone(),
@@ -1020,6 +1031,7 @@ impl PeerManagerCore {
             config.route_algo,
             my_peer_id,
             context,
+            public_ipv6_runtime,
             vpn_engine,
             events,
             nic_channel,
@@ -1039,6 +1051,7 @@ impl PeerManagerCore {
         route_algo: RouteAlgoType,
         my_peer_id: PeerId,
         core_context: Arc<CorePeerContext>,
+        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
         events: Arc<dyn CoreEventSink>,
         nic_channel: HostPacketSender,
@@ -1075,6 +1088,7 @@ impl PeerManagerCore {
             route_algo,
             my_peer_id,
             context.clone(),
+            public_ipv6_runtime,
             peer_rpc_mgr.clone(),
         );
 
@@ -1371,6 +1385,12 @@ impl PeerManagerCore {
             version: self.context.easytier_version(),
             feature_flags: self.context.feature_flags(),
             ip_list: GetIpListResponse::default(),
+            public_ipv6_addr: self.get_route().get_my_public_ipv6_addr().await,
+            ipv6_public_addr_prefix: self.context.advertised_ipv6_public_addr_prefix().map(
+                |prefix| {
+                    cidr::Ipv6Inet::new(prefix.first_address(), prefix.network_length()).unwrap()
+                },
+            ),
         }
     }
 
@@ -1378,8 +1398,20 @@ impl PeerManagerCore {
         self.get_route().list_routes().await
     }
 
+    pub async fn list_public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
+        self.get_route().list_public_ipv6_routes().await
+    }
+
+    pub async fn public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
+        self.get_route().get_my_public_ipv6_addr().await
+    }
+
     pub async fn dump_route(&self) -> String {
         self.get_route().dump().await
+    }
+
+    pub async fn local_public_ipv6_info(&self) -> ListPublicIpv6InfoResponse {
+        self.get_route().get_local_public_ipv6_info().await
     }
 
     pub async fn foreign_network_route_infos(&self) -> RouteForeignNetworkInfos {
@@ -1628,7 +1660,14 @@ impl PeerManagerCore {
     }
 
     pub async fn is_easytier_managed_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
-        self.context.is_ip_local_ipv6(ip) || self.peers.get_peer_id_by_ipv6(ip).await.is_some()
+        if self.context.is_ip_local_ipv6(ip) {
+            return true;
+        }
+        self.route
+            .list_public_ipv6_routes()
+            .await
+            .iter()
+            .any(|route| route.address() == *ip)
     }
 
     pub fn traffic_metrics(&self) -> Arc<TrafficMetricRecorder> {
@@ -3039,6 +3078,10 @@ impl PeerOutboundPacketRouter {
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(ipv6_addr).await {
             dst_peers.push(peer_id);
         } else if !ipv6_addr.is_unicast_link_local()
+            && let Some(peer_id) = self.route.get_public_ipv6_gateway_peer_id().await
+        {
+            dst_peers.push(peer_id);
+        } else if !ipv6_addr.is_unicast_link_local()
             && let Some(rule) = self.vpn_rule_exit(&IpAddr::V6(*ipv6_addr))
         {
             let Some(peer_id) = rule else {
@@ -3859,6 +3902,8 @@ mod tests {
                 CoreRuntimeConfig::default(),
                 Arc::new(config.snapshot.clone()),
             );
+            let public_ipv6_runtime =
+                CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
             let stun_info_source = Arc::new(RuntimeConfigStunInfoSource(runtime_config.clone()));
             Self::new(
                 config,
@@ -3866,6 +3911,7 @@ mod tests {
                 runtime_config,
                 stun_info_source,
                 nic_channel,
+                public_ipv6_runtime,
                 Arc::new(
                     super::super::vpn_policy::VpnPolicyEngine::new(
                         crate::config::vpn::VpnConfig::default(),
@@ -4484,6 +4530,8 @@ mod tests {
             CoreRuntimeConfig::default(),
             Arc::new(config.snapshot.clone()),
         );
+        let public_ipv6_runtime =
+            CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
         let events = Arc::new(CountingPeerEventSink::default());
         let (packet_tx, _packet_rx) = host_packet_channel();
 
@@ -4493,6 +4541,7 @@ mod tests {
             runtime_config,
             Arc::new(()),
             packet_tx,
+            public_ipv6_runtime,
             Arc::new(
                 super::super::vpn_policy::VpnPolicyEngine::new(
                     crate::config::vpn::VpnConfig::default(),
@@ -4640,6 +4689,9 @@ mod tests {
         assert_eq!(snapshot.listeners, vec![listener]);
         assert_eq!(snapshot.stun_info.public_ip, vec!["192.0.2.91"]);
         assert_eq!(snapshot.version, env!("CARGO_PKG_VERSION"));
+        assert!(snapshot.public_ipv6_addr.is_none());
+        assert!(snapshot.ipv6_public_addr_prefix.is_none());
+
         let dns_identity = core.dns_route_identity();
         assert_eq!(
             dns_identity,

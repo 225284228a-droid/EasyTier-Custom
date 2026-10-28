@@ -104,6 +104,8 @@ where
     }
 
     async fn start_components(&self) -> anyhow::Result<()> {
+        #[cfg(feature = "public-ipv6-provider")]
+        self.public_ipv6_provider.validate_before_start().await?;
         self.peer_manager
             .get_route()
             .set_route_cost_fn(self.peer_center.get_cost_calculator())
@@ -128,6 +130,9 @@ where
         if let Some(manual) = &self.manual {
             manual.start();
         }
+        #[cfg(feature = "public-ipv6-provider")]
+        self.public_ipv6_provider.start().await;
+
         let dhcp_host = self.instance_runtime.prepare(self.packet_plane()).await?;
         #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
         self.start_dhcp(dhcp_host).await?;
@@ -175,6 +180,8 @@ where
 
         #[cfg(feature = "vpn-portal")]
         self.vpn_portal.stop().await;
+        #[cfg(feature = "public-ipv6-provider")]
+        self.public_ipv6_provider.stop().await;
         #[cfg(any(feature = "dhcp-ipv4", feature = "dhcp-ipv6"))]
         self.dhcp.stop().await;
         #[cfg(feature = "proxy-cidr-monitor")]

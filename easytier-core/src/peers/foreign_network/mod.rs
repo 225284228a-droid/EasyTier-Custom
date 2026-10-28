@@ -48,6 +48,7 @@ use super::{
     },
     error::Error,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
+    public_ipv6::{DisabledPublicIpv6Runtime, PublicIpv6Runtime},
     relay_peer_map::RelayPeerMap,
     route::{NextHopPolicy, Route, RouteInterface, peer_ospf_route::PeerRoute},
     traffic_metrics::{
@@ -512,9 +513,15 @@ impl ForeignNetworkEntry {
     }
 
     async fn prepare_route(&self, global_peer_map: Weak<PeerMap>) {
+        let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> =
+            Arc::new(DisabledPublicIpv6Runtime::new(
+                self.peer_context.instance_id(),
+                self.network.network_name.clone(),
+            ));
         let route = PeerRoute::new(
             self.my_peer_id,
             self.peer_context.clone(),
+            public_ipv6_runtime,
             self.peer_rpc.clone(),
         );
         route

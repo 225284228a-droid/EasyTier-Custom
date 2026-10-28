@@ -1220,7 +1220,9 @@ mod manager {
                                 easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated(
                                     _,
                                     _,
-                                ),
+                                )
+                                | easytier::common::global_ctx::GlobalCtxEvent::PublicIpv6Changed(_, _)
+                                | easytier::common::global_ctx::GlobalCtxEvent::PublicIpv6RoutesUpdated(_, _),
                             ) => "proxy_cidrs_updated",
                             Ok(_) => continue,
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

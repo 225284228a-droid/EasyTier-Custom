@@ -35,6 +35,7 @@ const CONFIG_FLAG_FIELDS = [
 
     return [field]
   }),
+  'ipv6_public_addr_auto',
 ] as const satisfies readonly (keyof NetworkConfig)[]
 
 const CONFIG_CHECKBOX_FIELDS = [

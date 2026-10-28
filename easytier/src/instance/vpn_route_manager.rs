@@ -1525,10 +1525,10 @@ mod tests {
                 existing.set_mark(0x42).unwrap();
                 existing.bind(&"0.0.0.0:0".parse::<std::net::SocketAddr>().unwrap().into()).unwrap();
                 let _existing_registration = socket_protector::protect_native_socket(&existing, true).await.unwrap();
-                let exit = "10.66.0.2".parse().unwrap();
-                let engine = VpnPolicyEngine::new(VpnConfig { exit_enabled: false, rules: vec![
-                    VpnRuleConfig { cidr: "203.0.113.0/24".parse().unwrap(), exit },
-                    VpnRuleConfig { cidr: "2001:db8:2::/64".parse().unwrap(), exit },
+                let exit = "10.66.0.2".parse::<std::net::IpAddr>().unwrap();
+                let engine = VpnPolicyEngine::new(VpnConfig { rules: vec![
+                    VpnRuleConfig { cidr: "203.0.113.0/24".parse().unwrap(), exit: Some(exit) },
+                    VpnRuleConfig { cidr: "2001:db8:2::/64".parse().unwrap(), exit: Some(exit) },
                 ] }).unwrap();
                 let desired = engine.route_plan().0.exit_routes.into_iter().flat_map(split_default).collect::<BTreeSet<_>>();
                 let mut owner = RouteOwner::default();

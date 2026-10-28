@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
-    peers::{AclRuleConfig, PeerRuntimeSnapshot},
+    peers::{AclRuleConfig, PeerRuntimeSnapshot, PublicIpv6ProviderConfig},
 };
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreRuntimeConfig {
     pub acl: AclRuleConfig,
     pub dhcp_ipv4: bool,
@@ -26,6 +26,30 @@ pub struct CoreRuntimeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_routes: Option<BTreeSet<Ipv4Cidr>>,
     pub proxy: ProxyRuntimeConfig,
+    #[serde(default)]
+    pub public_ipv6_auto: bool,
+    pub public_ipv6_provider: PublicIpv6ProviderConfig,
+}
+
+impl Default for CoreRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            acl: AclRuleConfig::default(),
+            dhcp_ipv4: false,
+            dhcp_ipv4_cidr: None,
+            dhcp_ipv6: false,
+            dhcp_ipv6_cidr: None,
+            gateway: GatewayRuntimeConfig::default(),
+            manual_routes: None,
+            proxy: ProxyRuntimeConfig::default(),
+            public_ipv6_auto: false,
+            public_ipv6_provider: PublicIpv6ProviderConfig {
+                provider_enabled: false,
+                configured_prefix: None,
+                provider_supported: false,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

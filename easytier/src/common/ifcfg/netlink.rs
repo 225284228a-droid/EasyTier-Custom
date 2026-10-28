@@ -1,6 +1,10 @@
-#![cfg_attr(not(feature = "tun"), allow(dead_code))]
+#![cfg_attr(
+    not(any(feature = "public-ipv6-provider", feature = "tun")),
+    allow(dead_code)
+)]
 
 use std::{
+    collections::BTreeSet,
     ffi::CString,
     fmt::Debug,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -11,9 +15,10 @@ use super::{
     Error, IfConfiguerTrait,
     netlink_wire::{
         AddressMessage, MessageBuilder, MessageIter, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP,
-        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NetlinkDecode,
-        NetlinkEncode, RTM_DELADDR, RTM_DELROUTE, RTM_GETROUTE, RTM_NEWADDR, RTM_NEWROUTE,
-        RouteMessage, RouteMessageBuilder, netlink_error_code,
+        NLM_F_DUMP_INTR, NLM_F_EXCL, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR, NeighborMessage,
+        NetlinkDecode, NetlinkEncode, RTM_DELADDR, RTM_DELNEIGH, RTM_DELROUTE, RTM_GETNEIGH,
+        RTM_GETROUTE, RTM_NEWADDR, RTM_NEWNEIGH, RTM_NEWROUTE, RouteMessage, RouteMessageBuilder,
+        RouteType, netlink_error_code,
     },
 };
 use crate::common::network::ip_mask_to_prefix;
@@ -287,13 +292,51 @@ impl NetlinkIfConfiger {
         Self::list_route_messages(libc::AF_INET as u8)
     }
 
-    #[cfg(test)]
-    fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
+    pub(crate) fn list_ipv6_route_messages() -> Result<Vec<RouteMessage>, Error> {
         Self::list_route_messages(libc::AF_INET6 as u8)
     }
-}
 
-impl NetlinkIfConfiger {
+    fn ipv6_ndp_proxy_message(name: &str, address: Ipv6Addr) -> Result<NeighborMessage, Error> {
+        Ok(NeighborMessage::proxy(
+            Self::get_interface_index(name)?,
+            address,
+        ))
+    }
+
+    pub(crate) fn add_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        let message = Self::ipv6_ndp_proxy_message(name, address)?;
+        let request = message_request(
+            RTM_NEWNEIGH,
+            NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL | NLM_F_REQUEST,
+            &message,
+        )?;
+        send_netlink_req_and_wait_ack(request)
+    }
+
+    pub(crate) fn remove_ipv6_ndp_proxy(name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        let message = Self::ipv6_ndp_proxy_message(name, address)?;
+        let request = message_request(RTM_DELNEIGH, NLM_F_ACK | NLM_F_REQUEST, &message)?;
+        send_netlink_req_and_wait_ack(request)
+    }
+
+    fn list_neighbour_messages(address_family: u8) -> Result<Vec<NeighborMessage>, Error> {
+        let mut builder = MessageBuilder::new(RTM_GETNEIGH, NLM_F_REQUEST | NLM_F_DUMP);
+        builder.append_bytes(&NeighborMessage::proxy_dump_header(address_family));
+        receive_netlink_dump(builder)
+    }
+
+    pub(crate) fn list_ipv6_ndp_proxy(name: &str) -> Result<BTreeSet<Ipv6Addr>, Error> {
+        let ifindex = Self::get_interface_index(name)?;
+        Ok(Self::list_neighbour_messages(libc::AF_INET6 as u8)?
+            .into_iter()
+            .filter(|message| message.ifindex() == ifindex && message.is_proxy())
+            .filter_map(|message| match message.destination() {
+                Some(IpAddr::V6(address)) => Some(*address),
+                _ => None,
+            })
+            .collect())
+    }
+
     fn ipv4_route_message(
         ifindex: u32,
         address: Ipv4Addr,
@@ -308,7 +351,7 @@ impl NetlinkIfConfiger {
             .table(libc::RT_TABLE_MAIN.into())
             .static_protocol()
             .universe_scope()
-            .unicast();
+            .route_type(RouteType::Unicast);
         if let Some(source_hint) = source_hint {
             builder = builder.preferred_source(IpAddr::V4(source_hint));
         }
@@ -508,7 +551,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             .table(libc::RT_TABLE_MAIN.into())
             .static_protocol()
             .universe_scope()
-            .unicast();
+            .route_type(RouteType::Unicast);
         if cidr_prefix != 0 {
             builder = builder.destination(IpAddr::V6(address), cidr_prefix);
         }
@@ -796,7 +839,7 @@ mod tests {
         let routes = NetlinkIfConfiger::list_ipv6_route_messages().unwrap();
 
         assert!(routes.iter().any(|route| {
-            route.route_type() == libc::RTN_UNICAST
+            route.route_type() == RouteType::Unicast
                 && route.src_len() == 56
                 && route.source()
                     == Some(&IpAddr::V6(
@@ -807,7 +850,7 @@ mod tests {
         }));
 
         assert!(routes.iter().any(|route| {
-            route.route_type() == libc::RTN_UNICAST
+            route.route_type() == RouteType::Unicast
                 && route.dst_len() == 56
                 && route.destination()
                     == Some(&IpAddr::V6(

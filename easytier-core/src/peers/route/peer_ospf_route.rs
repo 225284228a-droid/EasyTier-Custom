@@ -11,7 +11,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use atomic_shim::AtomicU64;
-use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr};
+use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr, Ipv6Inet};
 use crossbeam_utils::atomic::AtomicCell;
 use dashmap::DashMap;
 use ordered_hash_map::OrderedHashMap;
@@ -42,17 +42,25 @@ use crate::{
             TrustedKeyMetadata, TrustedKeySource,
         },
         peer_rpc::PeerRpcManager,
+        public_ipv6::{
+            PublicIpv6PeerRouteInfo, PublicIpv6RouteControl, PublicIpv6Runtime, PublicIpv6Service,
+            PublicIpv6SyncTrigger,
+        },
         util::shrink_dashmap,
     },
     proto::{
         common::{NatType, RuntimeTimestamp as Timestamp, TimestampExt},
-        core_peer::peer::Route as CoreRouteInfo,
+        core_peer::peer::{
+            ListPublicIpv6InfoResponse as CoreListPublicIpv6InfoResponse,
+            PublicIpv6LeaseInfo as CorePublicIpv6LeaseInfo, Route as CoreRouteInfo,
+        },
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
             OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerGroupInfo, PeerIdVersion,
-            PeerIdentityType, RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
-            RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest, SyncRouteInfoResponse,
-            TrustedCredentialPubkey, TrustedCredentialPubkeyProof, route_foreign_network_infos,
+            PeerIdentityType, PublicIpv6AddrRpcServer, RouteForeignNetworkInfos,
+            RouteForeignNetworkSummary, RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError,
+            SyncRouteInfoRequest, SyncRouteInfoResponse, TrustedCredentialPubkey,
+            TrustedCredentialPubkeyProof, route_foreign_network_infos,
             route_foreign_network_summary, sync_route_info_request::ConnInfo,
         },
         rpc_types::{
@@ -561,6 +569,21 @@ impl OspfRouteTable {
                     .or_insert(peer_id_and_version);
             }
 
+            if let Some(ipv6_addr) = info
+                .ipv6_public_addr_lease
+                .as_ref()
+                .and_then(|addr| addr.address)
+            {
+                self.ipv6_peer_id_map
+                    .entry(ipv6_addr.into())
+                    .and_modify(|v| {
+                        if is_new_peer_better(v) {
+                            *v = peer_id_and_version;
+                        }
+                    })
+                    .or_insert(peer_id_and_version);
+            }
+
             for cidr in info.proxy_cidrs.iter() {
                 let Ok(cidr) = cidr.parse::<IpCidr>() else {
                     tracing::warn!("invalid proxy cidr: {:?}, from peer: {:?}", cidr, peer_id);
@@ -702,6 +725,10 @@ static FORCE_USE_CONN_LIST: AtomicBool = AtomicBool::new(false);
 //    in another zone when two zone restore the conneciton.
 static REMOVE_UNREACHABLE_PEER_INFO_AFTER: Duration = Duration::from_secs(90);
 
+fn route_peer_inst_id(info: &RoutePeerInfo) -> Option<uuid::Uuid> {
+    info.inst_id.map(Into::into)
+}
+
 fn is_foreign_network_info_newer(
     next: &ForeignNetworkRouteInfoEntry,
     prev: &ForeignNetworkRouteInfoEntry,
@@ -737,6 +764,8 @@ fn new_route_peer_info_with_version(easytier_version: String) -> RoutePeerInfo {
         quic_port: None,
         noise_static_pubkey: Vec::new(),
         trusted_credential_pubkeys: Vec::new(),
+        ipv6_public_addr_prefix: None,
+        ipv6_public_addr_lease: None,
     }
 }
 
@@ -745,6 +774,7 @@ pub fn new_updated_self_route_peer_info(
     my_peer_id: PeerId,
     peer_route_id: u64,
     context: &dyn PeerContext,
+    public_ipv6_addr_lease: Option<Ipv6Inet>,
 ) -> RoutePeerInfo {
     let stun_info = context.stun_info();
     let network_identity = context.network_identity();
@@ -781,6 +811,12 @@ pub fn new_updated_self_route_peer_info(
             .unwrap_or(24),
 
         ipv6_addr: context.ipv6().map(|x| x.into()),
+        ipv6_public_addr_prefix: context.advertised_ipv6_public_addr_prefix().map(|prefix| {
+            Ipv6Inet::new(prefix.first_address(), prefix.network_length())
+                .unwrap()
+                .into()
+        }),
+        ipv6_public_addr_lease: public_ipv6_addr_lease.map(Into::into),
 
         groups: context.peer_groups(my_peer_id),
 
@@ -1472,8 +1508,14 @@ impl SyncedRouteInfo {
         my_peer_id: PeerId,
         my_peer_route_id: u64,
         context: &dyn PeerContext,
+        public_ipv6_addr_lease: Option<Ipv6Inet>,
     ) -> bool {
-        let mut new = new_updated_self_route_peer_info(my_peer_id, my_peer_route_id, context);
+        let mut new = new_updated_self_route_peer_info(
+            my_peer_id,
+            my_peer_route_id,
+            context,
+            public_ipv6_addr_lease,
+        );
         let mut guard = self.peer_infos.upgradable_read();
         let old = guard.get(&my_peer_id);
         let new_version = old.map(|x| x.version).unwrap_or(0) + 1;
@@ -2324,6 +2366,8 @@ struct PeerRouteServiceImpl {
     foreign_network_owner_map: DashMap<CoreNetworkIdentity, Vec<PeerId>>,
     foreign_network_my_peer_id_map: DashMap<(String, PeerId), PeerId>,
     synced_route_info: SyncedRouteInfo,
+    public_ipv6_service: std::sync::Mutex<Weak<PublicIpv6Service>>,
+    self_public_ipv6_addr_lease: std::sync::Mutex<Option<Ipv6Inet>>,
     cached_local_conn_map: std::sync::Mutex<RouteConnBitmap>,
     cached_local_conn_map_version: AtomicVersion,
     cached_interface_peer_snapshot: std::sync::Mutex<Arc<InterfacePeerSnapshot>>,
@@ -2396,6 +2440,8 @@ impl PeerRouteServiceImpl {
                 ),
                 version: AtomicVersion::new(),
             },
+            public_ipv6_service: std::sync::Mutex::new(Weak::new()),
+            self_public_ipv6_addr_lease: std::sync::Mutex::new(None),
             cached_local_conn_map: std::sync::Mutex::new(RouteConnBitmap::default()),
             cached_local_conn_map_version: AtomicVersion::new(),
             cached_interface_peer_snapshot: std::sync::Mutex::new(Arc::new(
@@ -2423,6 +2469,20 @@ impl PeerRouteServiceImpl {
 
     fn peer_relay_projection_enabled(&self) -> bool {
         self.context.flags().prefer_peer_relay && !self.is_credential_node()
+    }
+
+    fn set_public_ipv6_service(&self, service: Weak<PublicIpv6Service>) {
+        *self.public_ipv6_service.lock().unwrap() = service;
+    }
+
+    fn public_ipv6_service(&self) -> Option<Arc<PublicIpv6Service>> {
+        self.public_ipv6_service.lock().unwrap().upgrade()
+    }
+
+    fn notify_public_ipv6_route_change(&self) -> bool {
+        self.public_ipv6_service()
+            .map(|service| service.handle_route_change())
+            .unwrap_or(false)
     }
 
     fn get_or_create_session(&self, dst_peer_id: PeerId) -> Arc<SyncRouteSession> {
@@ -2659,6 +2719,7 @@ impl PeerRouteServiceImpl {
             self.my_peer_id,
             self.my_peer_route_id,
             self.context.as_ref(),
+            *self.self_public_ipv6_addr_lease.lock().unwrap(),
         )
     }
 
@@ -3184,14 +3245,19 @@ impl PeerRouteServiceImpl {
             untrusted_changed = self.refresh_credential_trusts_and_disconnect().await;
         }
 
+        let mut public_ipv6_state_updated = false;
         if my_peer_info_updated || my_conn_info_updated || untrusted_changed {
             self.update_route_table_and_cached_local_conn_bitmap();
             self.update_foreign_network_owner_map();
+            public_ipv6_state_updated = self.notify_public_ipv6_route_change();
         }
         if my_peer_info_updated {
             self.update_peer_info_last_update();
         }
-        my_peer_info_updated || my_conn_info_updated || my_foreign_network_updated
+        my_peer_info_updated
+            || my_conn_info_updated
+            || my_foreign_network_updated
+            || public_ipv6_state_updated
     }
 
     async fn refresh_acl_groups(&self) -> bool {
@@ -3208,15 +3274,17 @@ impl PeerRouteServiceImpl {
         let untrusted = self.refresh_credential_trusts_with_current_topology();
         self.disconnect_untrusted_peers(&untrusted).await;
 
+        let mut public_ipv6_state_updated = false;
         if my_peer_info_updated || !untrusted.is_empty() {
             self.update_route_table_and_cached_local_conn_bitmap();
             self.update_foreign_network_owner_map();
+            public_ipv6_state_updated = self.notify_public_ipv6_route_change();
         }
         if my_peer_info_updated {
             self.update_peer_info_last_update();
         }
 
-        my_peer_info_updated || !untrusted.is_empty()
+        my_peer_info_updated || !untrusted.is_empty() || public_ipv6_state_updated
     }
 
     fn refresh_credential_trusts(&self) -> Vec<PeerId> {
@@ -4122,6 +4190,11 @@ impl RouteSessionManager {
         if need_update_route_table || foreign_network_changed {
             service_impl.update_route_table_and_cached_local_conn_bitmap();
             service_impl.update_foreign_network_owner_map();
+            if need_update_route_table
+                && let Some(public_ipv6_service) = service_impl.public_ipv6_service()
+            {
+                public_ipv6_service.handle_route_change();
+            }
         }
 
         tracing::debug!(
@@ -4167,6 +4240,79 @@ impl RouteSessionManager {
     }
 }
 
+struct OspfPublicIpv6RouteHandle {
+    service_impl: Weak<PeerRouteServiceImpl>,
+}
+
+impl PublicIpv6RouteControl for OspfPublicIpv6RouteHandle {
+    fn my_peer_id(&self) -> PeerId {
+        self.service_impl
+            .upgrade()
+            .map(|service_impl| service_impl.my_peer_id)
+            .unwrap_or_default()
+    }
+
+    fn peer_route_snapshot(&self) -> Vec<PublicIpv6PeerRouteInfo> {
+        let Some(service_impl) = self.service_impl.upgrade() else {
+            return Vec::new();
+        };
+
+        service_impl
+            .synced_route_info
+            .peer_infos
+            .read()
+            .iter()
+            .map(|(peer_id, info)| PublicIpv6PeerRouteInfo {
+                peer_id: *peer_id,
+                inst_id: route_peer_inst_id(info),
+                is_provider: info
+                    .feature_flag
+                    .as_ref()
+                    .map(|flags| flags.ipv6_public_addr_provider)
+                    .unwrap_or(false),
+                prefix: info
+                    .ipv6_public_addr_prefix
+                    .map(Into::into)
+                    .map(|prefix: Ipv6Inet| prefix.network()),
+                lease: info.ipv6_public_addr_lease.map(Into::into),
+                reachable: *peer_id == service_impl.my_peer_id
+                    || service_impl.route_table.peer_reachable(*peer_id),
+            })
+            .collect()
+    }
+
+    fn publish_self_public_ipv6_lease(&self, lease: Option<Ipv6Inet>) -> bool {
+        let Some(service_impl) = self.service_impl.upgrade() else {
+            return false;
+        };
+
+        let mut current = service_impl.self_public_ipv6_addr_lease.lock().unwrap();
+        if *current == lease {
+            return false;
+        }
+        *current = lease;
+        drop(current);
+
+        let changed = service_impl.update_my_peer_info();
+        if changed {
+            service_impl.update_route_table_and_cached_local_conn_bitmap();
+            service_impl.update_foreign_network_owner_map();
+        }
+        changed
+    }
+}
+
+#[derive(Clone)]
+struct OspfPublicIpv6SyncTrigger {
+    session_mgr: RouteSessionManager,
+}
+
+impl PublicIpv6SyncTrigger for OspfPublicIpv6SyncTrigger {
+    fn sync_now(&self, reason: &str) {
+        self.session_mgr.sync_now(reason);
+    }
+}
+
 pub struct PeerRoute {
     my_peer_id: PeerId,
     context: ArcPeerContext,
@@ -4178,6 +4324,7 @@ pub struct PeerRoute {
     known_vpn_peer_infos: RwLock<BTreeMap<PeerId, RoutePeerInfo>>,
 
     service_impl: Arc<PeerRouteServiceImpl>,
+    public_ipv6_service: Arc<PublicIpv6Service>,
     session_mgr: RouteSessionManager,
 
     tasks: std::sync::Mutex<JoinSet<()>>,
@@ -4254,10 +4401,22 @@ impl PeerRoute {
     pub fn new(
         my_peer_id: PeerId,
         context: ArcPeerContext,
+        public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
         peer_rpc: Arc<PeerRpcManager>,
     ) -> Arc<Self> {
         let service_impl = Arc::new(PeerRouteServiceImpl::new(my_peer_id, context.clone()));
         let session_mgr = RouteSessionManager::new(service_impl.clone(), peer_rpc.clone());
+        let public_ipv6_service = Arc::new(PublicIpv6Service::new(
+            public_ipv6_runtime,
+            Arc::downgrade(&peer_rpc),
+            Arc::new(OspfPublicIpv6RouteHandle {
+                service_impl: Arc::downgrade(&service_impl),
+            }),
+            Arc::new(OspfPublicIpv6SyncTrigger {
+                session_mgr: session_mgr.clone(),
+            }),
+        ));
+        service_impl.set_public_ipv6_service(Arc::downgrade(&public_ipv6_service));
 
         Arc::new(PeerRoute {
             my_peer_id,
@@ -4266,6 +4425,7 @@ impl PeerRoute {
             known_vpn_peer_infos: RwLock::new(BTreeMap::new()),
 
             service_impl,
+            public_ipv6_service,
             session_mgr,
 
             tasks: std::sync::Mutex::new(JoinSet::new()),
@@ -4304,6 +4464,9 @@ impl PeerRoute {
                 tracing::debug!("cost_calculator_need_update");
                 service_impl.synced_route_info.version.inc();
                 service_impl.update_route_table();
+                if let Some(public_ipv6_service) = service_impl.public_ipv6_service() {
+                    public_ipv6_service.handle_route_change();
+                }
             }
 
             let peer_event = async {
@@ -4350,9 +4513,14 @@ impl PeerRoute {
 
         // make sure my_peer_id is in the peer_infos.
         self.service_impl.update_my_infos().await;
+        self.public_ipv6_service.handle_route_change();
 
         peer_rpc.rpc_server().registry().register(
             OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.context.network_name(),
+        );
+        peer_rpc.rpc_server().registry().register(
+            PublicIpv6AddrRpcServer::new(self.public_ipv6_service.rpc_server()),
             &self.context.network_name(),
         );
 
@@ -4376,6 +4544,16 @@ impl PeerRoute {
             .lock()
             .unwrap()
             .spawn(Self::clear_expired_peer(self.service_impl.clone()));
+
+        self.tasks
+            .lock()
+            .unwrap()
+            .spawn(self.public_ipv6_service.clone().provider_gc_routine());
+
+        self.tasks
+            .lock()
+            .unwrap()
+            .spawn(self.public_ipv6_service.clone().client_routine());
     }
 
     fn unregister_rpc_services(&self) {
@@ -4385,6 +4563,10 @@ impl PeerRoute {
 
         peer_rpc.rpc_server().registry().unregister(
             OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.context.network_name(),
+        );
+        peer_rpc.rpc_server().registry().unregister(
+            PublicIpv6AddrRpcServer::new(self.public_ipv6_service.rpc_server()),
             &self.context.network_name(),
         );
     }
@@ -4497,6 +4679,49 @@ impl Route for PeerRoute {
         self.service_impl
             .route_table
             .list_proxy_cidrs_v6_excluding(self.my_peer_id)
+    }
+
+    async fn list_public_ipv6_routes(&self) -> BTreeSet<Ipv6Inet> {
+        self.public_ipv6_service.list_routes()
+    }
+
+    async fn get_my_public_ipv6_addr(&self) -> Option<Ipv6Inet> {
+        self.public_ipv6_service.my_addr()
+    }
+
+    async fn get_public_ipv6_gateway_peer_id(&self) -> Option<PeerId> {
+        self.public_ipv6_service.provider_peer_id_for_client()
+    }
+
+    async fn get_local_public_ipv6_info(&self) -> CoreListPublicIpv6InfoResponse {
+        let Some((provider, leases)) = self.public_ipv6_service.local_provider_state() else {
+            return CoreListPublicIpv6InfoResponse::default();
+        };
+
+        CoreListPublicIpv6InfoResponse {
+            provider_prefix: Some(
+                Ipv6Inet::new(
+                    provider.prefix.first_address(),
+                    provider.prefix.network_length(),
+                )
+                .unwrap()
+                .into(),
+            ),
+            provider_leases: leases
+                .into_iter()
+                .map(|lease| CorePublicIpv6LeaseInfo {
+                    peer_id: lease.peer_id,
+                    inst_id: lease.inst_id.to_string(),
+                    leased_addr: Some(lease.addr.into()),
+                    valid_until_unix_seconds: lease
+                        .valid_until
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                    reused: lease.reused,
+                })
+                .collect(),
+        }
     }
 
     async fn get_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {
@@ -4636,7 +4861,12 @@ mod tests {
     #[tokio::test]
     async fn known_vpn_advertisements_survive_outage_and_expiry() {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
-        let route = PeerRoute::new(1, Arc::new(NoopPeerContext::default()), peer_rpc);
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
         let remote = RoutePeerInfo {
             peer_id: 2,
             ipv4_addr: Some(Ipv4Addr::new(203, 0, 113, 2).into()),
@@ -4687,7 +4917,12 @@ mod tests {
     #[tokio::test]
     async fn known_vpn_advertisements_replace_changed_prefixes_and_subnets() {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
-        let route = PeerRoute::new(1, Arc::new(NoopPeerContext::default()), peer_rpc);
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
         let original = RoutePeerInfo {
             peer_id: 2,
             ipv4_addr: Some(Ipv4Addr::new(203, 0, 113, 2).into()),
@@ -4814,6 +5049,35 @@ mod tests {
         async fn recv(&self) -> anyhow::Result<ZCPacket> {
             std::future::pending().await
         }
+    }
+
+    struct TestPublicIpv6Runtime;
+
+    #[async_trait::async_trait]
+    impl PublicIpv6Runtime for TestPublicIpv6Runtime {
+        fn ipv6_public_addr_auto(&self) -> bool {
+            false
+        }
+
+        fn ipv6_public_addr_provider(&self) -> bool {
+            false
+        }
+
+        fn instance_id(&self) -> uuid::Uuid {
+            uuid::Uuid::nil()
+        }
+
+        fn network_name(&self) -> String {
+            "default".to_owned()
+        }
+
+        async fn collect_reserved_public_ipv6_addrs(&self, _prefix: Ipv6Cidr) -> HashSet<Ipv6Addr> {
+            HashSet::new()
+        }
+
+        fn public_ipv6_lease_changed(&self, _old: Option<Ipv6Inet>, _new: Option<Ipv6Inet>) {}
+
+        fn public_ipv6_routes_changed(&self, _added: Vec<Ipv6Inet>, _removed: Vec<Ipv6Inet>) {}
     }
 
     #[async_trait::async_trait]
@@ -4958,7 +5222,12 @@ mod tests {
         context: ArcPeerContext,
     ) -> (Arc<PeerRoute>, Arc<PeerRpcManager>) {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
-        let route = PeerRoute::new(1, context, peer_rpc.clone());
+        let route = PeerRoute::new(
+            1,
+            context,
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc.clone(),
+        );
         *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
             my_peer_id: 1,
             peers: Arc::new(Mutex::new(vec![2])),
@@ -6040,7 +6309,12 @@ mod tests {
     #[tokio::test]
     async fn initiator_sync_creates_session_and_marks_contact() {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
-        let route = PeerRoute::new(1, Arc::new(NoopPeerContext::default()), peer_rpc);
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
         let peers = Arc::new(Mutex::new(vec![2]));
         *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
             my_peer_id: 1,
@@ -6077,7 +6351,12 @@ mod tests {
     #[tokio::test]
     async fn stale_non_initiator_sync_does_not_create_session() {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
-        let route = PeerRoute::new(1, Arc::new(NoopPeerContext::default()), peer_rpc);
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
         let peers = Arc::new(Mutex::new(vec![2]));
         *route.service_impl.interface.lock().await = Some(Box::new(CountingInterface {
             my_peer_id: 1,
@@ -6276,7 +6555,12 @@ mod tests {
     #[tokio::test]
     async fn stop_waits_for_in_flight_route_sync_before_draining_sessions() {
         let peer_rpc = Arc::new(PeerRpcManager::new(TestPeerRpcTransport));
-        let route = PeerRoute::new(1, Arc::new(NoopPeerContext::default()), peer_rpc);
+        let route = PeerRoute::new(
+            1,
+            Arc::new(NoopPeerContext::default()),
+            Arc::new(TestPublicIpv6Runtime),
+            peer_rpc,
+        );
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         *route.service_impl.interface.lock().await = Some(Box::new(BlockingInterface {

@@ -40,6 +40,15 @@ core_clap:
   ipv6:
     en: "ipv6 address of this vpn node, can be used together with ipv4 for dual-stack operation"
     zh-CN: "此VPN节点的IPv6地址，可与IPv4一起使用以进行双栈操作"
+  ipv6_public_addr_provider:
+    en: "share this node's public IPv6 subnet with other peers so they can obtain public IPv6 addresses (Linux only)"
+    zh-CN: "将此节点的公网 IPv6 子网共享给其他节点，使它们也能获得公网 IPv6 地址（仅 Linux 支持）"
+  ipv6_public_addr_auto:
+    en: "auto-obtain a public IPv6 address from a peer that shares its IPv6 subnet"
+    zh-CN: "自动从共享了 IPv6 子网的对等节点获取一个公网 IPv6 地址"
+  ipv6_public_addr_prefix:
+    en: "manually specify the public IPv6 subnet to share, instead of auto-detecting from system routes"
+    zh-CN: "手动指定要共享的公网 IPv6 子网，不自动从系统路由检测"
   dhcp:
     en: "automatically assign an IPv4 address. Accepts true, false, or an IPv4 CIDR (e.g. --dhcp 192.168.100.0/24) for the initial subnet, defaulting to 10.126.126.0/24. Subnets advertised by peers take priority. Prefix lengths /31 and /32 are not supported. IP conflicts automatically trigger reassignment."
     zh-CN: "自动分配 IPv4 地址。支持 true、false 或 IPv4 CIDR（如 --dhcp 192.168.100.0/24）指定初始网段，默认使用 10.126.126.0/24。优先使用对等节点公布的网段，不支持 /31 和 /32。IP 冲突时会自动重新分配。"

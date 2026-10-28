@@ -127,6 +127,9 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "traffic_disguise",
     "instance_id",
     "ipv4",
+    "ipv6_public_addr_provider",
+    "ipv6_public_addr_auto",
+    "ipv6_public_addr_prefix",
     "vpn",
     "dhcp",
     "dhcpv6",
@@ -475,6 +478,24 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_vpn(vpn);
         }
 
+        if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {
+            cfg.set_ipv6_public_addr_provider(ipv6_public_addr_provider);
+        }
+
+        if let Some(ipv6_public_addr_auto) = self.ipv6_public_addr_auto {
+            cfg.set_ipv6_public_addr_auto(ipv6_public_addr_auto);
+        }
+
+        if let Some(ipv6_public_addr_prefix) = self
+            .ipv6_public_addr_prefix
+            .as_ref()
+            .filter(|prefix| !prefix.is_empty())
+        {
+            cfg.set_ipv6_public_addr_prefix(Some(ipv6_public_addr_prefix.parse().with_context(
+                || format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}"),
+            )?));
+        }
+
         if self.enable_socks5.unwrap_or_default()
             && let Some(socks5_port) = self.socks5_port
         {
@@ -628,6 +649,17 @@ impl NetworkConfigExt for NetworkConfig {
             result.virtual_ipv4 = Some(ipv4.address().to_string());
             result.network_length = Some(ipv4.network_length() as i32);
         }
+
+        if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider()
+        {
+            result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
+        }
+        if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
+            result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
+        }
+        result.ipv6_public_addr_prefix = config
+            .get_ipv6_public_addr_prefix()
+            .map(|prefix| prefix.to_string());
 
         let vpn = config.get_vpn();
         if vpn != default_config.get_vpn() {

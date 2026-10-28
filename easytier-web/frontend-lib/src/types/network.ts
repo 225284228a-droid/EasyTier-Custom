@@ -213,6 +213,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
 
     p2p_prefer_protocol: 'udp',
     p2p_disguise_mode: 'prefer',
+    ipv6_public_addr_provider: false,
+    ipv6_public_addr_auto: false,
+    ipv6_public_addr_prefix: '',
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,

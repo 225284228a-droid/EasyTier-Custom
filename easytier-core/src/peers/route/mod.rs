@@ -5,6 +5,7 @@ pub(crate) mod graph_algo;
 pub(crate) mod peer_ospf_route;
 mod route_peer_wire;
 
+use cidr::Ipv6Inet;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use dashmap::DashMap;
 use quanta::Instant;
@@ -18,7 +19,7 @@ use crate::{
     config::PeerId,
     peers::context::NetworkIdentity,
     proto::{
-        core_peer::peer::Route as CoreRoute,
+        core_peer::peer::{ListPublicIpv6InfoResponse, Route as CoreRoute},
         peer_rpc::{
             ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
             RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
@@ -110,6 +111,22 @@ pub trait Route {
 
     // TODO: rewrite route management, remove this
     async fn list_proxy_cidrs_v6(&self) -> BTreeSet<Ipv6Cidr>;
+
+    async fn list_public_ipv6_routes(&self) -> BTreeSet<Ipv6Inet> {
+        BTreeSet::new()
+    }
+
+    async fn get_my_public_ipv6_addr(&self) -> Option<Ipv6Inet> {
+        None
+    }
+
+    async fn get_public_ipv6_gateway_peer_id(&self) -> Option<PeerId> {
+        None
+    }
+
+    async fn get_local_public_ipv6_info(&self) -> ListPublicIpv6InfoResponse {
+        ListPublicIpv6InfoResponse::default()
+    }
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None
@@ -203,6 +220,14 @@ impl Route for DisabledRoute {
     // TODO: rewrite route management, remove this
     async fn list_proxy_cidrs_v6(&self) -> BTreeSet<Ipv6Cidr> {
         unimplemented!()
+    }
+
+    async fn list_public_ipv6_routes(&self) -> BTreeSet<Ipv6Inet> {
+        unimplemented!()
+    }
+
+    async fn get_my_public_ipv6_addr(&self) -> Option<Ipv6Inet> {
+        panic!("mock route")
     }
 
     async fn get_peer_info(&self, _peer_id: PeerId) -> Option<RoutePeerInfo> {

@@ -35,6 +35,8 @@ const BOOLEAN_CONFIG_FIELDS = [
   'lazy_p2p',
   'need_p2p',
   'disable_upnp',
+  'ipv6_public_addr_provider',
+  'ipv6_public_addr_auto',
   'disable_relay_data',
   'enable_udp_broadcast_relay',
   'disable_tcp_hole_punching',

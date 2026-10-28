@@ -54,6 +54,10 @@ pub(crate) fn runtime_core_host_config() -> CoreInstanceHostConfig {
         udp_broadcast_enabled: cfg!(all(target_os = "windows", feature = "tun")),
         upnp_enabled: cfg!(feature = "upnp"),
         tcp_hole_punching_enabled: cfg!(feature = "tcp-hole-punch"),
+        public_ipv6_provider_supported: cfg!(all(
+            target_os = "linux",
+            feature = "public-ipv6-provider"
+        )),
         wss_http3_supported: cfg!(feature = "websocket"),
         ignore_unsupported_config: false,
         connectivity: CoreConnectivityMode::Full,
@@ -75,6 +79,7 @@ pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
     config.udp_broadcast_enabled = false;
     config.upnp_enabled = false;
     config.tcp_hole_punching_enabled = false;
+    config.public_ipv6_provider_supported = false;
     config.wss_http3_supported = false;
     config.ignore_unsupported_config = true;
     config.endpoint_protocols = vec!["tcp".to_owned(), "udp".to_owned()];
@@ -144,6 +149,10 @@ mod tests {
         );
         assert_eq!(config.gateway_enabled, cfg!(feature = "socks5"));
         assert_eq!(config.smoltcp_available, cfg!(feature = "smoltcp"));
+        assert_eq!(
+            config.public_ipv6_provider_supported,
+            cfg!(all(target_os = "linux", feature = "public-ipv6-provider"))
+        );
         assert_eq!(config.easytier_version, EASYTIER_VERSION);
     }
 

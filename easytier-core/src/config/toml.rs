@@ -75,6 +75,15 @@ pub trait ConfigLoader: Send + Sync {
     fn get_ipv6(&self) -> Option<cidr::Ipv6Inet>;
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>);
 
+    fn get_ipv6_public_addr_provider(&self) -> bool;
+    fn set_ipv6_public_addr_provider(&self, enabled: bool);
+
+    fn get_ipv6_public_addr_auto(&self) -> bool;
+    fn set_ipv6_public_addr_auto(&self, enabled: bool);
+
+    fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr>;
+    fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>);
+
     fn get_dhcp_config(&self) -> DhcpConfig;
     fn set_dhcp_config(&self, dhcp: DhcpConfig);
 
@@ -442,6 +451,9 @@ struct Config {
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
     ipv6: Option<String>,
+    ipv6_public_addr_provider: Option<bool>,
+    ipv6_public_addr_auto: Option<bool>,
+    ipv6_public_addr_prefix: Option<String>,
     dhcp: Option<DhcpConfig>,
     dhcpv6: Option<DhcpConfig<cidr::Ipv6Cidr>>,
     network_identity: Option<NetworkIdentity>,
@@ -943,6 +955,43 @@ impl ConfigLoader for TomlConfig {
 
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
         self.config.lock().unwrap().ipv6 = addr.map(|addr| addr.to_string());
+    }
+
+    fn get_ipv6_public_addr_provider(&self) -> bool {
+        self.config
+            .lock()
+            .unwrap()
+            .ipv6_public_addr_provider
+            .unwrap_or_default()
+    }
+
+    fn set_ipv6_public_addr_provider(&self, enabled: bool) {
+        self.config.lock().unwrap().ipv6_public_addr_provider = Some(enabled);
+    }
+
+    fn get_ipv6_public_addr_auto(&self) -> bool {
+        self.config
+            .lock()
+            .unwrap()
+            .ipv6_public_addr_auto
+            .unwrap_or_default()
+    }
+
+    fn set_ipv6_public_addr_auto(&self, enabled: bool) {
+        self.config.lock().unwrap().ipv6_public_addr_auto = Some(enabled);
+    }
+
+    fn get_ipv6_public_addr_prefix(&self) -> Option<cidr::Ipv6Cidr> {
+        let locked_config = self.config.lock().unwrap();
+        locked_config
+            .ipv6_public_addr_prefix
+            .as_ref()
+            .and_then(|s| s.parse().ok())
+    }
+
+    fn set_ipv6_public_addr_prefix(&self, prefix: Option<cidr::Ipv6Cidr>) {
+        self.config.lock().unwrap().ipv6_public_addr_prefix =
+            prefix.map(|prefix| prefix.to_string());
     }
 
     fn get_dhcp_config(&self) -> DhcpConfig {
@@ -2091,6 +2140,27 @@ tcp_stun_servers = []
 
         let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
         assert_eq!(loaded.get_network_config_source(), ConfigSource::Web);
+    }
+
+    #[cfg(feature = "config-write")]
+    #[test]
+    fn test_ipv6_public_addr_config_roundtrip() {
+        let config = TomlConfigLoader::default();
+        let prefix: cidr::Ipv6Cidr = "2001:db8:100::/64".parse().unwrap();
+
+        config.set_ipv6_public_addr_provider(true);
+        config.set_ipv6_public_addr_auto(true);
+        config.set_ipv6_public_addr_prefix(Some(prefix));
+
+        assert!(config.get_ipv6_public_addr_provider());
+        assert!(config.get_ipv6_public_addr_auto());
+        assert_eq!(config.get_ipv6_public_addr_prefix(), Some(prefix));
+
+        let dumped = config.dump();
+        let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
+        assert!(loaded.get_ipv6_public_addr_provider());
+        assert!(loaded.get_ipv6_public_addr_auto());
+        assert_eq!(loaded.get_ipv6_public_addr_prefix(), Some(prefix));
     }
 
     #[cfg(feature = "config-write")]

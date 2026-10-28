@@ -5,6 +5,7 @@
 //! `crate::peers`.
 
 use anyhow::Context as _;
+use cidr::Ipv6Cidr;
 use easytier_proto::common::{Flags, PeerFeatureFlag, SecureModeConfig, StunInfo};
 use serde::{Deserialize, Serialize};
 
@@ -196,6 +197,19 @@ impl AclRuleConfig {
         let mut config = self.clone();
         config.generate_acl_from_whitelists()?;
         Ok(config.acl)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicIpv6ProviderConfig {
+    pub provider_enabled: bool,
+    pub configured_prefix: Option<Ipv6Cidr>,
+    pub provider_supported: bool,
+}
+
+impl PublicIpv6ProviderConfig {
+    pub fn should_run_reconcile(self) -> bool {
+        self.provider_enabled
     }
 }
 

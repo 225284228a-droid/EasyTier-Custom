@@ -96,6 +96,9 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "dhcp_ipv4_cidr" => vec!["dhcp"],
         "dhcpv6" | "dhcp_ipv6_cidr" => vec!["dhcpv6"],
         "virtual_ipv4" | "network_length" => vec!["ipv4"],
+        "ipv6_public_addr_provider" => vec!["ipv6_public_addr_provider"],
+        "ipv6_public_addr_auto" => vec!["ipv6_public_addr_auto"],
+        "ipv6_public_addr_prefix" => vec!["ipv6_public_addr_prefix"],
         "network_name" => vec!["network_identity.network_name"],
         "network_secret" => vec![
             "network_identity.network_secret",

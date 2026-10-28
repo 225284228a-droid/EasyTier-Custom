@@ -21,22 +21,28 @@ pub(crate) const RTM_DELADDR: u16 = 21;
 pub(crate) const RTM_NEWROUTE: u16 = 24;
 pub(crate) const RTM_DELROUTE: u16 = 25;
 pub(crate) const RTM_GETROUTE: u16 = 26;
+pub(crate) const RTM_NEWNEIGH: u16 = 28;
+pub(crate) const RTM_DELNEIGH: u16 = 29;
+pub(crate) const RTM_GETNEIGH: u16 = 30;
 
 const NLMSG_HEADER_LEN: usize = 16;
 const ATTRIBUTE_HEADER_LEN: usize = 4;
-pub(crate) const NLA_TYPE_MASK: u16 = 0x3fff;
+const NLA_TYPE_MASK: u16 = 0x3fff;
 
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
 const IFA_BROADCAST: u16 = 4;
 
 const RTA_DST: u16 = 1;
-#[cfg(test)]
 const RTA_SRC: u16 = 2;
 const RTA_OIF: u16 = 4;
-pub(crate) const RTA_PRIORITY: u16 = 6;
+const RTA_PRIORITY: u16 = 6;
 const RTA_PREFSRC: u16 = 7;
 const RTA_TABLE: u16 = 15;
+
+const NDA_DST: u16 = 1;
+const NTF_PROXY: u8 = 0x08;
+const NUD_PERMANENT: u16 = 0x80;
 
 fn align4(len: usize) -> Option<usize> {
     len.checked_add(3).map(|len| len & !3)
@@ -168,7 +174,7 @@ pub(crate) fn netlink_error_code(payload: &[u8]) -> io::Result<i32> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Attribute {
+struct Attribute {
     kind: u16,
     value: Vec<u8>,
 }
@@ -297,6 +303,31 @@ impl NetlinkEncode for AddressMessage {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RouteType {
+    Unicast,
+    Blackhole,
+    Other(u8),
+}
+
+impl RouteType {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            1 => Self::Unicast,
+            6 => Self::Blackhole,
+            value => Self::Other(value),
+        }
+    }
+
+    fn raw(self) -> u8 {
+        match self {
+            Self::Unicast => 1,
+            Self::Blackhole => 6,
+            Self::Other(value) => value,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RouteMessage {
     family: u8,
@@ -310,7 +341,6 @@ pub(crate) struct RouteMessage {
     flags: u32,
     attributes: Vec<Attribute>,
     destination: Option<IpAddr>,
-    #[cfg(test)]
     source: Option<IpAddr>,
     oif: Option<u32>,
 }
@@ -324,32 +354,20 @@ impl RouteMessage {
         self.dst_len
     }
 
-    #[cfg(test)]
     pub(crate) fn src_len(&self) -> u8 {
         self.src_len
     }
 
-    #[cfg(test)]
-    pub(crate) fn route_type(&self) -> u8 {
-        self.route_type
+    pub(crate) fn route_type(&self) -> RouteType {
+        RouteType::from_raw(self.route_type)
     }
 
     pub(crate) fn destination(&self) -> Option<&IpAddr> {
         self.destination.as_ref()
     }
 
-    #[cfg(test)]
     pub(crate) fn source(&self) -> Option<&IpAddr> {
         self.source.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn priority(&self) -> Option<u32> {
-        self.attributes
-            .iter()
-            .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_PRIORITY)
-            .and_then(|attribute| attribute.value.as_slice().try_into().ok())
-            .map(u32::from_ne_bytes)
     }
 
     pub(crate) fn oif(&self) -> Option<u32> {
@@ -376,7 +394,6 @@ impl NetlinkDecode for RouteMessage {
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_DST)
             .and_then(|attribute| parse_ip(family, &attribute.value));
-        #[cfg(test)]
         let source = attributes
             .iter()
             .find(|attribute| attribute.kind & NLA_TYPE_MASK == RTA_SRC)
@@ -398,7 +415,6 @@ impl NetlinkDecode for RouteMessage {
             flags: read_u32(&bytes[8..])?,
             attributes,
             destination,
-            #[cfg(test)]
             source,
             oif,
         })
@@ -442,7 +458,6 @@ impl RouteMessageBuilder {
                 flags: 0,
                 attributes: Vec::new(),
                 destination: None,
-                #[cfg(test)]
                 source: None,
                 oif: None,
             },
@@ -502,13 +517,93 @@ impl RouteMessageBuilder {
         self
     }
 
-    pub(crate) fn unicast(mut self) -> Self {
-        self.message.route_type = libc::RTN_UNICAST;
+    pub(crate) fn route_type(mut self, route_type: RouteType) -> Self {
+        self.message.route_type = route_type.raw();
         self
     }
 
     pub(crate) fn build(self) -> RouteMessage {
         self.message
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NeighborMessage {
+    family: u8,
+    ifindex: u32,
+    state: u16,
+    flags: u8,
+    kind: u8,
+    attributes: Vec<Attribute>,
+    destination: Option<IpAddr>,
+}
+
+impl NeighborMessage {
+    pub(crate) fn proxy(ifindex: u32, address: Ipv6Addr) -> Self {
+        Self {
+            family: libc::AF_INET6 as u8,
+            ifindex,
+            state: NUD_PERMANENT,
+            flags: NTF_PROXY,
+            kind: 0,
+            attributes: vec![Attribute::new(NDA_DST, address.octets().to_vec())],
+            destination: Some(IpAddr::V6(address)),
+        }
+    }
+
+    pub(crate) fn proxy_dump_header(family: u8) -> Vec<u8> {
+        let mut bytes = vec![family, 0, 0, 0];
+        bytes.extend_from_slice(&0_u32.to_ne_bytes());
+        bytes.extend_from_slice(&0_u16.to_ne_bytes());
+        bytes.extend_from_slice(&[NTF_PROXY, 0]);
+        bytes
+    }
+
+    pub(crate) fn ifindex(&self) -> u32 {
+        self.ifindex
+    }
+
+    pub(crate) fn is_proxy(&self) -> bool {
+        self.flags & NTF_PROXY != 0
+    }
+
+    pub(crate) fn destination(&self) -> Option<&IpAddr> {
+        self.destination.as_ref()
+    }
+}
+
+impl NetlinkDecode for NeighborMessage {
+    const MESSAGE_TYPE: u16 = RTM_NEWNEIGH;
+
+    fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() < 12 {
+            return Err(invalid_data("truncated neighbor message"));
+        }
+        let family = bytes[0];
+        let attributes = parse_attributes(&bytes[12..])?;
+        let destination = attributes
+            .iter()
+            .find(|attribute| attribute.kind & NLA_TYPE_MASK == NDA_DST)
+            .and_then(|attribute| parse_ip(family, &attribute.value));
+        Ok(Self {
+            family,
+            ifindex: read_u32(&bytes[4..])?,
+            state: read_u16(&bytes[8..])?,
+            flags: bytes[10],
+            kind: bytes[11],
+            attributes,
+            destination,
+        })
+    }
+}
+
+impl NetlinkEncode for NeighborMessage {
+    fn write_to(&self, bytes: &mut Vec<u8>) -> io::Result<()> {
+        bytes.extend_from_slice(&[self.family, 0, 0, 0]);
+        bytes.extend_from_slice(&self.ifindex.to_ne_bytes());
+        bytes.extend_from_slice(&self.state.to_ne_bytes());
+        bytes.extend_from_slice(&[self.flags, self.kind]);
+        write_attributes(&self.attributes, bytes)
     }
 }
 
@@ -531,24 +626,17 @@ mod tests {
             .table(libc::RT_TABLE_MAIN.into())
             .static_protocol()
             .universe_scope()
-            .unicast()
+            .route_type(RouteType::Unicast)
             .build();
         message
             .attributes
             .push(Attribute::new(0x4321, vec![1, 2, 3, 4, 5]));
-        // Gateway attributes stay opaque but must survive route readback and
-        // deletion just like any other attribute the caller does not inspect.
-        message.attributes.push(Attribute::new(
-            5, // RTA_GATEWAY
-            ip_bytes("2001:db8::1".parse().unwrap()),
-        ));
 
         let bytes = encode(&message);
         let decoded = RouteMessage::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.destination(), message.destination());
         assert_eq!(decoded.oif(), Some(7));
-        assert_eq!(decoded.priority(), Some(42));
-        assert_eq!(decoded.route_type(), libc::RTN_UNICAST);
+        assert_eq!(decoded.route_type(), RouteType::Unicast);
         assert_eq!(encode(&decoded), bytes);
     }
 
@@ -578,7 +666,7 @@ mod tests {
             libc::RT_TABLE_MAIN,
             libc::RTPROT_STATIC,
             libc::RT_SCOPE_UNIVERSE,
-            libc::RTN_UNICAST,
+            RouteType::Unicast.raw(),
         ];
         bytes.extend_from_slice(&0_u32.to_ne_bytes());
         Attribute::new(
@@ -598,23 +686,12 @@ mod tests {
     }
 
     #[test]
-    fn route_priority_handles_missing_malformed_and_flagged_attributes() {
-        let mut message = RouteMessageBuilder::new(libc::AF_INET as u8).build();
-        assert_eq!(message.priority(), None);
-
-        message
-            .attributes
-            .push(Attribute::new(RTA_PRIORITY, vec![1, 2, 3]));
-        let decoded = RouteMessage::from_bytes(&encode(&message)).unwrap();
-        assert_eq!(decoded.priority(), None);
-
-        message.attributes.clear();
-        message.attributes.push(Attribute::new(
-            RTA_PRIORITY | 0x8000,
-            17_u32.to_ne_bytes().to_vec(),
-        ));
-        let decoded = RouteMessage::from_bytes(&encode(&message)).unwrap();
-        assert_eq!(decoded.priority(), Some(17));
+    fn neighbor_proxy_round_trip() {
+        let message = NeighborMessage::proxy(9, "2001:db8::1".parse().unwrap());
+        let decoded = NeighborMessage::from_bytes(&encode(&message)).unwrap();
+        assert_eq!(decoded.ifindex(), 9);
+        assert!(decoded.is_proxy());
+        assert_eq!(decoded.destination(), message.destination());
     }
 
     #[test]

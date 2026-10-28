@@ -1574,6 +1574,164 @@ impl NicCtx {
         Ok(())
     }
 
+    async fn apply_public_ipv6_route_changes(
+        backend: &NicBackend,
+        cur_routes: &mut BTreeSet<cidr::Ipv6Inet>,
+        added: Vec<cidr::Ipv6Inet>,
+        removed: Vec<cidr::Ipv6Inet>,
+    ) {
+        for route in removed {
+            if !cur_routes.contains(&route) {
+                continue;
+            }
+            let ret = backend
+                .remove_ipv6_route(route.address(), route.network_length())
+                .await;
+            if ret.is_err() {
+                tracing::trace!(route = ?route, err = ?ret, "remove public ipv6 route failed");
+            }
+            cur_routes.remove(&route);
+        }
+
+        for route in added {
+            if cur_routes.contains(&route) {
+                continue;
+            }
+            let ret = backend
+                .add_ipv6_route(route.address(), route.network_length())
+                .await;
+            if ret.is_err() {
+                tracing::trace!(route = ?route, err = ?ret, "add public ipv6 route failed");
+            } else {
+                cur_routes.insert(route);
+            }
+        }
+    }
+
+    async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
+        let packet_plane = self.packet_plane.clone();
+        let global_ctx = self.global_ctx.clone();
+        let backend = self.backend.clone();
+        let mut event_receiver = global_ctx.subscribe();
+        let cancellation = self.cancellation.clone();
+
+        let mut cur_routes = BTreeSet::<cidr::Ipv6Inet>::new();
+        let initial_routes = packet_plane.public_ipv6_routes().await;
+        let initial_added = initial_routes.iter().copied().collect::<Vec<_>>();
+        Self::apply_public_ipv6_route_changes(&backend, &mut cur_routes, initial_added, Vec::new())
+            .await;
+
+        self.control_tasks.spawn(async move {
+            loop {
+                let event = match tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    event = event_receiver.recv() => event,
+                } {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        let latest = packet_plane.public_ipv6_routes().await;
+                        let added = latest.difference(&cur_routes).copied().collect::<Vec<_>>();
+                        let removed = cur_routes.difference(&latest).copied().collect::<Vec<_>>();
+                        GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
+                    }
+                };
+
+                let (added, removed) = match event {
+                    GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed) => (added, removed),
+                    _ => continue,
+                };
+
+                Self::apply_public_ipv6_route_changes(&backend, &mut cur_routes, added, removed)
+                    .await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn run_public_ipv6_addr_updater(&mut self) -> Result<(), Error> {
+        let packet_plane = self.packet_plane.clone();
+        let global_ctx = self.global_ctx.clone();
+        let backend = self.backend.clone();
+        let mut event_receiver = global_ctx.subscribe();
+        let cancellation = self.cancellation.clone();
+
+        let mut current_addr = packet_plane.public_ipv6_addr().await;
+        if let Some(addr) = current_addr {
+            if let Err(err) = backend.link_up().await {
+                tracing::warn!(?err, "failed to bring public ipv6 nic link up");
+            }
+            if let Err(err) = backend
+                .add_ipv6(addr.address(), addr.network_length() as i32)
+                .await
+            {
+                tracing::warn!(addr = ?addr, ?err, "failed to add public ipv6 address");
+            }
+            if let Err(err) = backend
+                .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
+                .await
+            {
+                tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
+            }
+        }
+
+        self.control_tasks.spawn(async move {
+            loop {
+                let event = match tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    event = event_receiver.recv() => event,
+                } {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        event_receiver = event_receiver.resubscribe();
+                        let latest = packet_plane.public_ipv6_addr().await;
+                        GlobalCtxEvent::PublicIpv6Changed(current_addr, latest)
+                    }
+                };
+
+                let (old, new) = match event {
+                    GlobalCtxEvent::PublicIpv6Changed(old, new) => (old, new),
+                    _ => continue,
+                };
+
+                current_addr = new;
+                if let Err(err) = backend.link_up().await {
+                    tracing::warn!(?err, "failed to bring public ipv6 nic link up");
+                }
+                if let Some(old) = old {
+                    if let Err(err) = backend
+                        .remove_ipv6_route(Ipv6Addr::UNSPECIFIED, 0)
+                        .await
+                    {
+                        tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to remove default public ipv6 route");
+                    }
+                    if let Err(err) = backend.remove_ipv6(Some(old)).await {
+                        tracing::warn!(addr = ?old, ?err, "failed to remove old public ipv6 address");
+                    }
+                }
+                if let Some(new) = new {
+                    if let Err(err) = backend
+                        .add_ipv6(new.address(), new.network_length() as i32)
+                        .await
+                    {
+                        tracing::warn!(addr = ?new, ?err, "failed to add public ipv6 address");
+                    }
+                    if let Err(err) = backend
+                        .add_ipv6_route_with_cost(Ipv6Addr::UNSPECIFIED, 0, Some(5))
+                        .await
+                    {
+                        tracing::warn!(route = %Ipv6Addr::UNSPECIFIED, prefix = 0, ?err, "failed to add default public ipv6 route");
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     /// Configures exit-side platform state (IPv6 forwarding + NAT66 on
     /// Linux) to match the current config, tracking what was installed so it
     /// can be removed again on disable and on shutdown.
@@ -1727,6 +1885,10 @@ impl NicCtx {
         }
 
         self.run_proxy_cidrs_route_updater().await?;
+        self.run_public_ipv6_route_updater().await?;
+        // Keep the updater running so runtime config patches can enable auto mode
+        // without recreating the NIC.
+        self.run_public_ipv6_addr_updater().await?;
         self.run_vpn_route_updater().await?;
         self.sync_vpn_exit_forwarding().await;
         #[cfg(feature = "management")]
@@ -1761,6 +1923,23 @@ impl NicCtx {
                     ));
                 }
             }
+        }
+        claims
+            .ipv6_routes
+            .extend(
+                packet_plane
+                    .public_ipv6_routes()
+                    .await
+                    .into_iter()
+                    .map(|route| {
+                        SharedIpv6Route::new(route.first_address(), route.network_length(), None)
+                    }),
+            );
+        if let Some(address) = packet_plane.public_ipv6_addr().await {
+            claims.ipv6_addresses.insert(address);
+            claims
+                .ipv6_routes
+                .insert(SharedIpv6Route::new(Ipv6Addr::UNSPECIFIED, 0, Some(5)));
         }
         claims
     }
@@ -1811,6 +1990,8 @@ impl NicCtx {
         };
 
         self.run_proxy_cidrs_route_updater().await?;
+        self.run_public_ipv6_route_updater().await?;
+        self.run_public_ipv6_addr_updater().await?;
 
         self.global_ctx.set_tun_device_ready(ifname);
 

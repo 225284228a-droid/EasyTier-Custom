@@ -135,9 +135,11 @@ dhcp-ipv4 = []
 dhcp-ipv6 = []
 vpn-portal = []
 wrapped-transport = []
+public-ipv6-provider = []
 extended-services = [
     "dhcp-ipv4",
     "dhcp-ipv6",
+    "public-ipv6-provider",
     "vpn-portal",
     "wrapped-transport",
     "proxy-cidr-monitor",

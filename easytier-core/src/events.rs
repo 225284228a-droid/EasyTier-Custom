@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cidr::Ipv4Cidr;
+use cidr::{Ipv4Cidr, Ipv6Inet};
 use url::Url;
 
 use crate::{
@@ -73,6 +73,14 @@ pub enum CoreEvent {
     ProxyCidrsUpdated {
         added: Vec<Ipv4Cidr>,
         removed: Vec<Ipv4Cidr>,
+    },
+    PublicIpv6LeaseChanged {
+        old: Option<Ipv6Inet>,
+        new: Option<Ipv6Inet>,
+    },
+    PublicIpv6RoutesChanged {
+        added: Vec<Ipv6Inet>,
+        removed: Vec<Ipv6Inet>,
     },
     /// Per-exit liveness view of the multi-exit VPN (virtual IP -> reachable).
     /// Emitted only when the view changes. Reachability selects the exit;

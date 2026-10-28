@@ -172,6 +172,12 @@ where
         self.peer_manager.dump_route().await
     }
 
+    pub async fn local_public_ipv6_info(
+        &self,
+    ) -> crate::proto::core_peer::peer::ListPublicIpv6InfoResponse {
+        self.peer_manager.local_public_ipv6_info().await
+    }
+
     pub async fn foreign_network_route_infos(
         &self,
     ) -> crate::proto::peer_rpc::RouteForeignNetworkInfos {

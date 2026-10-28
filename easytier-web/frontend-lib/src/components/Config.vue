@@ -165,6 +165,7 @@ const bool_flags: BoolFlag[] = [
   // Every schema flag uses a checkbox, together with the top-level
   // concurrency option.
   ...formFlags(),
+  { field: 'ipv6_public_addr_auto', help: 'ipv6_public_addr_auto_help' },
   { field: 'disable_parallel_connections', help: 'disable_parallel_connections_help' },
 ]
 const visibleBoolFlags = computed(() => bool_flags.filter(flag => extensionSupported(flag.field)))

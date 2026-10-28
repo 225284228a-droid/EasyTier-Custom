@@ -6,7 +6,8 @@ use easytier_proto::{
         ForeignNetworkEntryPb, GetForeignNetworkSummaryRequest, GetForeignNetworkSummaryResponse,
         GetVpnStatusRequest, GetVpnStatusResponse, ListConnectorRequest, ListConnectorResponse,
         ListForeignNetworkRequest, ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
-        ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse, ListRouteRequest,
+        ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse,
+        ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
         ListRouteResponse, NodeInfo, PeerInfo, PeerManageRpc, ShowNodeInfoRequest,
         ShowNodeInfoResponse, TrustedKeyInfoPb, TrustedKeySourcePb,
         list_global_foreign_network_response::OneForeignNetwork,
@@ -584,6 +585,18 @@ where
         })
     }
 
+    async fn list_public_ipv6_info(
+        &self,
+        _: BaseController,
+        request: ListPublicIpv6InfoRequest,
+    ) -> rpc_types::error::Result<ListPublicIpv6InfoResponse> {
+        Ok(self
+            .instance(request.instance.as_ref())?
+            .local_public_ipv6_info()
+            .await
+            .into())
+    }
+
     async fn get_vpn_status(
         &self,
         _: BaseController,
@@ -715,6 +728,8 @@ where
                 version: snapshot.version,
                 feature_flag: Some(snapshot.feature_flags),
                 ip_list: Some(snapshot.ip_list),
+                public_ipv6_addr: snapshot.public_ipv6_addr.map(Into::into),
+                ipv6_public_addr_prefix: snapshot.ipv6_public_addr_prefix.map(Into::into),
             }),
         })
     }

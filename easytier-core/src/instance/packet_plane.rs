@@ -84,6 +84,14 @@ impl CorePacketPlane {
         )
     }
 
+    pub async fn public_ipv6_routes(&self) -> BTreeSet<cidr::Ipv6Inet> {
+        self.peer_manager.list_public_ipv6_routes().await
+    }
+
+    pub async fn public_ipv6_addr(&self) -> Option<cidr::Ipv6Inet> {
+        self.peer_manager.public_ipv6_addr().await
+    }
+
     #[cfg(feature = "proxy-packet")]
     pub fn udp_broadcast_relay_stats(&self) -> UdpBroadcastRelayStats {
         let network_name = self

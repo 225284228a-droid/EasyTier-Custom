@@ -121,7 +121,9 @@ fn event_needs_tun_refresh(event: &GlobalCtxEvent) -> bool {
     // manual/proxy CIDRs, and the configured exit-node mode.
     matches!(
         event,
-        GlobalCtxEvent::DhcpIpv4Changed(_, _) | GlobalCtxEvent::ProxyCidrsUpdated(_, _)
+        GlobalCtxEvent::DhcpIpv4Changed(_, _)
+            | GlobalCtxEvent::ProxyCidrsUpdated(_, _)
+            | GlobalCtxEvent::PublicIpv6RoutesUpdated(_, _)
     )
 }
 

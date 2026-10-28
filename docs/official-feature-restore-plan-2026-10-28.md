@@ -98,9 +98,9 @@ ICMP、TCP、UDP 三个代理引擎和 `ProxyRuntimeConfig` 中 `vpn_exit` 全�
 
 - 出口节点：已完成（`3ffb244a`、`7080f884`）。
 - Magic DNS：已完成。恢复官方 core `gateway/magic_dns`、原生 `instance/dns_server`、`runtime_host/magic_dns.rs`、`magic_dns.proto`，以及字段 `accept_dns`(22) / `tld_dns_zone`(31) / `enable_magic_dns`(42)；补回 `bootstrap_without_magic_dns` 及其测试。移动端共享网卡按官方方式传递 Magic DNS 假地址。未恢复当年按 VPN 策略转发 DNS 的 `policy_io`。
-- 公网 IPv6：待恢复。
-- Magic DNS 验证（Windows）：core 库 1144 项通过；原生 444 项通过，除既有 5 项环境失败外，恢复的 4 项 Magic DNS 测试同样因 wintun 无法创建适配器失败（环境限制），另有 1 项 HTTP3 测试负载下偶发失败、单独复跑通过；Web 后端 364 项通过；前端 18 个测试文件 176 项及 `test-network-config` 通过；proto 字段清单 4 项通过。
-- Go 绑定与内嵌 WASM：待全部恢复后统一重新生成。
+- 公网 IPv6：已完成。恢复 core peers/public_ipv6、public_ipv6_extension、Linux provider、租约 RPC 与路由/管理字段，虚拟网卡跟随租约更新地址和默认路由，`three_node.rs` 的官方公网 IPv6 测试一并恢复。IPv6 选路按官方把公网 IPv6 网关放在网段规则之前。
+- 验证（Windows）：core 库 1163 项通过；原生 447 项通过，除既有 5 项环境失败（防火墙、系统 DNS、TUN、faketcp、0.0.0.0 RPC）外，恢复的 4 项 Magic DNS 测试同样因 wintun 无法创建适配器失败（环境限制）；Web 后端 364 项通过；前端 18 个测试文件 176 项及 `test-network-config` 通过；proto 字段清单 4 项通过。
+- Go 绑定与内嵌 WASM：待统一重新生成。
 
 ## 建议顺序
 
