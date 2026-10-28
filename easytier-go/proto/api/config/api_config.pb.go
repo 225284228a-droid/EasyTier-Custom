@@ -75,21 +75,24 @@ func (ConfigPatchAction) EnumDescriptor() ([]byte, []int) {
 }
 
 type InstanceConfigPatch struct {
-	state              protoimpl.MessageState       `protogen:"open.v1"`
-	Hostname           *string                      `protobuf:"bytes,1,opt,name=hostname,proto3,oneof" json:"hostname,omitempty"`
-	Ipv4               *common.Ipv4Inet             `protobuf:"bytes,2,opt,name=ipv4,proto3,oneof" json:"ipv4,omitempty"`
-	Ipv6               *common.Ipv6Inet             `protobuf:"bytes,3,opt,name=ipv6,proto3,oneof" json:"ipv6,omitempty"`
-	PortForwards       []*PortForwardPatch          `protobuf:"bytes,4,rep,name=port_forwards,json=portForwards,proto3" json:"port_forwards,omitempty"`
-	Acl                *AclPatch                    `protobuf:"bytes,5,opt,name=acl,proto3,oneof" json:"acl,omitempty"`
-	ProxyNetworks      []*ProxyNetworkPatch         `protobuf:"bytes,6,rep,name=proxy_networks,json=proxyNetworks,proto3" json:"proxy_networks,omitempty"`
-	Routes             []*RoutePatch                `protobuf:"bytes,7,rep,name=routes,proto3" json:"routes,omitempty"`
-	ExitNodes          []*ExitNodePatch             `protobuf:"bytes,8,rep,name=exit_nodes,json=exitNodes,proto3" json:"exit_nodes,omitempty"`
-	MappedListeners    []*UrlPatch                  `protobuf:"bytes,9,rep,name=mapped_listeners,json=mappedListeners,proto3" json:"mapped_listeners,omitempty"`
-	Connectors         []*UrlPatch                  `protobuf:"bytes,10,rep,name=connectors,proto3" json:"connectors,omitempty"`
-	DisableRelayData   *bool                        `protobuf:"varint,14,opt,name=disable_relay_data,json=disableRelayData,proto3,oneof" json:"disable_relay_data,omitempty"`
-	VpnPortalClients   []*VpnPortalClientPatch      `protobuf:"bytes,15,rep,name=vpn_portal_clients,json=vpnPortalClients,proto3" json:"vpn_portal_clients,omitempty"`
-	ManagedCredentials *manage.ManagedCredentialSet `protobuf:"bytes,16,opt,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
-	PreferPeerRelay    *bool                        `protobuf:"varint,17,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
+	state                  protoimpl.MessageState       `protogen:"open.v1"`
+	Hostname               *string                      `protobuf:"bytes,1,opt,name=hostname,proto3,oneof" json:"hostname,omitempty"`
+	Ipv4                   *common.Ipv4Inet             `protobuf:"bytes,2,opt,name=ipv4,proto3,oneof" json:"ipv4,omitempty"`
+	Ipv6                   *common.Ipv6Inet             `protobuf:"bytes,3,opt,name=ipv6,proto3,oneof" json:"ipv6,omitempty"`
+	PortForwards           []*PortForwardPatch          `protobuf:"bytes,4,rep,name=port_forwards,json=portForwards,proto3" json:"port_forwards,omitempty"`
+	Acl                    *AclPatch                    `protobuf:"bytes,5,opt,name=acl,proto3,oneof" json:"acl,omitempty"`
+	ProxyNetworks          []*ProxyNetworkPatch         `protobuf:"bytes,6,rep,name=proxy_networks,json=proxyNetworks,proto3" json:"proxy_networks,omitempty"`
+	Routes                 []*RoutePatch                `protobuf:"bytes,7,rep,name=routes,proto3" json:"routes,omitempty"`
+	ExitNodes              []*ExitNodePatch             `protobuf:"bytes,8,rep,name=exit_nodes,json=exitNodes,proto3" json:"exit_nodes,omitempty"`
+	MappedListeners        []*UrlPatch                  `protobuf:"bytes,9,rep,name=mapped_listeners,json=mappedListeners,proto3" json:"mapped_listeners,omitempty"`
+	Connectors             []*UrlPatch                  `protobuf:"bytes,10,rep,name=connectors,proto3" json:"connectors,omitempty"`
+	Ipv6PublicAddrProvider *bool                        `protobuf:"varint,11,opt,name=ipv6_public_addr_provider,json=ipv6PublicAddrProvider,proto3,oneof" json:"ipv6_public_addr_provider,omitempty"`
+	Ipv6PublicAddrAuto     *bool                        `protobuf:"varint,12,opt,name=ipv6_public_addr_auto,json=ipv6PublicAddrAuto,proto3,oneof" json:"ipv6_public_addr_auto,omitempty"`
+	Ipv6PublicAddrPrefix   *string                      `protobuf:"bytes,13,opt,name=ipv6_public_addr_prefix,json=ipv6PublicAddrPrefix,proto3,oneof" json:"ipv6_public_addr_prefix,omitempty"`
+	DisableRelayData       *bool                        `protobuf:"varint,14,opt,name=disable_relay_data,json=disableRelayData,proto3,oneof" json:"disable_relay_data,omitempty"`
+	VpnPortalClients       []*VpnPortalClientPatch      `protobuf:"bytes,15,rep,name=vpn_portal_clients,json=vpnPortalClients,proto3" json:"vpn_portal_clients,omitempty"`
+	ManagedCredentials     *manage.ManagedCredentialSet `protobuf:"bytes,16,opt,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
+	PreferPeerRelay        *bool                        `protobuf:"varint,17,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
 	// Custom subnet exit VPN (fork feature). Replaces the whole [vpn]
 	// section when present.
 	Vpn *manage.VpnConfig `protobuf:"bytes,50020,opt,name=vpn,proto3,oneof" json:"vpn,omitempty"`
@@ -198,6 +201,27 @@ func (x *InstanceConfigPatch) GetConnectors() []*UrlPatch {
 		return x.Connectors
 	}
 	return nil
+}
+
+func (x *InstanceConfigPatch) GetIpv6PublicAddrProvider() bool {
+	if x != nil && x.Ipv6PublicAddrProvider != nil {
+		return *x.Ipv6PublicAddrProvider
+	}
+	return false
+}
+
+func (x *InstanceConfigPatch) GetIpv6PublicAddrAuto() bool {
+	if x != nil && x.Ipv6PublicAddrAuto != nil {
+		return *x.Ipv6PublicAddrAuto
+	}
+	return false
+}
+
+func (x *InstanceConfigPatch) GetIpv6PublicAddrPrefix() string {
+	if x != nil && x.Ipv6PublicAddrPrefix != nil {
+		return *x.Ipv6PublicAddrPrefix
+	}
+	return ""
 }
 
 func (x *InstanceConfigPatch) GetDisableRelayData() bool {
@@ -863,7 +887,8 @@ var File_api_config_proto protoreflect.FileDescriptor
 const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_config.proto\x12\n" +
-	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\x86\b\n" +
+	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\x8e\n" +
+	"\n" +
 	"\x13InstanceConfigPatch\x12\x1f\n" +
 	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01\x12)\n" +
 	"\x04ipv4\x18\x02 \x01(\v2\x10.common.Ipv4InetH\x01R\x04ipv4\x88\x01\x01\x12)\n" +
@@ -878,17 +903,24 @@ const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"connectors\x18\n" +
 	" \x03(\v2\x14.api.config.UrlPatchR\n" +
-	"connectors\x121\n" +
-	"\x12disable_relay_data\x18\x0e \x01(\bH\x04R\x10disableRelayData\x88\x01\x01\x12N\n" +
+	"connectors\x12>\n" +
+	"\x19ipv6_public_addr_provider\x18\v \x01(\bH\x04R\x16ipv6PublicAddrProvider\x88\x01\x01\x126\n" +
+	"\x15ipv6_public_addr_auto\x18\f \x01(\bH\x05R\x12ipv6PublicAddrAuto\x88\x01\x01\x12:\n" +
+	"\x17ipv6_public_addr_prefix\x18\r \x01(\tH\x06R\x14ipv6PublicAddrPrefix\x88\x01\x01\x121\n" +
+	"\x12disable_relay_data\x18\x0e \x01(\bH\aR\x10disableRelayData\x88\x01\x01\x12N\n" +
 	"\x12vpn_portal_clients\x18\x0f \x03(\v2 .api.config.VpnPortalClientPatchR\x10vpnPortalClients\x12Q\n" +
 	"\x13managed_credentials\x18\x10 \x01(\v2 .api.manage.ManagedCredentialSetR\x12managedCredentials\x12/\n" +
-	"\x11prefer_peer_relay\x18\x11 \x01(\bH\x05R\x0fpreferPeerRelay\x88\x01\x01\x12.\n" +
-	"\x03vpn\x18\xe4\x86\x03 \x01(\v2\x15.api.manage.VpnConfigH\x06R\x03vpn\x88\x01\x01\x125\n" +
-	"\x14enable_manual_routes\x18\x12 \x01(\bH\aR\x12enableManualRoutes\x88\x01\x01B\v\n" +
+	"\x11prefer_peer_relay\x18\x11 \x01(\bH\bR\x0fpreferPeerRelay\x88\x01\x01\x12.\n" +
+	"\x03vpn\x18\xe4\x86\x03 \x01(\v2\x15.api.manage.VpnConfigH\tR\x03vpn\x88\x01\x01\x125\n" +
+	"\x14enable_manual_routes\x18\x12 \x01(\bH\n" +
+	"R\x12enableManualRoutes\x88\x01\x01B\v\n" +
 	"\t_hostnameB\a\n" +
 	"\x05_ipv4B\a\n" +
 	"\x05_ipv6B\x06\n" +
-	"\x04_aclB\x15\n" +
+	"\x04_aclB\x1c\n" +
+	"\x1a_ipv6_public_addr_providerB\x18\n" +
+	"\x16_ipv6_public_addr_autoB\x1a\n" +
+	"\x18_ipv6_public_addr_prefixB\x15\n" +
 	"\x13_disable_relay_dataB\x14\n" +
 	"\x12_prefer_peer_relayB\x06\n" +
 	"\x04_vpnB\x17\n" +

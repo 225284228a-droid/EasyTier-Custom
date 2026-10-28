@@ -232,6 +232,7 @@ type NetworkConfig struct {
 	DisableUdpHolePunching      *bool    `protobuf:"varint,39,opt,name=disable_udp_hole_punching,json=disableUdpHolePunching,proto3,oneof" json:"disable_udp_hole_punching,omitempty"`
 	Mtu                         *int32   `protobuf:"varint,40,opt,name=mtu,proto3,oneof" json:"mtu,omitempty"`
 	MappedListeners             []string `protobuf:"bytes,41,rep,name=mapped_listeners,json=mappedListeners,proto3" json:"mapped_listeners,omitempty"`
+	EnableMagicDns              *bool    `protobuf:"varint,42,opt,name=enable_magic_dns,json=enableMagicDns,proto3,oneof" json:"enable_magic_dns,omitempty"`
 	EnablePrivateMode           *bool    `protobuf:"varint,43,opt,name=enable_private_mode,json=enablePrivateMode,proto3,oneof" json:"enable_private_mode,omitempty"`
 	EnableQuicProxy             *bool    `protobuf:"varint,45,opt,name=enable_quic_proxy,json=enableQuicProxy,proto3,oneof" json:"enable_quic_proxy,omitempty"`
 	DisableQuicInput            *bool    `protobuf:"varint,46,opt,name=disable_quic_input,json=disableQuicInput,proto3,oneof" json:"disable_quic_input,omitempty"`
@@ -250,6 +251,9 @@ type NetworkConfig struct {
 	NeedP2P                 *bool                      `protobuf:"varint,59,opt,name=need_p2p,json=needP2p,proto3,oneof" json:"need_p2p,omitempty"`
 	InstanceRecvBpsLimit    *uint64                    `protobuf:"varint,60,opt,name=instance_recv_bps_limit,json=instanceRecvBpsLimit,proto3,oneof" json:"instance_recv_bps_limit,omitempty"`
 	DisableUpnp             *bool                      `protobuf:"varint,61,opt,name=disable_upnp,json=disableUpnp,proto3,oneof" json:"disable_upnp,omitempty"`
+	Ipv6PublicAddrProvider  *bool                      `protobuf:"varint,62,opt,name=ipv6_public_addr_provider,json=ipv6PublicAddrProvider,proto3,oneof" json:"ipv6_public_addr_provider,omitempty"`
+	Ipv6PublicAddrAuto      *bool                      `protobuf:"varint,63,opt,name=ipv6_public_addr_auto,json=ipv6PublicAddrAuto,proto3,oneof" json:"ipv6_public_addr_auto,omitempty"`
+	Ipv6PublicAddrPrefix    *string                    `protobuf:"bytes,64,opt,name=ipv6_public_addr_prefix,json=ipv6PublicAddrPrefix,proto3,oneof" json:"ipv6_public_addr_prefix,omitempty"`
 	DisableRelayData        *bool                      `protobuf:"varint,65,opt,name=disable_relay_data,json=disableRelayData,proto3,oneof" json:"disable_relay_data,omitempty"`
 	EnableUdpBroadcastRelay *bool                      `protobuf:"varint,66,opt,name=enable_udp_broadcast_relay,json=enableUdpBroadcastRelay,proto3,oneof" json:"enable_udp_broadcast_relay,omitempty"`
 	SocketMark              *uint32                    `protobuf:"varint,67,opt,name=socket_mark,json=socketMark,proto3,oneof" json:"socket_mark,omitempty"`
@@ -614,6 +618,13 @@ func (x *NetworkConfig) GetMappedListeners() []string {
 	return nil
 }
 
+func (x *NetworkConfig) GetEnableMagicDns() bool {
+	if x != nil && x.EnableMagicDns != nil {
+		return *x.EnableMagicDns
+	}
+	return false
+}
+
 func (x *NetworkConfig) GetEnablePrivateMode() bool {
 	if x != nil && x.EnablePrivateMode != nil {
 		return *x.EnablePrivateMode
@@ -732,6 +743,27 @@ func (x *NetworkConfig) GetDisableUpnp() bool {
 		return *x.DisableUpnp
 	}
 	return false
+}
+
+func (x *NetworkConfig) GetIpv6PublicAddrProvider() bool {
+	if x != nil && x.Ipv6PublicAddrProvider != nil {
+		return *x.Ipv6PublicAddrProvider
+	}
+	return false
+}
+
+func (x *NetworkConfig) GetIpv6PublicAddrAuto() bool {
+	if x != nil && x.Ipv6PublicAddrAuto != nil {
+		return *x.Ipv6PublicAddrAuto
+	}
+	return false
+}
+
+func (x *NetworkConfig) GetIpv6PublicAddrPrefix() string {
+	if x != nil && x.Ipv6PublicAddrPrefix != nil {
+		return *x.Ipv6PublicAddrPrefix
+	}
+	return ""
 }
 
 func (x *NetworkConfig) GetDisableRelayData() bool {
@@ -3299,7 +3331,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xde(\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\x92+\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3350,44 +3382,48 @@ const file_api_manage_proto_rawDesc = "" +
 	"socks5Port\x88\x01\x01\x12>\n" +
 	"\x19disable_udp_hole_punching\x18' \x01(\bH R\x16disableUdpHolePunching\x88\x01\x01\x12\x15\n" +
 	"\x03mtu\x18( \x01(\x05H!R\x03mtu\x88\x01\x01\x12)\n" +
-	"\x10mapped_listeners\x18) \x03(\tR\x0fmappedListeners\x123\n" +
-	"\x13enable_private_mode\x18+ \x01(\bH\"R\x11enablePrivateMode\x88\x01\x01\x12/\n" +
-	"\x11enable_quic_proxy\x18- \x01(\bH#R\x0fenableQuicProxy\x88\x01\x01\x121\n" +
-	"\x12disable_quic_input\x18. \x01(\bH$R\x10disableQuicInput\x88\x01\x01\x121\n" +
-	"\x10quic_listen_port\x182 \x01(\x05B\x02\x18\x01H%R\x0equicListenPort\x88\x01\x01\x12B\n" +
+	"\x10mapped_listeners\x18) \x03(\tR\x0fmappedListeners\x12-\n" +
+	"\x10enable_magic_dns\x18* \x01(\bH\"R\x0eenableMagicDns\x88\x01\x01\x123\n" +
+	"\x13enable_private_mode\x18+ \x01(\bH#R\x11enablePrivateMode\x88\x01\x01\x12/\n" +
+	"\x11enable_quic_proxy\x18- \x01(\bH$R\x0fenableQuicProxy\x88\x01\x01\x121\n" +
+	"\x12disable_quic_input\x18. \x01(\bH%R\x10disableQuicInput\x88\x01\x01\x121\n" +
+	"\x10quic_listen_port\x182 \x01(\x05B\x02\x18\x01H&R\x0equicListenPort\x88\x01\x01\x12B\n" +
 	"\rport_forwards\x180 \x03(\v2\x1d.api.manage.PortForwardConfigR\fportForwards\x12>\n" +
-	"\x19disable_sym_hole_punching\x181 \x01(\bH&R\x16disableSymHolePunching\x88\x01\x01\x12\x1e\n" +
-	"\bp2p_only\x183 \x01(\bH'R\ap2pOnly\x88\x01\x01\x12L\n" +
-	"\x12data_compress_algo\x184 \x01(\x0e2\x19.common.CompressionAlgoPbH(R\x10dataCompressAlgo\x88\x01\x01\x126\n" +
-	"\x14encryption_algorithm\x185 \x01(\tH)R\x13encryptionAlgorithm\x88\x01\x01\x12>\n" +
-	"\x19disable_tcp_hole_punching\x186 \x01(\bH*R\x16disableTcpHolePunching\x88\x01\x01\x129\n" +
+	"\x19disable_sym_hole_punching\x181 \x01(\bH'R\x16disableSymHolePunching\x88\x01\x01\x12\x1e\n" +
+	"\bp2p_only\x183 \x01(\bH(R\ap2pOnly\x88\x01\x01\x12L\n" +
+	"\x12data_compress_algo\x184 \x01(\x0e2\x19.common.CompressionAlgoPbH)R\x10dataCompressAlgo\x88\x01\x01\x126\n" +
+	"\x14encryption_algorithm\x185 \x01(\tH*R\x13encryptionAlgorithm\x88\x01\x01\x12>\n" +
+	"\x19disable_tcp_hole_punching\x186 \x01(\bH+R\x16disableTcpHolePunching\x88\x01\x01\x129\n" +
 	"\vsecure_mode\x187 \x01(\v2\x18.common.SecureModeConfigR\n" +
 	"secureMode\x12\x1f\n" +
-	"\x03acl\x188 \x01(\v2\b.acl.AclH+R\x03acl\x88\x01\x01\x12,\n" +
-	"\x0fcredential_file\x189 \x01(\tH,R\x0ecredentialFile\x88\x01\x01\x12\x1e\n" +
-	"\blazy_p2p\x18: \x01(\bH-R\alazyP2p\x88\x01\x01\x12\x1e\n" +
-	"\bneed_p2p\x18; \x01(\bH.R\aneedP2p\x88\x01\x01\x12:\n" +
-	"\x17instance_recv_bps_limit\x18< \x01(\x04H/R\x14instanceRecvBpsLimit\x88\x01\x01\x12&\n" +
-	"\fdisable_upnp\x18= \x01(\bH0R\vdisableUpnp\x88\x01\x01\x121\n" +
-	"\x12disable_relay_data\x18A \x01(\bH1R\x10disableRelayData\x88\x01\x01\x12@\n" +
-	"\x1aenable_udp_broadcast_relay\x18B \x01(\bH2R\x17enableUdpBroadcastRelay\x88\x01\x01\x12$\n" +
-	"\vsocket_mark\x18C \x01(\rH3R\n" +
+	"\x03acl\x188 \x01(\v2\b.acl.AclH,R\x03acl\x88\x01\x01\x12,\n" +
+	"\x0fcredential_file\x189 \x01(\tH-R\x0ecredentialFile\x88\x01\x01\x12\x1e\n" +
+	"\blazy_p2p\x18: \x01(\bH.R\alazyP2p\x88\x01\x01\x12\x1e\n" +
+	"\bneed_p2p\x18; \x01(\bH/R\aneedP2p\x88\x01\x01\x12:\n" +
+	"\x17instance_recv_bps_limit\x18< \x01(\x04H0R\x14instanceRecvBpsLimit\x88\x01\x01\x12&\n" +
+	"\fdisable_upnp\x18= \x01(\bH1R\vdisableUpnp\x88\x01\x01\x12>\n" +
+	"\x19ipv6_public_addr_provider\x18> \x01(\bH2R\x16ipv6PublicAddrProvider\x88\x01\x01\x126\n" +
+	"\x15ipv6_public_addr_auto\x18? \x01(\bH3R\x12ipv6PublicAddrAuto\x88\x01\x01\x12:\n" +
+	"\x17ipv6_public_addr_prefix\x18@ \x01(\tH4R\x14ipv6PublicAddrPrefix\x88\x01\x01\x121\n" +
+	"\x12disable_relay_data\x18A \x01(\bH5R\x10disableRelayData\x88\x01\x01\x12@\n" +
+	"\x1aenable_udp_broadcast_relay\x18B \x01(\bH6R\x17enableUdpBroadcastRelay\x88\x01\x01\x12$\n" +
+	"\vsocket_mark\x18C \x01(\rH7R\n" +
 	"socketMark\x88\x01\x01\x123\n" +
 	"\x05peers\x18D \x03(\v2\x1d.api.manage.NetworkPeerConfigR\x05peers\x12L\n" +
-	"\x11vpn_portal_config\x18E \x01(\v2\x1b.api.manage.VpnPortalConfigH4R\x0fvpnPortalConfig\x88\x01\x01\x12T\n" +
+	"\x11vpn_portal_config\x18E \x01(\v2\x1b.api.manage.VpnPortalConfigH8R\x0fvpnPortalConfig\x88\x01\x01\x12T\n" +
 	"\x13managed_credentials\x18G \x03(\v2#.api.manage.ManagedCredentialConfigR\x12managedCredentials\x12/\n" +
-	"\x11prefer_peer_relay\x18H \x01(\bH5R\x0fpreferPeerRelay\x88\x01\x01\x12)\n" +
-	"\x0edhcp_ipv4_cidr\x18J \x01(\tH6R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
-	"\x06dhcpv6\x18K \x01(\bH7R\x06dhcpv6\x88\x01\x01\x12)\n" +
-	"\x0edhcp_ipv6_cidr\x18L \x01(\tH8R\fdhcpIpv6Cidr\x88\x01\x01\x12\x17\n" +
-	"\x03sni\x18\x99\x87\x03 \x01(\tH9R\x03sni\x88\x01\x01\x125\n" +
-	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH:R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
-	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH;R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
-	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigH<R\x03vpn\x88\x01\x01\x121\n" +
-	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tH=R\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
-	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rH>R\x13parallelConnections\x88\x01\x01\x12G\n" +
-	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bH?R\x1adisableParallelConnections\x88\x01\x01\x120\n" +
-	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tH@R\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
+	"\x11prefer_peer_relay\x18H \x01(\bH9R\x0fpreferPeerRelay\x88\x01\x01\x12)\n" +
+	"\x0edhcp_ipv4_cidr\x18J \x01(\tH:R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
+	"\x06dhcpv6\x18K \x01(\bH;R\x06dhcpv6\x88\x01\x01\x12)\n" +
+	"\x0edhcp_ipv6_cidr\x18L \x01(\tH<R\fdhcpIpv6Cidr\x88\x01\x01\x12\x17\n" +
+	"\x03sni\x18\x99\x87\x03 \x01(\tH=R\x03sni\x88\x01\x01\x125\n" +
+	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH>R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
+	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH?R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
+	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigH@R\x03vpn\x88\x01\x01\x121\n" +
+	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tHAR\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
+	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rHBR\x13parallelConnections\x88\x01\x01\x12G\n" +
+	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bHCR\x1adisableParallelConnections\x88\x01\x01\x120\n" +
+	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHDR\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3421,7 +3457,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x0e_enable_socks5B\x0e\n" +
 	"\f_socks5_portB\x1c\n" +
 	"\x1a_disable_udp_hole_punchingB\x06\n" +
-	"\x04_mtuB\x16\n" +
+	"\x04_mtuB\x13\n" +
+	"\x11_enable_magic_dnsB\x16\n" +
 	"\x14_enable_private_modeB\x14\n" +
 	"\x12_enable_quic_proxyB\x15\n" +
 	"\x13_disable_quic_inputB\x13\n" +
@@ -3436,7 +3473,10 @@ const file_api_manage_proto_rawDesc = "" +
 	"\t_lazy_p2pB\v\n" +
 	"\t_need_p2pB\x1a\n" +
 	"\x18_instance_recv_bps_limitB\x0f\n" +
-	"\r_disable_upnpB\x15\n" +
+	"\r_disable_upnpB\x1c\n" +
+	"\x1a_ipv6_public_addr_providerB\x18\n" +
+	"\x16_ipv6_public_addr_autoB\x1a\n" +
+	"\x18_ipv6_public_addr_prefixB\x15\n" +
 	"\x13_disable_relay_dataB\x1d\n" +
 	"\x1b_enable_udp_broadcast_relayB\x0e\n" +
 	"\f_socket_markB\x14\n" +
@@ -3452,7 +3492,7 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x12_p2p_disguise_modeB\x17\n" +
 	"\x15_parallel_connectionsB\x1f\n" +
 	"\x1d_disable_parallel_connectionsB\x13\n" +
-	"\x11_traffic_disguiseJ\x04\b*\x10+J\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R\x10enable_magic_dnsR$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
+	"\x11_traffic_disguiseJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
 	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xc0\x01\n" +

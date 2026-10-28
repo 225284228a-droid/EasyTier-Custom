@@ -429,6 +429,8 @@ type RoutePeerInfo struct {
 	NoiseStaticPubkey []byte           `protobuf:"bytes,18,opt,name=noise_static_pubkey,json=noiseStaticPubkey,proto3" json:"noise_static_pubkey,omitempty"`
 	// Trusted credential public keys published by admin nodes (holding network_secret)
 	TrustedCredentialPubkeys []*TrustedCredentialPubkeyProof `protobuf:"bytes,19,rep,name=trusted_credential_pubkeys,json=trustedCredentialPubkeys,proto3" json:"trusted_credential_pubkeys,omitempty"`
+	Ipv6PublicAddrPrefix     *common.Ipv6Inet                `protobuf:"bytes,22,opt,name=ipv6_public_addr_prefix,json=ipv6PublicAddrPrefix,proto3,oneof" json:"ipv6_public_addr_prefix,omitempty"`
+	Ipv6PublicAddrLease      *common.Ipv6Inet                `protobuf:"bytes,24,opt,name=ipv6_public_addr_lease,json=ipv6PublicAddrLease,proto3,oneof" json:"ipv6_public_addr_lease,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -593,6 +595,20 @@ func (x *RoutePeerInfo) GetNoiseStaticPubkey() []byte {
 func (x *RoutePeerInfo) GetTrustedCredentialPubkeys() []*TrustedCredentialPubkeyProof {
 	if x != nil {
 		return x.TrustedCredentialPubkeys
+	}
+	return nil
+}
+
+func (x *RoutePeerInfo) GetIpv6PublicAddrPrefix() *common.Ipv6Inet {
+	if x != nil {
+		return x.Ipv6PublicAddrPrefix
+	}
+	return nil
+}
+
+func (x *RoutePeerInfo) GetIpv6PublicAddrLease() *common.Ipv6Inet {
+	if x != nil {
+		return x.Ipv6PublicAddrLease
 	}
 	return nil
 }
@@ -1256,6 +1272,314 @@ func (x *SyncRouteInfoResponse) GetMissingConnPeerIds() []uint32 {
 	return nil
 }
 
+type AcquireIpv6PublicAddrLeaseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        uint32                 `protobuf:"varint,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	InstId        *common.UUID           `protobuf:"bytes,2,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AcquireIpv6PublicAddrLeaseRequest) Reset() {
+	*x = AcquireIpv6PublicAddrLeaseRequest{}
+	mi := &file_peer_rpc_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AcquireIpv6PublicAddrLeaseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AcquireIpv6PublicAddrLeaseRequest) ProtoMessage() {}
+
+func (x *AcquireIpv6PublicAddrLeaseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_peer_rpc_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AcquireIpv6PublicAddrLeaseRequest.ProtoReflect.Descriptor instead.
+func (*AcquireIpv6PublicAddrLeaseRequest) Descriptor() ([]byte, []int) {
+	return file_peer_rpc_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *AcquireIpv6PublicAddrLeaseRequest) GetPeerId() uint32 {
+	if x != nil {
+		return x.PeerId
+	}
+	return 0
+}
+
+func (x *AcquireIpv6PublicAddrLeaseRequest) GetInstId() *common.UUID {
+	if x != nil {
+		return x.InstId
+	}
+	return nil
+}
+
+type RenewIpv6PublicAddrLeaseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        uint32                 `protobuf:"varint,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	InstId        *common.UUID           `protobuf:"bytes,2,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
+	LeasedAddr    *common.Ipv6Inet       `protobuf:"bytes,3,opt,name=leased_addr,json=leasedAddr,proto3" json:"leased_addr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenewIpv6PublicAddrLeaseRequest) Reset() {
+	*x = RenewIpv6PublicAddrLeaseRequest{}
+	mi := &file_peer_rpc_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenewIpv6PublicAddrLeaseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenewIpv6PublicAddrLeaseRequest) ProtoMessage() {}
+
+func (x *RenewIpv6PublicAddrLeaseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_peer_rpc_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenewIpv6PublicAddrLeaseRequest.ProtoReflect.Descriptor instead.
+func (*RenewIpv6PublicAddrLeaseRequest) Descriptor() ([]byte, []int) {
+	return file_peer_rpc_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RenewIpv6PublicAddrLeaseRequest) GetPeerId() uint32 {
+	if x != nil {
+		return x.PeerId
+	}
+	return 0
+}
+
+func (x *RenewIpv6PublicAddrLeaseRequest) GetInstId() *common.UUID {
+	if x != nil {
+		return x.InstId
+	}
+	return nil
+}
+
+func (x *RenewIpv6PublicAddrLeaseRequest) GetLeasedAddr() *common.Ipv6Inet {
+	if x != nil {
+		return x.LeasedAddr
+	}
+	return nil
+}
+
+type ReleaseIpv6PublicAddrLeaseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        uint32                 `protobuf:"varint,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	InstId        *common.UUID           `protobuf:"bytes,2,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseIpv6PublicAddrLeaseRequest) Reset() {
+	*x = ReleaseIpv6PublicAddrLeaseRequest{}
+	mi := &file_peer_rpc_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseIpv6PublicAddrLeaseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseIpv6PublicAddrLeaseRequest) ProtoMessage() {}
+
+func (x *ReleaseIpv6PublicAddrLeaseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_peer_rpc_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseIpv6PublicAddrLeaseRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseIpv6PublicAddrLeaseRequest) Descriptor() ([]byte, []int) {
+	return file_peer_rpc_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ReleaseIpv6PublicAddrLeaseRequest) GetPeerId() uint32 {
+	if x != nil {
+		return x.PeerId
+	}
+	return 0
+}
+
+func (x *ReleaseIpv6PublicAddrLeaseRequest) GetInstId() *common.UUID {
+	if x != nil {
+		return x.InstId
+	}
+	return nil
+}
+
+type GetIpv6PublicAddrLeaseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        uint32                 `protobuf:"varint,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	InstId        *common.UUID           `protobuf:"bytes,2,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetIpv6PublicAddrLeaseRequest) Reset() {
+	*x = GetIpv6PublicAddrLeaseRequest{}
+	mi := &file_peer_rpc_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetIpv6PublicAddrLeaseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetIpv6PublicAddrLeaseRequest) ProtoMessage() {}
+
+func (x *GetIpv6PublicAddrLeaseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_peer_rpc_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetIpv6PublicAddrLeaseRequest.ProtoReflect.Descriptor instead.
+func (*GetIpv6PublicAddrLeaseRequest) Descriptor() ([]byte, []int) {
+	return file_peer_rpc_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *GetIpv6PublicAddrLeaseRequest) GetPeerId() uint32 {
+	if x != nil {
+		return x.PeerId
+	}
+	return 0
+}
+
+func (x *GetIpv6PublicAddrLeaseRequest) GetInstId() *common.UUID {
+	if x != nil {
+		return x.InstId
+	}
+	return nil
+}
+
+type Ipv6PublicAddrLeaseReply struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ProviderPeerId uint32                 `protobuf:"varint,1,opt,name=provider_peer_id,json=providerPeerId,proto3" json:"provider_peer_id,omitempty"`
+	ProviderInstId *common.UUID           `protobuf:"bytes,2,opt,name=provider_inst_id,json=providerInstId,proto3" json:"provider_inst_id,omitempty"`
+	ProviderPrefix *common.Ipv6Inet       `protobuf:"bytes,3,opt,name=provider_prefix,json=providerPrefix,proto3" json:"provider_prefix,omitempty"`
+	LeasedAddr     *common.Ipv6Inet       `protobuf:"bytes,4,opt,name=leased_addr,json=leasedAddr,proto3" json:"leased_addr,omitempty"`
+	ValidUntil     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	Reused         bool                   `protobuf:"varint,6,opt,name=reused,proto3" json:"reused,omitempty"`
+	ErrorMsg       *string                `protobuf:"bytes,7,opt,name=error_msg,json=errorMsg,proto3,oneof" json:"error_msg,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *Ipv6PublicAddrLeaseReply) Reset() {
+	*x = Ipv6PublicAddrLeaseReply{}
+	mi := &file_peer_rpc_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Ipv6PublicAddrLeaseReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Ipv6PublicAddrLeaseReply) ProtoMessage() {}
+
+func (x *Ipv6PublicAddrLeaseReply) ProtoReflect() protoreflect.Message {
+	mi := &file_peer_rpc_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Ipv6PublicAddrLeaseReply.ProtoReflect.Descriptor instead.
+func (*Ipv6PublicAddrLeaseReply) Descriptor() ([]byte, []int) {
+	return file_peer_rpc_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *Ipv6PublicAddrLeaseReply) GetProviderPeerId() uint32 {
+	if x != nil {
+		return x.ProviderPeerId
+	}
+	return 0
+}
+
+func (x *Ipv6PublicAddrLeaseReply) GetProviderInstId() *common.UUID {
+	if x != nil {
+		return x.ProviderInstId
+	}
+	return nil
+}
+
+func (x *Ipv6PublicAddrLeaseReply) GetProviderPrefix() *common.Ipv6Inet {
+	if x != nil {
+		return x.ProviderPrefix
+	}
+	return nil
+}
+
+func (x *Ipv6PublicAddrLeaseReply) GetLeasedAddr() *common.Ipv6Inet {
+	if x != nil {
+		return x.LeasedAddr
+	}
+	return nil
+}
+
+func (x *Ipv6PublicAddrLeaseReply) GetValidUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidUntil
+	}
+	return nil
+}
+
+func (x *Ipv6PublicAddrLeaseReply) GetReused() bool {
+	if x != nil {
+		return x.Reused
+	}
+	return false
+}
+
+func (x *Ipv6PublicAddrLeaseReply) GetErrorMsg() string {
+	if x != nil && x.ErrorMsg != nil {
+		return *x.ErrorMsg
+	}
+	return ""
+}
+
 type GetIpListRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1264,7 +1588,7 @@ type GetIpListRequest struct {
 
 func (x *GetIpListRequest) Reset() {
 	*x = GetIpListRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[14]
+	mi := &file_peer_rpc_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1276,7 +1600,7 @@ func (x *GetIpListRequest) String() string {
 func (*GetIpListRequest) ProtoMessage() {}
 
 func (x *GetIpListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[14]
+	mi := &file_peer_rpc_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1289,7 +1613,7 @@ func (x *GetIpListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIpListRequest.ProtoReflect.Descriptor instead.
 func (*GetIpListRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{14}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{19}
 }
 
 type GetIpListResponse struct {
@@ -1307,7 +1631,7 @@ type GetIpListResponse struct {
 
 func (x *GetIpListResponse) Reset() {
 	*x = GetIpListResponse{}
-	mi := &file_peer_rpc_proto_msgTypes[15]
+	mi := &file_peer_rpc_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1319,7 +1643,7 @@ func (x *GetIpListResponse) String() string {
 func (*GetIpListResponse) ProtoMessage() {}
 
 func (x *GetIpListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[15]
+	mi := &file_peer_rpc_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1332,7 +1656,7 @@ func (x *GetIpListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIpListResponse.ProtoReflect.Descriptor instead.
 func (*GetIpListResponse) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{15}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetIpListResponse) GetPublicIpv4() *common.Ipv4Addr {
@@ -1389,7 +1713,7 @@ type SendUdpHolePunchPacketRequest struct {
 
 func (x *SendUdpHolePunchPacketRequest) Reset() {
 	*x = SendUdpHolePunchPacketRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[16]
+	mi := &file_peer_rpc_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1401,7 +1725,7 @@ func (x *SendUdpHolePunchPacketRequest) String() string {
 func (*SendUdpHolePunchPacketRequest) ProtoMessage() {}
 
 func (x *SendUdpHolePunchPacketRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[16]
+	mi := &file_peer_rpc_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1414,7 +1738,7 @@ func (x *SendUdpHolePunchPacketRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendUdpHolePunchPacketRequest.ProtoReflect.Descriptor instead.
 func (*SendUdpHolePunchPacketRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{16}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *SendUdpHolePunchPacketRequest) GetConnectorAddr() *common.SocketAddr {
@@ -1461,7 +1785,7 @@ type SelectPunchListenerRequest struct {
 
 func (x *SelectPunchListenerRequest) Reset() {
 	*x = SelectPunchListenerRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[17]
+	mi := &file_peer_rpc_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1473,7 +1797,7 @@ func (x *SelectPunchListenerRequest) String() string {
 func (*SelectPunchListenerRequest) ProtoMessage() {}
 
 func (x *SelectPunchListenerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[17]
+	mi := &file_peer_rpc_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1486,7 +1810,7 @@ func (x *SelectPunchListenerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectPunchListenerRequest.ProtoReflect.Descriptor instead.
 func (*SelectPunchListenerRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{17}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *SelectPunchListenerRequest) GetForceNew() bool {
@@ -1538,7 +1862,7 @@ type SelectPunchListenerResponse struct {
 
 func (x *SelectPunchListenerResponse) Reset() {
 	*x = SelectPunchListenerResponse{}
-	mi := &file_peer_rpc_proto_msgTypes[18]
+	mi := &file_peer_rpc_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1550,7 +1874,7 @@ func (x *SelectPunchListenerResponse) String() string {
 func (*SelectPunchListenerResponse) ProtoMessage() {}
 
 func (x *SelectPunchListenerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[18]
+	mi := &file_peer_rpc_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1563,7 +1887,7 @@ func (x *SelectPunchListenerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectPunchListenerResponse.ProtoReflect.Descriptor instead.
 func (*SelectPunchListenerResponse) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{18}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *SelectPunchListenerResponse) GetListenerMappedAddr() *common.SocketAddr {
@@ -1611,7 +1935,7 @@ type SendPunchPacketConeRequest struct {
 
 func (x *SendPunchPacketConeRequest) Reset() {
 	*x = SendPunchPacketConeRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[19]
+	mi := &file_peer_rpc_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1623,7 +1947,7 @@ func (x *SendPunchPacketConeRequest) String() string {
 func (*SendPunchPacketConeRequest) ProtoMessage() {}
 
 func (x *SendPunchPacketConeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[19]
+	mi := &file_peer_rpc_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1636,7 +1960,7 @@ func (x *SendPunchPacketConeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendPunchPacketConeRequest.ProtoReflect.Descriptor instead.
 func (*SendPunchPacketConeRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{19}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *SendPunchPacketConeRequest) GetListenerMappedAddr() *common.SocketAddr {
@@ -1694,7 +2018,7 @@ type SendPunchPacketHardSymRequest struct {
 
 func (x *SendPunchPacketHardSymRequest) Reset() {
 	*x = SendPunchPacketHardSymRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[20]
+	mi := &file_peer_rpc_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1706,7 +2030,7 @@ func (x *SendPunchPacketHardSymRequest) String() string {
 func (*SendPunchPacketHardSymRequest) ProtoMessage() {}
 
 func (x *SendPunchPacketHardSymRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[20]
+	mi := &file_peer_rpc_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1719,7 +2043,7 @@ func (x *SendPunchPacketHardSymRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendPunchPacketHardSymRequest.ProtoReflect.Descriptor instead.
 func (*SendPunchPacketHardSymRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{20}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *SendPunchPacketHardSymRequest) GetListenerMappedAddr() *common.SocketAddr {
@@ -1766,7 +2090,7 @@ type SendPunchPacketHardSymResponse struct {
 
 func (x *SendPunchPacketHardSymResponse) Reset() {
 	*x = SendPunchPacketHardSymResponse{}
-	mi := &file_peer_rpc_proto_msgTypes[21]
+	mi := &file_peer_rpc_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1778,7 +2102,7 @@ func (x *SendPunchPacketHardSymResponse) String() string {
 func (*SendPunchPacketHardSymResponse) ProtoMessage() {}
 
 func (x *SendPunchPacketHardSymResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[21]
+	mi := &file_peer_rpc_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1791,7 +2115,7 @@ func (x *SendPunchPacketHardSymResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendPunchPacketHardSymResponse.ProtoReflect.Descriptor instead.
 func (*SendPunchPacketHardSymResponse) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{21}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *SendPunchPacketHardSymResponse) GetNextPortIndex() uint32 {
@@ -1815,7 +2139,7 @@ type SendPunchPacketEasySymRequest struct {
 
 func (x *SendPunchPacketEasySymRequest) Reset() {
 	*x = SendPunchPacketEasySymRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[22]
+	mi := &file_peer_rpc_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1827,7 +2151,7 @@ func (x *SendPunchPacketEasySymRequest) String() string {
 func (*SendPunchPacketEasySymRequest) ProtoMessage() {}
 
 func (x *SendPunchPacketEasySymRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[22]
+	mi := &file_peer_rpc_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1840,7 +2164,7 @@ func (x *SendPunchPacketEasySymRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendPunchPacketEasySymRequest.ProtoReflect.Descriptor instead.
 func (*SendPunchPacketEasySymRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{22}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SendPunchPacketEasySymRequest) GetListenerMappedAddr() *common.SocketAddr {
@@ -1900,7 +2224,7 @@ type SendPunchPacketBothEasySymRequest struct {
 
 func (x *SendPunchPacketBothEasySymRequest) Reset() {
 	*x = SendPunchPacketBothEasySymRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[23]
+	mi := &file_peer_rpc_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1912,7 +2236,7 @@ func (x *SendPunchPacketBothEasySymRequest) String() string {
 func (*SendPunchPacketBothEasySymRequest) ProtoMessage() {}
 
 func (x *SendPunchPacketBothEasySymRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[23]
+	mi := &file_peer_rpc_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1925,7 +2249,7 @@ func (x *SendPunchPacketBothEasySymRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SendPunchPacketBothEasySymRequest.ProtoReflect.Descriptor instead.
 func (*SendPunchPacketBothEasySymRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{23}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SendPunchPacketBothEasySymRequest) GetUdpSocketCount() uint32 {
@@ -1990,7 +2314,7 @@ type SendPunchPacketBothEasySymResponse struct {
 
 func (x *SendPunchPacketBothEasySymResponse) Reset() {
 	*x = SendPunchPacketBothEasySymResponse{}
-	mi := &file_peer_rpc_proto_msgTypes[24]
+	mi := &file_peer_rpc_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2002,7 +2326,7 @@ func (x *SendPunchPacketBothEasySymResponse) String() string {
 func (*SendPunchPacketBothEasySymResponse) ProtoMessage() {}
 
 func (x *SendPunchPacketBothEasySymResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[24]
+	mi := &file_peer_rpc_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2015,7 +2339,7 @@ func (x *SendPunchPacketBothEasySymResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use SendPunchPacketBothEasySymResponse.ProtoReflect.Descriptor instead.
 func (*SendPunchPacketBothEasySymResponse) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{24}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *SendPunchPacketBothEasySymResponse) GetIsBusy() bool {
@@ -2062,7 +2386,7 @@ type TcpHolePunchPredictedPorts struct {
 
 func (x *TcpHolePunchPredictedPorts) Reset() {
 	*x = TcpHolePunchPredictedPorts{}
-	mi := &file_peer_rpc_proto_msgTypes[25]
+	mi := &file_peer_rpc_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2074,7 +2398,7 @@ func (x *TcpHolePunchPredictedPorts) String() string {
 func (*TcpHolePunchPredictedPorts) ProtoMessage() {}
 
 func (x *TcpHolePunchPredictedPorts) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[25]
+	mi := &file_peer_rpc_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2087,7 +2411,7 @@ func (x *TcpHolePunchPredictedPorts) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpHolePunchPredictedPorts.ProtoReflect.Descriptor instead.
 func (*TcpHolePunchPredictedPorts) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{25}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TcpHolePunchPredictedPorts) GetBaseMappedAddr() *common.SocketAddr {
@@ -2127,7 +2451,7 @@ type TcpHolePunchRequest struct {
 
 func (x *TcpHolePunchRequest) Reset() {
 	*x = TcpHolePunchRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[26]
+	mi := &file_peer_rpc_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2139,7 +2463,7 @@ func (x *TcpHolePunchRequest) String() string {
 func (*TcpHolePunchRequest) ProtoMessage() {}
 
 func (x *TcpHolePunchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[26]
+	mi := &file_peer_rpc_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2152,7 +2476,7 @@ func (x *TcpHolePunchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpHolePunchRequest.ProtoReflect.Descriptor instead.
 func (*TcpHolePunchRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{26}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *TcpHolePunchRequest) GetConnectorMappedAddr() *common.SocketAddr {
@@ -2196,7 +2520,7 @@ type TcpHolePunchResponse struct {
 
 func (x *TcpHolePunchResponse) Reset() {
 	*x = TcpHolePunchResponse{}
-	mi := &file_peer_rpc_proto_msgTypes[27]
+	mi := &file_peer_rpc_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2208,7 +2532,7 @@ func (x *TcpHolePunchResponse) String() string {
 func (*TcpHolePunchResponse) ProtoMessage() {}
 
 func (x *TcpHolePunchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[27]
+	mi := &file_peer_rpc_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2221,7 +2545,7 @@ func (x *TcpHolePunchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpHolePunchResponse.ProtoReflect.Descriptor instead.
 func (*TcpHolePunchResponse) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{27}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *TcpHolePunchResponse) GetListenerMappedAddr() *common.SocketAddr {
@@ -2254,7 +2578,7 @@ type DirectConnectedPeerInfo struct {
 
 func (x *DirectConnectedPeerInfo) Reset() {
 	*x = DirectConnectedPeerInfo{}
-	mi := &file_peer_rpc_proto_msgTypes[28]
+	mi := &file_peer_rpc_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2266,7 +2590,7 @@ func (x *DirectConnectedPeerInfo) String() string {
 func (*DirectConnectedPeerInfo) ProtoMessage() {}
 
 func (x *DirectConnectedPeerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[28]
+	mi := &file_peer_rpc_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2279,7 +2603,7 @@ func (x *DirectConnectedPeerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DirectConnectedPeerInfo.ProtoReflect.Descriptor instead.
 func (*DirectConnectedPeerInfo) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{28}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *DirectConnectedPeerInfo) GetLatencyMs() int32 {
@@ -2298,7 +2622,7 @@ type PeerInfoForGlobalMap struct {
 
 func (x *PeerInfoForGlobalMap) Reset() {
 	*x = PeerInfoForGlobalMap{}
-	mi := &file_peer_rpc_proto_msgTypes[29]
+	mi := &file_peer_rpc_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2310,7 +2634,7 @@ func (x *PeerInfoForGlobalMap) String() string {
 func (*PeerInfoForGlobalMap) ProtoMessage() {}
 
 func (x *PeerInfoForGlobalMap) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[29]
+	mi := &file_peer_rpc_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2323,7 +2647,7 @@ func (x *PeerInfoForGlobalMap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerInfoForGlobalMap.ProtoReflect.Descriptor instead.
 func (*PeerInfoForGlobalMap) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{29}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PeerInfoForGlobalMap) GetDirectPeers() map[uint32]*DirectConnectedPeerInfo {
@@ -2343,7 +2667,7 @@ type ReportPeersRequest struct {
 
 func (x *ReportPeersRequest) Reset() {
 	*x = ReportPeersRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[30]
+	mi := &file_peer_rpc_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2355,7 +2679,7 @@ func (x *ReportPeersRequest) String() string {
 func (*ReportPeersRequest) ProtoMessage() {}
 
 func (x *ReportPeersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[30]
+	mi := &file_peer_rpc_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2368,7 +2692,7 @@ func (x *ReportPeersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportPeersRequest.ProtoReflect.Descriptor instead.
 func (*ReportPeersRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{30}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ReportPeersRequest) GetMyPeerId() uint32 {
@@ -2393,7 +2717,7 @@ type ReportPeersResponse struct {
 
 func (x *ReportPeersResponse) Reset() {
 	*x = ReportPeersResponse{}
-	mi := &file_peer_rpc_proto_msgTypes[31]
+	mi := &file_peer_rpc_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2405,7 +2729,7 @@ func (x *ReportPeersResponse) String() string {
 func (*ReportPeersResponse) ProtoMessage() {}
 
 func (x *ReportPeersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[31]
+	mi := &file_peer_rpc_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2418,7 +2742,7 @@ func (x *ReportPeersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportPeersResponse.ProtoReflect.Descriptor instead.
 func (*ReportPeersResponse) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{31}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{36}
 }
 
 type GlobalPeerMap struct {
@@ -2430,7 +2754,7 @@ type GlobalPeerMap struct {
 
 func (x *GlobalPeerMap) Reset() {
 	*x = GlobalPeerMap{}
-	mi := &file_peer_rpc_proto_msgTypes[32]
+	mi := &file_peer_rpc_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2442,7 +2766,7 @@ func (x *GlobalPeerMap) String() string {
 func (*GlobalPeerMap) ProtoMessage() {}
 
 func (x *GlobalPeerMap) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[32]
+	mi := &file_peer_rpc_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2455,7 +2779,7 @@ func (x *GlobalPeerMap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GlobalPeerMap.ProtoReflect.Descriptor instead.
 func (*GlobalPeerMap) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{32}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *GlobalPeerMap) GetMap() map[uint32]*PeerInfoForGlobalMap {
@@ -2474,7 +2798,7 @@ type GetGlobalPeerMapRequest struct {
 
 func (x *GetGlobalPeerMapRequest) Reset() {
 	*x = GetGlobalPeerMapRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[33]
+	mi := &file_peer_rpc_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2486,7 +2810,7 @@ func (x *GetGlobalPeerMapRequest) String() string {
 func (*GetGlobalPeerMapRequest) ProtoMessage() {}
 
 func (x *GetGlobalPeerMapRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[33]
+	mi := &file_peer_rpc_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2499,7 +2823,7 @@ func (x *GetGlobalPeerMapRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGlobalPeerMapRequest.ProtoReflect.Descriptor instead.
 func (*GetGlobalPeerMapRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{33}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *GetGlobalPeerMapRequest) GetDigest() uint64 {
@@ -2519,7 +2843,7 @@ type GetGlobalPeerMapResponse struct {
 
 func (x *GetGlobalPeerMapResponse) Reset() {
 	*x = GetGlobalPeerMapResponse{}
-	mi := &file_peer_rpc_proto_msgTypes[34]
+	mi := &file_peer_rpc_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2531,7 +2855,7 @@ func (x *GetGlobalPeerMapResponse) String() string {
 func (*GetGlobalPeerMapResponse) ProtoMessage() {}
 
 func (x *GetGlobalPeerMapResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[34]
+	mi := &file_peer_rpc_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2544,7 +2868,7 @@ func (x *GetGlobalPeerMapResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGlobalPeerMapResponse.ProtoReflect.Descriptor instead.
 func (*GetGlobalPeerMapResponse) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{34}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *GetGlobalPeerMapResponse) GetGlobalPeerMap() map[uint32]*PeerInfoForGlobalMap {
@@ -2575,7 +2899,7 @@ type HandshakeRequest struct {
 
 func (x *HandshakeRequest) Reset() {
 	*x = HandshakeRequest{}
-	mi := &file_peer_rpc_proto_msgTypes[35]
+	mi := &file_peer_rpc_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2587,7 +2911,7 @@ func (x *HandshakeRequest) String() string {
 func (*HandshakeRequest) ProtoMessage() {}
 
 func (x *HandshakeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[35]
+	mi := &file_peer_rpc_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2600,7 +2924,7 @@ func (x *HandshakeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandshakeRequest.ProtoReflect.Descriptor instead.
 func (*HandshakeRequest) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{35}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *HandshakeRequest) GetMagic() uint32 {
@@ -2655,7 +2979,7 @@ type KcpConnData struct {
 
 func (x *KcpConnData) Reset() {
 	*x = KcpConnData{}
-	mi := &file_peer_rpc_proto_msgTypes[36]
+	mi := &file_peer_rpc_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2667,7 +2991,7 @@ func (x *KcpConnData) String() string {
 func (*KcpConnData) ProtoMessage() {}
 
 func (x *KcpConnData) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[36]
+	mi := &file_peer_rpc_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2680,7 +3004,7 @@ func (x *KcpConnData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KcpConnData.ProtoReflect.Descriptor instead.
 func (*KcpConnData) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{36}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *KcpConnData) GetSrc() *common.SocketAddr {
@@ -2711,7 +3035,7 @@ type PeerConnNoiseMsg1Pb struct {
 
 func (x *PeerConnNoiseMsg1Pb) Reset() {
 	*x = PeerConnNoiseMsg1Pb{}
-	mi := &file_peer_rpc_proto_msgTypes[37]
+	mi := &file_peer_rpc_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2723,7 +3047,7 @@ func (x *PeerConnNoiseMsg1Pb) String() string {
 func (*PeerConnNoiseMsg1Pb) ProtoMessage() {}
 
 func (x *PeerConnNoiseMsg1Pb) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[37]
+	mi := &file_peer_rpc_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2736,7 +3060,7 @@ func (x *PeerConnNoiseMsg1Pb) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerConnNoiseMsg1Pb.ProtoReflect.Descriptor instead.
 func (*PeerConnNoiseMsg1Pb) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{37}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *PeerConnNoiseMsg1Pb) GetVersion() uint32 {
@@ -2800,7 +3124,7 @@ type PeerConnNoiseMsg2Pb struct {
 
 func (x *PeerConnNoiseMsg2Pb) Reset() {
 	*x = PeerConnNoiseMsg2Pb{}
-	mi := &file_peer_rpc_proto_msgTypes[38]
+	mi := &file_peer_rpc_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2812,7 +3136,7 @@ func (x *PeerConnNoiseMsg2Pb) String() string {
 func (*PeerConnNoiseMsg2Pb) ProtoMessage() {}
 
 func (x *PeerConnNoiseMsg2Pb) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[38]
+	mi := &file_peer_rpc_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2825,7 +3149,7 @@ func (x *PeerConnNoiseMsg2Pb) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerConnNoiseMsg2Pb.ProtoReflect.Descriptor instead.
 func (*PeerConnNoiseMsg2Pb) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{38}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *PeerConnNoiseMsg2Pb) GetBNetworkName() string {
@@ -2917,7 +3241,7 @@ type RelayNoiseMsg1Pb struct {
 
 func (x *RelayNoiseMsg1Pb) Reset() {
 	*x = RelayNoiseMsg1Pb{}
-	mi := &file_peer_rpc_proto_msgTypes[39]
+	mi := &file_peer_rpc_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2929,7 +3253,7 @@ func (x *RelayNoiseMsg1Pb) String() string {
 func (*RelayNoiseMsg1Pb) ProtoMessage() {}
 
 func (x *RelayNoiseMsg1Pb) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[39]
+	mi := &file_peer_rpc_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2942,7 +3266,7 @@ func (x *RelayNoiseMsg1Pb) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelayNoiseMsg1Pb.ProtoReflect.Descriptor instead.
 func (*RelayNoiseMsg1Pb) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{39}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *RelayNoiseMsg1Pb) GetVersion() uint32 {
@@ -2988,7 +3312,7 @@ type RelayNoiseMsg2Pb struct {
 
 func (x *RelayNoiseMsg2Pb) Reset() {
 	*x = RelayNoiseMsg2Pb{}
-	mi := &file_peer_rpc_proto_msgTypes[40]
+	mi := &file_peer_rpc_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3000,7 +3324,7 @@ func (x *RelayNoiseMsg2Pb) String() string {
 func (*RelayNoiseMsg2Pb) ProtoMessage() {}
 
 func (x *RelayNoiseMsg2Pb) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[40]
+	mi := &file_peer_rpc_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3013,7 +3337,7 @@ func (x *RelayNoiseMsg2Pb) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RelayNoiseMsg2Pb.ProtoReflect.Descriptor instead.
 func (*RelayNoiseMsg2Pb) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{40}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *RelayNoiseMsg2Pb) GetAction() PeerConnSessionActionPb {
@@ -3077,7 +3401,7 @@ type PeerConnNoiseMsg3Pb struct {
 
 func (x *PeerConnNoiseMsg3Pb) Reset() {
 	*x = PeerConnNoiseMsg3Pb{}
-	mi := &file_peer_rpc_proto_msgTypes[41]
+	mi := &file_peer_rpc_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3089,7 +3413,7 @@ func (x *PeerConnNoiseMsg3Pb) String() string {
 func (*PeerConnNoiseMsg3Pb) ProtoMessage() {}
 
 func (x *PeerConnNoiseMsg3Pb) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[41]
+	mi := &file_peer_rpc_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3102,7 +3426,7 @@ func (x *PeerConnNoiseMsg3Pb) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerConnNoiseMsg3Pb.ProtoReflect.Descriptor instead.
 func (*PeerConnNoiseMsg3Pb) Descriptor() ([]byte, []int) {
-	return file_peer_rpc_proto_rawDescGZIP(), []int{41}
+	return file_peer_rpc_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *PeerConnNoiseMsg3Pb) GetAConnIdEcho() *common.UUID {
@@ -3143,7 +3467,7 @@ type RouteConnPeerList_PeerConnInfo struct {
 
 func (x *RouteConnPeerList_PeerConnInfo) Reset() {
 	*x = RouteConnPeerList_PeerConnInfo{}
-	mi := &file_peer_rpc_proto_msgTypes[42]
+	mi := &file_peer_rpc_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3155,7 +3479,7 @@ func (x *RouteConnPeerList_PeerConnInfo) String() string {
 func (*RouteConnPeerList_PeerConnInfo) ProtoMessage() {}
 
 func (x *RouteConnPeerList_PeerConnInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[42]
+	mi := &file_peer_rpc_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3195,7 +3519,7 @@ type RouteForeignNetworkInfos_Info struct {
 
 func (x *RouteForeignNetworkInfos_Info) Reset() {
 	*x = RouteForeignNetworkInfos_Info{}
-	mi := &file_peer_rpc_proto_msgTypes[43]
+	mi := &file_peer_rpc_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3207,7 +3531,7 @@ func (x *RouteForeignNetworkInfos_Info) String() string {
 func (*RouteForeignNetworkInfos_Info) ProtoMessage() {}
 
 func (x *RouteForeignNetworkInfos_Info) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[43]
+	mi := &file_peer_rpc_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3248,7 +3572,7 @@ type RouteForeignNetworkSummary_Info struct {
 
 func (x *RouteForeignNetworkSummary_Info) Reset() {
 	*x = RouteForeignNetworkSummary_Info{}
-	mi := &file_peer_rpc_proto_msgTypes[44]
+	mi := &file_peer_rpc_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3260,7 +3584,7 @@ func (x *RouteForeignNetworkSummary_Info) String() string {
 func (*RouteForeignNetworkSummary_Info) ProtoMessage() {}
 
 func (x *RouteForeignNetworkSummary_Info) ProtoReflect() protoreflect.Message {
-	mi := &file_peer_rpc_proto_msgTypes[44]
+	mi := &file_peer_rpc_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3316,7 +3640,7 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\n" +
 	"credential\x18\x01 \x01(\v2!.peer_rpc.TrustedCredentialPubkeyR\n" +
 	"credential\x12'\n" +
-	"\x0fcredential_hmac\x18\x02 \x01(\fR\x0ecredentialHmac\"\xa0\a\n" +
+	"\x0fcredential_hmac\x18\x02 \x01(\fR\x0ecredentialHmac\"\xf1\b\n" +
 	"\rRoutePeerInfo\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12%\n" +
 	"\ainst_id\x18\x02 \x01(\v2\f.common.UUIDR\x06instId\x12\x12\n" +
@@ -3341,14 +3665,18 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\ftcp_nat_type\x18\x11 \x01(\x0e2\x0f.common.NatTypeR\n" +
 	"tcpNatType\x12.\n" +
 	"\x13noise_static_pubkey\x18\x12 \x01(\fR\x11noiseStaticPubkey\x12d\n" +
-	"\x1atrusted_credential_pubkeys\x18\x13 \x03(\v2&.peer_rpc.TrustedCredentialPubkeyProofR\x18trustedCredentialPubkeysB\f\n" +
+	"\x1atrusted_credential_pubkeys\x18\x13 \x03(\v2&.peer_rpc.TrustedCredentialPubkeyProofR\x18trustedCredentialPubkeys\x12L\n" +
+	"\x17ipv6_public_addr_prefix\x18\x16 \x01(\v2\x10.common.Ipv6InetH\x04R\x14ipv6PublicAddrPrefix\x88\x01\x01\x12J\n" +
+	"\x16ipv6_public_addr_lease\x18\x18 \x01(\v2\x10.common.Ipv6InetH\x05R\x13ipv6PublicAddrLease\x88\x01\x01B\f\n" +
 	"\n" +
 	"_ipv4_addrB\v\n" +
 	"\t_hostnameB\f\n" +
 	"\n" +
 	"_quic_portB\f\n" +
 	"\n" +
-	"_ipv6_addr\"B\n" +
+	"_ipv6_addrB\x1a\n" +
+	"\x18_ipv6_public_addr_prefixB\x19\n" +
+	"\x17_ipv6_public_addr_lease\"B\n" +
 	"\rPeerIdVersion\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\rR\aversion\"]\n" +
@@ -3411,7 +3739,33 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\x05error\x18\x03 \x01(\x0e2\x1c.peer_rpc.SyncRouteInfoErrorH\x00R\x05error\x88\x01\x01\x12(\n" +
 	"\x10missing_peer_ids\x18\x04 \x03(\rR\x0emissingPeerIds\x121\n" +
 	"\x15missing_conn_peer_ids\x18\x05 \x03(\rR\x12missingConnPeerIdsB\b\n" +
-	"\x06_error\"\x12\n" +
+	"\x06_error\"c\n" +
+	"!AcquireIpv6PublicAddrLeaseRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12%\n" +
+	"\ainst_id\x18\x02 \x01(\v2\f.common.UUIDR\x06instId\"\x94\x01\n" +
+	"\x1fRenewIpv6PublicAddrLeaseRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12%\n" +
+	"\ainst_id\x18\x02 \x01(\v2\f.common.UUIDR\x06instId\x121\n" +
+	"\vleased_addr\x18\x03 \x01(\v2\x10.common.Ipv6InetR\n" +
+	"leasedAddr\"c\n" +
+	"!ReleaseIpv6PublicAddrLeaseRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12%\n" +
+	"\ainst_id\x18\x02 \x01(\v2\f.common.UUIDR\x06instId\"_\n" +
+	"\x1dGetIpv6PublicAddrLeaseRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12%\n" +
+	"\ainst_id\x18\x02 \x01(\v2\f.common.UUIDR\x06instId\"\xef\x02\n" +
+	"\x18Ipv6PublicAddrLeaseReply\x12(\n" +
+	"\x10provider_peer_id\x18\x01 \x01(\rR\x0eproviderPeerId\x126\n" +
+	"\x10provider_inst_id\x18\x02 \x01(\v2\f.common.UUIDR\x0eproviderInstId\x129\n" +
+	"\x0fprovider_prefix\x18\x03 \x01(\v2\x10.common.Ipv6InetR\x0eproviderPrefix\x121\n" +
+	"\vleased_addr\x18\x04 \x01(\v2\x10.common.Ipv6InetR\n" +
+	"leasedAddr\x12;\n" +
+	"\vvalid_until\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"validUntil\x12\x16\n" +
+	"\x06reused\x18\x06 \x01(\bR\x06reused\x12 \n" +
+	"\terror_msg\x18\a \x01(\tH\x00R\berrorMsg\x88\x01\x01B\f\n" +
+	"\n" +
+	"_error_msg\"\x12\n" +
 	"\x10GetIpListRequest\"\xd9\x02\n" +
 	"\x11GetIpListResponse\x121\n" +
 	"\vpublic_ipv4\x18\x01 \x01(\v2\x10.common.Ipv4AddrR\n" +
@@ -3603,7 +3957,13 @@ const file_peer_rpc_proto_rawDesc = "" +
 	"\n" +
 	"\x06Create\x10\x022`\n" +
 	"\fOspfRouteRpc\x12P\n" +
-	"\rSyncRouteInfo\x12\x1e.peer_rpc.SyncRouteInfoRequest\x1a\x1f.peer_rpc.SyncRouteInfoResponse2\xab\x01\n" +
+	"\rSyncRouteInfo\x12\x1e.peer_rpc.SyncRouteInfoRequest\x1a\x1f.peer_rpc.SyncRouteInfoResponse2\xf5\x02\n" +
+	"\x11PublicIpv6AddrRpc\x12_\n" +
+	"\fAcquireLease\x12+.peer_rpc.AcquireIpv6PublicAddrLeaseRequest\x1a\".peer_rpc.Ipv6PublicAddrLeaseReply\x12[\n" +
+	"\n" +
+	"RenewLease\x12).peer_rpc.RenewIpv6PublicAddrLeaseRequest\x1a\".peer_rpc.Ipv6PublicAddrLeaseReply\x12I\n" +
+	"\fReleaseLease\x12+.peer_rpc.ReleaseIpv6PublicAddrLeaseRequest\x1a\f.common.Void\x12W\n" +
+	"\bGetLease\x12'.peer_rpc.GetIpv6PublicAddrLeaseRequest\x1a\".peer_rpc.Ipv6PublicAddrLeaseReply2\xab\x01\n" +
 	"\x12DirectConnectorRpc\x12D\n" +
 	"\tGetIpList\x12\x1a.peer_rpc.GetIpListRequest\x1a\x1b.peer_rpc.GetIpListResponse\x12O\n" +
 	"\x16SendUdpHolePunchPacket\x12'.peer_rpc.SendUdpHolePunchPacketRequest\x1a\f.common.Void2\xf7\x03\n" +
@@ -3632,7 +3992,7 @@ func file_peer_rpc_proto_rawDescGZIP() []byte {
 }
 
 var file_peer_rpc_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_peer_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
+var file_peer_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_peer_rpc_proto_goTypes = []any{
 	(SyncRouteInfoError)(0),                    // 0: peer_rpc.SyncRouteInfoError
 	(PortSequenceDirection)(0),                 // 1: peer_rpc.PortSequenceDirection
@@ -3653,147 +4013,171 @@ var file_peer_rpc_proto_goTypes = []any{
 	(*PeerGroupInfo)(nil),                      // 16: peer_rpc.PeerGroupInfo
 	(*SyncRouteInfoRequest)(nil),               // 17: peer_rpc.SyncRouteInfoRequest
 	(*SyncRouteInfoResponse)(nil),              // 18: peer_rpc.SyncRouteInfoResponse
-	(*GetIpListRequest)(nil),                   // 19: peer_rpc.GetIpListRequest
-	(*GetIpListResponse)(nil),                  // 20: peer_rpc.GetIpListResponse
-	(*SendUdpHolePunchPacketRequest)(nil),      // 21: peer_rpc.SendUdpHolePunchPacketRequest
-	(*SelectPunchListenerRequest)(nil),         // 22: peer_rpc.SelectPunchListenerRequest
-	(*SelectPunchListenerResponse)(nil),        // 23: peer_rpc.SelectPunchListenerResponse
-	(*SendPunchPacketConeRequest)(nil),         // 24: peer_rpc.SendPunchPacketConeRequest
-	(*SendPunchPacketHardSymRequest)(nil),      // 25: peer_rpc.SendPunchPacketHardSymRequest
-	(*SendPunchPacketHardSymResponse)(nil),     // 26: peer_rpc.SendPunchPacketHardSymResponse
-	(*SendPunchPacketEasySymRequest)(nil),      // 27: peer_rpc.SendPunchPacketEasySymRequest
-	(*SendPunchPacketBothEasySymRequest)(nil),  // 28: peer_rpc.SendPunchPacketBothEasySymRequest
-	(*SendPunchPacketBothEasySymResponse)(nil), // 29: peer_rpc.SendPunchPacketBothEasySymResponse
-	(*TcpHolePunchPredictedPorts)(nil),         // 30: peer_rpc.TcpHolePunchPredictedPorts
-	(*TcpHolePunchRequest)(nil),                // 31: peer_rpc.TcpHolePunchRequest
-	(*TcpHolePunchResponse)(nil),               // 32: peer_rpc.TcpHolePunchResponse
-	(*DirectConnectedPeerInfo)(nil),            // 33: peer_rpc.DirectConnectedPeerInfo
-	(*PeerInfoForGlobalMap)(nil),               // 34: peer_rpc.PeerInfoForGlobalMap
-	(*ReportPeersRequest)(nil),                 // 35: peer_rpc.ReportPeersRequest
-	(*ReportPeersResponse)(nil),                // 36: peer_rpc.ReportPeersResponse
-	(*GlobalPeerMap)(nil),                      // 37: peer_rpc.GlobalPeerMap
-	(*GetGlobalPeerMapRequest)(nil),            // 38: peer_rpc.GetGlobalPeerMapRequest
-	(*GetGlobalPeerMapResponse)(nil),           // 39: peer_rpc.GetGlobalPeerMapResponse
-	(*HandshakeRequest)(nil),                   // 40: peer_rpc.HandshakeRequest
-	(*KcpConnData)(nil),                        // 41: peer_rpc.KcpConnData
-	(*PeerConnNoiseMsg1Pb)(nil),                // 42: peer_rpc.PeerConnNoiseMsg1Pb
-	(*PeerConnNoiseMsg2Pb)(nil),                // 43: peer_rpc.PeerConnNoiseMsg2Pb
-	(*RelayNoiseMsg1Pb)(nil),                   // 44: peer_rpc.RelayNoiseMsg1Pb
-	(*RelayNoiseMsg2Pb)(nil),                   // 45: peer_rpc.RelayNoiseMsg2Pb
-	(*PeerConnNoiseMsg3Pb)(nil),                // 46: peer_rpc.PeerConnNoiseMsg3Pb
-	(*RouteConnPeerList_PeerConnInfo)(nil),     // 47: peer_rpc.RouteConnPeerList.PeerConnInfo
-	(*RouteForeignNetworkInfos_Info)(nil),      // 48: peer_rpc.RouteForeignNetworkInfos.Info
-	(*RouteForeignNetworkSummary_Info)(nil),    // 49: peer_rpc.RouteForeignNetworkSummary.Info
-	nil,                                        // 50: peer_rpc.RouteForeignNetworkSummary.InfoMapEntry
-	nil,                                        // 51: peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry
-	nil,                                        // 52: peer_rpc.GlobalPeerMap.MapEntry
-	nil,                                        // 53: peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry
-	(*common.UUID)(nil),                        // 54: common.UUID
-	(*common.Ipv4Addr)(nil),                    // 55: common.Ipv4Addr
-	(common.NatType)(0),                        // 56: common.NatType
-	(*timestamppb.Timestamp)(nil),              // 57: google.protobuf.Timestamp
-	(*common.PeerFeatureFlag)(nil),             // 58: common.PeerFeatureFlag
-	(*common.Ipv6Inet)(nil),                    // 59: common.Ipv6Inet
-	(*common.Ipv6Addr)(nil),                    // 60: common.Ipv6Addr
-	(*common.Url)(nil),                         // 61: common.Url
-	(*common.SocketAddr)(nil),                  // 62: common.SocketAddr
-	(*common.Void)(nil),                        // 63: common.Void
+	(*AcquireIpv6PublicAddrLeaseRequest)(nil),  // 19: peer_rpc.AcquireIpv6PublicAddrLeaseRequest
+	(*RenewIpv6PublicAddrLeaseRequest)(nil),    // 20: peer_rpc.RenewIpv6PublicAddrLeaseRequest
+	(*ReleaseIpv6PublicAddrLeaseRequest)(nil),  // 21: peer_rpc.ReleaseIpv6PublicAddrLeaseRequest
+	(*GetIpv6PublicAddrLeaseRequest)(nil),      // 22: peer_rpc.GetIpv6PublicAddrLeaseRequest
+	(*Ipv6PublicAddrLeaseReply)(nil),           // 23: peer_rpc.Ipv6PublicAddrLeaseReply
+	(*GetIpListRequest)(nil),                   // 24: peer_rpc.GetIpListRequest
+	(*GetIpListResponse)(nil),                  // 25: peer_rpc.GetIpListResponse
+	(*SendUdpHolePunchPacketRequest)(nil),      // 26: peer_rpc.SendUdpHolePunchPacketRequest
+	(*SelectPunchListenerRequest)(nil),         // 27: peer_rpc.SelectPunchListenerRequest
+	(*SelectPunchListenerResponse)(nil),        // 28: peer_rpc.SelectPunchListenerResponse
+	(*SendPunchPacketConeRequest)(nil),         // 29: peer_rpc.SendPunchPacketConeRequest
+	(*SendPunchPacketHardSymRequest)(nil),      // 30: peer_rpc.SendPunchPacketHardSymRequest
+	(*SendPunchPacketHardSymResponse)(nil),     // 31: peer_rpc.SendPunchPacketHardSymResponse
+	(*SendPunchPacketEasySymRequest)(nil),      // 32: peer_rpc.SendPunchPacketEasySymRequest
+	(*SendPunchPacketBothEasySymRequest)(nil),  // 33: peer_rpc.SendPunchPacketBothEasySymRequest
+	(*SendPunchPacketBothEasySymResponse)(nil), // 34: peer_rpc.SendPunchPacketBothEasySymResponse
+	(*TcpHolePunchPredictedPorts)(nil),         // 35: peer_rpc.TcpHolePunchPredictedPorts
+	(*TcpHolePunchRequest)(nil),                // 36: peer_rpc.TcpHolePunchRequest
+	(*TcpHolePunchResponse)(nil),               // 37: peer_rpc.TcpHolePunchResponse
+	(*DirectConnectedPeerInfo)(nil),            // 38: peer_rpc.DirectConnectedPeerInfo
+	(*PeerInfoForGlobalMap)(nil),               // 39: peer_rpc.PeerInfoForGlobalMap
+	(*ReportPeersRequest)(nil),                 // 40: peer_rpc.ReportPeersRequest
+	(*ReportPeersResponse)(nil),                // 41: peer_rpc.ReportPeersResponse
+	(*GlobalPeerMap)(nil),                      // 42: peer_rpc.GlobalPeerMap
+	(*GetGlobalPeerMapRequest)(nil),            // 43: peer_rpc.GetGlobalPeerMapRequest
+	(*GetGlobalPeerMapResponse)(nil),           // 44: peer_rpc.GetGlobalPeerMapResponse
+	(*HandshakeRequest)(nil),                   // 45: peer_rpc.HandshakeRequest
+	(*KcpConnData)(nil),                        // 46: peer_rpc.KcpConnData
+	(*PeerConnNoiseMsg1Pb)(nil),                // 47: peer_rpc.PeerConnNoiseMsg1Pb
+	(*PeerConnNoiseMsg2Pb)(nil),                // 48: peer_rpc.PeerConnNoiseMsg2Pb
+	(*RelayNoiseMsg1Pb)(nil),                   // 49: peer_rpc.RelayNoiseMsg1Pb
+	(*RelayNoiseMsg2Pb)(nil),                   // 50: peer_rpc.RelayNoiseMsg2Pb
+	(*PeerConnNoiseMsg3Pb)(nil),                // 51: peer_rpc.PeerConnNoiseMsg3Pb
+	(*RouteConnPeerList_PeerConnInfo)(nil),     // 52: peer_rpc.RouteConnPeerList.PeerConnInfo
+	(*RouteForeignNetworkInfos_Info)(nil),      // 53: peer_rpc.RouteForeignNetworkInfos.Info
+	(*RouteForeignNetworkSummary_Info)(nil),    // 54: peer_rpc.RouteForeignNetworkSummary.Info
+	nil,                                        // 55: peer_rpc.RouteForeignNetworkSummary.InfoMapEntry
+	nil,                                        // 56: peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry
+	nil,                                        // 57: peer_rpc.GlobalPeerMap.MapEntry
+	nil,                                        // 58: peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry
+	(*common.UUID)(nil),                        // 59: common.UUID
+	(*common.Ipv4Addr)(nil),                    // 60: common.Ipv4Addr
+	(common.NatType)(0),                        // 61: common.NatType
+	(*timestamppb.Timestamp)(nil),              // 62: google.protobuf.Timestamp
+	(*common.PeerFeatureFlag)(nil),             // 63: common.PeerFeatureFlag
+	(*common.Ipv6Inet)(nil),                    // 64: common.Ipv6Inet
+	(*common.Ipv6Addr)(nil),                    // 65: common.Ipv6Addr
+	(*common.Url)(nil),                         // 66: common.Url
+	(*common.SocketAddr)(nil),                  // 67: common.SocketAddr
+	(*common.Void)(nil),                        // 68: common.Void
 }
 var file_peer_rpc_proto_depIdxs = []int32{
 	5,  // 0: peer_rpc.TrustedCredentialPubkeyProof.credential:type_name -> peer_rpc.TrustedCredentialPubkey
-	54, // 1: peer_rpc.RoutePeerInfo.inst_id:type_name -> common.UUID
-	55, // 2: peer_rpc.RoutePeerInfo.ipv4_addr:type_name -> common.Ipv4Addr
-	56, // 3: peer_rpc.RoutePeerInfo.udp_nat_type:type_name -> common.NatType
-	57, // 4: peer_rpc.RoutePeerInfo.last_update:type_name -> google.protobuf.Timestamp
-	58, // 5: peer_rpc.RoutePeerInfo.feature_flag:type_name -> common.PeerFeatureFlag
-	59, // 6: peer_rpc.RoutePeerInfo.ipv6_addr:type_name -> common.Ipv6Inet
+	59, // 1: peer_rpc.RoutePeerInfo.inst_id:type_name -> common.UUID
+	60, // 2: peer_rpc.RoutePeerInfo.ipv4_addr:type_name -> common.Ipv4Addr
+	61, // 3: peer_rpc.RoutePeerInfo.udp_nat_type:type_name -> common.NatType
+	62, // 4: peer_rpc.RoutePeerInfo.last_update:type_name -> google.protobuf.Timestamp
+	63, // 5: peer_rpc.RoutePeerInfo.feature_flag:type_name -> common.PeerFeatureFlag
+	64, // 6: peer_rpc.RoutePeerInfo.ipv6_addr:type_name -> common.Ipv6Inet
 	16, // 7: peer_rpc.RoutePeerInfo.groups:type_name -> peer_rpc.PeerGroupInfo
-	56, // 8: peer_rpc.RoutePeerInfo.tcp_nat_type:type_name -> common.NatType
+	61, // 8: peer_rpc.RoutePeerInfo.tcp_nat_type:type_name -> common.NatType
 	6,  // 9: peer_rpc.RoutePeerInfo.trusted_credential_pubkeys:type_name -> peer_rpc.TrustedCredentialPubkeyProof
-	8,  // 10: peer_rpc.RouteConnBitmap.peer_ids:type_name -> peer_rpc.PeerIdVersion
-	47, // 11: peer_rpc.RouteConnPeerList.peer_conn_infos:type_name -> peer_rpc.RouteConnPeerList.PeerConnInfo
-	7,  // 12: peer_rpc.RoutePeerInfos.items:type_name -> peer_rpc.RoutePeerInfo
-	57, // 13: peer_rpc.ForeignNetworkRouteInfoEntry.last_update:type_name -> google.protobuf.Timestamp
-	48, // 14: peer_rpc.RouteForeignNetworkInfos.infos:type_name -> peer_rpc.RouteForeignNetworkInfos.Info
-	50, // 15: peer_rpc.RouteForeignNetworkSummary.info_map:type_name -> peer_rpc.RouteForeignNetworkSummary.InfoMapEntry
-	11, // 16: peer_rpc.SyncRouteInfoRequest.peer_infos:type_name -> peer_rpc.RoutePeerInfos
-	9,  // 17: peer_rpc.SyncRouteInfoRequest.conn_bitmap:type_name -> peer_rpc.RouteConnBitmap
-	10, // 18: peer_rpc.SyncRouteInfoRequest.conn_peer_list:type_name -> peer_rpc.RouteConnPeerList
-	14, // 19: peer_rpc.SyncRouteInfoRequest.foreign_network_infos:type_name -> peer_rpc.RouteForeignNetworkInfos
-	0,  // 20: peer_rpc.SyncRouteInfoResponse.error:type_name -> peer_rpc.SyncRouteInfoError
-	55, // 21: peer_rpc.GetIpListResponse.public_ipv4:type_name -> common.Ipv4Addr
-	55, // 22: peer_rpc.GetIpListResponse.interface_ipv4s:type_name -> common.Ipv4Addr
-	60, // 23: peer_rpc.GetIpListResponse.public_ipv6:type_name -> common.Ipv6Addr
-	60, // 24: peer_rpc.GetIpListResponse.interface_ipv6s:type_name -> common.Ipv6Addr
-	61, // 25: peer_rpc.GetIpListResponse.listeners:type_name -> common.Url
-	61, // 26: peer_rpc.GetIpListResponse.udp_http3_listeners:type_name -> common.Url
-	62, // 27: peer_rpc.SendUdpHolePunchPacketRequest.connector_addr:type_name -> common.SocketAddr
-	60, // 28: peer_rpc.SendUdpHolePunchPacketRequest.preferred_src_ipv6:type_name -> common.Ipv6Addr
-	62, // 29: peer_rpc.SendUdpHolePunchPacketRequest.connector_addrs:type_name -> common.SocketAddr
-	62, // 30: peer_rpc.SelectPunchListenerResponse.listener_mapped_addr:type_name -> common.SocketAddr
-	62, // 31: peer_rpc.SendPunchPacketConeRequest.listener_mapped_addr:type_name -> common.SocketAddr
-	62, // 32: peer_rpc.SendPunchPacketConeRequest.dest_addr:type_name -> common.SocketAddr
-	62, // 33: peer_rpc.SendPunchPacketHardSymRequest.listener_mapped_addr:type_name -> common.SocketAddr
-	55, // 34: peer_rpc.SendPunchPacketHardSymRequest.public_ips:type_name -> common.Ipv4Addr
-	62, // 35: peer_rpc.SendPunchPacketEasySymRequest.listener_mapped_addr:type_name -> common.SocketAddr
-	55, // 36: peer_rpc.SendPunchPacketEasySymRequest.public_ips:type_name -> common.Ipv4Addr
-	55, // 37: peer_rpc.SendPunchPacketBothEasySymRequest.public_ip:type_name -> common.Ipv4Addr
-	62, // 38: peer_rpc.SendPunchPacketBothEasySymResponse.base_mapped_addr:type_name -> common.SocketAddr
-	62, // 39: peer_rpc.TcpHolePunchPredictedPorts.base_mapped_addr:type_name -> common.SocketAddr
-	1,  // 40: peer_rpc.TcpHolePunchPredictedPorts.direction:type_name -> peer_rpc.PortSequenceDirection
-	62, // 41: peer_rpc.TcpHolePunchRequest.connector_mapped_addr:type_name -> common.SocketAddr
-	62, // 42: peer_rpc.TcpHolePunchResponse.listener_mapped_addr:type_name -> common.SocketAddr
-	30, // 43: peer_rpc.TcpHolePunchResponse.predicted_ports:type_name -> peer_rpc.TcpHolePunchPredictedPorts
-	51, // 44: peer_rpc.PeerInfoForGlobalMap.direct_peers:type_name -> peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry
-	34, // 45: peer_rpc.ReportPeersRequest.peer_infos:type_name -> peer_rpc.PeerInfoForGlobalMap
-	52, // 46: peer_rpc.GlobalPeerMap.map:type_name -> peer_rpc.GlobalPeerMap.MapEntry
-	53, // 47: peer_rpc.GetGlobalPeerMapResponse.global_peer_map:type_name -> peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry
-	62, // 48: peer_rpc.KcpConnData.src:type_name -> common.SocketAddr
-	62, // 49: peer_rpc.KcpConnData.dst:type_name -> common.SocketAddr
-	54, // 50: peer_rpc.PeerConnNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
-	4,  // 51: peer_rpc.PeerConnNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
-	54, // 52: peer_rpc.PeerConnNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
-	54, // 53: peer_rpc.PeerConnNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
-	54, // 54: peer_rpc.RelayNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
-	4,  // 55: peer_rpc.RelayNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
-	54, // 56: peer_rpc.RelayNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
-	54, // 57: peer_rpc.RelayNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
-	54, // 58: peer_rpc.PeerConnNoiseMsg3Pb.a_conn_id_echo:type_name -> common.UUID
-	54, // 59: peer_rpc.PeerConnNoiseMsg3Pb.b_conn_id_echo:type_name -> common.UUID
-	8,  // 60: peer_rpc.RouteConnPeerList.PeerConnInfo.peer_id:type_name -> peer_rpc.PeerIdVersion
-	12, // 61: peer_rpc.RouteForeignNetworkInfos.Info.key:type_name -> peer_rpc.ForeignNetworkRouteInfoKey
-	13, // 62: peer_rpc.RouteForeignNetworkInfos.Info.value:type_name -> peer_rpc.ForeignNetworkRouteInfoEntry
-	49, // 63: peer_rpc.RouteForeignNetworkSummary.InfoMapEntry.value:type_name -> peer_rpc.RouteForeignNetworkSummary.Info
-	33, // 64: peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry.value:type_name -> peer_rpc.DirectConnectedPeerInfo
-	34, // 65: peer_rpc.GlobalPeerMap.MapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
-	34, // 66: peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
-	17, // 67: peer_rpc.OspfRouteRpc.SyncRouteInfo:input_type -> peer_rpc.SyncRouteInfoRequest
-	19, // 68: peer_rpc.DirectConnectorRpc.GetIpList:input_type -> peer_rpc.GetIpListRequest
-	21, // 69: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:input_type -> peer_rpc.SendUdpHolePunchPacketRequest
-	22, // 70: peer_rpc.UdpHolePunchRpc.SelectPunchListener:input_type -> peer_rpc.SelectPunchListenerRequest
-	24, // 71: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:input_type -> peer_rpc.SendPunchPacketConeRequest
-	25, // 72: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:input_type -> peer_rpc.SendPunchPacketHardSymRequest
-	27, // 73: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:input_type -> peer_rpc.SendPunchPacketEasySymRequest
-	28, // 74: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:input_type -> peer_rpc.SendPunchPacketBothEasySymRequest
-	31, // 75: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:input_type -> peer_rpc.TcpHolePunchRequest
-	35, // 76: peer_rpc.PeerCenterRpc.ReportPeers:input_type -> peer_rpc.ReportPeersRequest
-	38, // 77: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:input_type -> peer_rpc.GetGlobalPeerMapRequest
-	18, // 78: peer_rpc.OspfRouteRpc.SyncRouteInfo:output_type -> peer_rpc.SyncRouteInfoResponse
-	20, // 79: peer_rpc.DirectConnectorRpc.GetIpList:output_type -> peer_rpc.GetIpListResponse
-	63, // 80: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:output_type -> common.Void
-	23, // 81: peer_rpc.UdpHolePunchRpc.SelectPunchListener:output_type -> peer_rpc.SelectPunchListenerResponse
-	63, // 82: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:output_type -> common.Void
-	26, // 83: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:output_type -> peer_rpc.SendPunchPacketHardSymResponse
-	63, // 84: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:output_type -> common.Void
-	29, // 85: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:output_type -> peer_rpc.SendPunchPacketBothEasySymResponse
-	32, // 86: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:output_type -> peer_rpc.TcpHolePunchResponse
-	36, // 87: peer_rpc.PeerCenterRpc.ReportPeers:output_type -> peer_rpc.ReportPeersResponse
-	39, // 88: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:output_type -> peer_rpc.GetGlobalPeerMapResponse
-	78, // [78:89] is the sub-list for method output_type
-	67, // [67:78] is the sub-list for method input_type
-	67, // [67:67] is the sub-list for extension type_name
-	67, // [67:67] is the sub-list for extension extendee
-	0,  // [0:67] is the sub-list for field type_name
+	64, // 10: peer_rpc.RoutePeerInfo.ipv6_public_addr_prefix:type_name -> common.Ipv6Inet
+	64, // 11: peer_rpc.RoutePeerInfo.ipv6_public_addr_lease:type_name -> common.Ipv6Inet
+	8,  // 12: peer_rpc.RouteConnBitmap.peer_ids:type_name -> peer_rpc.PeerIdVersion
+	52, // 13: peer_rpc.RouteConnPeerList.peer_conn_infos:type_name -> peer_rpc.RouteConnPeerList.PeerConnInfo
+	7,  // 14: peer_rpc.RoutePeerInfos.items:type_name -> peer_rpc.RoutePeerInfo
+	62, // 15: peer_rpc.ForeignNetworkRouteInfoEntry.last_update:type_name -> google.protobuf.Timestamp
+	53, // 16: peer_rpc.RouteForeignNetworkInfos.infos:type_name -> peer_rpc.RouteForeignNetworkInfos.Info
+	55, // 17: peer_rpc.RouteForeignNetworkSummary.info_map:type_name -> peer_rpc.RouteForeignNetworkSummary.InfoMapEntry
+	11, // 18: peer_rpc.SyncRouteInfoRequest.peer_infos:type_name -> peer_rpc.RoutePeerInfos
+	9,  // 19: peer_rpc.SyncRouteInfoRequest.conn_bitmap:type_name -> peer_rpc.RouteConnBitmap
+	10, // 20: peer_rpc.SyncRouteInfoRequest.conn_peer_list:type_name -> peer_rpc.RouteConnPeerList
+	14, // 21: peer_rpc.SyncRouteInfoRequest.foreign_network_infos:type_name -> peer_rpc.RouteForeignNetworkInfos
+	0,  // 22: peer_rpc.SyncRouteInfoResponse.error:type_name -> peer_rpc.SyncRouteInfoError
+	59, // 23: peer_rpc.AcquireIpv6PublicAddrLeaseRequest.inst_id:type_name -> common.UUID
+	59, // 24: peer_rpc.RenewIpv6PublicAddrLeaseRequest.inst_id:type_name -> common.UUID
+	64, // 25: peer_rpc.RenewIpv6PublicAddrLeaseRequest.leased_addr:type_name -> common.Ipv6Inet
+	59, // 26: peer_rpc.ReleaseIpv6PublicAddrLeaseRequest.inst_id:type_name -> common.UUID
+	59, // 27: peer_rpc.GetIpv6PublicAddrLeaseRequest.inst_id:type_name -> common.UUID
+	59, // 28: peer_rpc.Ipv6PublicAddrLeaseReply.provider_inst_id:type_name -> common.UUID
+	64, // 29: peer_rpc.Ipv6PublicAddrLeaseReply.provider_prefix:type_name -> common.Ipv6Inet
+	64, // 30: peer_rpc.Ipv6PublicAddrLeaseReply.leased_addr:type_name -> common.Ipv6Inet
+	62, // 31: peer_rpc.Ipv6PublicAddrLeaseReply.valid_until:type_name -> google.protobuf.Timestamp
+	60, // 32: peer_rpc.GetIpListResponse.public_ipv4:type_name -> common.Ipv4Addr
+	60, // 33: peer_rpc.GetIpListResponse.interface_ipv4s:type_name -> common.Ipv4Addr
+	65, // 34: peer_rpc.GetIpListResponse.public_ipv6:type_name -> common.Ipv6Addr
+	65, // 35: peer_rpc.GetIpListResponse.interface_ipv6s:type_name -> common.Ipv6Addr
+	66, // 36: peer_rpc.GetIpListResponse.listeners:type_name -> common.Url
+	66, // 37: peer_rpc.GetIpListResponse.udp_http3_listeners:type_name -> common.Url
+	67, // 38: peer_rpc.SendUdpHolePunchPacketRequest.connector_addr:type_name -> common.SocketAddr
+	65, // 39: peer_rpc.SendUdpHolePunchPacketRequest.preferred_src_ipv6:type_name -> common.Ipv6Addr
+	67, // 40: peer_rpc.SendUdpHolePunchPacketRequest.connector_addrs:type_name -> common.SocketAddr
+	67, // 41: peer_rpc.SelectPunchListenerResponse.listener_mapped_addr:type_name -> common.SocketAddr
+	67, // 42: peer_rpc.SendPunchPacketConeRequest.listener_mapped_addr:type_name -> common.SocketAddr
+	67, // 43: peer_rpc.SendPunchPacketConeRequest.dest_addr:type_name -> common.SocketAddr
+	67, // 44: peer_rpc.SendPunchPacketHardSymRequest.listener_mapped_addr:type_name -> common.SocketAddr
+	60, // 45: peer_rpc.SendPunchPacketHardSymRequest.public_ips:type_name -> common.Ipv4Addr
+	67, // 46: peer_rpc.SendPunchPacketEasySymRequest.listener_mapped_addr:type_name -> common.SocketAddr
+	60, // 47: peer_rpc.SendPunchPacketEasySymRequest.public_ips:type_name -> common.Ipv4Addr
+	60, // 48: peer_rpc.SendPunchPacketBothEasySymRequest.public_ip:type_name -> common.Ipv4Addr
+	67, // 49: peer_rpc.SendPunchPacketBothEasySymResponse.base_mapped_addr:type_name -> common.SocketAddr
+	67, // 50: peer_rpc.TcpHolePunchPredictedPorts.base_mapped_addr:type_name -> common.SocketAddr
+	1,  // 51: peer_rpc.TcpHolePunchPredictedPorts.direction:type_name -> peer_rpc.PortSequenceDirection
+	67, // 52: peer_rpc.TcpHolePunchRequest.connector_mapped_addr:type_name -> common.SocketAddr
+	67, // 53: peer_rpc.TcpHolePunchResponse.listener_mapped_addr:type_name -> common.SocketAddr
+	35, // 54: peer_rpc.TcpHolePunchResponse.predicted_ports:type_name -> peer_rpc.TcpHolePunchPredictedPorts
+	56, // 55: peer_rpc.PeerInfoForGlobalMap.direct_peers:type_name -> peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry
+	39, // 56: peer_rpc.ReportPeersRequest.peer_infos:type_name -> peer_rpc.PeerInfoForGlobalMap
+	57, // 57: peer_rpc.GlobalPeerMap.map:type_name -> peer_rpc.GlobalPeerMap.MapEntry
+	58, // 58: peer_rpc.GetGlobalPeerMapResponse.global_peer_map:type_name -> peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry
+	67, // 59: peer_rpc.KcpConnData.src:type_name -> common.SocketAddr
+	67, // 60: peer_rpc.KcpConnData.dst:type_name -> common.SocketAddr
+	59, // 61: peer_rpc.PeerConnNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
+	4,  // 62: peer_rpc.PeerConnNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
+	59, // 63: peer_rpc.PeerConnNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
+	59, // 64: peer_rpc.PeerConnNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
+	59, // 65: peer_rpc.RelayNoiseMsg1Pb.a_conn_id:type_name -> common.UUID
+	4,  // 66: peer_rpc.RelayNoiseMsg2Pb.action:type_name -> peer_rpc.PeerConnSessionActionPb
+	59, // 67: peer_rpc.RelayNoiseMsg2Pb.b_conn_id:type_name -> common.UUID
+	59, // 68: peer_rpc.RelayNoiseMsg2Pb.a_conn_id_echo:type_name -> common.UUID
+	59, // 69: peer_rpc.PeerConnNoiseMsg3Pb.a_conn_id_echo:type_name -> common.UUID
+	59, // 70: peer_rpc.PeerConnNoiseMsg3Pb.b_conn_id_echo:type_name -> common.UUID
+	8,  // 71: peer_rpc.RouteConnPeerList.PeerConnInfo.peer_id:type_name -> peer_rpc.PeerIdVersion
+	12, // 72: peer_rpc.RouteForeignNetworkInfos.Info.key:type_name -> peer_rpc.ForeignNetworkRouteInfoKey
+	13, // 73: peer_rpc.RouteForeignNetworkInfos.Info.value:type_name -> peer_rpc.ForeignNetworkRouteInfoEntry
+	54, // 74: peer_rpc.RouteForeignNetworkSummary.InfoMapEntry.value:type_name -> peer_rpc.RouteForeignNetworkSummary.Info
+	38, // 75: peer_rpc.PeerInfoForGlobalMap.DirectPeersEntry.value:type_name -> peer_rpc.DirectConnectedPeerInfo
+	39, // 76: peer_rpc.GlobalPeerMap.MapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
+	39, // 77: peer_rpc.GetGlobalPeerMapResponse.GlobalPeerMapEntry.value:type_name -> peer_rpc.PeerInfoForGlobalMap
+	17, // 78: peer_rpc.OspfRouteRpc.SyncRouteInfo:input_type -> peer_rpc.SyncRouteInfoRequest
+	19, // 79: peer_rpc.PublicIpv6AddrRpc.AcquireLease:input_type -> peer_rpc.AcquireIpv6PublicAddrLeaseRequest
+	20, // 80: peer_rpc.PublicIpv6AddrRpc.RenewLease:input_type -> peer_rpc.RenewIpv6PublicAddrLeaseRequest
+	21, // 81: peer_rpc.PublicIpv6AddrRpc.ReleaseLease:input_type -> peer_rpc.ReleaseIpv6PublicAddrLeaseRequest
+	22, // 82: peer_rpc.PublicIpv6AddrRpc.GetLease:input_type -> peer_rpc.GetIpv6PublicAddrLeaseRequest
+	24, // 83: peer_rpc.DirectConnectorRpc.GetIpList:input_type -> peer_rpc.GetIpListRequest
+	26, // 84: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:input_type -> peer_rpc.SendUdpHolePunchPacketRequest
+	27, // 85: peer_rpc.UdpHolePunchRpc.SelectPunchListener:input_type -> peer_rpc.SelectPunchListenerRequest
+	29, // 86: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:input_type -> peer_rpc.SendPunchPacketConeRequest
+	30, // 87: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:input_type -> peer_rpc.SendPunchPacketHardSymRequest
+	32, // 88: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:input_type -> peer_rpc.SendPunchPacketEasySymRequest
+	33, // 89: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:input_type -> peer_rpc.SendPunchPacketBothEasySymRequest
+	36, // 90: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:input_type -> peer_rpc.TcpHolePunchRequest
+	40, // 91: peer_rpc.PeerCenterRpc.ReportPeers:input_type -> peer_rpc.ReportPeersRequest
+	43, // 92: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:input_type -> peer_rpc.GetGlobalPeerMapRequest
+	18, // 93: peer_rpc.OspfRouteRpc.SyncRouteInfo:output_type -> peer_rpc.SyncRouteInfoResponse
+	23, // 94: peer_rpc.PublicIpv6AddrRpc.AcquireLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
+	23, // 95: peer_rpc.PublicIpv6AddrRpc.RenewLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
+	68, // 96: peer_rpc.PublicIpv6AddrRpc.ReleaseLease:output_type -> common.Void
+	23, // 97: peer_rpc.PublicIpv6AddrRpc.GetLease:output_type -> peer_rpc.Ipv6PublicAddrLeaseReply
+	25, // 98: peer_rpc.DirectConnectorRpc.GetIpList:output_type -> peer_rpc.GetIpListResponse
+	68, // 99: peer_rpc.DirectConnectorRpc.SendUdpHolePunchPacket:output_type -> common.Void
+	28, // 100: peer_rpc.UdpHolePunchRpc.SelectPunchListener:output_type -> peer_rpc.SelectPunchListenerResponse
+	68, // 101: peer_rpc.UdpHolePunchRpc.SendPunchPacketCone:output_type -> common.Void
+	31, // 102: peer_rpc.UdpHolePunchRpc.SendPunchPacketHardSym:output_type -> peer_rpc.SendPunchPacketHardSymResponse
+	68, // 103: peer_rpc.UdpHolePunchRpc.SendPunchPacketEasySym:output_type -> common.Void
+	34, // 104: peer_rpc.UdpHolePunchRpc.SendPunchPacketBothEasySym:output_type -> peer_rpc.SendPunchPacketBothEasySymResponse
+	37, // 105: peer_rpc.TcpHolePunchRpc.ExchangeMappedAddr:output_type -> peer_rpc.TcpHolePunchResponse
+	41, // 106: peer_rpc.PeerCenterRpc.ReportPeers:output_type -> peer_rpc.ReportPeersResponse
+	44, // 107: peer_rpc.PeerCenterRpc.GetGlobalPeerMap:output_type -> peer_rpc.GetGlobalPeerMapResponse
+	93, // [93:108] is the sub-list for method output_type
+	78, // [78:93] is the sub-list for method input_type
+	78, // [78:78] is the sub-list for extension type_name
+	78, // [78:78] is the sub-list for extension extendee
+	0,  // [0:78] is the sub-list for field type_name
 }
 
 func init() { file_peer_rpc_proto_init() }
@@ -3808,23 +4192,24 @@ func file_peer_rpc_proto_init() {
 		(*SyncRouteInfoRequest_ConnPeerList)(nil),
 	}
 	file_peer_rpc_proto_msgTypes[13].OneofWrappers = []any{}
-	file_peer_rpc_proto_msgTypes[17].OneofWrappers = []any{}
 	file_peer_rpc_proto_msgTypes[18].OneofWrappers = []any{}
-	file_peer_rpc_proto_msgTypes[34].OneofWrappers = []any{}
-	file_peer_rpc_proto_msgTypes[37].OneofWrappers = []any{}
-	file_peer_rpc_proto_msgTypes[38].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[22].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[23].OneofWrappers = []any{}
 	file_peer_rpc_proto_msgTypes[39].OneofWrappers = []any{}
-	file_peer_rpc_proto_msgTypes[40].OneofWrappers = []any{}
-	file_peer_rpc_proto_msgTypes[41].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[42].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[43].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[44].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[45].OneofWrappers = []any{}
+	file_peer_rpc_proto_msgTypes[46].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_peer_rpc_proto_rawDesc), len(file_peer_rpc_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   49,
+			NumMessages:   54,
 			NumExtensions: 0,
-			NumServices:   5,
+			NumServices:   6,
 		},
 		GoTypes:           file_peer_rpc_proto_goTypes,
 		DependencyIndexes: file_peer_rpc_proto_depIdxs,

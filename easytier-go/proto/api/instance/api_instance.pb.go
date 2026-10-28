@@ -867,6 +867,8 @@ type Route struct {
 	CostLatencyFirst          *int32                  `protobuf:"varint,13,opt,name=cost_latency_first,json=costLatencyFirst,proto3,oneof" json:"cost_latency_first,omitempty"`
 	PathLatencyLatencyFirst   *int32                  `protobuf:"varint,14,opt,name=path_latency_latency_first,json=pathLatencyLatencyFirst,proto3,oneof" json:"path_latency_latency_first,omitempty"`
 	Ipv6Addr                  *common.Ipv6Inet        `protobuf:"bytes,15,opt,name=ipv6_addr,json=ipv6Addr,proto3" json:"ipv6_addr,omitempty"`
+	PublicIpv6Addr            *common.Ipv6Inet        `protobuf:"bytes,16,opt,name=public_ipv6_addr,json=publicIpv6Addr,proto3" json:"public_ipv6_addr,omitempty"`
+	Ipv6PublicAddrPrefix      *common.Ipv6Inet        `protobuf:"bytes,17,opt,name=ipv6_public_addr_prefix,json=ipv6PublicAddrPrefix,proto3" json:"ipv6_public_addr_prefix,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
 }
@@ -1006,6 +1008,20 @@ func (x *Route) GetIpv6Addr() *common.Ipv6Inet {
 	return nil
 }
 
+func (x *Route) GetPublicIpv6Addr() *common.Ipv6Inet {
+	if x != nil {
+		return x.PublicIpv6Addr
+	}
+	return nil
+}
+
+func (x *Route) GetIpv6PublicAddrPrefix() *common.Ipv6Inet {
+	if x != nil {
+		return x.Ipv6PublicAddrPrefix
+	}
+	return nil
+}
+
 type PeerRoutePair struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Route         *Route                 `protobuf:"bytes,1,opt,name=route,proto3" json:"route,omitempty"`
@@ -1059,20 +1075,22 @@ func (x *PeerRoutePair) GetPeer() *PeerInfo {
 }
 
 type NodeInfo struct {
-	state         protoimpl.MessageState      `protogen:"open.v1"`
-	PeerId        uint32                      `protobuf:"varint,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
-	Ipv4Addr      string                      `protobuf:"bytes,2,opt,name=ipv4_addr,json=ipv4Addr,proto3" json:"ipv4_addr,omitempty"`
-	ProxyCidrs    []string                    `protobuf:"bytes,3,rep,name=proxy_cidrs,json=proxyCidrs,proto3" json:"proxy_cidrs,omitempty"`
-	Hostname      string                      `protobuf:"bytes,4,opt,name=hostname,proto3" json:"hostname,omitempty"`
-	StunInfo      *common.StunInfo            `protobuf:"bytes,5,opt,name=stun_info,json=stunInfo,proto3" json:"stun_info,omitempty"`
-	InstId        string                      `protobuf:"bytes,6,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
-	Listeners     []string                    `protobuf:"bytes,7,rep,name=listeners,proto3" json:"listeners,omitempty"`
-	Config        string                      `protobuf:"bytes,8,opt,name=config,proto3" json:"config,omitempty"`
-	Version       string                      `protobuf:"bytes,9,opt,name=version,proto3" json:"version,omitempty"`
-	FeatureFlag   *common.PeerFeatureFlag     `protobuf:"bytes,10,opt,name=feature_flag,json=featureFlag,proto3" json:"feature_flag,omitempty"`
-	IpList        *peer_rpc.GetIpListResponse `protobuf:"bytes,11,opt,name=ip_list,json=ipList,proto3" json:"ip_list,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState      `protogen:"open.v1"`
+	PeerId               uint32                      `protobuf:"varint,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	Ipv4Addr             string                      `protobuf:"bytes,2,opt,name=ipv4_addr,json=ipv4Addr,proto3" json:"ipv4_addr,omitempty"`
+	ProxyCidrs           []string                    `protobuf:"bytes,3,rep,name=proxy_cidrs,json=proxyCidrs,proto3" json:"proxy_cidrs,omitempty"`
+	Hostname             string                      `protobuf:"bytes,4,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	StunInfo             *common.StunInfo            `protobuf:"bytes,5,opt,name=stun_info,json=stunInfo,proto3" json:"stun_info,omitempty"`
+	InstId               string                      `protobuf:"bytes,6,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
+	Listeners            []string                    `protobuf:"bytes,7,rep,name=listeners,proto3" json:"listeners,omitempty"`
+	Config               string                      `protobuf:"bytes,8,opt,name=config,proto3" json:"config,omitempty"`
+	Version              string                      `protobuf:"bytes,9,opt,name=version,proto3" json:"version,omitempty"`
+	FeatureFlag          *common.PeerFeatureFlag     `protobuf:"bytes,10,opt,name=feature_flag,json=featureFlag,proto3" json:"feature_flag,omitempty"`
+	IpList               *peer_rpc.GetIpListResponse `protobuf:"bytes,11,opt,name=ip_list,json=ipList,proto3" json:"ip_list,omitempty"`
+	PublicIpv6Addr       *common.Ipv6Inet            `protobuf:"bytes,12,opt,name=public_ipv6_addr,json=publicIpv6Addr,proto3" json:"public_ipv6_addr,omitempty"`
+	Ipv6PublicAddrPrefix *common.Ipv6Inet            `protobuf:"bytes,13,opt,name=ipv6_public_addr_prefix,json=ipv6PublicAddrPrefix,proto3" json:"ipv6_public_addr_prefix,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *NodeInfo) Reset() {
@@ -1182,6 +1200,20 @@ func (x *NodeInfo) GetIpList() *peer_rpc.GetIpListResponse {
 	return nil
 }
 
+func (x *NodeInfo) GetPublicIpv6Addr() *common.Ipv6Inet {
+	if x != nil {
+		return x.PublicIpv6Addr
+	}
+	return nil
+}
+
+func (x *NodeInfo) GetIpv6PublicAddrPrefix() *common.Ipv6Inet {
+	if x != nil {
+		return x.Ipv6PublicAddrPrefix
+	}
+	return nil
+}
+
 type ShowNodeInfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Instance      *InstanceIdentifier    `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
@@ -1270,6 +1302,178 @@ func (x *ShowNodeInfoResponse) GetNodeInfo() *NodeInfo {
 	return nil
 }
 
+type PublicIpv6LeaseInfo struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	PeerId                uint32                 `protobuf:"varint,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	InstId                string                 `protobuf:"bytes,2,opt,name=inst_id,json=instId,proto3" json:"inst_id,omitempty"`
+	LeasedAddr            *common.Ipv6Inet       `protobuf:"bytes,3,opt,name=leased_addr,json=leasedAddr,proto3" json:"leased_addr,omitempty"`
+	ValidUntilUnixSeconds int64                  `protobuf:"varint,4,opt,name=valid_until_unix_seconds,json=validUntilUnixSeconds,proto3" json:"valid_until_unix_seconds,omitempty"`
+	Reused                bool                   `protobuf:"varint,5,opt,name=reused,proto3" json:"reused,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *PublicIpv6LeaseInfo) Reset() {
+	*x = PublicIpv6LeaseInfo{}
+	mi := &file_api_instance_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublicIpv6LeaseInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublicIpv6LeaseInfo) ProtoMessage() {}
+
+func (x *PublicIpv6LeaseInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_api_instance_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublicIpv6LeaseInfo.ProtoReflect.Descriptor instead.
+func (*PublicIpv6LeaseInfo) Descriptor() ([]byte, []int) {
+	return file_api_instance_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *PublicIpv6LeaseInfo) GetPeerId() uint32 {
+	if x != nil {
+		return x.PeerId
+	}
+	return 0
+}
+
+func (x *PublicIpv6LeaseInfo) GetInstId() string {
+	if x != nil {
+		return x.InstId
+	}
+	return ""
+}
+
+func (x *PublicIpv6LeaseInfo) GetLeasedAddr() *common.Ipv6Inet {
+	if x != nil {
+		return x.LeasedAddr
+	}
+	return nil
+}
+
+func (x *PublicIpv6LeaseInfo) GetValidUntilUnixSeconds() int64 {
+	if x != nil {
+		return x.ValidUntilUnixSeconds
+	}
+	return 0
+}
+
+func (x *PublicIpv6LeaseInfo) GetReused() bool {
+	if x != nil {
+		return x.Reused
+	}
+	return false
+}
+
+type ListPublicIpv6InfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Instance      *InstanceIdentifier    `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListPublicIpv6InfoRequest) Reset() {
+	*x = ListPublicIpv6InfoRequest{}
+	mi := &file_api_instance_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPublicIpv6InfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPublicIpv6InfoRequest) ProtoMessage() {}
+
+func (x *ListPublicIpv6InfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_instance_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPublicIpv6InfoRequest.ProtoReflect.Descriptor instead.
+func (*ListPublicIpv6InfoRequest) Descriptor() ([]byte, []int) {
+	return file_api_instance_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ListPublicIpv6InfoRequest) GetInstance() *InstanceIdentifier {
+	if x != nil {
+		return x.Instance
+	}
+	return nil
+}
+
+type ListPublicIpv6InfoResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ProviderPrefix *common.Ipv6Inet       `protobuf:"bytes,1,opt,name=provider_prefix,json=providerPrefix,proto3" json:"provider_prefix,omitempty"`
+	ProviderLeases []*PublicIpv6LeaseInfo `protobuf:"bytes,2,rep,name=provider_leases,json=providerLeases,proto3" json:"provider_leases,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ListPublicIpv6InfoResponse) Reset() {
+	*x = ListPublicIpv6InfoResponse{}
+	mi := &file_api_instance_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListPublicIpv6InfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListPublicIpv6InfoResponse) ProtoMessage() {}
+
+func (x *ListPublicIpv6InfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_instance_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListPublicIpv6InfoResponse.ProtoReflect.Descriptor instead.
+func (*ListPublicIpv6InfoResponse) Descriptor() ([]byte, []int) {
+	return file_api_instance_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ListPublicIpv6InfoResponse) GetProviderPrefix() *common.Ipv6Inet {
+	if x != nil {
+		return x.ProviderPrefix
+	}
+	return nil
+}
+
+func (x *ListPublicIpv6InfoResponse) GetProviderLeases() []*PublicIpv6LeaseInfo {
+	if x != nil {
+		return x.ProviderLeases
+	}
+	return nil
+}
+
 type ListRouteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Instance      *InstanceIdentifier    `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
@@ -1279,7 +1483,7 @@ type ListRouteRequest struct {
 
 func (x *ListRouteRequest) Reset() {
 	*x = ListRouteRequest{}
-	mi := &file_api_instance_proto_msgTypes[12]
+	mi := &file_api_instance_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1291,7 +1495,7 @@ func (x *ListRouteRequest) String() string {
 func (*ListRouteRequest) ProtoMessage() {}
 
 func (x *ListRouteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[12]
+	mi := &file_api_instance_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1304,7 +1508,7 @@ func (x *ListRouteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRouteRequest.ProtoReflect.Descriptor instead.
 func (*ListRouteRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{12}
+	return file_api_instance_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ListRouteRequest) GetInstance() *InstanceIdentifier {
@@ -1323,7 +1527,7 @@ type ListRouteResponse struct {
 
 func (x *ListRouteResponse) Reset() {
 	*x = ListRouteResponse{}
-	mi := &file_api_instance_proto_msgTypes[13]
+	mi := &file_api_instance_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1335,7 +1539,7 @@ func (x *ListRouteResponse) String() string {
 func (*ListRouteResponse) ProtoMessage() {}
 
 func (x *ListRouteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[13]
+	mi := &file_api_instance_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1348,7 +1552,7 @@ func (x *ListRouteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRouteResponse.ProtoReflect.Descriptor instead.
 func (*ListRouteResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{13}
+	return file_api_instance_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListRouteResponse) GetRoutes() []*Route {
@@ -1367,7 +1571,7 @@ type DumpRouteRequest struct {
 
 func (x *DumpRouteRequest) Reset() {
 	*x = DumpRouteRequest{}
-	mi := &file_api_instance_proto_msgTypes[14]
+	mi := &file_api_instance_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1379,7 +1583,7 @@ func (x *DumpRouteRequest) String() string {
 func (*DumpRouteRequest) ProtoMessage() {}
 
 func (x *DumpRouteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[14]
+	mi := &file_api_instance_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1392,7 +1596,7 @@ func (x *DumpRouteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DumpRouteRequest.ProtoReflect.Descriptor instead.
 func (*DumpRouteRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{14}
+	return file_api_instance_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *DumpRouteRequest) GetInstance() *InstanceIdentifier {
@@ -1411,7 +1615,7 @@ type DumpRouteResponse struct {
 
 func (x *DumpRouteResponse) Reset() {
 	*x = DumpRouteResponse{}
-	mi := &file_api_instance_proto_msgTypes[15]
+	mi := &file_api_instance_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1423,7 +1627,7 @@ func (x *DumpRouteResponse) String() string {
 func (*DumpRouteResponse) ProtoMessage() {}
 
 func (x *DumpRouteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[15]
+	mi := &file_api_instance_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1436,7 +1640,7 @@ func (x *DumpRouteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DumpRouteResponse.ProtoReflect.Descriptor instead.
 func (*DumpRouteResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{15}
+	return file_api_instance_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *DumpRouteResponse) GetResult() string {
@@ -1456,7 +1660,7 @@ type ListForeignNetworkRequest struct {
 
 func (x *ListForeignNetworkRequest) Reset() {
 	*x = ListForeignNetworkRequest{}
-	mi := &file_api_instance_proto_msgTypes[16]
+	mi := &file_api_instance_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1468,7 +1672,7 @@ func (x *ListForeignNetworkRequest) String() string {
 func (*ListForeignNetworkRequest) ProtoMessage() {}
 
 func (x *ListForeignNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[16]
+	mi := &file_api_instance_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1481,7 +1685,7 @@ func (x *ListForeignNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListForeignNetworkRequest.ProtoReflect.Descriptor instead.
 func (*ListForeignNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{16}
+	return file_api_instance_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListForeignNetworkRequest) GetInstance() *InstanceIdentifier {
@@ -1509,7 +1713,7 @@ type TrustedKeyInfoPb struct {
 
 func (x *TrustedKeyInfoPb) Reset() {
 	*x = TrustedKeyInfoPb{}
-	mi := &file_api_instance_proto_msgTypes[17]
+	mi := &file_api_instance_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1521,7 +1725,7 @@ func (x *TrustedKeyInfoPb) String() string {
 func (*TrustedKeyInfoPb) ProtoMessage() {}
 
 func (x *TrustedKeyInfoPb) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[17]
+	mi := &file_api_instance_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1534,7 +1738,7 @@ func (x *TrustedKeyInfoPb) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrustedKeyInfoPb.ProtoReflect.Descriptor instead.
 func (*TrustedKeyInfoPb) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{17}
+	return file_api_instance_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *TrustedKeyInfoPb) GetPubkey() []byte {
@@ -1570,7 +1774,7 @@ type ForeignNetworkEntryPb struct {
 
 func (x *ForeignNetworkEntryPb) Reset() {
 	*x = ForeignNetworkEntryPb{}
-	mi := &file_api_instance_proto_msgTypes[18]
+	mi := &file_api_instance_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1582,7 +1786,7 @@ func (x *ForeignNetworkEntryPb) String() string {
 func (*ForeignNetworkEntryPb) ProtoMessage() {}
 
 func (x *ForeignNetworkEntryPb) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[18]
+	mi := &file_api_instance_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1595,7 +1799,7 @@ func (x *ForeignNetworkEntryPb) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForeignNetworkEntryPb.ProtoReflect.Descriptor instead.
 func (*ForeignNetworkEntryPb) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{18}
+	return file_api_instance_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ForeignNetworkEntryPb) GetPeers() []*PeerInfo {
@@ -1636,7 +1840,7 @@ type ListForeignNetworkResponse struct {
 
 func (x *ListForeignNetworkResponse) Reset() {
 	*x = ListForeignNetworkResponse{}
-	mi := &file_api_instance_proto_msgTypes[19]
+	mi := &file_api_instance_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1648,7 +1852,7 @@ func (x *ListForeignNetworkResponse) String() string {
 func (*ListForeignNetworkResponse) ProtoMessage() {}
 
 func (x *ListForeignNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[19]
+	mi := &file_api_instance_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1661,7 +1865,7 @@ func (x *ListForeignNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListForeignNetworkResponse.ProtoReflect.Descriptor instead.
 func (*ListForeignNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{19}
+	return file_api_instance_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListForeignNetworkResponse) GetForeignNetworks() map[string]*ForeignNetworkEntryPb {
@@ -1680,7 +1884,7 @@ type ListGlobalForeignNetworkRequest struct {
 
 func (x *ListGlobalForeignNetworkRequest) Reset() {
 	*x = ListGlobalForeignNetworkRequest{}
-	mi := &file_api_instance_proto_msgTypes[20]
+	mi := &file_api_instance_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1692,7 +1896,7 @@ func (x *ListGlobalForeignNetworkRequest) String() string {
 func (*ListGlobalForeignNetworkRequest) ProtoMessage() {}
 
 func (x *ListGlobalForeignNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[20]
+	mi := &file_api_instance_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1705,7 +1909,7 @@ func (x *ListGlobalForeignNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGlobalForeignNetworkRequest.ProtoReflect.Descriptor instead.
 func (*ListGlobalForeignNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{20}
+	return file_api_instance_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ListGlobalForeignNetworkRequest) GetInstance() *InstanceIdentifier {
@@ -1724,7 +1928,7 @@ type ListGlobalForeignNetworkResponse struct {
 
 func (x *ListGlobalForeignNetworkResponse) Reset() {
 	*x = ListGlobalForeignNetworkResponse{}
-	mi := &file_api_instance_proto_msgTypes[21]
+	mi := &file_api_instance_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1736,7 +1940,7 @@ func (x *ListGlobalForeignNetworkResponse) String() string {
 func (*ListGlobalForeignNetworkResponse) ProtoMessage() {}
 
 func (x *ListGlobalForeignNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[21]
+	mi := &file_api_instance_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +1953,7 @@ func (x *ListGlobalForeignNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGlobalForeignNetworkResponse.ProtoReflect.Descriptor instead.
 func (*ListGlobalForeignNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{21}
+	return file_api_instance_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListGlobalForeignNetworkResponse) GetForeignNetworks() map[uint32]*ListGlobalForeignNetworkResponse_ForeignNetworks {
@@ -1768,7 +1972,7 @@ type GetForeignNetworkSummaryRequest struct {
 
 func (x *GetForeignNetworkSummaryRequest) Reset() {
 	*x = GetForeignNetworkSummaryRequest{}
-	mi := &file_api_instance_proto_msgTypes[22]
+	mi := &file_api_instance_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1780,7 +1984,7 @@ func (x *GetForeignNetworkSummaryRequest) String() string {
 func (*GetForeignNetworkSummaryRequest) ProtoMessage() {}
 
 func (x *GetForeignNetworkSummaryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[22]
+	mi := &file_api_instance_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1793,7 +1997,7 @@ func (x *GetForeignNetworkSummaryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetForeignNetworkSummaryRequest.ProtoReflect.Descriptor instead.
 func (*GetForeignNetworkSummaryRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{22}
+	return file_api_instance_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetForeignNetworkSummaryRequest) GetInstance() *InstanceIdentifier {
@@ -1812,7 +2016,7 @@ type GetForeignNetworkSummaryResponse struct {
 
 func (x *GetForeignNetworkSummaryResponse) Reset() {
 	*x = GetForeignNetworkSummaryResponse{}
-	mi := &file_api_instance_proto_msgTypes[23]
+	mi := &file_api_instance_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1824,7 +2028,7 @@ func (x *GetForeignNetworkSummaryResponse) String() string {
 func (*GetForeignNetworkSummaryResponse) ProtoMessage() {}
 
 func (x *GetForeignNetworkSummaryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[23]
+	mi := &file_api_instance_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1837,7 +2041,7 @@ func (x *GetForeignNetworkSummaryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetForeignNetworkSummaryResponse.ProtoReflect.Descriptor instead.
 func (*GetForeignNetworkSummaryResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{23}
+	return file_api_instance_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetForeignNetworkSummaryResponse) GetSummary() *peer_rpc.RouteForeignNetworkSummary {
@@ -1857,7 +2061,7 @@ type Connector struct {
 
 func (x *Connector) Reset() {
 	*x = Connector{}
-	mi := &file_api_instance_proto_msgTypes[24]
+	mi := &file_api_instance_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1869,7 +2073,7 @@ func (x *Connector) String() string {
 func (*Connector) ProtoMessage() {}
 
 func (x *Connector) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[24]
+	mi := &file_api_instance_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1882,7 +2086,7 @@ func (x *Connector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Connector.ProtoReflect.Descriptor instead.
 func (*Connector) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{24}
+	return file_api_instance_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *Connector) GetUrl() *common.Url {
@@ -1908,7 +2112,7 @@ type ListConnectorRequest struct {
 
 func (x *ListConnectorRequest) Reset() {
 	*x = ListConnectorRequest{}
-	mi := &file_api_instance_proto_msgTypes[25]
+	mi := &file_api_instance_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1920,7 +2124,7 @@ func (x *ListConnectorRequest) String() string {
 func (*ListConnectorRequest) ProtoMessage() {}
 
 func (x *ListConnectorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[25]
+	mi := &file_api_instance_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1933,7 +2137,7 @@ func (x *ListConnectorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListConnectorRequest.ProtoReflect.Descriptor instead.
 func (*ListConnectorRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{25}
+	return file_api_instance_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListConnectorRequest) GetInstance() *InstanceIdentifier {
@@ -1952,7 +2156,7 @@ type ListConnectorResponse struct {
 
 func (x *ListConnectorResponse) Reset() {
 	*x = ListConnectorResponse{}
-	mi := &file_api_instance_proto_msgTypes[26]
+	mi := &file_api_instance_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1964,7 +2168,7 @@ func (x *ListConnectorResponse) String() string {
 func (*ListConnectorResponse) ProtoMessage() {}
 
 func (x *ListConnectorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[26]
+	mi := &file_api_instance_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1977,7 +2181,7 @@ func (x *ListConnectorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListConnectorResponse.ProtoReflect.Descriptor instead.
 func (*ListConnectorResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{26}
+	return file_api_instance_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListConnectorResponse) GetConnectors() []*Connector {
@@ -1996,7 +2200,7 @@ type MappedListener struct {
 
 func (x *MappedListener) Reset() {
 	*x = MappedListener{}
-	mi := &file_api_instance_proto_msgTypes[27]
+	mi := &file_api_instance_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2008,7 +2212,7 @@ func (x *MappedListener) String() string {
 func (*MappedListener) ProtoMessage() {}
 
 func (x *MappedListener) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[27]
+	mi := &file_api_instance_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2021,7 +2225,7 @@ func (x *MappedListener) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MappedListener.ProtoReflect.Descriptor instead.
 func (*MappedListener) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{27}
+	return file_api_instance_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *MappedListener) GetUrl() *common.Url {
@@ -2040,7 +2244,7 @@ type ListMappedListenerRequest struct {
 
 func (x *ListMappedListenerRequest) Reset() {
 	*x = ListMappedListenerRequest{}
-	mi := &file_api_instance_proto_msgTypes[28]
+	mi := &file_api_instance_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2052,7 +2256,7 @@ func (x *ListMappedListenerRequest) String() string {
 func (*ListMappedListenerRequest) ProtoMessage() {}
 
 func (x *ListMappedListenerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[28]
+	mi := &file_api_instance_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2065,7 +2269,7 @@ func (x *ListMappedListenerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMappedListenerRequest.ProtoReflect.Descriptor instead.
 func (*ListMappedListenerRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{28}
+	return file_api_instance_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListMappedListenerRequest) GetInstance() *InstanceIdentifier {
@@ -2084,7 +2288,7 @@ type ListMappedListenerResponse struct {
 
 func (x *ListMappedListenerResponse) Reset() {
 	*x = ListMappedListenerResponse{}
-	mi := &file_api_instance_proto_msgTypes[29]
+	mi := &file_api_instance_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2096,7 +2300,7 @@ func (x *ListMappedListenerResponse) String() string {
 func (*ListMappedListenerResponse) ProtoMessage() {}
 
 func (x *ListMappedListenerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[29]
+	mi := &file_api_instance_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2109,7 +2313,7 @@ func (x *ListMappedListenerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMappedListenerResponse.ProtoReflect.Descriptor instead.
 func (*ListMappedListenerResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{29}
+	return file_api_instance_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListMappedListenerResponse) GetMappedlisteners() []*MappedListener {
@@ -2136,7 +2340,7 @@ type VpnPortalClientInfo struct {
 
 func (x *VpnPortalClientInfo) Reset() {
 	*x = VpnPortalClientInfo{}
-	mi := &file_api_instance_proto_msgTypes[30]
+	mi := &file_api_instance_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2148,7 +2352,7 @@ func (x *VpnPortalClientInfo) String() string {
 func (*VpnPortalClientInfo) ProtoMessage() {}
 
 func (x *VpnPortalClientInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[30]
+	mi := &file_api_instance_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2161,7 +2365,7 @@ func (x *VpnPortalClientInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VpnPortalClientInfo.ProtoReflect.Descriptor instead.
 func (*VpnPortalClientInfo) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{30}
+	return file_api_instance_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *VpnPortalClientInfo) GetName() string {
@@ -2242,7 +2446,7 @@ type VpnPortalInfo struct {
 
 func (x *VpnPortalInfo) Reset() {
 	*x = VpnPortalInfo{}
-	mi := &file_api_instance_proto_msgTypes[31]
+	mi := &file_api_instance_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2254,7 +2458,7 @@ func (x *VpnPortalInfo) String() string {
 func (*VpnPortalInfo) ProtoMessage() {}
 
 func (x *VpnPortalInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[31]
+	mi := &file_api_instance_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2267,7 +2471,7 @@ func (x *VpnPortalInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VpnPortalInfo.ProtoReflect.Descriptor instead.
 func (*VpnPortalInfo) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{31}
+	return file_api_instance_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *VpnPortalInfo) GetVpnType() string {
@@ -2316,7 +2520,7 @@ type GetVpnPortalInfoRequest struct {
 
 func (x *GetVpnPortalInfoRequest) Reset() {
 	*x = GetVpnPortalInfoRequest{}
-	mi := &file_api_instance_proto_msgTypes[32]
+	mi := &file_api_instance_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2328,7 +2532,7 @@ func (x *GetVpnPortalInfoRequest) String() string {
 func (*GetVpnPortalInfoRequest) ProtoMessage() {}
 
 func (x *GetVpnPortalInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[32]
+	mi := &file_api_instance_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2341,7 +2545,7 @@ func (x *GetVpnPortalInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVpnPortalInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetVpnPortalInfoRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{32}
+	return file_api_instance_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *GetVpnPortalInfoRequest) GetInstance() *InstanceIdentifier {
@@ -2360,7 +2564,7 @@ type GetVpnPortalInfoResponse struct {
 
 func (x *GetVpnPortalInfoResponse) Reset() {
 	*x = GetVpnPortalInfoResponse{}
-	mi := &file_api_instance_proto_msgTypes[33]
+	mi := &file_api_instance_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2372,7 +2576,7 @@ func (x *GetVpnPortalInfoResponse) String() string {
 func (*GetVpnPortalInfoResponse) ProtoMessage() {}
 
 func (x *GetVpnPortalInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[33]
+	mi := &file_api_instance_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2589,7 @@ func (x *GetVpnPortalInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVpnPortalInfoResponse.ProtoReflect.Descriptor instead.
 func (*GetVpnPortalInfoResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{33}
+	return file_api_instance_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GetVpnPortalInfoResponse) GetVpnPortalInfo() *VpnPortalInfo {
@@ -2408,7 +2612,7 @@ type TcpProxyEntry struct {
 
 func (x *TcpProxyEntry) Reset() {
 	*x = TcpProxyEntry{}
-	mi := &file_api_instance_proto_msgTypes[34]
+	mi := &file_api_instance_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2420,7 +2624,7 @@ func (x *TcpProxyEntry) String() string {
 func (*TcpProxyEntry) ProtoMessage() {}
 
 func (x *TcpProxyEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[34]
+	mi := &file_api_instance_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2433,7 +2637,7 @@ func (x *TcpProxyEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpProxyEntry.ProtoReflect.Descriptor instead.
 func (*TcpProxyEntry) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{34}
+	return file_api_instance_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *TcpProxyEntry) GetSrc() *common.SocketAddr {
@@ -2480,7 +2684,7 @@ type ListTcpProxyEntryRequest struct {
 
 func (x *ListTcpProxyEntryRequest) Reset() {
 	*x = ListTcpProxyEntryRequest{}
-	mi := &file_api_instance_proto_msgTypes[35]
+	mi := &file_api_instance_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2492,7 +2696,7 @@ func (x *ListTcpProxyEntryRequest) String() string {
 func (*ListTcpProxyEntryRequest) ProtoMessage() {}
 
 func (x *ListTcpProxyEntryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[35]
+	mi := &file_api_instance_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2505,7 +2709,7 @@ func (x *ListTcpProxyEntryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTcpProxyEntryRequest.ProtoReflect.Descriptor instead.
 func (*ListTcpProxyEntryRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{35}
+	return file_api_instance_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListTcpProxyEntryRequest) GetInstance() *InstanceIdentifier {
@@ -2524,7 +2728,7 @@ type ListTcpProxyEntryResponse struct {
 
 func (x *ListTcpProxyEntryResponse) Reset() {
 	*x = ListTcpProxyEntryResponse{}
-	mi := &file_api_instance_proto_msgTypes[36]
+	mi := &file_api_instance_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2536,7 +2740,7 @@ func (x *ListTcpProxyEntryResponse) String() string {
 func (*ListTcpProxyEntryResponse) ProtoMessage() {}
 
 func (x *ListTcpProxyEntryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[36]
+	mi := &file_api_instance_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2549,7 +2753,7 @@ func (x *ListTcpProxyEntryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTcpProxyEntryResponse.ProtoReflect.Descriptor instead.
 func (*ListTcpProxyEntryResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{36}
+	return file_api_instance_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListTcpProxyEntryResponse) GetEntries() []*TcpProxyEntry {
@@ -2568,7 +2772,7 @@ type GetAclStatsRequest struct {
 
 func (x *GetAclStatsRequest) Reset() {
 	*x = GetAclStatsRequest{}
-	mi := &file_api_instance_proto_msgTypes[37]
+	mi := &file_api_instance_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2580,7 +2784,7 @@ func (x *GetAclStatsRequest) String() string {
 func (*GetAclStatsRequest) ProtoMessage() {}
 
 func (x *GetAclStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[37]
+	mi := &file_api_instance_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2593,7 +2797,7 @@ func (x *GetAclStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAclStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetAclStatsRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{37}
+	return file_api_instance_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *GetAclStatsRequest) GetInstance() *InstanceIdentifier {
@@ -2612,7 +2816,7 @@ type GetAclStatsResponse struct {
 
 func (x *GetAclStatsResponse) Reset() {
 	*x = GetAclStatsResponse{}
-	mi := &file_api_instance_proto_msgTypes[38]
+	mi := &file_api_instance_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2624,7 +2828,7 @@ func (x *GetAclStatsResponse) String() string {
 func (*GetAclStatsResponse) ProtoMessage() {}
 
 func (x *GetAclStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[38]
+	mi := &file_api_instance_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2637,7 +2841,7 @@ func (x *GetAclStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAclStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetAclStatsResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{38}
+	return file_api_instance_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *GetAclStatsResponse) GetAclStats() *acl.AclStats {
@@ -2656,7 +2860,7 @@ type GetWhitelistRequest struct {
 
 func (x *GetWhitelistRequest) Reset() {
 	*x = GetWhitelistRequest{}
-	mi := &file_api_instance_proto_msgTypes[39]
+	mi := &file_api_instance_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2668,7 +2872,7 @@ func (x *GetWhitelistRequest) String() string {
 func (*GetWhitelistRequest) ProtoMessage() {}
 
 func (x *GetWhitelistRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[39]
+	mi := &file_api_instance_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2681,7 +2885,7 @@ func (x *GetWhitelistRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWhitelistRequest.ProtoReflect.Descriptor instead.
 func (*GetWhitelistRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{39}
+	return file_api_instance_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *GetWhitelistRequest) GetInstance() *InstanceIdentifier {
@@ -2701,7 +2905,7 @@ type GetWhitelistResponse struct {
 
 func (x *GetWhitelistResponse) Reset() {
 	*x = GetWhitelistResponse{}
-	mi := &file_api_instance_proto_msgTypes[40]
+	mi := &file_api_instance_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2713,7 +2917,7 @@ func (x *GetWhitelistResponse) String() string {
 func (*GetWhitelistResponse) ProtoMessage() {}
 
 func (x *GetWhitelistResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[40]
+	mi := &file_api_instance_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2726,7 +2930,7 @@ func (x *GetWhitelistResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWhitelistResponse.ProtoReflect.Descriptor instead.
 func (*GetWhitelistResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{40}
+	return file_api_instance_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *GetWhitelistResponse) GetTcpPorts() []string {
@@ -2752,7 +2956,7 @@ type ListPortForwardRequest struct {
 
 func (x *ListPortForwardRequest) Reset() {
 	*x = ListPortForwardRequest{}
-	mi := &file_api_instance_proto_msgTypes[41]
+	mi := &file_api_instance_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2764,7 +2968,7 @@ func (x *ListPortForwardRequest) String() string {
 func (*ListPortForwardRequest) ProtoMessage() {}
 
 func (x *ListPortForwardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[41]
+	mi := &file_api_instance_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2777,7 +2981,7 @@ func (x *ListPortForwardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPortForwardRequest.ProtoReflect.Descriptor instead.
 func (*ListPortForwardRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{41}
+	return file_api_instance_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListPortForwardRequest) GetInstance() *InstanceIdentifier {
@@ -2796,7 +3000,7 @@ type ListPortForwardResponse struct {
 
 func (x *ListPortForwardResponse) Reset() {
 	*x = ListPortForwardResponse{}
-	mi := &file_api_instance_proto_msgTypes[42]
+	mi := &file_api_instance_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2808,7 +3012,7 @@ func (x *ListPortForwardResponse) String() string {
 func (*ListPortForwardResponse) ProtoMessage() {}
 
 func (x *ListPortForwardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[42]
+	mi := &file_api_instance_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2821,7 +3025,7 @@ func (x *ListPortForwardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPortForwardResponse.ProtoReflect.Descriptor instead.
 func (*ListPortForwardResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{42}
+	return file_api_instance_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ListPortForwardResponse) GetCfgs() []*common.PortForwardConfigPb {
@@ -2842,7 +3046,7 @@ type MetricSnapshot struct {
 
 func (x *MetricSnapshot) Reset() {
 	*x = MetricSnapshot{}
-	mi := &file_api_instance_proto_msgTypes[43]
+	mi := &file_api_instance_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2854,7 +3058,7 @@ func (x *MetricSnapshot) String() string {
 func (*MetricSnapshot) ProtoMessage() {}
 
 func (x *MetricSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[43]
+	mi := &file_api_instance_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2867,7 +3071,7 @@ func (x *MetricSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricSnapshot.ProtoReflect.Descriptor instead.
 func (*MetricSnapshot) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{43}
+	return file_api_instance_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *MetricSnapshot) GetName() string {
@@ -2900,7 +3104,7 @@ type GetStatsRequest struct {
 
 func (x *GetStatsRequest) Reset() {
 	*x = GetStatsRequest{}
-	mi := &file_api_instance_proto_msgTypes[44]
+	mi := &file_api_instance_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2912,7 +3116,7 @@ func (x *GetStatsRequest) String() string {
 func (*GetStatsRequest) ProtoMessage() {}
 
 func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[44]
+	mi := &file_api_instance_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2925,7 +3129,7 @@ func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetStatsRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{44}
+	return file_api_instance_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *GetStatsRequest) GetInstance() *InstanceIdentifier {
@@ -2944,7 +3148,7 @@ type GetStatsResponse struct {
 
 func (x *GetStatsResponse) Reset() {
 	*x = GetStatsResponse{}
-	mi := &file_api_instance_proto_msgTypes[45]
+	mi := &file_api_instance_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2956,7 +3160,7 @@ func (x *GetStatsResponse) String() string {
 func (*GetStatsResponse) ProtoMessage() {}
 
 func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[45]
+	mi := &file_api_instance_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2969,7 +3173,7 @@ func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetStatsResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{45}
+	return file_api_instance_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *GetStatsResponse) GetMetrics() []*MetricSnapshot {
@@ -2988,7 +3192,7 @@ type GetPrometheusStatsRequest struct {
 
 func (x *GetPrometheusStatsRequest) Reset() {
 	*x = GetPrometheusStatsRequest{}
-	mi := &file_api_instance_proto_msgTypes[46]
+	mi := &file_api_instance_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3000,7 +3204,7 @@ func (x *GetPrometheusStatsRequest) String() string {
 func (*GetPrometheusStatsRequest) ProtoMessage() {}
 
 func (x *GetPrometheusStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[46]
+	mi := &file_api_instance_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3013,7 +3217,7 @@ func (x *GetPrometheusStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPrometheusStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetPrometheusStatsRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{46}
+	return file_api_instance_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *GetPrometheusStatsRequest) GetInstance() *InstanceIdentifier {
@@ -3032,7 +3236,7 @@ type GetPrometheusStatsResponse struct {
 
 func (x *GetPrometheusStatsResponse) Reset() {
 	*x = GetPrometheusStatsResponse{}
-	mi := &file_api_instance_proto_msgTypes[47]
+	mi := &file_api_instance_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3044,7 +3248,7 @@ func (x *GetPrometheusStatsResponse) String() string {
 func (*GetPrometheusStatsResponse) ProtoMessage() {}
 
 func (x *GetPrometheusStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[47]
+	mi := &file_api_instance_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3057,7 +3261,7 @@ func (x *GetPrometheusStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPrometheusStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetPrometheusStatsResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{47}
+	return file_api_instance_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *GetPrometheusStatsResponse) GetPrometheusText() string {
@@ -3082,7 +3286,7 @@ type GenerateCredentialRequest struct {
 
 func (x *GenerateCredentialRequest) Reset() {
 	*x = GenerateCredentialRequest{}
-	mi := &file_api_instance_proto_msgTypes[48]
+	mi := &file_api_instance_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3094,7 +3298,7 @@ func (x *GenerateCredentialRequest) String() string {
 func (*GenerateCredentialRequest) ProtoMessage() {}
 
 func (x *GenerateCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[48]
+	mi := &file_api_instance_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3107,7 +3311,7 @@ func (x *GenerateCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateCredentialRequest.ProtoReflect.Descriptor instead.
 func (*GenerateCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{48}
+	return file_api_instance_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *GenerateCredentialRequest) GetGroups() []string {
@@ -3170,7 +3374,7 @@ type GenerateCredentialResponse struct {
 
 func (x *GenerateCredentialResponse) Reset() {
 	*x = GenerateCredentialResponse{}
-	mi := &file_api_instance_proto_msgTypes[49]
+	mi := &file_api_instance_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3182,7 +3386,7 @@ func (x *GenerateCredentialResponse) String() string {
 func (*GenerateCredentialResponse) ProtoMessage() {}
 
 func (x *GenerateCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[49]
+	mi := &file_api_instance_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3195,7 +3399,7 @@ func (x *GenerateCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateCredentialResponse.ProtoReflect.Descriptor instead.
 func (*GenerateCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{49}
+	return file_api_instance_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *GenerateCredentialResponse) GetCredentialId() string {
@@ -3235,7 +3439,7 @@ type UpsertCredentialRequest struct {
 
 func (x *UpsertCredentialRequest) Reset() {
 	*x = UpsertCredentialRequest{}
-	mi := &file_api_instance_proto_msgTypes[50]
+	mi := &file_api_instance_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3247,7 +3451,7 @@ func (x *UpsertCredentialRequest) String() string {
 func (*UpsertCredentialRequest) ProtoMessage() {}
 
 func (x *UpsertCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[50]
+	mi := &file_api_instance_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3260,7 +3464,7 @@ func (x *UpsertCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertCredentialRequest.ProtoReflect.Descriptor instead.
 func (*UpsertCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{50}
+	return file_api_instance_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *UpsertCredentialRequest) GetCredentialId() string {
@@ -3328,7 +3532,7 @@ type UpsertCredentialResponse struct {
 
 func (x *UpsertCredentialResponse) Reset() {
 	*x = UpsertCredentialResponse{}
-	mi := &file_api_instance_proto_msgTypes[51]
+	mi := &file_api_instance_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3340,7 +3544,7 @@ func (x *UpsertCredentialResponse) String() string {
 func (*UpsertCredentialResponse) ProtoMessage() {}
 
 func (x *UpsertCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[51]
+	mi := &file_api_instance_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3353,7 +3557,7 @@ func (x *UpsertCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpsertCredentialResponse.ProtoReflect.Descriptor instead.
 func (*UpsertCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{51}
+	return file_api_instance_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *UpsertCredentialResponse) GetChanged() bool {
@@ -3373,7 +3577,7 @@ type RevokeCredentialRequest struct {
 
 func (x *RevokeCredentialRequest) Reset() {
 	*x = RevokeCredentialRequest{}
-	mi := &file_api_instance_proto_msgTypes[52]
+	mi := &file_api_instance_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3385,7 +3589,7 @@ func (x *RevokeCredentialRequest) String() string {
 func (*RevokeCredentialRequest) ProtoMessage() {}
 
 func (x *RevokeCredentialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[52]
+	mi := &file_api_instance_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3398,7 +3602,7 @@ func (x *RevokeCredentialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCredentialRequest.ProtoReflect.Descriptor instead.
 func (*RevokeCredentialRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{52}
+	return file_api_instance_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *RevokeCredentialRequest) GetCredentialId() string {
@@ -3424,7 +3628,7 @@ type RevokeCredentialResponse struct {
 
 func (x *RevokeCredentialResponse) Reset() {
 	*x = RevokeCredentialResponse{}
-	mi := &file_api_instance_proto_msgTypes[53]
+	mi := &file_api_instance_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3436,7 +3640,7 @@ func (x *RevokeCredentialResponse) String() string {
 func (*RevokeCredentialResponse) ProtoMessage() {}
 
 func (x *RevokeCredentialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[53]
+	mi := &file_api_instance_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3449,7 +3653,7 @@ func (x *RevokeCredentialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCredentialResponse.ProtoReflect.Descriptor instead.
 func (*RevokeCredentialResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{53}
+	return file_api_instance_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *RevokeCredentialResponse) GetSuccess() bool {
@@ -3468,7 +3672,7 @@ type ListCredentialsRequest struct {
 
 func (x *ListCredentialsRequest) Reset() {
 	*x = ListCredentialsRequest{}
-	mi := &file_api_instance_proto_msgTypes[54]
+	mi := &file_api_instance_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3480,7 +3684,7 @@ func (x *ListCredentialsRequest) String() string {
 func (*ListCredentialsRequest) ProtoMessage() {}
 
 func (x *ListCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[54]
+	mi := &file_api_instance_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3493,7 +3697,7 @@ func (x *ListCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*ListCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{54}
+	return file_api_instance_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ListCredentialsRequest) GetInstance() *InstanceIdentifier {
@@ -3518,7 +3722,7 @@ type CredentialInfo struct {
 
 func (x *CredentialInfo) Reset() {
 	*x = CredentialInfo{}
-	mi := &file_api_instance_proto_msgTypes[55]
+	mi := &file_api_instance_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3530,7 +3734,7 @@ func (x *CredentialInfo) String() string {
 func (*CredentialInfo) ProtoMessage() {}
 
 func (x *CredentialInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[55]
+	mi := &file_api_instance_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3543,7 +3747,7 @@ func (x *CredentialInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialInfo.ProtoReflect.Descriptor instead.
 func (*CredentialInfo) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{55}
+	return file_api_instance_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *CredentialInfo) GetCredentialId() string {
@@ -3604,7 +3808,7 @@ type ListCredentialsResponse struct {
 
 func (x *ListCredentialsResponse) Reset() {
 	*x = ListCredentialsResponse{}
-	mi := &file_api_instance_proto_msgTypes[56]
+	mi := &file_api_instance_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3616,7 +3820,7 @@ func (x *ListCredentialsResponse) String() string {
 func (*ListCredentialsResponse) ProtoMessage() {}
 
 func (x *ListCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[56]
+	mi := &file_api_instance_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3629,7 +3833,7 @@ func (x *ListCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*ListCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{56}
+	return file_api_instance_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ListCredentialsResponse) GetCredentials() []*CredentialInfo {
@@ -3651,7 +3855,7 @@ type VpnRuleStatus struct {
 
 func (x *VpnRuleStatus) Reset() {
 	*x = VpnRuleStatus{}
-	mi := &file_api_instance_proto_msgTypes[57]
+	mi := &file_api_instance_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3663,7 +3867,7 @@ func (x *VpnRuleStatus) String() string {
 func (*VpnRuleStatus) ProtoMessage() {}
 
 func (x *VpnRuleStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[57]
+	mi := &file_api_instance_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3676,7 +3880,7 @@ func (x *VpnRuleStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VpnRuleStatus.ProtoReflect.Descriptor instead.
 func (*VpnRuleStatus) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{57}
+	return file_api_instance_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *VpnRuleStatus) GetCidr() string {
@@ -3709,7 +3913,7 @@ type GetVpnStatusRequest struct {
 
 func (x *GetVpnStatusRequest) Reset() {
 	*x = GetVpnStatusRequest{}
-	mi := &file_api_instance_proto_msgTypes[58]
+	mi := &file_api_instance_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3721,7 +3925,7 @@ func (x *GetVpnStatusRequest) String() string {
 func (*GetVpnStatusRequest) ProtoMessage() {}
 
 func (x *GetVpnStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[58]
+	mi := &file_api_instance_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3734,7 +3938,7 @@ func (x *GetVpnStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVpnStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetVpnStatusRequest) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{58}
+	return file_api_instance_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *GetVpnStatusRequest) GetInstance() *InstanceIdentifier {
@@ -3767,7 +3971,7 @@ type GetVpnStatusResponse struct {
 
 func (x *GetVpnStatusResponse) Reset() {
 	*x = GetVpnStatusResponse{}
-	mi := &file_api_instance_proto_msgTypes[59]
+	mi := &file_api_instance_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3779,7 +3983,7 @@ func (x *GetVpnStatusResponse) String() string {
 func (*GetVpnStatusResponse) ProtoMessage() {}
 
 func (x *GetVpnStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[59]
+	mi := &file_api_instance_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3792,7 +3996,7 @@ func (x *GetVpnStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVpnStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetVpnStatusResponse) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{59}
+	return file_api_instance_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *GetVpnStatusResponse) GetEnabled() bool {
@@ -3867,7 +4071,7 @@ type InstanceIdentifier_InstanceSelector struct {
 
 func (x *InstanceIdentifier_InstanceSelector) Reset() {
 	*x = InstanceIdentifier_InstanceSelector{}
-	mi := &file_api_instance_proto_msgTypes[60]
+	mi := &file_api_instance_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3879,7 +4083,7 @@ func (x *InstanceIdentifier_InstanceSelector) String() string {
 func (*InstanceIdentifier_InstanceSelector) ProtoMessage() {}
 
 func (x *InstanceIdentifier_InstanceSelector) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[60]
+	mi := &file_api_instance_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3915,7 +4119,7 @@ type ListGlobalForeignNetworkResponse_OneForeignNetwork struct {
 
 func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) Reset() {
 	*x = ListGlobalForeignNetworkResponse_OneForeignNetwork{}
-	mi := &file_api_instance_proto_msgTypes[62]
+	mi := &file_api_instance_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3927,7 +4131,7 @@ func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) String() string {
 func (*ListGlobalForeignNetworkResponse_OneForeignNetwork) ProtoMessage() {}
 
 func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[62]
+	mi := &file_api_instance_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3940,7 +4144,7 @@ func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) ProtoReflect() prot
 
 // Deprecated: Use ListGlobalForeignNetworkResponse_OneForeignNetwork.ProtoReflect.Descriptor instead.
 func (*ListGlobalForeignNetworkResponse_OneForeignNetwork) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{21, 0}
+	return file_api_instance_proto_rawDescGZIP(), []int{24, 0}
 }
 
 func (x *ListGlobalForeignNetworkResponse_OneForeignNetwork) GetNetworkName() string {
@@ -3980,7 +4184,7 @@ type ListGlobalForeignNetworkResponse_ForeignNetworks struct {
 
 func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) Reset() {
 	*x = ListGlobalForeignNetworkResponse_ForeignNetworks{}
-	mi := &file_api_instance_proto_msgTypes[63]
+	mi := &file_api_instance_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3992,7 +4196,7 @@ func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) String() string {
 func (*ListGlobalForeignNetworkResponse_ForeignNetworks) ProtoMessage() {}
 
 func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) ProtoReflect() protoreflect.Message {
-	mi := &file_api_instance_proto_msgTypes[63]
+	mi := &file_api_instance_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4005,7 +4209,7 @@ func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) ProtoReflect() protor
 
 // Deprecated: Use ListGlobalForeignNetworkResponse_ForeignNetworks.ProtoReflect.Descriptor instead.
 func (*ListGlobalForeignNetworkResponse_ForeignNetworks) Descriptor() ([]byte, []int) {
-	return file_api_instance_proto_rawDescGZIP(), []int{21, 1}
+	return file_api_instance_proto_rawDescGZIP(), []int{24, 1}
 }
 
 func (x *ListGlobalForeignNetworkResponse_ForeignNetworks) GetForeignNetworks() []*ListGlobalForeignNetworkResponse_OneForeignNetwork {
@@ -4071,7 +4275,7 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x10ListPeerResponse\x125\n" +
 	"\n" +
 	"peer_infos\x18\x01 \x03(\v2\x16.api.instance.PeerInfoR\tpeerInfos\x12/\n" +
-	"\amy_info\x18\x02 \x01(\v2\x16.api.instance.NodeInfoR\x06myInfo\"\xcf\x05\n" +
+	"\amy_info\x18\x02 \x01(\v2\x16.api.instance.NodeInfoR\x06myInfo\"\xd4\x06\n" +
 	"\x05Route\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12-\n" +
 	"\tipv4_addr\x18\x02 \x01(\v2\x10.common.Ipv4InetR\bipv4Addr\x12'\n" +
@@ -4089,13 +4293,15 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x1enext_hop_peer_id_latency_first\x18\f \x01(\rH\x00R\x19nextHopPeerIdLatencyFirst\x88\x01\x01\x121\n" +
 	"\x12cost_latency_first\x18\r \x01(\x05H\x01R\x10costLatencyFirst\x88\x01\x01\x12@\n" +
 	"\x1apath_latency_latency_first\x18\x0e \x01(\x05H\x02R\x17pathLatencyLatencyFirst\x88\x01\x01\x12-\n" +
-	"\tipv6_addr\x18\x0f \x01(\v2\x10.common.Ipv6InetR\bipv6AddrB!\n" +
+	"\tipv6_addr\x18\x0f \x01(\v2\x10.common.Ipv6InetR\bipv6Addr\x12:\n" +
+	"\x10public_ipv6_addr\x18\x10 \x01(\v2\x10.common.Ipv6InetR\x0epublicIpv6Addr\x12G\n" +
+	"\x17ipv6_public_addr_prefix\x18\x11 \x01(\v2\x10.common.Ipv6InetR\x14ipv6PublicAddrPrefixB!\n" +
 	"\x1f_next_hop_peer_id_latency_firstB\x15\n" +
 	"\x13_cost_latency_firstB\x1d\n" +
 	"\x1b_path_latency_latency_first\"f\n" +
 	"\rPeerRoutePair\x12)\n" +
 	"\x05route\x18\x01 \x01(\v2\x13.api.instance.RouteR\x05route\x12*\n" +
-	"\x04peer\x18\x02 \x01(\v2\x16.api.instance.PeerInfoR\x04peer\"\x87\x03\n" +
+	"\x04peer\x18\x02 \x01(\v2\x16.api.instance.PeerInfoR\x04peer\"\x8c\x04\n" +
 	"\bNodeInfo\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12\x1b\n" +
 	"\tipv4_addr\x18\x02 \x01(\tR\bipv4Addr\x12\x1f\n" +
@@ -4109,11 +4315,25 @@ const file_api_instance_proto_rawDesc = "" +
 	"\aversion\x18\t \x01(\tR\aversion\x12:\n" +
 	"\ffeature_flag\x18\n" +
 	" \x01(\v2\x17.common.PeerFeatureFlagR\vfeatureFlag\x124\n" +
-	"\aip_list\x18\v \x01(\v2\x1b.peer_rpc.GetIpListResponseR\x06ipList\"S\n" +
+	"\aip_list\x18\v \x01(\v2\x1b.peer_rpc.GetIpListResponseR\x06ipList\x12:\n" +
+	"\x10public_ipv6_addr\x18\f \x01(\v2\x10.common.Ipv6InetR\x0epublicIpv6Addr\x12G\n" +
+	"\x17ipv6_public_addr_prefix\x18\r \x01(\v2\x10.common.Ipv6InetR\x14ipv6PublicAddrPrefix\"S\n" +
 	"\x13ShowNodeInfoRequest\x12<\n" +
 	"\binstance\x18\x01 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"K\n" +
 	"\x14ShowNodeInfoResponse\x123\n" +
-	"\tnode_info\x18\x01 \x01(\v2\x16.api.instance.NodeInfoR\bnodeInfo\"P\n" +
+	"\tnode_info\x18\x01 \x01(\v2\x16.api.instance.NodeInfoR\bnodeInfo\"\xcb\x01\n" +
+	"\x13PublicIpv6LeaseInfo\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x12\x17\n" +
+	"\ainst_id\x18\x02 \x01(\tR\x06instId\x121\n" +
+	"\vleased_addr\x18\x03 \x01(\v2\x10.common.Ipv6InetR\n" +
+	"leasedAddr\x127\n" +
+	"\x18valid_until_unix_seconds\x18\x04 \x01(\x03R\x15validUntilUnixSeconds\x12\x16\n" +
+	"\x06reused\x18\x05 \x01(\bR\x06reused\"Y\n" +
+	"\x19ListPublicIpv6InfoRequest\x12<\n" +
+	"\binstance\x18\x01 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"\xa3\x01\n" +
+	"\x1aListPublicIpv6InfoResponse\x129\n" +
+	"\x0fprovider_prefix\x18\x01 \x01(\v2\x10.common.Ipv6InetR\x0eproviderPrefix\x12J\n" +
+	"\x0fprovider_leases\x18\x02 \x03(\v2!.api.instance.PublicIpv6LeaseInfoR\x0eproviderLeases\"P\n" +
 	"\x10ListRouteRequest\x12<\n" +
 	"\binstance\x18\x01 \x01(\v2 .api.instance.InstanceIdentifierR\binstance\"@\n" +
 	"\x11ListRouteResponse\x12+\n" +
@@ -4339,9 +4559,10 @@ const file_api_instance_proto_rawDesc = "" +
 	"\n" +
 	"ClosingSrc\x10\x05\x12\x0e\n" +
 	"\n" +
-	"ClosingDst\x10\x062\x83\x06\n" +
+	"ClosingDst\x10\x062\xec\x06\n" +
 	"\rPeerManageRpc\x12I\n" +
-	"\bListPeer\x12\x1d.api.instance.ListPeerRequest\x1a\x1e.api.instance.ListPeerResponse\x12U\n" +
+	"\bListPeer\x12\x1d.api.instance.ListPeerRequest\x1a\x1e.api.instance.ListPeerResponse\x12g\n" +
+	"\x12ListPublicIpv6Info\x12'.api.instance.ListPublicIpv6InfoRequest\x1a(.api.instance.ListPublicIpv6InfoResponse\x12U\n" +
 	"\fGetVpnStatus\x12!.api.instance.GetVpnStatusRequest\x1a\".api.instance.GetVpnStatusResponse\x12L\n" +
 	"\tListRoute\x12\x1e.api.instance.ListRouteRequest\x1a\x1f.api.instance.ListRouteResponse\x12L\n" +
 	"\tDumpRoute\x12\x1e.api.instance.DumpRouteRequest\x1a\x1f.api.instance.DumpRouteResponse\x12g\n" +
@@ -4384,7 +4605,7 @@ func file_api_instance_proto_rawDescGZIP() []byte {
 }
 
 var file_api_instance_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_api_instance_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
+var file_api_instance_proto_msgTypes = make([]protoimpl.MessageInfo, 69)
 var file_api_instance_proto_goTypes = []any{
 	(TrustedKeySourcePb)(0),                     // 0: api.instance.TrustedKeySourcePb
 	(ConnectorStatus)(0),                        // 1: api.instance.ConnectorStatus
@@ -4403,196 +4624,209 @@ var file_api_instance_proto_goTypes = []any{
 	(*NodeInfo)(nil),                            // 14: api.instance.NodeInfo
 	(*ShowNodeInfoRequest)(nil),                 // 15: api.instance.ShowNodeInfoRequest
 	(*ShowNodeInfoResponse)(nil),                // 16: api.instance.ShowNodeInfoResponse
-	(*ListRouteRequest)(nil),                    // 17: api.instance.ListRouteRequest
-	(*ListRouteResponse)(nil),                   // 18: api.instance.ListRouteResponse
-	(*DumpRouteRequest)(nil),                    // 19: api.instance.DumpRouteRequest
-	(*DumpRouteResponse)(nil),                   // 20: api.instance.DumpRouteResponse
-	(*ListForeignNetworkRequest)(nil),           // 21: api.instance.ListForeignNetworkRequest
-	(*TrustedKeyInfoPb)(nil),                    // 22: api.instance.TrustedKeyInfoPb
-	(*ForeignNetworkEntryPb)(nil),               // 23: api.instance.ForeignNetworkEntryPb
-	(*ListForeignNetworkResponse)(nil),          // 24: api.instance.ListForeignNetworkResponse
-	(*ListGlobalForeignNetworkRequest)(nil),     // 25: api.instance.ListGlobalForeignNetworkRequest
-	(*ListGlobalForeignNetworkResponse)(nil),    // 26: api.instance.ListGlobalForeignNetworkResponse
-	(*GetForeignNetworkSummaryRequest)(nil),     // 27: api.instance.GetForeignNetworkSummaryRequest
-	(*GetForeignNetworkSummaryResponse)(nil),    // 28: api.instance.GetForeignNetworkSummaryResponse
-	(*Connector)(nil),                           // 29: api.instance.Connector
-	(*ListConnectorRequest)(nil),                // 30: api.instance.ListConnectorRequest
-	(*ListConnectorResponse)(nil),               // 31: api.instance.ListConnectorResponse
-	(*MappedListener)(nil),                      // 32: api.instance.MappedListener
-	(*ListMappedListenerRequest)(nil),           // 33: api.instance.ListMappedListenerRequest
-	(*ListMappedListenerResponse)(nil),          // 34: api.instance.ListMappedListenerResponse
-	(*VpnPortalClientInfo)(nil),                 // 35: api.instance.VpnPortalClientInfo
-	(*VpnPortalInfo)(nil),                       // 36: api.instance.VpnPortalInfo
-	(*GetVpnPortalInfoRequest)(nil),             // 37: api.instance.GetVpnPortalInfoRequest
-	(*GetVpnPortalInfoResponse)(nil),            // 38: api.instance.GetVpnPortalInfoResponse
-	(*TcpProxyEntry)(nil),                       // 39: api.instance.TcpProxyEntry
-	(*ListTcpProxyEntryRequest)(nil),            // 40: api.instance.ListTcpProxyEntryRequest
-	(*ListTcpProxyEntryResponse)(nil),           // 41: api.instance.ListTcpProxyEntryResponse
-	(*GetAclStatsRequest)(nil),                  // 42: api.instance.GetAclStatsRequest
-	(*GetAclStatsResponse)(nil),                 // 43: api.instance.GetAclStatsResponse
-	(*GetWhitelistRequest)(nil),                 // 44: api.instance.GetWhitelistRequest
-	(*GetWhitelistResponse)(nil),                // 45: api.instance.GetWhitelistResponse
-	(*ListPortForwardRequest)(nil),              // 46: api.instance.ListPortForwardRequest
-	(*ListPortForwardResponse)(nil),             // 47: api.instance.ListPortForwardResponse
-	(*MetricSnapshot)(nil),                      // 48: api.instance.MetricSnapshot
-	(*GetStatsRequest)(nil),                     // 49: api.instance.GetStatsRequest
-	(*GetStatsResponse)(nil),                    // 50: api.instance.GetStatsResponse
-	(*GetPrometheusStatsRequest)(nil),           // 51: api.instance.GetPrometheusStatsRequest
-	(*GetPrometheusStatsResponse)(nil),          // 52: api.instance.GetPrometheusStatsResponse
-	(*GenerateCredentialRequest)(nil),           // 53: api.instance.GenerateCredentialRequest
-	(*GenerateCredentialResponse)(nil),          // 54: api.instance.GenerateCredentialResponse
-	(*UpsertCredentialRequest)(nil),             // 55: api.instance.UpsertCredentialRequest
-	(*UpsertCredentialResponse)(nil),            // 56: api.instance.UpsertCredentialResponse
-	(*RevokeCredentialRequest)(nil),             // 57: api.instance.RevokeCredentialRequest
-	(*RevokeCredentialResponse)(nil),            // 58: api.instance.RevokeCredentialResponse
-	(*ListCredentialsRequest)(nil),              // 59: api.instance.ListCredentialsRequest
-	(*CredentialInfo)(nil),                      // 60: api.instance.CredentialInfo
-	(*ListCredentialsResponse)(nil),             // 61: api.instance.ListCredentialsResponse
-	(*VpnRuleStatus)(nil),                       // 62: api.instance.VpnRuleStatus
-	(*GetVpnStatusRequest)(nil),                 // 63: api.instance.GetVpnStatusRequest
-	(*GetVpnStatusResponse)(nil),                // 64: api.instance.GetVpnStatusResponse
-	(*InstanceIdentifier_InstanceSelector)(nil), // 65: api.instance.InstanceIdentifier.InstanceSelector
-	nil, // 66: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
-	(*ListGlobalForeignNetworkResponse_OneForeignNetwork)(nil), // 67: api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
-	(*ListGlobalForeignNetworkResponse_ForeignNetworks)(nil),   // 68: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
-	nil,                                         // 69: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
-	nil,                                         // 70: api.instance.MetricSnapshot.LabelsEntry
-	(*common.UUID)(nil),                         // 71: common.UUID
-	(*common.TunnelInfo)(nil),                   // 72: common.TunnelInfo
-	(peer_rpc.SecureAuthLevel)(0),               // 73: peer_rpc.SecureAuthLevel
-	(peer_rpc.PeerIdentityType)(0),              // 74: peer_rpc.PeerIdentityType
-	(*common.ParallelConnectionStatus)(nil),     // 75: common.ParallelConnectionStatus
-	(*common.Ipv4Inet)(nil),                     // 76: common.Ipv4Inet
-	(*common.StunInfo)(nil),                     // 77: common.StunInfo
-	(*common.PeerFeatureFlag)(nil),              // 78: common.PeerFeatureFlag
-	(*common.Ipv6Inet)(nil),                     // 79: common.Ipv6Inet
-	(*peer_rpc.GetIpListResponse)(nil),          // 80: peer_rpc.GetIpListResponse
-	(*peer_rpc.RouteForeignNetworkSummary)(nil), // 81: peer_rpc.RouteForeignNetworkSummary
-	(*common.Url)(nil),                          // 82: common.Url
-	(*common.SocketAddr)(nil),                   // 83: common.SocketAddr
-	(*acl.AclStats)(nil),                        // 84: acl.AclStats
-	(*common.PortForwardConfigPb)(nil),          // 85: common.PortForwardConfigPb
+	(*PublicIpv6LeaseInfo)(nil),                 // 17: api.instance.PublicIpv6LeaseInfo
+	(*ListPublicIpv6InfoRequest)(nil),           // 18: api.instance.ListPublicIpv6InfoRequest
+	(*ListPublicIpv6InfoResponse)(nil),          // 19: api.instance.ListPublicIpv6InfoResponse
+	(*ListRouteRequest)(nil),                    // 20: api.instance.ListRouteRequest
+	(*ListRouteResponse)(nil),                   // 21: api.instance.ListRouteResponse
+	(*DumpRouteRequest)(nil),                    // 22: api.instance.DumpRouteRequest
+	(*DumpRouteResponse)(nil),                   // 23: api.instance.DumpRouteResponse
+	(*ListForeignNetworkRequest)(nil),           // 24: api.instance.ListForeignNetworkRequest
+	(*TrustedKeyInfoPb)(nil),                    // 25: api.instance.TrustedKeyInfoPb
+	(*ForeignNetworkEntryPb)(nil),               // 26: api.instance.ForeignNetworkEntryPb
+	(*ListForeignNetworkResponse)(nil),          // 27: api.instance.ListForeignNetworkResponse
+	(*ListGlobalForeignNetworkRequest)(nil),     // 28: api.instance.ListGlobalForeignNetworkRequest
+	(*ListGlobalForeignNetworkResponse)(nil),    // 29: api.instance.ListGlobalForeignNetworkResponse
+	(*GetForeignNetworkSummaryRequest)(nil),     // 30: api.instance.GetForeignNetworkSummaryRequest
+	(*GetForeignNetworkSummaryResponse)(nil),    // 31: api.instance.GetForeignNetworkSummaryResponse
+	(*Connector)(nil),                           // 32: api.instance.Connector
+	(*ListConnectorRequest)(nil),                // 33: api.instance.ListConnectorRequest
+	(*ListConnectorResponse)(nil),               // 34: api.instance.ListConnectorResponse
+	(*MappedListener)(nil),                      // 35: api.instance.MappedListener
+	(*ListMappedListenerRequest)(nil),           // 36: api.instance.ListMappedListenerRequest
+	(*ListMappedListenerResponse)(nil),          // 37: api.instance.ListMappedListenerResponse
+	(*VpnPortalClientInfo)(nil),                 // 38: api.instance.VpnPortalClientInfo
+	(*VpnPortalInfo)(nil),                       // 39: api.instance.VpnPortalInfo
+	(*GetVpnPortalInfoRequest)(nil),             // 40: api.instance.GetVpnPortalInfoRequest
+	(*GetVpnPortalInfoResponse)(nil),            // 41: api.instance.GetVpnPortalInfoResponse
+	(*TcpProxyEntry)(nil),                       // 42: api.instance.TcpProxyEntry
+	(*ListTcpProxyEntryRequest)(nil),            // 43: api.instance.ListTcpProxyEntryRequest
+	(*ListTcpProxyEntryResponse)(nil),           // 44: api.instance.ListTcpProxyEntryResponse
+	(*GetAclStatsRequest)(nil),                  // 45: api.instance.GetAclStatsRequest
+	(*GetAclStatsResponse)(nil),                 // 46: api.instance.GetAclStatsResponse
+	(*GetWhitelistRequest)(nil),                 // 47: api.instance.GetWhitelistRequest
+	(*GetWhitelistResponse)(nil),                // 48: api.instance.GetWhitelistResponse
+	(*ListPortForwardRequest)(nil),              // 49: api.instance.ListPortForwardRequest
+	(*ListPortForwardResponse)(nil),             // 50: api.instance.ListPortForwardResponse
+	(*MetricSnapshot)(nil),                      // 51: api.instance.MetricSnapshot
+	(*GetStatsRequest)(nil),                     // 52: api.instance.GetStatsRequest
+	(*GetStatsResponse)(nil),                    // 53: api.instance.GetStatsResponse
+	(*GetPrometheusStatsRequest)(nil),           // 54: api.instance.GetPrometheusStatsRequest
+	(*GetPrometheusStatsResponse)(nil),          // 55: api.instance.GetPrometheusStatsResponse
+	(*GenerateCredentialRequest)(nil),           // 56: api.instance.GenerateCredentialRequest
+	(*GenerateCredentialResponse)(nil),          // 57: api.instance.GenerateCredentialResponse
+	(*UpsertCredentialRequest)(nil),             // 58: api.instance.UpsertCredentialRequest
+	(*UpsertCredentialResponse)(nil),            // 59: api.instance.UpsertCredentialResponse
+	(*RevokeCredentialRequest)(nil),             // 60: api.instance.RevokeCredentialRequest
+	(*RevokeCredentialResponse)(nil),            // 61: api.instance.RevokeCredentialResponse
+	(*ListCredentialsRequest)(nil),              // 62: api.instance.ListCredentialsRequest
+	(*CredentialInfo)(nil),                      // 63: api.instance.CredentialInfo
+	(*ListCredentialsResponse)(nil),             // 64: api.instance.ListCredentialsResponse
+	(*VpnRuleStatus)(nil),                       // 65: api.instance.VpnRuleStatus
+	(*GetVpnStatusRequest)(nil),                 // 66: api.instance.GetVpnStatusRequest
+	(*GetVpnStatusResponse)(nil),                // 67: api.instance.GetVpnStatusResponse
+	(*InstanceIdentifier_InstanceSelector)(nil), // 68: api.instance.InstanceIdentifier.InstanceSelector
+	nil, // 69: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
+	(*ListGlobalForeignNetworkResponse_OneForeignNetwork)(nil), // 70: api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
+	(*ListGlobalForeignNetworkResponse_ForeignNetworks)(nil),   // 71: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
+	nil,                                         // 72: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
+	nil,                                         // 73: api.instance.MetricSnapshot.LabelsEntry
+	(*common.UUID)(nil),                         // 74: common.UUID
+	(*common.TunnelInfo)(nil),                   // 75: common.TunnelInfo
+	(peer_rpc.SecureAuthLevel)(0),               // 76: peer_rpc.SecureAuthLevel
+	(peer_rpc.PeerIdentityType)(0),              // 77: peer_rpc.PeerIdentityType
+	(*common.ParallelConnectionStatus)(nil),     // 78: common.ParallelConnectionStatus
+	(*common.Ipv4Inet)(nil),                     // 79: common.Ipv4Inet
+	(*common.StunInfo)(nil),                     // 80: common.StunInfo
+	(*common.PeerFeatureFlag)(nil),              // 81: common.PeerFeatureFlag
+	(*common.Ipv6Inet)(nil),                     // 82: common.Ipv6Inet
+	(*peer_rpc.GetIpListResponse)(nil),          // 83: peer_rpc.GetIpListResponse
+	(*peer_rpc.RouteForeignNetworkSummary)(nil), // 84: peer_rpc.RouteForeignNetworkSummary
+	(*common.Url)(nil),                          // 85: common.Url
+	(*common.SocketAddr)(nil),                   // 86: common.SocketAddr
+	(*acl.AclStats)(nil),                        // 87: acl.AclStats
+	(*common.PortForwardConfigPb)(nil),          // 88: common.PortForwardConfigPb
 }
 var file_api_instance_proto_depIdxs = []int32{
-	71, // 0: api.instance.InstanceIdentifier.id:type_name -> common.UUID
-	65, // 1: api.instance.InstanceIdentifier.instance_selector:type_name -> api.instance.InstanceIdentifier.InstanceSelector
-	72, // 2: api.instance.PeerConnInfo.tunnel:type_name -> common.TunnelInfo
-	7,  // 3: api.instance.PeerConnInfo.stats:type_name -> api.instance.PeerConnStats
-	73, // 4: api.instance.PeerConnInfo.secure_auth_level:type_name -> peer_rpc.SecureAuthLevel
-	74, // 5: api.instance.PeerConnInfo.peer_identity_type:type_name -> peer_rpc.PeerIdentityType
-	8,  // 6: api.instance.PeerInfo.conns:type_name -> api.instance.PeerConnInfo
-	71, // 7: api.instance.PeerInfo.default_conn_id:type_name -> common.UUID
-	71, // 8: api.instance.PeerInfo.directly_connected_conns:type_name -> common.UUID
-	75, // 9: api.instance.PeerInfo.parallel_connections:type_name -> common.ParallelConnectionStatus
-	5,  // 10: api.instance.ListPeerRequest.instance:type_name -> api.instance.InstanceIdentifier
-	9,  // 11: api.instance.ListPeerResponse.peer_infos:type_name -> api.instance.PeerInfo
-	14, // 12: api.instance.ListPeerResponse.my_info:type_name -> api.instance.NodeInfo
-	76, // 13: api.instance.Route.ipv4_addr:type_name -> common.Ipv4Inet
-	77, // 14: api.instance.Route.stun_info:type_name -> common.StunInfo
-	78, // 15: api.instance.Route.feature_flag:type_name -> common.PeerFeatureFlag
-	79, // 16: api.instance.Route.ipv6_addr:type_name -> common.Ipv6Inet
-	12, // 17: api.instance.PeerRoutePair.route:type_name -> api.instance.Route
-	9,  // 18: api.instance.PeerRoutePair.peer:type_name -> api.instance.PeerInfo
-	77, // 19: api.instance.NodeInfo.stun_info:type_name -> common.StunInfo
-	78, // 20: api.instance.NodeInfo.feature_flag:type_name -> common.PeerFeatureFlag
-	80, // 21: api.instance.NodeInfo.ip_list:type_name -> peer_rpc.GetIpListResponse
-	5,  // 22: api.instance.ShowNodeInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
-	14, // 23: api.instance.ShowNodeInfoResponse.node_info:type_name -> api.instance.NodeInfo
-	5,  // 24: api.instance.ListRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
-	12, // 25: api.instance.ListRouteResponse.routes:type_name -> api.instance.Route
-	5,  // 26: api.instance.DumpRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 27: api.instance.ListForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
-	0,  // 28: api.instance.TrustedKeyInfoPb.source:type_name -> api.instance.TrustedKeySourcePb
-	9,  // 29: api.instance.ForeignNetworkEntryPb.peers:type_name -> api.instance.PeerInfo
-	22, // 30: api.instance.ForeignNetworkEntryPb.trusted_keys:type_name -> api.instance.TrustedKeyInfoPb
-	66, // 31: api.instance.ListForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
-	5,  // 32: api.instance.ListGlobalForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
-	69, // 33: api.instance.ListGlobalForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
-	5,  // 34: api.instance.GetForeignNetworkSummaryRequest.instance:type_name -> api.instance.InstanceIdentifier
-	81, // 35: api.instance.GetForeignNetworkSummaryResponse.summary:type_name -> peer_rpc.RouteForeignNetworkSummary
-	82, // 36: api.instance.Connector.url:type_name -> common.Url
-	1,  // 37: api.instance.Connector.status:type_name -> api.instance.ConnectorStatus
-	5,  // 38: api.instance.ListConnectorRequest.instance:type_name -> api.instance.InstanceIdentifier
-	29, // 39: api.instance.ListConnectorResponse.connectors:type_name -> api.instance.Connector
-	82, // 40: api.instance.MappedListener.url:type_name -> common.Url
-	5,  // 41: api.instance.ListMappedListenerRequest.instance:type_name -> api.instance.InstanceIdentifier
-	32, // 42: api.instance.ListMappedListenerResponse.mappedlisteners:type_name -> api.instance.MappedListener
-	2,  // 43: api.instance.VpnPortalClientInfo.state:type_name -> api.instance.VpnPortalClientState
-	35, // 44: api.instance.VpnPortalInfo.clients:type_name -> api.instance.VpnPortalClientInfo
-	5,  // 45: api.instance.GetVpnPortalInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
-	36, // 46: api.instance.GetVpnPortalInfoResponse.vpn_portal_info:type_name -> api.instance.VpnPortalInfo
-	83, // 47: api.instance.TcpProxyEntry.src:type_name -> common.SocketAddr
-	83, // 48: api.instance.TcpProxyEntry.dst:type_name -> common.SocketAddr
-	4,  // 49: api.instance.TcpProxyEntry.state:type_name -> api.instance.TcpProxyEntryState
-	3,  // 50: api.instance.TcpProxyEntry.transport_type:type_name -> api.instance.TcpProxyEntryTransportType
-	5,  // 51: api.instance.ListTcpProxyEntryRequest.instance:type_name -> api.instance.InstanceIdentifier
-	39, // 52: api.instance.ListTcpProxyEntryResponse.entries:type_name -> api.instance.TcpProxyEntry
-	5,  // 53: api.instance.GetAclStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	84, // 54: api.instance.GetAclStatsResponse.acl_stats:type_name -> acl.AclStats
-	5,  // 55: api.instance.GetWhitelistRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 56: api.instance.ListPortForwardRequest.instance:type_name -> api.instance.InstanceIdentifier
-	85, // 57: api.instance.ListPortForwardResponse.cfgs:type_name -> common.PortForwardConfigPb
-	70, // 58: api.instance.MetricSnapshot.labels:type_name -> api.instance.MetricSnapshot.LabelsEntry
-	5,  // 59: api.instance.GetStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	48, // 60: api.instance.GetStatsResponse.metrics:type_name -> api.instance.MetricSnapshot
-	5,  // 61: api.instance.GetPrometheusStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 62: api.instance.GenerateCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 63: api.instance.UpsertCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 64: api.instance.RevokeCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
-	5,  // 65: api.instance.ListCredentialsRequest.instance:type_name -> api.instance.InstanceIdentifier
-	60, // 66: api.instance.ListCredentialsResponse.credentials:type_name -> api.instance.CredentialInfo
-	5,  // 67: api.instance.GetVpnStatusRequest.instance:type_name -> api.instance.InstanceIdentifier
-	62, // 68: api.instance.GetVpnStatusResponse.rules:type_name -> api.instance.VpnRuleStatus
-	23, // 69: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ForeignNetworkEntryPb
-	67, // 70: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
-	68, // 71: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
-	10, // 72: api.instance.PeerManageRpc.ListPeer:input_type -> api.instance.ListPeerRequest
-	63, // 73: api.instance.PeerManageRpc.GetVpnStatus:input_type -> api.instance.GetVpnStatusRequest
-	17, // 74: api.instance.PeerManageRpc.ListRoute:input_type -> api.instance.ListRouteRequest
-	19, // 75: api.instance.PeerManageRpc.DumpRoute:input_type -> api.instance.DumpRouteRequest
-	21, // 76: api.instance.PeerManageRpc.ListForeignNetwork:input_type -> api.instance.ListForeignNetworkRequest
-	25, // 77: api.instance.PeerManageRpc.ListGlobalForeignNetwork:input_type -> api.instance.ListGlobalForeignNetworkRequest
-	15, // 78: api.instance.PeerManageRpc.ShowNodeInfo:input_type -> api.instance.ShowNodeInfoRequest
-	27, // 79: api.instance.PeerManageRpc.GetForeignNetworkSummary:input_type -> api.instance.GetForeignNetworkSummaryRequest
-	30, // 80: api.instance.ConnectorManageRpc.ListConnector:input_type -> api.instance.ListConnectorRequest
-	33, // 81: api.instance.MappedListenerManageRpc.ListMappedListener:input_type -> api.instance.ListMappedListenerRequest
-	37, // 82: api.instance.VpnPortalRpc.GetVpnPortalInfo:input_type -> api.instance.GetVpnPortalInfoRequest
-	40, // 83: api.instance.TcpProxyRpc.ListTcpProxyEntry:input_type -> api.instance.ListTcpProxyEntryRequest
-	42, // 84: api.instance.AclManageRpc.GetAclStats:input_type -> api.instance.GetAclStatsRequest
-	44, // 85: api.instance.AclManageRpc.GetWhitelist:input_type -> api.instance.GetWhitelistRequest
-	46, // 86: api.instance.PortForwardManageRpc.ListPortForward:input_type -> api.instance.ListPortForwardRequest
-	49, // 87: api.instance.StatsRpc.GetStats:input_type -> api.instance.GetStatsRequest
-	51, // 88: api.instance.StatsRpc.GetPrometheusStats:input_type -> api.instance.GetPrometheusStatsRequest
-	53, // 89: api.instance.CredentialManageRpc.GenerateCredential:input_type -> api.instance.GenerateCredentialRequest
-	57, // 90: api.instance.CredentialManageRpc.RevokeCredential:input_type -> api.instance.RevokeCredentialRequest
-	59, // 91: api.instance.CredentialManageRpc.ListCredentials:input_type -> api.instance.ListCredentialsRequest
-	55, // 92: api.instance.CredentialManageRpc.UpsertCredential:input_type -> api.instance.UpsertCredentialRequest
-	11, // 93: api.instance.PeerManageRpc.ListPeer:output_type -> api.instance.ListPeerResponse
-	64, // 94: api.instance.PeerManageRpc.GetVpnStatus:output_type -> api.instance.GetVpnStatusResponse
-	18, // 95: api.instance.PeerManageRpc.ListRoute:output_type -> api.instance.ListRouteResponse
-	20, // 96: api.instance.PeerManageRpc.DumpRoute:output_type -> api.instance.DumpRouteResponse
-	24, // 97: api.instance.PeerManageRpc.ListForeignNetwork:output_type -> api.instance.ListForeignNetworkResponse
-	26, // 98: api.instance.PeerManageRpc.ListGlobalForeignNetwork:output_type -> api.instance.ListGlobalForeignNetworkResponse
-	16, // 99: api.instance.PeerManageRpc.ShowNodeInfo:output_type -> api.instance.ShowNodeInfoResponse
-	28, // 100: api.instance.PeerManageRpc.GetForeignNetworkSummary:output_type -> api.instance.GetForeignNetworkSummaryResponse
-	31, // 101: api.instance.ConnectorManageRpc.ListConnector:output_type -> api.instance.ListConnectorResponse
-	34, // 102: api.instance.MappedListenerManageRpc.ListMappedListener:output_type -> api.instance.ListMappedListenerResponse
-	38, // 103: api.instance.VpnPortalRpc.GetVpnPortalInfo:output_type -> api.instance.GetVpnPortalInfoResponse
-	41, // 104: api.instance.TcpProxyRpc.ListTcpProxyEntry:output_type -> api.instance.ListTcpProxyEntryResponse
-	43, // 105: api.instance.AclManageRpc.GetAclStats:output_type -> api.instance.GetAclStatsResponse
-	45, // 106: api.instance.AclManageRpc.GetWhitelist:output_type -> api.instance.GetWhitelistResponse
-	47, // 107: api.instance.PortForwardManageRpc.ListPortForward:output_type -> api.instance.ListPortForwardResponse
-	50, // 108: api.instance.StatsRpc.GetStats:output_type -> api.instance.GetStatsResponse
-	52, // 109: api.instance.StatsRpc.GetPrometheusStats:output_type -> api.instance.GetPrometheusStatsResponse
-	54, // 110: api.instance.CredentialManageRpc.GenerateCredential:output_type -> api.instance.GenerateCredentialResponse
-	58, // 111: api.instance.CredentialManageRpc.RevokeCredential:output_type -> api.instance.RevokeCredentialResponse
-	61, // 112: api.instance.CredentialManageRpc.ListCredentials:output_type -> api.instance.ListCredentialsResponse
-	56, // 113: api.instance.CredentialManageRpc.UpsertCredential:output_type -> api.instance.UpsertCredentialResponse
-	93, // [93:114] is the sub-list for method output_type
-	72, // [72:93] is the sub-list for method input_type
-	72, // [72:72] is the sub-list for extension type_name
-	72, // [72:72] is the sub-list for extension extendee
-	0,  // [0:72] is the sub-list for field type_name
+	74,  // 0: api.instance.InstanceIdentifier.id:type_name -> common.UUID
+	68,  // 1: api.instance.InstanceIdentifier.instance_selector:type_name -> api.instance.InstanceIdentifier.InstanceSelector
+	75,  // 2: api.instance.PeerConnInfo.tunnel:type_name -> common.TunnelInfo
+	7,   // 3: api.instance.PeerConnInfo.stats:type_name -> api.instance.PeerConnStats
+	76,  // 4: api.instance.PeerConnInfo.secure_auth_level:type_name -> peer_rpc.SecureAuthLevel
+	77,  // 5: api.instance.PeerConnInfo.peer_identity_type:type_name -> peer_rpc.PeerIdentityType
+	8,   // 6: api.instance.PeerInfo.conns:type_name -> api.instance.PeerConnInfo
+	74,  // 7: api.instance.PeerInfo.default_conn_id:type_name -> common.UUID
+	74,  // 8: api.instance.PeerInfo.directly_connected_conns:type_name -> common.UUID
+	78,  // 9: api.instance.PeerInfo.parallel_connections:type_name -> common.ParallelConnectionStatus
+	5,   // 10: api.instance.ListPeerRequest.instance:type_name -> api.instance.InstanceIdentifier
+	9,   // 11: api.instance.ListPeerResponse.peer_infos:type_name -> api.instance.PeerInfo
+	14,  // 12: api.instance.ListPeerResponse.my_info:type_name -> api.instance.NodeInfo
+	79,  // 13: api.instance.Route.ipv4_addr:type_name -> common.Ipv4Inet
+	80,  // 14: api.instance.Route.stun_info:type_name -> common.StunInfo
+	81,  // 15: api.instance.Route.feature_flag:type_name -> common.PeerFeatureFlag
+	82,  // 16: api.instance.Route.ipv6_addr:type_name -> common.Ipv6Inet
+	82,  // 17: api.instance.Route.public_ipv6_addr:type_name -> common.Ipv6Inet
+	82,  // 18: api.instance.Route.ipv6_public_addr_prefix:type_name -> common.Ipv6Inet
+	12,  // 19: api.instance.PeerRoutePair.route:type_name -> api.instance.Route
+	9,   // 20: api.instance.PeerRoutePair.peer:type_name -> api.instance.PeerInfo
+	80,  // 21: api.instance.NodeInfo.stun_info:type_name -> common.StunInfo
+	81,  // 22: api.instance.NodeInfo.feature_flag:type_name -> common.PeerFeatureFlag
+	83,  // 23: api.instance.NodeInfo.ip_list:type_name -> peer_rpc.GetIpListResponse
+	82,  // 24: api.instance.NodeInfo.public_ipv6_addr:type_name -> common.Ipv6Inet
+	82,  // 25: api.instance.NodeInfo.ipv6_public_addr_prefix:type_name -> common.Ipv6Inet
+	5,   // 26: api.instance.ShowNodeInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
+	14,  // 27: api.instance.ShowNodeInfoResponse.node_info:type_name -> api.instance.NodeInfo
+	82,  // 28: api.instance.PublicIpv6LeaseInfo.leased_addr:type_name -> common.Ipv6Inet
+	5,   // 29: api.instance.ListPublicIpv6InfoRequest.instance:type_name -> api.instance.InstanceIdentifier
+	82,  // 30: api.instance.ListPublicIpv6InfoResponse.provider_prefix:type_name -> common.Ipv6Inet
+	17,  // 31: api.instance.ListPublicIpv6InfoResponse.provider_leases:type_name -> api.instance.PublicIpv6LeaseInfo
+	5,   // 32: api.instance.ListRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
+	12,  // 33: api.instance.ListRouteResponse.routes:type_name -> api.instance.Route
+	5,   // 34: api.instance.DumpRouteRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,   // 35: api.instance.ListForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
+	0,   // 36: api.instance.TrustedKeyInfoPb.source:type_name -> api.instance.TrustedKeySourcePb
+	9,   // 37: api.instance.ForeignNetworkEntryPb.peers:type_name -> api.instance.PeerInfo
+	25,  // 38: api.instance.ForeignNetworkEntryPb.trusted_keys:type_name -> api.instance.TrustedKeyInfoPb
+	69,  // 39: api.instance.ListForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListForeignNetworkResponse.ForeignNetworksEntry
+	5,   // 40: api.instance.ListGlobalForeignNetworkRequest.instance:type_name -> api.instance.InstanceIdentifier
+	72,  // 41: api.instance.ListGlobalForeignNetworkResponse.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry
+	5,   // 42: api.instance.GetForeignNetworkSummaryRequest.instance:type_name -> api.instance.InstanceIdentifier
+	84,  // 43: api.instance.GetForeignNetworkSummaryResponse.summary:type_name -> peer_rpc.RouteForeignNetworkSummary
+	85,  // 44: api.instance.Connector.url:type_name -> common.Url
+	1,   // 45: api.instance.Connector.status:type_name -> api.instance.ConnectorStatus
+	5,   // 46: api.instance.ListConnectorRequest.instance:type_name -> api.instance.InstanceIdentifier
+	32,  // 47: api.instance.ListConnectorResponse.connectors:type_name -> api.instance.Connector
+	85,  // 48: api.instance.MappedListener.url:type_name -> common.Url
+	5,   // 49: api.instance.ListMappedListenerRequest.instance:type_name -> api.instance.InstanceIdentifier
+	35,  // 50: api.instance.ListMappedListenerResponse.mappedlisteners:type_name -> api.instance.MappedListener
+	2,   // 51: api.instance.VpnPortalClientInfo.state:type_name -> api.instance.VpnPortalClientState
+	38,  // 52: api.instance.VpnPortalInfo.clients:type_name -> api.instance.VpnPortalClientInfo
+	5,   // 53: api.instance.GetVpnPortalInfoRequest.instance:type_name -> api.instance.InstanceIdentifier
+	39,  // 54: api.instance.GetVpnPortalInfoResponse.vpn_portal_info:type_name -> api.instance.VpnPortalInfo
+	86,  // 55: api.instance.TcpProxyEntry.src:type_name -> common.SocketAddr
+	86,  // 56: api.instance.TcpProxyEntry.dst:type_name -> common.SocketAddr
+	4,   // 57: api.instance.TcpProxyEntry.state:type_name -> api.instance.TcpProxyEntryState
+	3,   // 58: api.instance.TcpProxyEntry.transport_type:type_name -> api.instance.TcpProxyEntryTransportType
+	5,   // 59: api.instance.ListTcpProxyEntryRequest.instance:type_name -> api.instance.InstanceIdentifier
+	42,  // 60: api.instance.ListTcpProxyEntryResponse.entries:type_name -> api.instance.TcpProxyEntry
+	5,   // 61: api.instance.GetAclStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	87,  // 62: api.instance.GetAclStatsResponse.acl_stats:type_name -> acl.AclStats
+	5,   // 63: api.instance.GetWhitelistRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,   // 64: api.instance.ListPortForwardRequest.instance:type_name -> api.instance.InstanceIdentifier
+	88,  // 65: api.instance.ListPortForwardResponse.cfgs:type_name -> common.PortForwardConfigPb
+	73,  // 66: api.instance.MetricSnapshot.labels:type_name -> api.instance.MetricSnapshot.LabelsEntry
+	5,   // 67: api.instance.GetStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	51,  // 68: api.instance.GetStatsResponse.metrics:type_name -> api.instance.MetricSnapshot
+	5,   // 69: api.instance.GetPrometheusStatsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,   // 70: api.instance.GenerateCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,   // 71: api.instance.UpsertCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,   // 72: api.instance.RevokeCredentialRequest.instance:type_name -> api.instance.InstanceIdentifier
+	5,   // 73: api.instance.ListCredentialsRequest.instance:type_name -> api.instance.InstanceIdentifier
+	63,  // 74: api.instance.ListCredentialsResponse.credentials:type_name -> api.instance.CredentialInfo
+	5,   // 75: api.instance.GetVpnStatusRequest.instance:type_name -> api.instance.InstanceIdentifier
+	65,  // 76: api.instance.GetVpnStatusResponse.rules:type_name -> api.instance.VpnRuleStatus
+	26,  // 77: api.instance.ListForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ForeignNetworkEntryPb
+	70,  // 78: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks.foreign_networks:type_name -> api.instance.ListGlobalForeignNetworkResponse.OneForeignNetwork
+	71,  // 79: api.instance.ListGlobalForeignNetworkResponse.ForeignNetworksEntry.value:type_name -> api.instance.ListGlobalForeignNetworkResponse.ForeignNetworks
+	10,  // 80: api.instance.PeerManageRpc.ListPeer:input_type -> api.instance.ListPeerRequest
+	18,  // 81: api.instance.PeerManageRpc.ListPublicIpv6Info:input_type -> api.instance.ListPublicIpv6InfoRequest
+	66,  // 82: api.instance.PeerManageRpc.GetVpnStatus:input_type -> api.instance.GetVpnStatusRequest
+	20,  // 83: api.instance.PeerManageRpc.ListRoute:input_type -> api.instance.ListRouteRequest
+	22,  // 84: api.instance.PeerManageRpc.DumpRoute:input_type -> api.instance.DumpRouteRequest
+	24,  // 85: api.instance.PeerManageRpc.ListForeignNetwork:input_type -> api.instance.ListForeignNetworkRequest
+	28,  // 86: api.instance.PeerManageRpc.ListGlobalForeignNetwork:input_type -> api.instance.ListGlobalForeignNetworkRequest
+	15,  // 87: api.instance.PeerManageRpc.ShowNodeInfo:input_type -> api.instance.ShowNodeInfoRequest
+	30,  // 88: api.instance.PeerManageRpc.GetForeignNetworkSummary:input_type -> api.instance.GetForeignNetworkSummaryRequest
+	33,  // 89: api.instance.ConnectorManageRpc.ListConnector:input_type -> api.instance.ListConnectorRequest
+	36,  // 90: api.instance.MappedListenerManageRpc.ListMappedListener:input_type -> api.instance.ListMappedListenerRequest
+	40,  // 91: api.instance.VpnPortalRpc.GetVpnPortalInfo:input_type -> api.instance.GetVpnPortalInfoRequest
+	43,  // 92: api.instance.TcpProxyRpc.ListTcpProxyEntry:input_type -> api.instance.ListTcpProxyEntryRequest
+	45,  // 93: api.instance.AclManageRpc.GetAclStats:input_type -> api.instance.GetAclStatsRequest
+	47,  // 94: api.instance.AclManageRpc.GetWhitelist:input_type -> api.instance.GetWhitelistRequest
+	49,  // 95: api.instance.PortForwardManageRpc.ListPortForward:input_type -> api.instance.ListPortForwardRequest
+	52,  // 96: api.instance.StatsRpc.GetStats:input_type -> api.instance.GetStatsRequest
+	54,  // 97: api.instance.StatsRpc.GetPrometheusStats:input_type -> api.instance.GetPrometheusStatsRequest
+	56,  // 98: api.instance.CredentialManageRpc.GenerateCredential:input_type -> api.instance.GenerateCredentialRequest
+	60,  // 99: api.instance.CredentialManageRpc.RevokeCredential:input_type -> api.instance.RevokeCredentialRequest
+	62,  // 100: api.instance.CredentialManageRpc.ListCredentials:input_type -> api.instance.ListCredentialsRequest
+	58,  // 101: api.instance.CredentialManageRpc.UpsertCredential:input_type -> api.instance.UpsertCredentialRequest
+	11,  // 102: api.instance.PeerManageRpc.ListPeer:output_type -> api.instance.ListPeerResponse
+	19,  // 103: api.instance.PeerManageRpc.ListPublicIpv6Info:output_type -> api.instance.ListPublicIpv6InfoResponse
+	67,  // 104: api.instance.PeerManageRpc.GetVpnStatus:output_type -> api.instance.GetVpnStatusResponse
+	21,  // 105: api.instance.PeerManageRpc.ListRoute:output_type -> api.instance.ListRouteResponse
+	23,  // 106: api.instance.PeerManageRpc.DumpRoute:output_type -> api.instance.DumpRouteResponse
+	27,  // 107: api.instance.PeerManageRpc.ListForeignNetwork:output_type -> api.instance.ListForeignNetworkResponse
+	29,  // 108: api.instance.PeerManageRpc.ListGlobalForeignNetwork:output_type -> api.instance.ListGlobalForeignNetworkResponse
+	16,  // 109: api.instance.PeerManageRpc.ShowNodeInfo:output_type -> api.instance.ShowNodeInfoResponse
+	31,  // 110: api.instance.PeerManageRpc.GetForeignNetworkSummary:output_type -> api.instance.GetForeignNetworkSummaryResponse
+	34,  // 111: api.instance.ConnectorManageRpc.ListConnector:output_type -> api.instance.ListConnectorResponse
+	37,  // 112: api.instance.MappedListenerManageRpc.ListMappedListener:output_type -> api.instance.ListMappedListenerResponse
+	41,  // 113: api.instance.VpnPortalRpc.GetVpnPortalInfo:output_type -> api.instance.GetVpnPortalInfoResponse
+	44,  // 114: api.instance.TcpProxyRpc.ListTcpProxyEntry:output_type -> api.instance.ListTcpProxyEntryResponse
+	46,  // 115: api.instance.AclManageRpc.GetAclStats:output_type -> api.instance.GetAclStatsResponse
+	48,  // 116: api.instance.AclManageRpc.GetWhitelist:output_type -> api.instance.GetWhitelistResponse
+	50,  // 117: api.instance.PortForwardManageRpc.ListPortForward:output_type -> api.instance.ListPortForwardResponse
+	53,  // 118: api.instance.StatsRpc.GetStats:output_type -> api.instance.GetStatsResponse
+	55,  // 119: api.instance.StatsRpc.GetPrometheusStats:output_type -> api.instance.GetPrometheusStatsResponse
+	57,  // 120: api.instance.CredentialManageRpc.GenerateCredential:output_type -> api.instance.GenerateCredentialResponse
+	61,  // 121: api.instance.CredentialManageRpc.RevokeCredential:output_type -> api.instance.RevokeCredentialResponse
+	64,  // 122: api.instance.CredentialManageRpc.ListCredentials:output_type -> api.instance.ListCredentialsResponse
+	59,  // 123: api.instance.CredentialManageRpc.UpsertCredential:output_type -> api.instance.UpsertCredentialResponse
+	102, // [102:124] is the sub-list for method output_type
+	80,  // [80:102] is the sub-list for method input_type
+	80,  // [80:80] is the sub-list for extension type_name
+	80,  // [80:80] is the sub-list for extension extendee
+	0,   // [0:80] is the sub-list for field type_name
 }
 
 func init() { file_api_instance_proto_init() }
@@ -4605,20 +4839,20 @@ func file_api_instance_proto_init() {
 		(*InstanceIdentifier_InstanceSelector_)(nil),
 	}
 	file_api_instance_proto_msgTypes[7].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[17].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[30].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[31].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[48].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[50].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[55].OneofWrappers = []any{}
-	file_api_instance_proto_msgTypes[60].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[20].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[33].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[34].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[51].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[53].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[58].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[63].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_instance_proto_rawDesc), len(file_api_instance_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   66,
+			NumMessages:   69,
 			NumExtensions: 0,
 			NumServices:   9,
 		},
