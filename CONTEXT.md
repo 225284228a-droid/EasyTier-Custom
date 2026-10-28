@@ -140,8 +140,9 @@ prefix; duplicate CIDRs are rejected. Rules sit in front of the official
 `exit_nodes` list in the outbound route lookup: a matching rule uses its exit
 or drops the packet when that exit is unreachable; other destinations follow
 the official exit-node path. Offering exit forwarding is the official
-`flags.enable_exit_node` (default false). Magic DNS is the official
-implementation. Public IPv6 is the official implementation; its provider gateway takes precedence over IPv6 subnet rules.
+`flags.enable_exit_node` (default false). Magic DNS and public IPv6 are the
+official implementations; the public IPv6 gateway takes precedence over IPv6
+subnet rules.
 
 `VpnPolicyEngine` (`easytier-core/src/peers/vpn_policy.rs`) owns the compiled
 rules and exit liveness refreshed from peer route snapshots. An unreachable

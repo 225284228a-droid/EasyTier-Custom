@@ -318,12 +318,8 @@ impl CorePeerContext {
         adapters: CorePeerContextAdapters,
         parent: &CorePeerContext,
     ) -> Self {
-        let mut context = Self::new_with_stats_manager(
-            config,
-            Arc::new(()),
-            adapters,
-            parent.stats_manager(),
-        );
+        let mut context =
+            Self::new_with_stats_manager(config, Arc::new(()), adapters, parent.stats_manager());
         context.is_foreign_context = true;
         context.parallel_dials = parent.parallel_dials.clone();
         context.parallel_parent_config = Some(parent.config.clone());

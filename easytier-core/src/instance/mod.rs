@@ -91,9 +91,9 @@ use crate::gateway::proxy::icmp_host::IcmpProxyHost;
 use crate::gateway::proxy::wrapped_transport::WrappedTransportEngines;
 #[cfg(feature = "vpn-portal")]
 use crate::gateway::vpn_portal::PortalHost;
+use crate::gateway::vpn_portal::PortalRuntimeConfig;
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderPlatform;
-use crate::gateway::vpn_portal::PortalRuntimeConfig;
 #[cfg(feature = "public-ipv6-provider")]
 use crate::peers::public_ipv6::provider::PublicIpv6ProviderRuntime;
 

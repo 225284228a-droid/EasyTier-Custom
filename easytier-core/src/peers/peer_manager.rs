@@ -1660,7 +1660,8 @@ impl PeerManagerCore {
     }
 
     pub async fn is_easytier_managed_ipv6(&self, ip: &std::net::Ipv6Addr) -> bool {
-        if self.context.is_ip_local_ipv6(ip) {
+        // Custom: a peer's virtual IPv6 is never a direct-connect candidate.
+        if self.context.is_ip_local_ipv6(ip) || self.peers.get_peer_id_by_ipv6(ip).await.is_some() {
             return true;
         }
         self.route
