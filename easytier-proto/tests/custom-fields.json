@@ -44,7 +44,6 @@
     {"message":"api.manage.NetworkConfig","field":"p2p_disguise_mode","number":50081,"type":9,"type_name":"","label":1,"proto3_optional":true,"previous_number":81},
     {"message":"api.manage.VpnRuleConfig","field":"cidr","number":50001,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":1},
     {"message":"api.manage.VpnRuleConfig","field":"exit_addr","number":50007,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":7},
-    {"message":"api.manage.VpnConfig","field":"exit_enabled","number":50002,"type":8,"type_name":"","label":1,"proto3_optional":false,"previous_number":2},
     {"message":"api.manage.VpnConfig","field":"rules","number":50007,"type":11,"type_name":".api.manage.VpnRuleConfig","label":3,"proto3_optional":false,"previous_number":7},
     {"message":"api.manage.NodeLocation","field":"public_ip","number":50001,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":1},
     {"message":"api.manage.NodeLocation","field":"country","number":50002,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":2},
