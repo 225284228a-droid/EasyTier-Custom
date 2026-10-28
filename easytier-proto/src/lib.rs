@@ -13,6 +13,8 @@ pub mod core_config;
 pub mod core_peer;
 #[cfg(feature = "core")]
 pub mod error;
+#[cfg(all(feature = "api", feature = "magic-dns"))]
+pub mod magic_dns;
 #[cfg(feature = "core")]
 pub mod peer_rpc;
 #[cfg(feature = "api")]

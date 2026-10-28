@@ -16,6 +16,8 @@ mod dhcp;
 mod event_journal;
 mod implementation;
 #[cfg(feature = "tun")]
+mod magic_dns;
+#[cfg(feature = "tun")]
 mod tun_common;
 #[cfg(not(feature = "tun"))]
 #[path = "runtime_host/tun_disabled.rs"]
@@ -29,6 +31,8 @@ mod tun_runtime;
 
 use super::runtime_executor::NativeInstanceExecutor;
 use event_journal::EventJournal;
+#[cfg(feature = "tun")]
+use magic_dns::MagicDnsRuntime;
 use tun_runtime::NativeTunRuntime;
 
 #[cfg(feature = "tun")]
@@ -186,11 +190,15 @@ impl NativeInstanceRuntimeHost {
     ) -> (
         crate::instance::shared_virtual_nic::SharedIfConfigClaims,
         Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
+        bool,
     ) {
         (
             crate::instance::virtual_nic::NicCtx::mobile_tun_claims(&self.global_ctx, packet_plane)
                 .await,
             self.tun.current_mobile_tun_claims().await,
+            cfg!(feature = "magic-dns")
+                && self.global_ctx.get_flags().accept_dns
+                && self.global_ctx.get_ipv4().is_some(),
         )
     }
 

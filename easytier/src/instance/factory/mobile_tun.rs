@@ -57,11 +57,27 @@ struct MobileTunMember {
     instance_id: uuid::Uuid,
     claims: SharedIfConfigClaims,
     current_claims: Option<SharedIfConfigClaims>,
+    dns: bool,
+}
+
+#[cfg(any(mobile, test))]
+fn magic_dns_route() -> SharedIpv4Route {
+    SharedIpv4Route::new(
+        crate::instance::dns_server::MAGIC_DNS_FAKE_IP
+            .parse()
+            .unwrap(),
+        32,
+        Some(1),
+    )
 }
 
 #[cfg(any(mobile, test))]
 fn comparable_claims(mut claims: SharedIfConfigClaims) -> SharedIfConfigClaims {
     claims.mtu = None;
+    let magic_dns = magic_dns_route();
+    claims
+        .ipv4_routes
+        .retain(|route| route.address != magic_dns.address || route.prefix != magic_dns.prefix);
     claims
 }
 
@@ -79,7 +95,10 @@ fn select_members(
     let mut ifcfg = SharedIfConfig::default();
     let mut accepted = Vec::new();
     for member in members {
-        let claims = member.claims.clone();
+        let mut claims = member.claims.clone();
+        if member.dns {
+            claims.ipv4_routes.insert(magic_dns_route());
+        }
         if let Err(error) = ifcfg.ensure_disjoint(member.instance_id, &claims) {
             rejected.push(MobileTunMemberError {
                 instance_id: member.instance_id,
@@ -124,6 +143,13 @@ fn config_for_members(
                 routes.insert(format!("{:#}", route.network()));
             }
         }
+        if member.dns {
+            config.dns = Some(crate::instance::dns_server::MAGIC_DNS_FAKE_IP.to_owned());
+            routes.insert(format!(
+                "{}/32",
+                crate::instance::dns_server::MAGIC_DNS_FAKE_IP
+            ));
+        }
     }
     config.instance_ids.sort();
     config.addresses = addresses.into_iter().collect();
@@ -156,13 +182,14 @@ async fn collect_members(
             });
             continue;
         };
-        let (claims, current_claims) = runtime
+        let (claims, current_claims, dns) = runtime
             .mobile_tun_claims(&instance.as_ref().unwrap().packet_plane())
             .await;
         members.push(MobileTunMember {
             instance_id,
             claims,
             current_claims,
+            dns,
         });
     }
     (members, rejected)
@@ -329,6 +356,7 @@ mod tests {
                 ..Default::default()
             },
             current_claims: None,
+            dns: false,
         }
     }
 
@@ -359,8 +387,9 @@ mod tests {
     }
 
     #[test]
-    fn projects_ipv6_and_rejects_overlapping_proxy_routes() {
+    fn projects_ipv6_and_shared_dns_and_rejects_overlapping_proxy_routes() {
         let mut first = member(1, "10.0.1.1/24");
+        first.dns = true;
         first
             .claims
             .ipv4_addresses
@@ -373,20 +402,29 @@ mod tests {
             .claims
             .ipv6_routes
             .insert(SharedIpv6Route::new("::".parse().unwrap(), 0, Some(5)));
-        let second = member(2, "10.0.2.1/24");
+        let mut second = member(2, "10.0.2.1/24");
+        second.dns = true;
         let (members, rejected) = select_members(
             vec![first, second, member(3, "100.100.100.101/32")],
             Vec::new(),
         );
         let config = config_for_members(&members, rejected);
-        assert_eq!(config.instance_ids.len(), 3);
+        assert_eq!(config.instance_ids.len(), 2);
         assert!(config.addresses.contains(&"10.0.4.1/32".to_owned()));
         assert!(config.routes.contains(&"10.0.4.1/32".to_owned()));
         assert!(config.addresses.contains(&"2001:db8::1/128".to_owned()));
         assert!(config.routes.contains(&"2001:db8::1/128".to_owned()));
         assert!(config.routes.contains(&"::/0".to_owned()));
-        assert_eq!(config.dns, None);
-        assert!(config.rejected.is_empty());
+        assert_eq!(
+            config
+                .routes
+                .iter()
+                .filter(|route| *route == "100.100.100.101/32")
+                .count(),
+            1
+        );
+        assert_eq!(config.dns.as_deref(), Some("100.100.100.101"));
+        assert_eq!(config.rejected[0].instance_id, uuid::Uuid::from_u128(3));
         let mut route_owner = member(2, "10.0.2.1/24");
         route_owner.claims.ipv4_routes.insert(SharedIpv4Route::new(
             "10.0.1.0".parse().unwrap(),

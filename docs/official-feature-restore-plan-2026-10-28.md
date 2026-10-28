@@ -94,6 +94,14 @@ ICMP、TCP、UDP 三个代理引擎和 `ProxyRuntimeConfig` 中 `vpn_exit` 全�
 2. **网段规则可以不写出口。** 不写 `exit` 的规则按官方 `exit_nodes` 顺序选第一个可达出口；写了 `exit` 的规则仍只用该出口，失联时丢弃。
 3. **公网 IPv6 网关优先**于 IPv6 网段规则，与官方选路顺序一致。
 
+## 进度
+
+- 出口节点：已完成（`3ffb244a`、`7080f884`）。
+- Magic DNS：已完成。恢复官方 core `gateway/magic_dns`、原生 `instance/dns_server`、`runtime_host/magic_dns.rs`、`magic_dns.proto`，以及字段 `accept_dns`(22) / `tld_dns_zone`(31) / `enable_magic_dns`(42)；补回 `bootstrap_without_magic_dns` 及其测试。移动端共享网卡按官方方式传递 Magic DNS 假地址。未恢复当年按 VPN 策略转发 DNS 的 `policy_io`。
+- 公网 IPv6：待恢复。
+- Magic DNS 验证（Windows）：core 库 1144 项通过；原生 444 项通过，除既有 5 项环境失败外，恢复的 4 项 Magic DNS 测试同样因 wintun 无法创建适配器失败（环境限制），另有 1 项 HTTP3 测试负载下偶发失败、单独复跑通过；Web 后端 364 项通过；前端 18 个测试文件 176 项及 `test-network-config` 通过；proto 字段清单 4 项通过。
+- Go 绑定与内嵌 WASM：待全部恢复后统一重新生成。
+
 ## 建议顺序
 
 1. 出口节点。改动集中在 core 选路、配置和管理 API，能一次性消掉最多的改名差异，并为后两项提供官方的 `exit_nodes` 基础。

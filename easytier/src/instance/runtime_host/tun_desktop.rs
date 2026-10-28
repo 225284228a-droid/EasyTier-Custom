@@ -10,7 +10,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::tun_common::{NativeDhcpHost, TunNicState};
+use super::{
+    MagicDnsRuntime,
+    tun_common::{NativeDhcpHost, TunNicState},
+};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
     instance::{shared_virtual_nic::ArcSharedVirtualNicRegistry, virtual_nic::NicCtx},
@@ -121,7 +124,19 @@ impl NativeTunRuntime {
                     continue;
                 }
 
-                if let Err(error) = nic_state.install(None, nic).await {
+                let magic_dns = if let Some(ip) = ipv4 {
+                    let shared_route_backend = nic.shared_route_backend_for_dns();
+                    MagicDnsRuntime::start(
+                        global_ctx.clone(),
+                        packet_plane.clone(),
+                        nic.ifname().await,
+                        ip,
+                        shared_route_backend,
+                    )
+                } else {
+                    MagicDnsRuntime::default()
+                };
+                if let Err(error) = nic_state.install(None, nic, magic_dns).await {
                     if let Some(output) = output.take() {
                         let _ = output.send(Err(error.into()));
                     }

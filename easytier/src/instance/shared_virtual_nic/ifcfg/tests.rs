@@ -78,7 +78,7 @@ fn replacing_member_claims_releases_previous_addresses() {
 }
 
 #[test]
-fn overlapping_routes_and_addresses_are_rejected_between_members() {
+fn only_magic_dns_routes_can_overlap_between_members() {
     let address_claims = SharedIfConfigClaims {
         ipv4_addresses: BTreeSet::from(["100.100.100.101/32".parse().unwrap()]),
         ..Default::default()
@@ -89,7 +89,7 @@ fn overlapping_routes_and_addresses_are_rejected_between_members() {
     };
 
     for (first, second, allowed) in [
-        (&route_claims, &route_claims, false),
+        (&route_claims, &route_claims, true),
         (&address_claims, &address_claims, false),
         (&address_claims, &route_claims, false),
         (&route_claims, &address_claims, false),

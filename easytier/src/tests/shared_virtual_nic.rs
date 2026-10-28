@@ -1,4 +1,4 @@
-use std::{process::Command, sync::Arc, time::Duration};
+use std::{net::Ipv4Addr, process::Command, sync::Arc, time::Duration};
 
 use easytier_core::{config::PeerId, process_runtime::CoreProcessRuntime};
 
@@ -11,7 +11,8 @@ use crate::{
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::{
-        shared_virtual_nic::ArcSharedVirtualNicRegistry, test_instance::TestInstance as Instance,
+        shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedIpv4Route},
+        test_instance::TestInstance as Instance,
     },
     tunnel::common::tests::wait_for_condition,
 };
@@ -212,6 +213,21 @@ async fn patch_proxy_cidr(
         })
         .await
         .unwrap();
+}
+
+async fn shared_route_owner_count(
+    registry: &ArcSharedVirtualNicRegistry,
+    dev_name: &str,
+    route: &SharedIpv4Route,
+) -> usize {
+    let nic = {
+        let registry = registry.lock().await;
+        registry.get_by_dev_name_for_test(dev_name)
+    };
+    let Some(nic) = nic else {
+        return 0;
+    };
+    nic.lock().await.ifcfg().owners_of_ipv4_route(route).len()
 }
 
 #[tokio::test]
@@ -762,4 +778,166 @@ async fn runtime_proxy_patch_adds_and_removes_os_route() {
     .await;
 
     drop_insts(vec![source, destination]).await;
+}
+
+#[cfg(feature = "magic-dns")]
+async fn wait_shared_magic_dns_record(
+    ns: &str,
+    domain: &str,
+    expected_source: &str,
+    expected_ip: &str,
+) {
+    use hickory_proto::{
+        op::{Message, MessageType, Query, ResponseCode},
+        rr::{RData, RecordType},
+    };
+
+    use crate::instance::dns_server::MAGIC_DNS_FAKE_IP;
+
+    let expected_source = expected_source.parse::<Ipv4Addr>().unwrap();
+    let expected_ip = expected_ip.parse::<Ipv4Addr>().unwrap();
+    let mut query = Message::new();
+    query
+        .set_id(rand::random())
+        .add_query(Query::query(domain.parse().unwrap(), RecordType::A));
+    let payload = query.to_vec().unwrap();
+    wait_for_condition(
+        || async {
+            // Let the kernel select the source from the shared route, rather
+            // than binding to the server and hiding a client-owned route.
+            let Ok(socket) = NetNS::new(Some(ns.to_owned())).run(|| {
+                let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+                socket.connect((MAGIC_DNS_FAKE_IP, 53))?;
+                socket.set_nonblocking(true)?;
+                tokio::net::UdpSocket::from_std(socket)
+            }) else {
+                return false;
+            };
+            let source = socket.local_addr().unwrap().ip();
+            if socket.send(&payload).await.is_err() {
+                return false;
+            }
+            let mut buffer = [0; 512];
+            let Ok(Ok(len)) =
+                tokio::time::timeout(Duration::from_millis(500), socket.recv(&mut buffer)).await
+            else {
+                return false;
+            };
+            let response = Message::from_vec(&buffer[..len]).unwrap();
+            source == std::net::IpAddr::V4(expected_source)
+                && response.id() == query.id()
+                && response.message_type() == MessageType::Response
+                && response.response_code() == ResponseCode::NoError
+                && response.answers().len() == 1
+                && matches!(response.answers()[0].data(), RData::A(ip) if ip.0 == expected_ip)
+        },
+        WAIT,
+    )
+    .await;
+}
+
+#[cfg(feature = "magic-dns")]
+#[tokio::test]
+#[serial_test::serial]
+async fn magic_dns_route_follows_serving_member_and_takeover() {
+    use crate::instance::dns_server::MAGIC_DNS_FAKE_IP;
+
+    let netns = TestNetnsGuard::new(short_name("svd"), "10.232.1.2/24", "fd42::2/64");
+    let dev_name = test_dev_name();
+    let runtime = SharedTestRuntime::new();
+    let first_config = test_config(
+        "shared_dns_first",
+        "shared_dns_network",
+        "shared_dns_secret",
+        Some(&netns.name),
+        Some(&dev_name),
+        "10.144.243.1/24",
+    );
+    // The first runner wins the singleton, but the client sorts first when
+    // shared route source hints are chosen by UUID.
+    first_config.set_id(uuid::Uuid::from_u128(2));
+    first_config.set_hostname(Some("shared-dns-first".to_owned()));
+    let mut flags = first_config.get_flags();
+    flags.accept_dns = true;
+    first_config.set_flags(flags.clone());
+    let second_config = test_config(
+        "shared_dns_second",
+        "shared_dns_network",
+        "shared_dns_secret",
+        Some(&netns.name),
+        Some(&dev_name),
+        "10.144.242.2/24",
+    );
+    second_config.set_id(uuid::Uuid::from_u128(1));
+    second_config.set_hostname(Some("shared-dns-second".to_owned()));
+    second_config.set_flags(flags);
+    let mut first = runtime.instance(first_config);
+    let mut second = runtime.instance(second_config);
+
+    first.run().await.unwrap();
+    wait_tun_ready(&first, &dev_name).await;
+    wait_shared_magic_dns_record(
+        &netns.name,
+        "shared-dns-first.et.net.",
+        "10.144.243.1",
+        "10.144.243.1",
+    )
+    .await;
+
+    second.run().await.unwrap();
+    wait_tun_ready(&second, &dev_name).await;
+    // Resolving the second member also waits for its client to connect and
+    // publish, ensuring its failed server election has already completed.
+    wait_shared_magic_dns_record(
+        &netns.name,
+        "shared-dns-second.et.net.",
+        "10.144.243.1",
+        "10.144.242.2",
+    )
+    .await;
+    let route = SharedIpv4Route::new(MAGIC_DNS_FAKE_IP.parse::<Ipv4Addr>().unwrap(), 32, None);
+    assert_eq!(
+        shared_route_owner_count(&runtime.registry, &dev_name, &route).await,
+        1
+    );
+
+    drop_insts(vec![first]).await;
+    wait_shared_magic_dns_record(
+        &netns.name,
+        "shared-dns-second.et.net.",
+        "10.144.242.2",
+        "10.144.242.2",
+    )
+    .await;
+    assert_eq!(
+        shared_route_owner_count(&runtime.registry, &dev_name, &route).await,
+        1
+    );
+
+    // Keep the TUN alive after the final DNS runner stops so device teardown
+    // cannot hide a leaked fake-IP route.
+    let mut observer = runtime.instance(test_config(
+        "shared_dns_observer",
+        "shared_dns_network",
+        "shared_dns_secret",
+        Some(&netns.name),
+        Some(&dev_name),
+        "10.144.244.3/24",
+    ));
+    observer.run().await.unwrap();
+    wait_tun_ready(&observer, &dev_name).await;
+
+    drop_insts(vec![second]).await;
+    wait_for_condition(
+        || async {
+            shared_route_owner_count(&runtime.registry, &dev_name, &route).await == 0
+                && !ipv4_route_exists_in_ns(
+                    &netns.name,
+                    &format!("{MAGIC_DNS_FAKE_IP} dev {dev_name}"),
+                )
+        },
+        WAIT,
+    )
+    .await;
+    drop_insts(vec![observer]).await;
 }

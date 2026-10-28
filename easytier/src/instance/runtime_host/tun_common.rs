@@ -13,10 +13,12 @@ use tokio::sync::Notify;
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
+use super::MagicDnsRuntime;
 use crate::instance::virtual_nic::NicCtx;
 
 struct NicCtxContainer {
     nic_ctx: NicOwner,
+    magic_dns: MagicDnsRuntime,
 }
 
 enum NicOwner {
@@ -25,19 +27,22 @@ enum NicOwner {
 }
 
 impl NicCtxContainer {
-    fn new(nic_ctx: NicCtx) -> Self {
+    fn new(nic_ctx: NicCtx, magic_dns: MagicDnsRuntime) -> Self {
         Self {
             nic_ctx: NicOwner::Interface(nic_ctx),
+            magic_dns,
         }
     }
 
     fn packet_drain(tasks: JoinSet<()>) -> Self {
         Self {
             nic_ctx: NicOwner::Drain(tasks),
+            magic_dns: MagicDnsRuntime::default(),
         }
     }
 
     async fn shutdown(&mut self) {
+        self.magic_dns.stop().await;
         match &mut self.nic_ctx {
             NicOwner::Interface(nic) => nic.shutdown().await,
             NicOwner::Drain(tasks) => tasks.shutdown().await,
@@ -221,14 +226,19 @@ impl TunNicState {
         self.generations.lock().await.status(generation)
     }
 
-    pub(super) async fn install(&self, generation: Option<u64>, nic: NicCtx) -> anyhow::Result<()> {
+    pub(super) async fn install(
+        &self,
+        generation: Option<u64>,
+        nic: NicCtx,
+        magic_dns: MagicDnsRuntime,
+    ) -> anyhow::Result<()> {
         let mut state = self.nic_ctx.lock().await;
         let mut generations = self.generations.lock().await;
         let status = generations.status(generation);
         if status != TunGenerationStatus::Install {
             drop(generations);
             drop(state);
-            let mut stale = NicCtxContainer::new(nic);
+            let mut stale = NicCtxContainer::new(nic, magic_dns);
             stale.shutdown().await;
             return match status {
                 TunGenerationStatus::AlreadyCommitted => Ok(()),
@@ -240,7 +250,7 @@ impl TunNicState {
         }
         let status = generations.commit(generation);
         debug_assert_eq!(status, TunGenerationStatus::Install);
-        let replacement = NicCtxContainer::new(nic);
+        let replacement = NicCtxContainer::new(nic, magic_dns);
         let mut old = state.active.replace(replacement);
         drop(generations);
         drop(state);
@@ -392,7 +402,19 @@ impl NativeDhcpHost {
                     },
                     result = nic.run(addresses.ipv4, addresses.ipv6) => result?,
                 }
-                self.nic.install(None, nic).await?;
+                let magic_dns = if let Some(ip) = addresses.ipv4 {
+                    let shared_route_backend = nic.shared_route_backend_for_dns();
+                    MagicDnsRuntime::start(
+                        self.global_ctx.clone(),
+                        self.packet_plane.clone(),
+                        nic.ifname().await,
+                        ip,
+                        shared_route_backend,
+                    )
+                } else {
+                    MagicDnsRuntime::default()
+                };
+                self.nic.install(None, nic, magic_dns).await?;
             }
         }
         self.set_addresses(next);

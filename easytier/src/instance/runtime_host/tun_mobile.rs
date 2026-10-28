@@ -7,7 +7,10 @@ use easytier_core::{
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::tun_common::{NativeDhcpHost, TunGenerationStatus, TunNicState};
+use super::{
+    MagicDnsRuntime,
+    tun_common::{NativeDhcpHost, TunGenerationStatus, TunNicState},
+};
 use crate::{
     common::global_ctx::ArcGlobalCtx,
     instance::{shared_virtual_nic::ArcSharedVirtualNicRegistry, virtual_nic::NicCtx},
@@ -87,7 +90,19 @@ impl NativeTunRuntime {
             nic.shutdown().await;
             return Err(error).context("attach mobile TUN failed");
         }
-        nic_state.install(generation, nic).await
+        let magic_dns = if let Some(ip) = global_ctx.get_ipv4() {
+            let shared_route_backend = nic.shared_route_backend_for_dns();
+            MagicDnsRuntime::start(
+                global_ctx.clone(),
+                packet_plane.clone(),
+                None,
+                ip,
+                shared_route_backend,
+            )
+        } else {
+            MagicDnsRuntime::default()
+        };
+        nic_state.install(generation, nic, magic_dns).await
     }
 
     pub(super) async fn prepare(&self, packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {

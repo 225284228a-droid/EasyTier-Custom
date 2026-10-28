@@ -2078,6 +2078,7 @@ mod tests {
         assert_eq!(updated.disable_sym_hole_punching, Some(true));
         assert_eq!(updated.disable_upnp, Some(true));
         assert_eq!(updated.disable_relay_data, Some(true));
+        assert_eq!(updated.enable_magic_dns, Some(true));
         // Runtime projections omit flags that match the Custom defaults.
         // Check the effective setting after the managed-config round trip.
         assert!(updated.gen_config().unwrap().get_flags().private_mode);
@@ -2155,6 +2156,7 @@ mod tests {
             disable_sym_hole_punching: Some(true),
             disable_upnp: Some(true),
             disable_relay_data: Some(true),
+            enable_magic_dns: Some(true),
             enable_private_mode: Some(true),
             mtu: Some(1360),
             data_compress_algo: Some(CompressionAlgoPb::Zstd as i32),

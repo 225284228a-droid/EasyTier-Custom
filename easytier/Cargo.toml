@@ -216,7 +216,15 @@ kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "268533568d734ae8
 hickory-resolver = { version = "0.25.2", optional = true }
 hickory-proto = { version = "0.25.2", optional = true }
 
+# for magic dns
+hickory-client = { version = "0.25.2", optional = true }
+hickory-server = { version = "0.25.2", features = [
+    "resolver",
+], optional = true }
+
 bon.workspace = true
+derive_builder = { version = "0.20.2", optional = true }
+humantime-serde = { version = "1.1.1", optional = true }
 shellexpand = "3.1.2"
 
 # for fake tcp
@@ -332,6 +340,7 @@ default = [
     "kcp",
     "quic",
     "faketcp",
+    "magic-dns",
     "zstd",
     "upnp",
     "icmp-proxy",
@@ -353,6 +362,7 @@ full = [
     "kcp",
     "quic",
     "faketcp",
+    "magic-dns",
     "zstd",
     "upnp",
     "icmp-proxy",
@@ -397,6 +407,15 @@ tracing = ["tokio/tracing", "dep:console-subscriber", "dep:tracing-subscriber"]
 tracing-log = ["tracing/log", "easytier-core/tracing-log"]
 logging = []
 dns-resolver = ["dep:hickory-proto", "dep:hickory-resolver"]
+magic-dns = [
+    "dep:derive_builder",
+    "dep:humantime-serde",
+    "dns-resolver",
+    "dep:hickory-client",
+    "dep:hickory-server",
+    "easytier-core/proxy-packet",
+    "easytier-proto/magic-dns",
+]
 faketcp = [
     "dep:flume",
     "dep:pnet_datalink",
@@ -496,6 +515,7 @@ ignored = [
     "globwalk",
     "regex",
     "thunk-rs",
-    # Enabled for allocator feature unification.
+    # Referenced by serde attributes or enabled for allocator feature unification.
+    "humantime-serde",
     "jemalloc-sys",
 ]

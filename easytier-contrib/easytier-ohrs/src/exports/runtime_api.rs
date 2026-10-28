@@ -179,6 +179,7 @@ pub(crate) fn collect_runtime_state() -> RuntimeAggregateState {
                 running: true,
                 tun_required: tun_attached,
                 tun_attached,
+                magic_dns_enabled: false,
                 need_exit_node: false,
                 error_message: None,
                 my_node_info: None,

@@ -1265,6 +1265,13 @@ impl NicCtx {
         self.backend.ifname().await
     }
 
+    pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
+        match self.backend {
+            NicBackend::Dedicated(_) => None,
+            NicBackend::Shared(_) => Some(self.backend.clone()),
+        }
+    }
+
     /// Stop packet I/O, then await every route owner and forwarding lease
     /// before the virtual interface is dropped. No cleanup is detached.
     pub(crate) async fn shutdown(&mut self) {

@@ -142,14 +142,22 @@ impl SharedIfConfig {
         member_id: SharedVirtualNicMemberId,
         claims: &SharedIfConfigClaims,
     ) -> anyhow::Result<()> {
+        let magic_dns = Ipv4Cidr::new(crate::instance::dns_server::MAGIC_DNS_FAKE_IP.parse()?, 32)?;
         for (other_id, other) in &self.member_claims {
             if *other_id == member_id {
                 continue;
             }
-            for (requested, _) in claims.ipv4_destinations() {
-                if let Some((existing, _)) = other
-                    .ipv4_destinations()
-                    .find(|(existing, _)| ipv4_cidrs_overlap(requested, *existing))
+            for (requested, requested_is_route) in claims.ipv4_destinations() {
+                if let Some((existing, _)) =
+                    other
+                        .ipv4_destinations()
+                        .find(|(existing, existing_is_route)| {
+                            !(requested_is_route
+                                && *existing_is_route
+                                && requested == magic_dns
+                                && *existing == magic_dns)
+                                && ipv4_cidrs_overlap(requested, *existing)
+                        })
                 {
                     return Err(SharedIfConfigConflict {
                         requested: requested.to_string(),

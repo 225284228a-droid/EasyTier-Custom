@@ -2328,7 +2328,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_prefers_source_owner_for_overlapping_routes() {
+    fn dispatcher_prefers_source_owner_for_shared_magic_dns() {
         let first = uuid::Uuid::from_u128(1);
         let source_owner = uuid::Uuid::from_u128(2);
         let first_ip = Ipv4Addr::new(10, 231, 1, 1);
