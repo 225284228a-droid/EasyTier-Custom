@@ -883,6 +883,8 @@ vpn_add_rule: 添加规则
 vpn_no_rules: 暂无规则
 vpn_rule_cidr: 目标网段
 vpn_rule_exit: 出口虚拟 IP
+vpn_rule_exit_placeholder: 留空则使用出口节点列表
+vpn_rule_exit_nodes: 出口节点列表
 vpn_rule_state: 出口状态
 vpn_rule_remove: 删除规则
 vpn_status_title: VPN 运行状态

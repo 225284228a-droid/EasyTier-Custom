@@ -461,7 +461,7 @@ function showEventLogs() {
                         <span class="vpn-rule-label">{{ t('vpn_rule_cidr') }}</span><span class="vpn-rule-address">{{ rule.cidr }}</span>
                       </div>
                       <div class="vpn-rule-exit">
-                        <span class="vpn-rule-label">{{ t('vpn_rule_exit') }}</span><span class="vpn-rule-address">{{ rule.exit_addr || '—' }}</span>
+                        <span class="vpn-rule-label">{{ t('vpn_rule_exit') }}</span><span class="vpn-rule-address">{{ rule.exit_addr || t('vpn_rule_exit_nodes') }}</span>
                       </div>
                       <div class="vpn-rule-state">
                         <span class="sr-only">{{ t('vpn_rule_state') }}</span>

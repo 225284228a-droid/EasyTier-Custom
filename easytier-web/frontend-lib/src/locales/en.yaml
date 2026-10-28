@@ -883,6 +883,8 @@ vpn_add_rule: Add rule
 vpn_no_rules: No rules
 vpn_rule_cidr: Destination CIDR
 vpn_rule_exit: Exit virtual IP
+vpn_rule_exit_placeholder: Empty uses the exit nodes list
+vpn_rule_exit_nodes: Exit nodes list
 vpn_rule_state: Exit state
 vpn_rule_remove: Remove rule
 vpn_status_title: VPN status

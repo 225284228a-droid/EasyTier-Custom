@@ -246,6 +246,14 @@ describe('status protobuf JSON rendering', () => {
     expect(wrapper.find('.vpn-status').text()).not.toContain('203.0.113.0/24')
   })
 
+  it('names the exit nodes list for a rule without its own exit', async () => {
+    const wrapper = await render(undefined, undefined, undefined, vpnResponse({ rules: [
+      { cidr: '0.0.0.0/0', exit_addr: '', state: 'up' },
+    ] }))
+    await expandNodeDetails(wrapper)
+    expect(wrapper.findAll('.vpn-rule-address').map(cell => cell.text())).toEqual(['0.0.0.0/0', 'vpn_rule_exit_nodes'])
+  })
+
   it('clears VPN status on connection replacement and stop, and does not refill it after unmount', async () => {
     vi.useFakeTimers()
     const wrapper = await render(undefined, undefined, undefined, vpnResponse())

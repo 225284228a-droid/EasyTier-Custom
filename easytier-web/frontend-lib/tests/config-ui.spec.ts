@@ -779,6 +779,15 @@ describe('Config.vue network config projection', () => {
     expect(wrapper.find('#enable_exit_node').exists()).toBe(true)
   })
 
+  it('keeps a rule without an exit so it follows the exit nodes list', async () => {
+    const { curNetwork, wrapper } = mountConfig()
+    await wrapper.find('button[data-label="vpn_add_rule"]').trigger('click')
+    await setInput(wrapper, '#vpn_rule_cidr_1', '198.51.100.0/24')
+    expect(input(wrapper, '#vpn_rule_exit_1').getAttribute('placeholder')).toBe('vpn_rule_exit_placeholder')
+    // The empty exit is omitted from protobuf JSON; Core reads it as no exit.
+    expect(toBackendNetworkConfig(curNetwork).vpn?.rules[1]).toEqual({ cidr: '198.51.100.0/24' })
+  })
+
   it('writes a VPN section only when the first rule is added', async () => {
     const config = DEFAULT_NETWORK_CONFIG()
     config.advanced_settings = true

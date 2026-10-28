@@ -2028,21 +2028,21 @@ impl PeerManagerCore {
         let events = self.events.clone();
         let vpn_context = self.context.clone();
         let vpn_runtime = self.runtime_config.clone();
+        let exit_nodes = self.exit_nodes.clone();
         self.tasks.lock().await.spawn(async move {
             let mut last_liveness: Option<Vec<(String, bool)>> = None;
             loop {
                 vpn_engine.update_exclusions(
                     collect_vpn_route_exclusions(&vpn_context, &vpn_runtime, &route).await,
                 );
-                let addresses = vpn_engine.config().exit_addresses();
-                if !addresses.is_empty() {
+                let config = vpn_engine.config();
+                let addresses = config.exit_addresses();
+                if !addresses.is_empty() || config.follows_exit_nodes() {
                     let routes = route.list_routes().await;
-                    let mut updates = Vec::with_capacity(addresses.len());
-                    let mut liveness = Vec::with_capacity(addresses.len());
-                    for address in addresses {
-                        // Exit addresses identify nodes, never an address merely
-                        // covered by a node's advertised subnet.
-                        let reachable = routes
+                    // Exit addresses identify nodes, never an address merely
+                    // covered by a node's advertised subnet.
+                    let node_at = |address: IpAddr| {
+                        routes
                             .iter()
                             .find(|route| match address {
                                 IpAddr::V4(v4) => {
@@ -2062,7 +2062,19 @@ impl PeerManagerCore {
                                         == Some(v6)
                                 }
                             })
-                            .map(|route| route.peer_id);
+                            .map(|route| route.peer_id)
+                    };
+                    vpn_engine.update_exit_nodes_state(
+                        exit_nodes
+                            .read()
+                            .await
+                            .iter()
+                            .any(|address| node_at(*address).is_some()),
+                    );
+                    let mut updates = Vec::with_capacity(addresses.len());
+                    let mut liveness = Vec::with_capacity(addresses.len());
+                    for address in addresses {
+                        let reachable = node_at(address);
                         updates.push((address, reachable));
                         liveness.push((address.to_string(), reachable.is_some()));
                     }
@@ -4711,7 +4723,12 @@ mod tests {
         let mut vpn = crate::config::vpn::VpnConfig::default();
         vpn.rules.push(crate::config::vpn::VpnRuleConfig {
             cidr: "203.0.113.0/24".parse().unwrap(),
-            exit: "10.20.0.50".parse().unwrap(),
+            exit: Some("10.20.0.50".parse().unwrap()),
+        });
+        // A rule without an exit leaves its subnet to exit_nodes and fallback.
+        vpn.rules.push(crate::config::vpn::VpnRuleConfig {
+            cidr: "198.51.100.0/24".parse().unwrap(),
+            exit: None,
         });
         core.update_vpn_config(vpn).unwrap();
         // The rule's exit is unknown: drop, neither exit_nodes nor the local

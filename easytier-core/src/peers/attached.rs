@@ -804,10 +804,9 @@ mod tests {
                 .iter()
                 .map(|(cidr, exit)| crate::config::vpn::VpnRuleConfig {
                     cidr: cidr.parse().unwrap(),
-                    exit: (*exit).into(),
+                    exit: Some((*exit).into()),
                 })
                 .collect(),
-            ..Default::default()
         }
     }
 

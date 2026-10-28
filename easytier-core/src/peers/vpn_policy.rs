@@ -10,7 +10,10 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::{
     net::IpAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +36,8 @@ pub struct VpnRuleStatusEntry {
 pub struct VpnPolicyEngine {
     state: ArcSwap<VpnCompiledState>,
     exit_states: DashMap<IpAddr, Option<PeerId>>,
+    /// Some `exit_nodes` entry is reachable, for rules without their own exit.
+    exit_nodes_up: AtomicBool,
     update_lock: Mutex<()>,
     config_changes: tokio::sync::watch::Sender<VpnConfig>,
 }
@@ -50,6 +55,7 @@ impl VpnPolicyEngine {
                 generation: 1,
             }),
             exit_states: DashMap::new(),
+            exit_nodes_up: AtomicBool::new(false),
             update_lock: Mutex::new(()),
             config_changes,
         };
@@ -97,6 +103,9 @@ impl VpnPolicyEngine {
             }
         }
     }
+    pub fn update_exit_nodes_state(&self, up: bool) {
+        self.exit_nodes_up.store(up, Ordering::Relaxed);
+    }
     pub fn config(&self) -> VpnConfig {
         self.state.load().config.clone()
     }
@@ -132,8 +141,13 @@ impl VpnPolicyEngine {
         let Some(index) = state.config.match_rule_index(destination) else {
             return VpnDecision::Passthrough;
         };
+        // A rule without an exit only captures its subnet; the official
+        // exit_nodes lookup then routes it.
+        let Some(exit) = state.config.rules[index].exit else {
+            return VpnDecision::Passthrough;
+        };
         self.exit_states
-            .get(&state.config.rules[index].exit)
+            .get(&exit)
             .and_then(|slot| *slot)
             .map(VpnDecision::Exit)
             .unwrap_or(VpnDecision::Drop)
@@ -146,11 +160,11 @@ impl VpnPolicyEngine {
             .iter()
             .map(|rule| VpnRuleStatusEntry {
                 cidr: rule.cidr.to_string(),
-                exit_addr: rule.exit.to_string(),
-                up: self
-                    .exit_states
-                    .get(&rule.exit)
-                    .is_some_and(|s| s.is_some()),
+                exit_addr: rule.exit.map(|exit| exit.to_string()).unwrap_or_default(),
+                up: match rule.exit {
+                    Some(exit) => self.exit_states.get(&exit).is_some_and(|s| s.is_some()),
+                    None => self.exit_nodes_up.load(Ordering::Relaxed),
+                },
             })
             .collect()
     }
@@ -179,15 +193,45 @@ mod tests {
                 .iter()
                 .map(|(cidr, exit)| VpnRuleConfig {
                     cidr: cidr.parse().unwrap(),
-                    exit: exit.parse().unwrap(),
+                    exit: Some(exit.parse().unwrap()),
                 })
                 .collect(),
-            ..Default::default()
         })
         .unwrap()
     }
     fn resolve(engine: &VpnPolicyEngine, ip: &str) -> VpnDecision {
         engine.resolve(&ip.parse().unwrap())
+    }
+    #[test]
+    fn rule_without_exit_captures_but_leaves_routing_to_exit_nodes() {
+        let e = VpnPolicyEngine::new(VpnConfig {
+            rules: vec![
+                VpnRuleConfig {
+                    cidr: "0.0.0.0/0".parse().unwrap(),
+                    exit: None,
+                },
+                VpnRuleConfig {
+                    cidr: "203.0.113.0/24".parse().unwrap(),
+                    exit: Some("10.0.0.2".parse().unwrap()),
+                },
+            ],
+        })
+        .unwrap();
+        assert!(
+            e.route_plan()
+                .0
+                .capture_routes
+                .contains(&"0.0.0.0/0".parse().unwrap())
+        );
+        // Only the rule with its own exit is decided here.
+        assert_eq!(resolve(&e, "198.51.100.1"), VpnDecision::Passthrough);
+        assert_eq!(resolve(&e, "203.0.113.1"), VpnDecision::Drop);
+        assert!(e.config().exit_addresses().len() == 1);
+        assert!(!e.status()[0].up);
+        e.update_exit_nodes_state(true);
+        assert_eq!(e.status()[0].exit_addr, "");
+        assert!(e.status()[0].up);
+        assert!(!e.status()[1].up);
     }
     #[test]
     fn two_subnets_use_their_own_exit_and_ipv6_is_explicit() {
@@ -270,7 +314,7 @@ mod tests {
         let mut config = e.config();
         config.rules[0].cidr = "198.51.100.0/24".parse().unwrap();
         e.install(config.clone()).unwrap();
-        config.rules[0].exit = "10.0.0.3".parse().unwrap();
+        config.rules[0].exit = Some("10.0.0.3".parse().unwrap());
         e.install(config.clone()).unwrap();
         changes.changed().await.unwrap();
         assert_eq!(*changes.borrow_and_update(), config);

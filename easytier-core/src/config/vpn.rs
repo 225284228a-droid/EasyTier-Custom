@@ -115,7 +115,10 @@ impl VpnCidr {
 #[serde(deny_unknown_fields)]
 pub struct VpnRuleConfig {
     pub cidr: VpnCidr,
-    pub exit: IpAddr,
+    /// Without an exit the subnet is captured and routed through the official
+    /// `exit_nodes` list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<IpAddr>,
 }
 
 /// Client rules only. Offering exit forwarding is the official
@@ -157,14 +160,14 @@ impl VpnConfig {
                 "duplicate VPN rule CIDR: {}",
                 rule.cidr
             );
-            anyhow::ensure!(
-                !rule.exit.is_unspecified()
-                    && !rule.exit.is_multicast()
-                    && !rule.exit.is_loopback(),
-                "vpn rule {} has invalid exit address {}",
-                rule.cidr,
-                rule.exit
-            );
+            if let Some(exit) = rule.exit {
+                anyhow::ensure!(
+                    !exit.is_unspecified() && !exit.is_multicast() && !exit.is_loopback(),
+                    "vpn rule {} has invalid exit address {}",
+                    rule.cidr,
+                    exit
+                );
+            }
         }
         Ok(())
     }
@@ -172,7 +175,11 @@ impl VpnConfig {
         !self.rules.is_empty()
     }
     pub fn exit_addresses(&self) -> std::collections::BTreeSet<IpAddr> {
-        self.rules.iter().map(|r| r.exit).collect()
+        self.rules.iter().filter_map(|r| r.exit).collect()
+    }
+    /// Some rule leaves its subnet to the official `exit_nodes` list.
+    pub fn follows_exit_nodes(&self) -> bool {
+        self.rules.iter().any(|r| r.exit.is_none())
     }
     pub fn match_rule_index(&self, address: &IpAddr) -> Option<usize> {
         self.rules
@@ -194,7 +201,10 @@ pub mod pb {
             .map(|r| {
                 Ok(VpnRuleConfig {
                     cidr: r.cidr.parse()?,
-                    exit: r.exit_addr.parse()?,
+                    exit: match r.exit_addr.trim() {
+                        "" => None,
+                        exit => Some(exit.parse()?),
+                    },
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -209,7 +219,7 @@ pub mod pb {
                 .iter()
                 .map(|r| easytier_proto::api::manage::VpnRuleConfig {
                     cidr: r.cidr.to_string(),
-                    exit_addr: r.exit.to_string(),
+                    exit_addr: r.exit.map(|exit| exit.to_string()).unwrap_or_default(),
                 })
                 .collect(),
         }
@@ -222,8 +232,19 @@ mod tests {
     fn rule(cidr: &str, exit: &str) -> VpnRuleConfig {
         VpnRuleConfig {
             cidr: cidr.parse().unwrap(),
-            exit: exit.parse().unwrap(),
+            exit: Some(exit.parse().unwrap()),
         }
+    }
+    #[test]
+    fn rule_exit_is_optional_in_toml() {
+        let c: VpnConfig = toml::from_str("[[rules]]\ncidr = '0.0.0.0/0'\n").unwrap();
+        assert_eq!(c.rules[0].exit, None);
+        assert!(c.follows_exit_nodes());
+        assert!(c.exit_addresses().is_empty());
+        c.validate().unwrap();
+        let text = toml::to_string(&c).unwrap();
+        assert!(!text.contains("exit"));
+        assert_eq!(toml::from_str::<VpnConfig>(&text).unwrap(), c);
     }
     #[test]
     fn defaults_and_toml_roundtrip() {
@@ -246,7 +267,6 @@ mod tests {
             assert!(
                 VpnConfig {
                     rules: vec![rule("::/0", exit)],
-                    ..Default::default()
                 }
                 .validate()
                 .is_err()
@@ -257,7 +277,6 @@ mod tests {
                 rule("10.0.0.0/8", "10.1.0.2"),
                 rule("10.0.0.0/8", "10.1.0.3"),
             ],
-            ..Default::default()
         };
         assert!(config.validate().is_err());
     }
@@ -270,13 +289,12 @@ mod tests {
                 rule("::/0", "fd00::2"),
                 rule("2001:db8::/32", "fd00::3"),
             ],
-            ..Default::default()
         };
         assert_eq!(c.match_rule_index(&"8.8.8.8".parse().unwrap()), Some(1));
         assert_eq!(c.match_rule_index(&"2001:db8::1".parse().unwrap()), Some(3));
     }
     #[test]
-    fn removed_fields_and_missing_exit_are_rejected() {
+    fn removed_fields_are_rejected() {
         for field in [
             "enabled = true",
             "fail_mode = 'direct'",
@@ -296,7 +314,6 @@ mod tests {
             let text = format!("[[rules]]\ncidr = '0.0.0.0/0'\nexit = '10.0.0.2'\n{field}");
             assert!(toml::from_str::<VpnConfig>(&text).is_err(), "{field}");
         }
-        assert!(toml::from_str::<VpnConfig>("[[rules]]\ncidr = '0.0.0.0/0'").is_err());
     }
     #[test]
     fn legacy_exit_enabled_is_read_but_enables_nothing() {
@@ -322,13 +339,19 @@ mod tests {
             rules: vec![rule("203.0.113.0/24", "10.0.0.2")],
         };
         assert_eq!(pb::from_pb(pb::to_pb(&c)).unwrap(), c);
+        let follows = VpnConfig {
+            rules: vec![VpnRuleConfig {
+                cidr: "0.0.0.0/0".parse().unwrap(),
+                exit: None,
+            }],
+        };
+        assert_eq!(pb::from_pb(pb::to_pb(&follows)).unwrap(), follows);
         assert!(
             pb::from_pb(easytier_proto::api::manage::VpnConfig {
                 rules: vec![easytier_proto::api::manage::VpnRuleConfig {
                     cidr: "0.0.0.0/0".into(),
-                    ..Default::default()
+                    exit_addr: "exit.example".into(),
                 }],
-                ..Default::default()
             })
             .is_err()
         );

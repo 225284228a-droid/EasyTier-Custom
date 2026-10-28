@@ -137,10 +137,9 @@ mod tests {
                 .iter()
                 .map(|c| VpnRuleConfig {
                     cidr: c.parse().unwrap(),
-                    exit: "10.0.0.2".parse().unwrap(),
+                    exit: Some("10.0.0.2".parse().unwrap()),
                 })
                 .collect(),
-            ..Default::default()
         }
     }
     fn contains(routes: &[VpnCidr], address: &str) -> bool {

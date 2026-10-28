@@ -2311,7 +2311,7 @@ members = ["admin"]
         let mut vpn = crate::config::vpn::VpnConfig::default();
         vpn.rules.push(crate::config::vpn::VpnRuleConfig {
             cidr: "0.0.0.0/0".parse().unwrap(),
-            exit: "10.144.144.2".parse().unwrap(),
+            exit: Some("10.144.144.2".parse().unwrap()),
         });
 
         config.set_vpn(vpn.clone());

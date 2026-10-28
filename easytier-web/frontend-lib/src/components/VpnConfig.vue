@@ -39,7 +39,7 @@ function addRule() {
       </div>
       <div class="min-w-0">
         <label :for="`vpn_rule_exit_${index}`" class="mb-1 block">{{ t('vpn_rule_exit') }}</label>
-        <InputText :id="`vpn_rule_exit_${index}`" v-model="rule.exit_addr" class="w-full min-w-0" placeholder="10.144.144.2" />
+        <InputText :id="`vpn_rule_exit_${index}`" v-model="rule.exit_addr" class="w-full min-w-0" :placeholder="t('vpn_rule_exit_placeholder')" />
       </div>
       <Button class="self-end justify-self-end" icon="pi pi-trash" text severity="danger" :aria-label="t('vpn_rule_remove')"
         @click="rules.splice(index, 1)" />

@@ -2030,7 +2030,11 @@ impl<'a> CommandHandler<'a> {
                 .iter()
                 .map(|r| VpnRuleRow {
                     cidr: r.cidr.clone(),
-                    exit: r.exit_addr.clone(),
+                    exit: if r.exit_addr.is_empty() {
+                        "exit_nodes".to_owned()
+                    } else {
+                        r.exit_addr.clone()
+                    },
                     state: r.state.clone(),
                 })
                 .collect::<Vec<_>>();
