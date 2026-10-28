@@ -3548,6 +3548,10 @@ virtual_ip = "10.82.0.2/24"
 
     #[cfg(feature = "proxy-packet")]
     mod dynamic_packet_proxy {
+        // Custom: kernel-listener mode also binds a v6-only listener for IPv6
+        // exit relaying, so one proxy start opens two TCP listeners.
+        const PROXY_TCP_LISTENERS: usize = 2;
+
         use std::net::Ipv4Addr;
 
         use smoltcp::wire::{Icmpv4Message, Icmpv4Packet, IpProtocol, Ipv4Packet};
@@ -3679,7 +3683,7 @@ virtual_ip = "10.82.0.2/24"
                 .update_runtime_config(updated.clone())
                 .await
                 .unwrap();
-            assert_eq!(host.tcp_binds.load(Ordering::Relaxed), 1);
+            assert_eq!(host.tcp_binds.load(Ordering::Relaxed), PROXY_TCP_LISTENERS);
             assert_eq!(icmp_host.opens.load(Ordering::Relaxed), 0);
             send().await;
             assert_eq!(
@@ -3712,7 +3716,7 @@ virtual_ip = "10.82.0.2/24"
                     .unwrap(),
                 Some("192.0.2.42".parse().unwrap()),
             );
-            assert_eq!(host.tcp_binds.load(Ordering::Relaxed), 1);
+            assert_eq!(host.tcp_binds.load(Ordering::Relaxed), PROXY_TCP_LISTENERS);
             assert_eq!(icmp_host.opens.load(Ordering::Relaxed), 1);
             source.stop().await;
             instance.stop().await;
@@ -3746,7 +3750,7 @@ virtual_ip = "10.82.0.2/24"
                 instance.update_runtime_config(updated).await.unwrap();
                 assert_eq!(
                     host.tcp_binds.load(Ordering::Relaxed),
-                    usize::from(!forward_by_system),
+                    usize::from(!forward_by_system) * PROXY_TCP_LISTENERS,
                 );
                 instance.stop().await;
             }
@@ -3781,7 +3785,10 @@ virtual_ip = "10.82.0.2/24"
             assert_eq!(instance.node_snapshot().await.proxy_networks.len(), 1);
             *host.reject_tcp_bind.lock().unwrap() = None;
             instance.update_runtime_config(updated).await.unwrap();
-            assert_eq!(host.active_tcp_listeners.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                host.active_tcp_listeners.load(Ordering::Relaxed),
+                PROXY_TCP_LISTENERS
+            );
             instance.stop().await;
             assert_eq!(host.active_tcp_listeners.load(Ordering::Relaxed), 0);
         }
@@ -3823,10 +3830,16 @@ virtual_ip = "10.82.0.2/24"
             assert!(update.await.unwrap_err().is_cancelled());
             assert_eq!(host.active_tcp_listeners.load(Ordering::Relaxed), 0);
 
-            gate.add_permits(1);
+            gate.add_permits(PROXY_TCP_LISTENERS);
             instance.update_runtime_config(updated).await.unwrap();
-            assert_eq!(host.tcp_binds.load(Ordering::Relaxed), 2);
-            assert_eq!(host.active_tcp_listeners.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                host.tcp_binds.load(Ordering::Relaxed),
+                1 + PROXY_TCP_LISTENERS
+            );
+            assert_eq!(
+                host.active_tcp_listeners.load(Ordering::Relaxed),
+                PROXY_TCP_LISTENERS
+            );
             instance.stop().await;
             assert_eq!(host.active_tcp_listeners.load(Ordering::Relaxed), 0);
         }
@@ -3887,7 +3900,10 @@ virtual_ip = "10.82.0.2/24"
                 *host.tcp_bind_runtime.lock().unwrap(),
                 Some(executor.handle().id()),
             );
-            assert_eq!(host.active_tcp_listeners.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                host.active_tcp_listeners.load(Ordering::Relaxed),
+                PROXY_TCP_LISTENERS
+            );
             executor.block_on(instance.stop());
             assert_eq!(host.active_tcp_listeners.load(Ordering::Relaxed), 0);
         }

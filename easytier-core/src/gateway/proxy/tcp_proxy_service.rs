@@ -200,6 +200,9 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         if let Some(listener) = self.kernel_listener.lock().take() {
             drop(listener);
         }
+        if let Some(listener) = self.kernel_v6_listener.lock().take() {
+            drop(listener);
+        }
         #[cfg(feature = "proxy-smoltcp-stack")]
         if let Some(stack) = self.smoltcp_stack.lock().take() {
             drop(stack);

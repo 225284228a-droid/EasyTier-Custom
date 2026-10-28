@@ -2948,6 +2948,11 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
         flags.disable_udp_hole_punching = true;
         flags.disable_tcp_hole_punching = true;
         flags.relay_all_peer_rpc = true;
+        if index < 2 {
+            // Both servers publicly relay client-net, which Custom's private
+            // default would reject.
+            flags.private_mode = false;
+        }
         if index == 1 {
             // The second server only relays RPC, as in the reported topology.
             flags.relay_network_whitelist = String::new();
