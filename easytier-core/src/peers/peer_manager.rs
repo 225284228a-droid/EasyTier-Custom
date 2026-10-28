@@ -845,9 +845,6 @@ async fn collect_vpn_route_exclusions(
     if let Some(manual) = &runtime.services.manual_routes {
         remote_subnets.extend(manual.iter().copied().map(VpnCidr::V4));
     }
-    if runtime.peer.flags.accept_dns {
-        mesh.push("100.100.100.101/32".parse().unwrap());
-    }
     let mut local_subnets = Vec::new();
     for proxy in &runtime.peer.runtime.core.routes.proxy_networks {
         for prefix in std::iter::once(&proxy.real).chain(proxy.mapped.iter()) {

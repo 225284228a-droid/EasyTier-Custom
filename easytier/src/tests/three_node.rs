@@ -3034,6 +3034,8 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
             .map(url::Url::from)
             .collect::<Vec<_>>();
         assert_eq!(listeners, remote_server.running_listeners());
+        // Custom: a UDP listener also serves HTTP3, which direct connect prefers.
+        let tunnel_type = if protocol == "udp" { "http3" } else { protocol };
         wait_for_condition_named(
             || async {
                 client.peer_snapshots().await.iter().any(|peer| {
@@ -3043,7 +3045,7 @@ async fn foreign_network_advertises_listeners_for_direct_connect(
                                 && conn
                                     .tunnel
                                     .as_ref()
-                                    .is_some_and(|tunnel| tunnel.tunnel_type == protocol)
+                                    .is_some_and(|tunnel| tunnel.tunnel_type == tunnel_type)
                         })
                 })
             },
