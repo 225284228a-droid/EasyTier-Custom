@@ -240,6 +240,68 @@ struct ReconcileCache {
     cleaned_web_source_instances: bool,
     last_desired_web_inst_ids: Option<HashSet<String>>,
     runtime_configs: SessionRuntimeConfigCache,
+    auto_runs: AutoRunBackoff,
+}
+
+const AUTO_RUN_MIN_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+const AUTO_RUN_MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Paces automatic restarts of enabled configs the node does not report as
+/// running. Cores wake their heartbeat on every instance state change, so an
+/// instance that fails right after starting (an occupied listener port, an
+/// invalid address) would otherwise be re-run on every resulting heartbeat,
+/// many times per second. Seeing the instance running, or a different stored
+/// config, starts the schedule over.
+#[derive(Default)]
+struct AutoRunBackoff {
+    entries: HashMap<String, AutoRunAttempts>,
+}
+
+struct AutoRunAttempts {
+    config: String,
+    attempts: u32,
+    next_at: tokio::time::Instant,
+}
+
+impl AutoRunBackoff {
+    fn allows(&self, inst_id: &str, config: &str, now: tokio::time::Instant) -> bool {
+        self.entries
+            .get(inst_id)
+            .is_none_or(|entry| entry.config != config || now >= entry.next_at)
+    }
+
+    fn record_attempt(&mut self, inst_id: &str, config: &str, now: tokio::time::Instant) {
+        let attempts = match self.entries.get(inst_id) {
+            Some(entry) if entry.config == config => entry.attempts.saturating_add(1),
+            _ => 1,
+        };
+        let delay = AUTO_RUN_MIN_RETRY
+            .saturating_mul(1 << (attempts - 1).min(6))
+            .min(AUTO_RUN_MAX_RETRY);
+        self.entries.insert(
+            inst_id.to_owned(),
+            AutoRunAttempts {
+                config: config.to_owned(),
+                attempts,
+                next_at: now + delay,
+            },
+        );
+    }
+
+    fn clear(&mut self, inst_id: &str) {
+        self.entries.remove(inst_id);
+    }
+
+    fn retain_configs(
+        &mut self,
+        configs: &[crate::db::entity::user_running_network_configs::Model],
+    ) {
+        self.entries.retain(|inst_id, _| {
+            configs
+                .iter()
+                .any(|config| &config.network_instance_id == inst_id)
+        });
+    }
 }
 
 impl ReconcileCache {
@@ -986,12 +1048,33 @@ async fn reconcile_desired_runtime_configs(
     // config that the latest heartbeat did not report as running. When
     // a managed config revision is pending, also reconcile running
     // web-owned configs before reporting that revision as applied.
+    if round.scope == ReconcileScope::Full {
+        cache.auto_runs.retain_configs(&round.local_configs);
+    }
     for config in &round.local_configs {
         let source = PersistedConfigSource::from_db(&config.source);
         let is_running = round.running_inst_ids.contains(&config.network_instance_id);
+        if is_running {
+            cache.auto_runs.clear(&config.network_instance_id);
+        }
         let should_reconcile_running_web_config =
             should_reconcile_running_web_config(is_running, source, round);
         if is_running && !should_reconcile_running_web_config {
+            continue;
+        }
+        let now = tokio::time::Instant::now();
+        if !should_reconcile_running_web_config
+            && !cache
+                .auto_runs
+                .allows(&config.network_instance_id, &config.network_config, now)
+        {
+            tracing::debug!(
+                user_id = ?round.user_id,
+                machine_id = ?round.machine_id,
+                instance_id = %config.network_instance_id,
+                "network instance is still not running; waiting before the next automatic run"
+            );
+            outcome.record_failure(source == PersistedConfigSource::Web);
             continue;
         }
 
@@ -1027,6 +1110,11 @@ async fn reconcile_desired_runtime_configs(
             if source == PersistedConfigSource::Web {
                 cache.runtime_configs.forget(&config.network_instance_id);
             }
+            cache.auto_runs.record_attempt(
+                &config.network_instance_id,
+                &config.network_config,
+                now,
+            );
             let action_result = run_missing_network_config(
                 session_data,
                 &mut clients.rpc,
@@ -2008,6 +2096,49 @@ mod tests {
             assert!(runtime.applied_config_revision_known);
             assert_eq!(runtime.known_runtime_base_revision, None);
         }
+    }
+
+    #[test]
+    fn failing_auto_runs_back_off_until_running_or_config_changes() {
+        use std::time::Duration;
+
+        let mut backoff = AutoRunBackoff::default();
+        let start = tokio::time::Instant::now();
+        assert!(backoff.allows("inst", "cfg-a", start));
+
+        // Each attempt that leaves the instance stopped doubles the wait.
+        backoff.record_attempt("inst", "cfg-a", start);
+        assert!(!backoff.allows("inst", "cfg-a", start + Duration::from_millis(999)));
+        assert!(backoff.allows("inst", "cfg-a", start + Duration::from_secs(1)));
+        let second = start + Duration::from_secs(1);
+        backoff.record_attempt("inst", "cfg-a", second);
+        assert!(!backoff.allows("inst", "cfg-a", second + Duration::from_millis(1999)));
+        assert!(backoff.allows("inst", "cfg-a", second + Duration::from_secs(2)));
+
+        // The wait is capped.
+        let mut at = second;
+        for _ in 0..20 {
+            backoff.record_attempt("inst", "cfg-a", at);
+            at += AUTO_RUN_MAX_RETRY;
+        }
+        backoff.record_attempt("inst", "cfg-a", at);
+        assert!(!backoff.allows(
+            "inst",
+            "cfg-a",
+            at + AUTO_RUN_MAX_RETRY - Duration::from_millis(1)
+        ));
+        assert!(backoff.allows("inst", "cfg-a", at + AUTO_RUN_MAX_RETRY));
+
+        // An edited config runs at once and starts a new schedule.
+        assert!(backoff.allows("inst", "cfg-b", at));
+        backoff.record_attempt("inst", "cfg-b", at);
+        assert!(backoff.allows("inst", "cfg-b", at + Duration::from_secs(1)));
+
+        // A running instance clears its history; other instances are unaffected.
+        backoff.record_attempt("other", "cfg", at);
+        backoff.clear("inst");
+        assert!(backoff.allows("inst", "cfg-b", at));
+        assert!(!backoff.allows("other", "cfg", at));
     }
 
     #[test]
