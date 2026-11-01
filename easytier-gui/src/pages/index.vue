@@ -78,7 +78,7 @@ async function onModeSave() {
     return true
   }
   catch (e: any) {
-    toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
+    toast.add({ severity: 'error', summary: t('web.common.error'), detail: e, life: 10000 })
     console.error("Error switching mode", e, currentMode.value, editingMode.value)
     try {
       await initWithMode(previousMode);
@@ -124,7 +124,7 @@ async function onUninstallService() {
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
         modeDialogVisible.value = false
       } catch (e: any) {
-        toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
+        toast.add({ severity: 'error', summary: t('web.common.error'), detail: e, life: 10000 })
         console.error("Error uninstalling service", e)
       } finally {
         isModeSaving.value = false
@@ -163,7 +163,7 @@ async function onStopService() {
   }
   catch (e: any) {
     autoReconnectEnabled = true
-    toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
+    toast.add({ severity: 'error', summary: t('web.common.error'), detail: e, life: 10000 })
     console.error("Error stopping service", e)
   }
   finally {
@@ -354,7 +354,7 @@ onMounted(async () => {
   const cleanupFns: Array<() => void> = []
 
   if (type() === 'android') {
-    setMobileVpnErrorHandler(error => toast.add({ severity: 'error', summary: t('error'), detail: error, life: 10000 }))
+    setMobileVpnErrorHandler(error => toast.add({ severity: 'error', summary: t('web.common.error'), detail: error, life: 10000 }))
     cleanupFns.push(() => setMobileVpnErrorHandler())
     try {
       await initMobileVpnService()
@@ -371,7 +371,7 @@ onMounted(async () => {
   } catch (error) {
     clientRunning.value = false
     console.error('Failed to initialize saved mode', error)
-    toast.add({ severity: 'error', summary: t('error'), detail: String(error), life: 10000 })
+    toast.add({ severity: 'error', summary: t('web.common.error'), detail: String(error), life: 10000 })
   } finally {
     isModeSaving.value = false
   }
@@ -437,7 +437,7 @@ async function handleMobileVpnTileAction(action: 'start' | 'stop') {
     console.error('VPN tile action failed', action, error)
     toast.add({
       severity: 'error',
-      summary: t('error'),
+      summary: t('web.common.error'),
       detail: t('vpn_tile_action_failed', { error: String(error) }),
       life: 8000,
     })

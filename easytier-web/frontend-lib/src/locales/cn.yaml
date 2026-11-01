@@ -233,6 +233,9 @@ bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网�
 no_tun: 无 TUN 模式
 no_tun_help: 不使用 TUN 网卡，适合无管理员权限时使用。本节点仅允许被访问。访问其他节点需要使用 SOCK5
 
+enable_exit_node: 启用出口节点
+enable_exit_node_help: 允许此节点成为出口节点
+
 
 relay_all_peer_rpc: 转发RPC包
 relay_all_peer_rpc_help: |
@@ -306,6 +309,9 @@ manual_routes_help: 手动分配路由CIDR，将禁用子网代理和从对等�
 socks5: socks5服务器
 socks5_help: |
   启用 socks5 服务器，允许 socks5 客户端访问虚拟网络. 格式: <端口>，例如：1080
+
+exit_nodes: 出口节点列表
+exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定
 
   
 port_forwards: 端口转发

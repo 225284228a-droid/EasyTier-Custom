@@ -510,7 +510,6 @@ const saveConfigFile = async (tomlConfig: string): Promise<void> => {
     replaceFormConfig(resp.config);
 }
 
-const formActionLabel = computed(() => creating.value ? t('web.local_configs.create_and_start') : t('web.local_configs.apply'));
 const submitForm = () => creating.value ? createNetwork(true) : saveNetwork(true);
 const saveKeepingState = () => creating.value ? createNetwork(false) : saveNetwork(false);
 
@@ -724,7 +723,7 @@ const editorMerged = editor.merged;
                 </Message>
 
                 <Config :cur-network="formConfig" :config-invalid="!formConfig || busy || !!editorRemote"
-                    :runtime-capabilities="runtimeCapabilities" :action-label="formActionLabel"
+                    :runtime-capabilities="runtimeCapabilities"
                     @run-network="submitForm"></Config>
             </div>
 

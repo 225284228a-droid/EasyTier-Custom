@@ -261,7 +261,7 @@ describe('creating networks', () => {
     try {
       await button(wrapper, 'web.device_management.create_network').trigger('click')
       await flushPromises()
-      expect(form(wrapper).props('actionLabel')).toBe('web.local_configs.create_and_start')
+      expect(form(wrapper).props('actionLabel')).toBeUndefined()
       expect(api.save_config).not.toHaveBeenCalled()
       form(wrapper).props('curNetwork').hostname = 'new-host'
       await submit(wrapper)
@@ -340,7 +340,7 @@ describe('saving official networks', () => {
     const expected = snapshotBooleanConfigFields(entry.config)
     const wrapper = await mountManagement(api)
     try {
-      expect(form(wrapper).props('actionLabel')).toBe('web.local_configs.apply')
+      expect(form(wrapper).props('actionLabel')).toBeUndefined()
       expect(button(wrapper, 'web.device_management.save_config').attributes('disabled')).toBeDefined()
       form(wrapper).props('curNetwork').hostname = 'saved-host'
       await nextTick()
