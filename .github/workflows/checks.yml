@@ -303,8 +303,10 @@ jobs:
       - name: Check Android ARM64
         if: needs.prepare.outputs.full != 'true'
         run: cargo check --locked --lib --target "$TARGET" -p easytier-gui --features custom-protocol
+  # Generated bindings and the embedded core are refreshed on main by
+  # go-artifacts.yml, so a proto change is not expected to carry them.
   go:
-    name: Go tests and generated proto consistency
+    name: Go tests
     needs: prepare
     if: needs.prepare.outputs.go == 'true'
     runs-on: ubuntu-latest
@@ -316,19 +318,10 @@ jobs:
           cache-dependency-path: |
             easytier-go/go.sum
             easytier-go/examples/tun/go.sum
-      - uses: arduino/setup-protoc@v3
-        with:
-          version: '35.1'
-          repo-token: ${{ github.token }}
       - run: go test ./...
         working-directory: easytier-go
       - run: go test ./...
         working-directory: easytier-go/examples/tun
-      - run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
-      - run: |
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          ./easytier-go/script/generate-proto.sh
-          git diff --exit-code -- easytier-go/proto
 
   js:
     name: JavaScript Hosts build and tests

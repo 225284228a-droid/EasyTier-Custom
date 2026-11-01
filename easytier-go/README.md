@@ -356,8 +356,11 @@ The implementation is split by responsibility:
 ## Embedded artifact
 
 The committed WASM lets downstream Go builds and tests run without a Rust
-toolchain. Refresh it from a clean EasyTier checkout whenever the guest ABI or
-core implementation changes:
+toolchain. On `main`, the `Regenerate Go artifacts` workflow
+(`.github/workflows/go-artifacts.yml`) refreshes it and the bindings after every
+push that changes their inputs, tests the result, and pushes a
+`build(go): regenerate ...` commit. It can also be started by hand. To refresh
+locally instead, run from a clean EasyTier checkout:
 
 ```sh
 EASYTIER_SOURCE=/path/to/EasyTier go generate ./...

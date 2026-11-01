@@ -1,0 +1,98 @@
+name: Regenerate Go artifacts
+
+# Keeps easytier-go's embedded WASI core and protobuf bindings in step with
+# main. A push that changes their inputs regenerates both from that exact
+# commit and pushes a `build(go): ...` commit back to the branch.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'easytier-core/**'
+      - 'easytier-proto/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - 'script/build-wasi-core.sh'
+      - 'easytier-go/cmd/update-wasm/**'
+      - 'easytier-go/script/generate-proto.sh'
+      - '.github/workflows/go-artifacts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only the newest commit matters: an older run's output is superseded.
+concurrency:
+  group: go-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  regenerate:
+    name: Regenerate embedded core and bindings
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/prepare-build
+        with:
+          target: wasm32-wasip1
+          token: ${{ github.token }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: |
+            easytier-go/go.sum
+            easytier-go/examples/tun/go.sum
+      - run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: go-artifacts
+      - name: Regenerate from this commit
+        working-directory: easytier-go
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          go generate ./internal/artifact
+      - name: Detect changes
+        id: diff
+        run: |
+          # The provenance files always name the new commit. Commit them only
+          # with a real artifact or binding change; otherwise the committed
+          # artifact still matches the commit it already names.
+          if git diff --quiet -- easytier-go \
+              ':(exclude)easytier-go/internal/artifact/provenance.go' \
+              ':(exclude)easytier-go/proto/provenance.go'; then
+            echo "Embedded core and bindings are already up to date."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git status --short -- easytier-go
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Pushes made with GITHUB_TOKEN start no other workflow, so test here.
+      - name: Test against the regenerated core
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          (cd easytier-go && go test ./...)
+          (cd easytier-go/examples/tun && go test ./...)
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- easytier-go
+          git commit -m "build(go): regenerate bindings and embedded core for ${GITHUB_SHA::8}"
+          # A later commit that did not touch these inputs starts no run of
+          # its own, so rebase onto it rather than dropping this output.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+          done
+          echo "::error::Could not push the regenerated Go artifacts."
+          exit 1
