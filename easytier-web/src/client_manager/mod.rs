@@ -2079,6 +2079,7 @@ mod tests {
         assert_eq!(updated.disable_upnp, Some(true));
         assert_eq!(updated.disable_relay_data, Some(true));
         assert_eq!(updated.enable_magic_dns, Some(true));
+        assert_eq!(updated.tld_dns_zone.as_deref(), Some("nas.internal."));
         // Runtime projections omit flags that match the Custom defaults.
         // Check the effective setting after the managed-config round trip.
         assert!(updated.gen_config().unwrap().get_flags().private_mode);
@@ -2107,6 +2108,7 @@ mod tests {
             "relay_all_peer_rpc": false,
             "multi_thread": false,
             "disable_relay_data": false,
+            "tld_dns_zone": "initial.internal.",
             "mtu": 1380
         })
     }
@@ -2157,6 +2159,7 @@ mod tests {
             disable_upnp: Some(true),
             disable_relay_data: Some(true),
             enable_magic_dns: Some(true),
+            tld_dns_zone: Some("nas.internal.".to_owned()),
             enable_private_mode: Some(true),
             mtu: Some(1360),
             data_compress_algo: Some(CompressionAlgoPb::Zstd as i32),
@@ -2953,10 +2956,11 @@ mod tests {
         .await
         .unwrap();
 
-        wait_for_runtime_config(&core_manager, instance_id, |config| {
+        let initial = wait_for_runtime_config(&core_manager, instance_id, |config| {
             config.network_name.as_deref() == Some("managed-initial")
         })
         .await;
+        assert_eq!(initial.tld_dns_zone.as_deref(), Some("initial.internal."));
         wait_for_applied_revision(&mgr, user_id, machine_id, "rev-initial").await;
 
         // Runtime-only mutations do not change SQLite. Invalidate the Session
@@ -3073,6 +3077,7 @@ mod tests {
             Some("managed-redelivered")
         );
         assert_eq!(redelivered.enable_kcp_proxy, Some(true));
+        assert_eq!(redelivered.tld_dns_zone, None);
         assert_eq!(redelivered.instance_recv_bps_limit, Some(654321));
         assert_eq!(
             core_manager.config_source(instance_id),
@@ -3108,6 +3113,7 @@ mod tests {
             Some("managed-redelivered")
         );
         assert_eq!(replayed.enable_kcp_proxy, Some(true));
+        assert_eq!(replayed.tld_dns_zone, None);
         assert_eq!(replayed.instance_recv_bps_limit, Some(654321));
 
         core_manager

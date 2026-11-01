@@ -551,6 +551,7 @@
     {"message":"api.manage.NetworkConfig","field":"dev_name","number":20,"type":9,"type_name":"","label":1,"proto3_optional":true,"retained":true},
     {"message":"api.manage.NetworkConfig","field":"use_smoltcp","number":21,"type":8,"type_name":"","label":1,"proto3_optional":true,"retained":true},
     {"message":"api.manage.NetworkConfig","field":"disable_ipv6","number":47,"type":8,"type_name":"","label":1,"proto3_optional":true,"retained":true},
+    {"message":"api.manage.NetworkConfig","field":"tld_dns_zone","number":73,"type":9,"type_name":"","label":1,"proto3_optional":true,"retained":true},
     {"message":"api.manage.NetworkConfig","field":"enable_kcp_proxy","number":22,"type":8,"type_name":"","label":1,"proto3_optional":true,"retained":true},
     {"message":"api.manage.NetworkConfig","field":"disable_kcp_input","number":23,"type":8,"type_name":"","label":1,"proto3_optional":true,"retained":true},
     {"message":"api.manage.NetworkConfig","field":"disable_p2p","number":24,"type":8,"type_name":"","label":1,"proto3_optional":true,"retained":true},
