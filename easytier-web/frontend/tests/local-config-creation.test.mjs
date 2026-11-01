@@ -132,7 +132,7 @@ test('embedded console creates a default network and Core restores it as disable
         await page.getByRole('button', { name: 'Create New Network', exact: true }).click();
         const createdResponse = page.waitForResponse(response => response.url().endsWith(`/machines/${machine}/local-configs/patch`));
         const startedResponse = page.waitForResponse(response => response.url().includes(`/machines/${machine}/networks/`) && response.request().method() === 'PUT');
-        await page.getByRole('button', { name: 'Create and start', exact: true }).click();
+        await page.getByRole('button', { name: 'Run Network', exact: true }).click();
         const created = await createdResponse;
         assert.equal(created.status(), 200, await created.text());
         const submitted = created.request().postDataJSON();
@@ -202,7 +202,7 @@ test('embedded console creates a default network and Core restores it as disable
             await page.getByText('official-smoke-node', { exact: true }).first().waitFor();
             await page.getByRole('button', { name: 'Create New Network', exact: true }).click();
             const savedResponse = page.waitForResponse(response => response.url().endsWith(`/machines/${officialMachine}/networks`) && response.request().method() === 'POST');
-            await page.getByRole('button', { name: 'Create and start', exact: true }).click();
+            await page.getByRole('button', { name: 'Run Network', exact: true }).click();
             const response = await savedResponse;
             assert.equal(response.status(), 200, await response.text());
             const config = response.request().postDataJSON().config;
