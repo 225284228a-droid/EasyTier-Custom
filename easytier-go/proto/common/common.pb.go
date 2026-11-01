@@ -2273,7 +2273,7 @@ const file_common_proto_rawDesc = "" +
 	"\x06target\x18ц\x03 \x01(\rR\x06target\x12(\n" +
 	"\x0factive_conn_ids\x18҆\x03 \x03(\tR\ractiveConnIds\x12\x1c\n" +
 	"\bprotocol\x18ӆ\x03 \x01(\tR\bprotocol\x12)\n" +
-	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xb7\x16\n" +
+	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xb9\x16\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2352,9 +2352,9 @@ const file_common_proto_rawDesc = "" +
 	"\x14encryption_algorithm\x18\x1d \x01(\tB\x0f\x8a\xb5\x18\v\n" +
 	"\aaes-gcm\x18\x01R\x13encryptionAlgorithm\x12F\n" +
 	"\x19disable_sym_hole_punching\x18\x1e \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x16disableSymHolePunching\x12/\n" +
-	"\ftld_dns_zone\x18\x1f \x01(\tB\r\x8a\xb5\x18\t\n" +
-	"\aet.net.R\n" +
+	"\x05falseR\x16disableSymHolePunching\x121\n" +
+	"\ftld_dns_zone\x18\x1f \x01(\tB\x0f\x8a\xb5\x18\v\n" +
+	"\aet.net.\x18\x01R\n" +
 	"tldDnsZone\x12&\n" +
 	"\bp2p_only\x18  \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\ap2pOnly\x12F\n" +
