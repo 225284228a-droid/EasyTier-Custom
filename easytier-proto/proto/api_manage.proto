@@ -146,6 +146,10 @@ message NetworkConfig {
   optional uint32 parallel_connections = 50082;
   optional bool disable_parallel_connections = 50083;
   optional string traffic_disguise = 50084;
+  // UTC Unix milliseconds of the last change to the settings peers must
+  // share (network name, secret, secure mode, encryption) that a console
+  // published. Consoles order competing changes by it; the runtime ignores it.
+  optional uint64 network_sync_at = 50085;
 }
 
 // One destination subnet mapped to exactly one virtual node address.

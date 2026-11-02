@@ -126,6 +126,7 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "parallel_connections",
     "disable_parallel_connections",
     "traffic_disguise",
+    "network_sync_at",
     "instance_id",
     "ipv4",
     "ipv6_public_addr_provider",
@@ -270,6 +271,7 @@ impl NetworkConfigExt for NetworkConfig {
         cfg.set_parallel_connections(self.parallel_connections);
         cfg.set_disable_parallel_connections(self.disable_parallel_connections);
         cfg.set_traffic_disguise(self.traffic_disguise.clone());
+        cfg.set_network_sync_at(self.network_sync_at);
         cfg.set_dhcp(self.dhcp.unwrap_or(self.dhcp_ipv4_cidr.is_some()));
         if cfg.get_dhcp()
             && let Some(cidr) = &self.dhcp_ipv4_cidr
@@ -634,6 +636,7 @@ impl NetworkConfigExt for NetworkConfig {
         if config.get_traffic_disguise() != "speedtest" {
             result.traffic_disguise = Some(config.get_traffic_disguise());
         }
+        result.network_sync_at = config.get_network_sync_at();
 
         result.dhcp = Some(config.get_dhcp());
         result.dhcp_ipv4_cidr = config.get_dhcp_config().cidr().map(|cidr| cidr.to_string());

@@ -164,6 +164,7 @@
 | 顶层 `parallel_connections` | `1` | 期望物理隧道数，范围 1–16；双方支持时取平均值四舍五入 |
 | 顶层 `disable_parallel_connections` | `false` | 禁用并行传输，保留已配置数量；任意一端禁用即回退单连接 |
 | 顶层 `traffic_disguise` | `"speedtest"` | HTTP3/WSS 流量风格，可选 `speedtest`、`video` |
+| 顶层 `network_sync_at` | 未设置 | 控制台最后一次下发核心设置（网络名、密码、安全模式、加密）的 UTC Unix 毫秒；多个控制台据此排序，运行时不使用 |
 | `[flags] default_protocol` | `"udp"` | 自动P2P优先 UDP，协商伪装时优先 HTTP3 |
 | `[flags] private_mode` | 定制内核 `true`；官方内核保持官方默认 | 网页按能力显示默认值，默认不写入配置；官方节点没有定制能力标记时显示并沿用官方默认 `false` |
 | `[flags] p2p_disguise_mode` | `"prefer"` | 自动 P2P 伪装策略；取值为 `prefer`、`off`、`disabled`、`only`，默认策略可省略 |

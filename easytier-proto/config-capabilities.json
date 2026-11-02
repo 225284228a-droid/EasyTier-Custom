@@ -3,6 +3,7 @@
   "parallel_connections": { "capability": "config:parallel-connections-v1", "support": "always" },
   "disable_parallel_connections": { "capability": "config:parallel-connections-v1", "support": "always" },
   "traffic_disguise": { "capability": "config:traffic-disguise-v1", "support": "tls" },
+  "network_sync_at": { "capability": "config:network-sync-v1", "support": "always" },
   "p2p_prefer_protocol": { "capability": "config:p2p_prefer_protocol", "support": "tcp_udp" },
   "p2p_disguise_mode": { "capability": "config:p2p_disguise_mode", "support": "disguised_p2p" },
   "close_redundant_conns_when_disguised": { "capability": "config:close_redundant_conns_when_disguised", "support": "disguised_p2p" },

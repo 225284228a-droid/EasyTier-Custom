@@ -123,6 +123,7 @@ function allFieldFixture() {
     parallel_connections: 5,
     disable_parallel_connections: true,
     traffic_disguise: 'video',
+    network_sync_at: '1793587936027',
     network_name: 'full-field-network',
     network_secret: 'full-field-secret',
     networking_method: NetworkingMethod.Manual,
@@ -296,6 +297,7 @@ function assertFullFieldRoundTrip() {
   assert.equal(normalized.parallel_connections, 5)
   assert.equal(normalized.disable_parallel_connections, true)
   assert.equal(normalized.traffic_disguise, 'video')
+  assert.equal(normalized.network_sync_at, 1793587936027)
   assert.equal(normalized.acl.acl_v1.chains[0].chain_type, AclChainType.Forward)
   assert.equal(normalized.acl.acl_v1.chains[0].rules[0].protocol, AclProtocol.TCP)
 
@@ -318,6 +320,7 @@ function assertFullFieldRoundTrip() {
   assert.deepEqual(backend.peers[1], { uri: 'udp://peer-b:11010' })
   assert.equal(backend.data_compress_algo, 'Zstd')
   assert.equal(backend.instance_recv_bps_limit, '9007199254740993')
+  assert.equal(backend.network_sync_at, '1793587936027')
   assert.equal(backend.vpn_portal_config.wireguard_listen, '0.0.0.0:23000')
   assert.equal(backend.vpn_portal_config.clients[0].name, 'phone-a')
   assert.deepEqual(backend.vpn_portal_config.clients[0].groups, ['ops'])

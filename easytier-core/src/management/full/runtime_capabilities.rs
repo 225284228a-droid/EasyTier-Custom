@@ -46,6 +46,7 @@ mod tests {
         assert_eq!(
             management_capabilities_for_host(&host),
             vec![
+                "config:network-sync-v1",
                 "config:p2p_prefer_protocol",
                 "config:parallel-connections-v1",
                 "config:private-mode-default-true-v1",

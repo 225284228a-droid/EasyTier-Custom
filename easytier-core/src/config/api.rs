@@ -40,6 +40,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
     if config.get_traffic_disguise() != "speedtest" {
         result.traffic_disguise = Some(config.get_traffic_disguise());
     }
+    result.network_sync_at = config.get_network_sync_at();
 
     let network_identity = config.get_network_identity();
     result.network_name = Some(network_identity.network_name);

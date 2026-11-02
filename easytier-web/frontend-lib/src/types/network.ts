@@ -65,12 +65,15 @@ export type NetworkConfig = Omit<
   ProtoNetworkConfig,
   | 'instance_id'
   | 'instance_recv_bps_limit'
+  | 'network_sync_at'
   | 'mtu'
   | 'networking_method'
 > & {
   instance_id: string
   mtu: number | null
   instance_recv_bps_limit: number | string | null
+  /// UTC Unix milliseconds of the last core-setting change a console published.
+  network_sync_at?: number | string | null
   networking_method: NetworkingMethod | string
   /// Form-only field: an admin-issued credential secret for joining as a
   /// temporary device. Saved as secure_mode.local_private_key with an empty
@@ -225,6 +228,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     socks5_port: 1080,
     mtu: null,
     instance_recv_bps_limit: null,
+    network_sync_at: null,
     mapped_listeners: [],
     tld_dns_zone: 'et.net.',
     port_forwards: [],
@@ -397,6 +401,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.instance_recv_bps_limit = normalizeUint64ForInput(
     normalized.instance_recv_bps_limit as any,
   )
+  normalized.network_sync_at = normalizeUint64ForInput(normalized.network_sync_at as any)
   normalized.proxy_cidrs ??= []
   normalized.listener_urls ??= []
   normalized.relay_network_whitelist ??= []
@@ -436,6 +441,7 @@ export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: rea
   applyNetworkingMethod(backend)
   backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined
   backend.instance_recv_bps_limit = toBackendUint64(config.instance_recv_bps_limit)
+  backend.network_sync_at = toBackendUint64(config.network_sync_at)
   if (config.acl === undefined || isAclEmpty(config.acl)) {
     backend.acl = undefined
   }

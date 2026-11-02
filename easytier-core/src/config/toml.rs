@@ -62,6 +62,10 @@ pub trait ConfigLoader: Send + Sync {
         "speedtest".to_owned()
     }
     fn set_traffic_disguise(&self, _style: Option<String>) {}
+    fn get_network_sync_at(&self) -> Option<u64> {
+        None
+    }
+    fn set_network_sync_at(&self, _stamp: Option<u64>) {}
 
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
@@ -472,6 +476,7 @@ struct Config {
     parallel_connections: Option<u32>,
     disable_parallel_connections: Option<bool>,
     traffic_disguise: Option<String>,
+    network_sync_at: Option<u64>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -971,6 +976,14 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().traffic_disguise = style.filter(|style| style != "speedtest");
     }
 
+    fn get_network_sync_at(&self) -> Option<u64> {
+        self.config.lock().unwrap().network_sync_at
+    }
+
+    fn set_network_sync_at(&self, stamp: Option<u64>) {
+        self.config.lock().unwrap().network_sync_at = stamp;
+    }
+
     fn get_netns(&self) -> Option<String> {
         self.config.lock().unwrap().netns.clone()
     }
@@ -1423,6 +1436,21 @@ mod tests {
     }
 
     #[cfg(feature = "config-write")]
+    #[test]
+    fn network_sync_stamp_round_trips_and_is_omitted_when_unset() {
+        let config = TomlConfig::new_from_str("").unwrap();
+        assert_eq!(config.get_network_sync_at(), None);
+        assert!(!config.dump().contains("network_sync_at"));
+        config.set_network_sync_at(Some(1_793_587_936_027));
+        let restored = TomlConfig::new_from_str(&config.dump()).unwrap();
+        assert_eq!(restored.get_network_sync_at(), Some(1_793_587_936_027));
+        #[cfg(feature = "web-client")]
+        assert_eq!(
+            crate::config::api::network_config_from_toml(&restored).network_sync_at,
+            Some(1_793_587_936_027)
+        );
+    }
+
     #[test]
     fn parallel_tuning_validates_and_omits_defaults() {
         let config = TomlConfig::new_from_str("parallel_connections = 1\ndisable_parallel_connections = false\ntraffic_disguise = 'speedtest'\n").unwrap();
