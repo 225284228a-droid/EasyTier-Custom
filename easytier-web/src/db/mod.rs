@@ -10,7 +10,7 @@ mod mesh;
 pub(crate) use central_intent::{CentralIntentError, CentralOwnedRuntimeConfig};
 pub(crate) use central_local_delivery::CentralLocalDelivery;
 pub use devices::DeviceHeartbeatRecord;
-pub(crate) use mesh::{MeshCoreReplay, MeshObservation};
+pub(crate) use mesh::{MeshAdvancedReplay, MeshCoreReplay, MeshNetworkRecord, MeshObservation};
 
 use easytier::common::config::{ConfigSource, NetworkConfig};
 use easytier_core::management::remote_client::{ListNetworkProps, Storage};

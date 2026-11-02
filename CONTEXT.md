@@ -133,16 +133,29 @@ identity as the topology. The console manages only the core settings peers
 must share to stay connected (network name, secret, secure mode switch,
 encryption switch and algorithm). It writes a change of them to the members
 it can reach and sends a missed change once to a member that was offline,
-the next time it connects; a later change on the node is never reverted.
-Each write stamps `network_sync_at` (UTC Unix milliseconds) on the node so
-several consoles managing one node order competing changes. The network's
+the next time it connects. That replay overwrites edits made on the node
+meanwhile; only a newer change by another console is kept. Edits after the
+replay are never reverted. Each write stamps `network_sync_at` (UTC Unix
+milliseconds) on the node so several consoles managing one node order
+competing changes; node edits carry no stamp and count as older. The network's
 display name travels with them as each member's `instance_name`, the name its
 configuration shows; the network name alone identifies the network. Official
 nodes connect to one console that stores their configurations, so their core
-settings are written over that copy and applied whenever they are online. Other fields are
-batch-edited in the browser for online members only. Central networks keep
-only temporary members, their credentials and the Gateway; ACL policies are
-not managed. See `docs/decentralized-networks.md`.
+settings are written over that copy and applied whenever they are online.
+
+The console also keeps its own record of each network it manages: the core
+settings it last wrote, a preset (initial nodes, listeners, advanced
+settings) that only devices joining the network receive, and whether devices
+that connect for the first time join on their own. Advanced settings (feature
+switches and a few transport parameters) are batch-edited incrementally: only
+the touched settings are written, stamped with their own `advanced_sync_at`; a
+missed edit replays once by the same newest-wins rule, and instances locked
+in this console are skipped.
+Per-device settings (addresses, routes, exits, proxies) are never
+batch-edited. Deleting a network forgets the console's data and pauses the
+members. Temporary devices are backed by a central record created from the
+network's core settings; ACL policies are not managed. See
+`docs/decentralized-networks.md`.
 
 Device deletion uses the upstream disconnect semantics: an already in-flight
 validation may register the device again. A persisted ban rejects subsequent

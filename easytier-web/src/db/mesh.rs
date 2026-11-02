@@ -11,6 +11,9 @@ pub(crate) struct MeshObservation {
     pub core: String,
     pub sync_at: Option<i64>,
     pub credential: bool,
+    /// The advanced settings it held, as `AdvancedValues` JSON.
+    pub advanced: String,
+    pub advanced_sync_at: Option<i64>,
 }
 
 /// A core change an offline member missed.
@@ -20,6 +23,28 @@ pub(crate) struct MeshCoreReplay {
     pub instance_id: String,
     pub base: String,
     pub base_sync_at: Option<i64>,
+    pub change: String,
+    pub target_sync_at: i64,
+}
+
+/// What this console keeps for one network it manages.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct MeshNetworkRecord {
+    pub network_name: String,
+    /// `CoreSettings` JSON this console last wrote.
+    pub core: String,
+    pub sync_at: Option<i64>,
+    /// `Preset` JSON for devices that join.
+    pub preset: String,
+    /// UTC milliseconds since new devices join on their own; unset is off.
+    pub auto_join_since: Option<i64>,
+}
+
+/// Advanced settings an offline member missed.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct MeshAdvancedReplay {
+    pub device_id: String,
+    pub instance_id: String,
     pub change: String,
     pub target_sync_at: i64,
 }
@@ -70,8 +95,8 @@ impl Db {
         for observation in observations {
             sqlx::query(
                 "INSERT INTO mesh_observations \
-                 (user_id, device_id, instance_id, network_name, core, sync_at, credential, seen_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (user_id, device_id, instance_id, network_name, core, sync_at, credential, advanced, \
+                 advanced_sync_at, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(user_id)
             .bind(device_id.to_string())
@@ -80,6 +105,8 @@ impl Db {
             .bind(&observation.core)
             .bind(observation.sync_at)
             .bind(observation.credential)
+            .bind(&observation.advanced)
+            .bind(observation.advanced_sync_at)
             .bind(&seen_at)
             .execute(&mut *transaction)
             .await
@@ -95,7 +122,7 @@ impl Db {
         network_name: Option<&str>,
     ) -> Result<Vec<MeshObservation>, sea_orm::DbErr> {
         sqlx::query_as(
-            "SELECT device_id, instance_id, network_name, core, sync_at, credential \
+            "SELECT device_id, instance_id, network_name, core, sync_at, credential, advanced, advanced_sync_at \
              FROM mesh_observations WHERE user_id = ? AND (? IS NULL OR network_name = ?) \
              ORDER BY device_id, instance_id",
         )
@@ -228,5 +255,281 @@ impl Db {
         .await
         .map_err(sqlx_db_error)?;
         Ok(count > 0)
+    }
+
+    pub(crate) async fn list_mesh_networks(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<MeshNetworkRecord>, sea_orm::DbErr> {
+        sqlx::query_as(
+            "SELECT network_name, core, sync_at, preset, auto_join_since \
+             FROM mesh_networks WHERE user_id = ? ORDER BY create_time, network_name",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(sqlx_db_error)
+    }
+
+    pub(crate) async fn get_mesh_network(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+    ) -> Result<Option<MeshNetworkRecord>, sea_orm::DbErr> {
+        sqlx::query_as(
+            "SELECT network_name, core, sync_at, preset, auto_join_since \
+             FROM mesh_networks WHERE user_id = ? AND network_name = ?",
+        )
+        .bind(user_id)
+        .bind(network_name)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(sqlx_db_error)
+    }
+
+    pub(crate) async fn put_mesh_network(
+        &self,
+        user_id: UserIdInDb,
+        record: &MeshNetworkRecord,
+    ) -> Result<(), sea_orm::DbErr> {
+        sqlx::query(
+            "INSERT INTO mesh_networks \
+             (user_id, network_name, core, sync_at, preset, auto_join_since, create_time) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(user_id, network_name) DO UPDATE SET \
+             core = excluded.core, sync_at = excluded.sync_at, preset = excluded.preset, \
+             auto_join_since = excluded.auto_join_since",
+        )
+        .bind(user_id)
+        .bind(&record.network_name)
+        .bind(&record.core)
+        .bind(record.sync_at)
+        .bind(&record.preset)
+        .bind(record.auto_join_since)
+        .bind(now())
+        .execute(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
+    /// Follow a rename; a record already holding the new name is kept.
+    pub(crate) async fn rename_mesh_network(
+        &self,
+        user_id: UserIdInDb,
+        from: &str,
+        to: &str,
+    ) -> Result<(), sea_orm::DbErr> {
+        let mut transaction = self
+            .db
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(sqlx_db_error)?;
+        for sql in [
+            "UPDATE OR IGNORE mesh_networks SET network_name = ? WHERE user_id = ? AND network_name = ?",
+            "UPDATE OR IGNORE mesh_auto_joins SET network_name = ? WHERE user_id = ? AND network_name = ?",
+        ] {
+            sqlx::query(sql)
+                .bind(to)
+                .bind(user_id)
+                .bind(from)
+                .execute(&mut *transaction)
+                .await
+                .map_err(sqlx_db_error)?;
+        }
+        for sql in [
+            "DELETE FROM mesh_networks WHERE user_id = ? AND network_name = ?",
+            "DELETE FROM mesh_auto_joins WHERE user_id = ? AND network_name = ?",
+        ] {
+            sqlx::query(sql)
+                .bind(user_id)
+                .bind(from)
+                .execute(&mut *transaction)
+                .await
+                .map_err(sqlx_db_error)?;
+        }
+        transaction.commit().await.map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_mesh_network(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+    ) -> Result<(), sea_orm::DbErr> {
+        for sql in [
+            "DELETE FROM mesh_networks WHERE user_id = ? AND network_name = ?",
+            "DELETE FROM mesh_auto_joins WHERE user_id = ? AND network_name = ?",
+        ] {
+            sqlx::query(sql)
+                .bind(user_id)
+                .bind(network_name)
+                .execute(&self.db)
+                .await
+                .map_err(sqlx_db_error)?;
+        }
+        Ok(())
+    }
+
+    /// Devices that joined `network_name` on their own, or were already
+    /// known when joining on their own was switched on.
+    pub(crate) async fn mesh_auto_joined(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+    ) -> Result<Vec<String>, sea_orm::DbErr> {
+        sqlx::query_scalar(
+            "SELECT device_id FROM mesh_auto_joins WHERE user_id = ? AND network_name = ?",
+        )
+        .bind(user_id)
+        .bind(network_name)
+        .fetch_all(&self.db)
+        .await
+        .map_err(sqlx_db_error)
+    }
+
+    pub(crate) async fn put_mesh_auto_joins(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+        device_ids: &[String],
+    ) -> Result<(), sea_orm::DbErr> {
+        for device_id in device_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO mesh_auto_joins (user_id, network_name, device_id) \
+                 SELECT ?, ?, ? WHERE EXISTS \
+                 (SELECT 1 FROM devices WHERE user_id = ? AND machine_id = ?)",
+            )
+            .bind(user_id)
+            .bind(network_name)
+            .bind(device_id)
+            .bind(user_id)
+            .bind(device_id)
+            .execute(&self.db)
+            .await
+            .map_err(sqlx_db_error)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn list_mesh_locks(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<(String, String)>, sea_orm::DbErr> {
+        sqlx::query_as("SELECT device_id, instance_id FROM mesh_locks WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&self.db)
+            .await
+            .map_err(sqlx_db_error)
+    }
+
+    pub(crate) async fn set_mesh_lock(
+        &self,
+        user_id: UserIdInDb,
+        device_id: &str,
+        instance_id: &str,
+        locked: bool,
+    ) -> Result<(), sea_orm::DbErr> {
+        let sql = if locked {
+            "INSERT OR IGNORE INTO mesh_locks (user_id, device_id, instance_id) VALUES (?, ?, ?)"
+        } else {
+            "DELETE FROM mesh_locks WHERE user_id = ? AND device_id = ? AND instance_id = ?"
+        };
+        sqlx::query(sql)
+            .bind(user_id)
+            .bind(device_id)
+            .bind(instance_id)
+            .execute(&self.db)
+            .await
+            .map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn list_mesh_advanced_replays(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<MeshAdvancedReplay>, sea_orm::DbErr> {
+        sqlx::query_as(
+            "SELECT device_id, instance_id, change, target_sync_at FROM mesh_advanced_replays \
+             WHERE user_id = ? ORDER BY device_id, instance_id",
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(sqlx_db_error)
+    }
+
+    pub(crate) async fn put_mesh_advanced_replay(
+        &self,
+        user_id: UserIdInDb,
+        replay: &MeshAdvancedReplay,
+    ) -> Result<(), sea_orm::DbErr> {
+        sqlx::query(
+            "INSERT INTO mesh_advanced_replays \
+             (user_id, device_id, instance_id, change, target_sync_at, create_time) VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(user_id, device_id, instance_id) DO UPDATE SET \
+             change = excluded.change, target_sync_at = excluded.target_sync_at",
+        )
+        .bind(user_id)
+        .bind(&replay.device_id)
+        .bind(&replay.instance_id)
+        .bind(&replay.change)
+        .bind(replay.target_sync_at)
+        .bind(now())
+        .execute(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_mesh_advanced_replay(
+        &self,
+        user_id: UserIdInDb,
+        device_id: &str,
+        instance_id: &str,
+    ) -> Result<(), sea_orm::DbErr> {
+        sqlx::query(
+            "DELETE FROM mesh_advanced_replays WHERE user_id = ? AND device_id = ? AND instance_id = ?",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .bind(instance_id)
+        .execute(&self.db)
+        .await
+        .map_err(sqlx_db_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn list_mesh_pause_replays(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<(String, String)>, sea_orm::DbErr> {
+        sqlx::query_as("SELECT device_id, instance_id FROM mesh_pause_replays WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&self.db)
+            .await
+            .map_err(sqlx_db_error)
+    }
+
+    pub(crate) async fn set_mesh_pause_replay(
+        &self,
+        user_id: UserIdInDb,
+        device_id: &str,
+        instance_id: &str,
+        pending: bool,
+    ) -> Result<(), sea_orm::DbErr> {
+        let sql = if pending {
+            "INSERT OR IGNORE INTO mesh_pause_replays (user_id, device_id, instance_id) VALUES (?, ?, ?)"
+        } else {
+            "DELETE FROM mesh_pause_replays WHERE user_id = ? AND device_id = ? AND instance_id = ?"
+        };
+        sqlx::query(sql)
+            .bind(user_id)
+            .bind(device_id)
+            .bind(instance_id)
+            .execute(&self.db)
+            .await
+            .map_err(sqlx_db_error)?;
+        Ok(())
     }
 }

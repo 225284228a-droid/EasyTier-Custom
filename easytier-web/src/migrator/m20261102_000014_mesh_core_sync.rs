@@ -111,7 +111,10 @@ mod tests {
     #[tokio::test]
     async fn permanent_members_leave_central_ownership_without_deleting_their_instances() {
         let db = Database::connect("sqlite::memory:").await.unwrap();
-        let before = Migrator::migrations().len() as u32 - 1;
+        let before = Migrator::migrations()
+            .iter()
+            .position(|migration| migration.name() == "m20261102_000014_mesh_core_sync")
+            .unwrap() as u32;
         Migrator::up(&db, Some(before)).await.unwrap();
         db.execute_unprepared(
             "INSERT INTO users (id, username, password) VALUES (900, 'migration-owner', 'x');

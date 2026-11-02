@@ -4,13 +4,14 @@
 //! member's configuration (`instance_name`) and never joins or splits peers.
 //!
 //! A console writes a change to the members it can reach now. A member that
-//! was offline receives the missed change once, the next time it connects,
-//! and never again; a change made on the node is never reverted. Nothing
-//! else in a member's configuration is touched.
+//! was offline receives the missed change once, the next time it connects:
+//! it overwrites whatever the member holds, edits made on the node included,
+//! unless another console wrote a newer change meanwhile. Later edits are
+//! never reverted. Nothing else in a member's configuration is touched.
 //!
 //! Several consoles can manage one node. Each change carries a UTC timestamp
-//! stored on the node (`network_sync_at`), so a late replay never overwrites
-//! a newer change another console already made. Official nodes connect to
+//! stored on the node (`network_sync_at`), so the newest change wins; an edit
+//! on the node carries none and counts as older than any console's change. Official nodes connect to
 //! one console, which stores their configurations itself: a change is
 //! written over that copy and reaches the node whenever it is online.
 
@@ -151,7 +152,7 @@ impl CoreChange {
 }
 
 /// A temporary member authenticates with a credential instead of the secret.
-fn is_credential_member(config: &NetworkConfig) -> bool {
+pub(super) fn is_credential_member(config: &NetworkConfig) -> bool {
     config.network_secret.is_none()
         && config
             .secure_mode
@@ -207,7 +208,7 @@ fn core_patch(
     Some((desired, mask))
 }
 
-fn now_ms() -> u64 {
+pub(super) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
@@ -216,13 +217,16 @@ fn now_ms() -> u64 {
 
 /// UTC milliseconds that sort after every change already seen, even when
 /// this console's clock runs behind the console that made it.
-fn next_stamp(seen: impl IntoIterator<Item = u64>) -> u64 {
+pub(super) fn next_stamp(seen: impl IntoIterator<Item = u64>) -> u64 {
     let now = now_ms();
     seen.into_iter()
         .fold(now, |stamp, seen| stamp.max(seen + 1))
 }
 
-fn instance_entry(view: &LocalConfigView, instance_id: &str) -> Option<PersistedConfigEntry> {
+pub(super) fn instance_entry(
+    view: &LocalConfigView,
+    instance_id: &str,
+) -> Option<PersistedConfigEntry> {
     view.snapshot
         .entries
         .iter()
@@ -252,6 +256,8 @@ fn observation(
         core: serde_json::to_string(&core)?,
         sync_at: config.network_sync_at.map(|stamp| stamp as i64),
         credential: is_credential_member(config),
+        advanced: serde_json::to_string(&super::advanced::values_of(config))?,
+        advanced_sync_at: config.advanced_sync_at.map(|stamp| stamp as i64),
     })
 }
 
@@ -274,14 +280,14 @@ fn observations_of(view: &LocalConfigView) -> anyhow::Result<Vec<MeshObservation
 }
 
 /// A configuration the console stores for a node without its own catalog.
-struct StoredConfig {
-    instance_id: String,
-    config: NetworkConfig,
-    disabled: bool,
-    source: ConfigSource,
+pub(super) struct StoredConfig {
+    pub instance_id: String,
+    pub config: NetworkConfig,
+    pub disabled: bool,
+    pub source: ConfigSource,
 }
 
-async fn stored_configs(
+pub(super) async fn stored_configs(
     db: &Db,
     user_id: UserIdInDb,
     device_id: Uuid,
@@ -312,21 +318,55 @@ async fn force_stored(
     instance_id: &str,
     change: &CoreChange,
 ) -> anyhow::Result<bool> {
+    rewrite_stored(
+        db,
+        manager,
+        user_id,
+        device_id,
+        instance_id,
+        None,
+        |config| {
+            let target = change.apply_to(&CoreSettings::of(config));
+            // Official cores neither keep the stamp nor a separate display name.
+            Ok(core_patch(config, &target, None, false).map(|(desired, _)| desired))
+        },
+    )
+    .await
+}
+
+/// Rewrite the console's copy of an official node's configuration. The copy
+/// keeps its running state unless `disabled` says otherwise.
+pub(super) async fn rewrite_stored(
+    db: &Db,
+    manager: &ClientManager,
+    user_id: UserIdInDb,
+    device_id: Uuid,
+    instance_id: &str,
+    disabled: Option<bool>,
+    rewrite: impl FnOnce(&NetworkConfig) -> anyhow::Result<Option<NetworkConfig>>,
+) -> anyhow::Result<bool> {
     let stored = stored_configs(db, user_id, device_id)
         .await?
         .into_iter()
         .find(|stored| stored.instance_id == instance_id)
         .ok_or_else(|| anyhow::anyhow!("configuration no longer exists"))?;
-    let target = change.apply_to(&CoreSettings::of(&stored.config));
-    // Official cores neither keep the stamp nor a separate display name.
-    let Some((desired, _)) = core_patch(&stored.config, &target, None, false) else {
+    let desired = rewrite(&stored.config)?;
+    let disabled_now = disabled.unwrap_or(stored.disabled);
+    if desired.is_none() && disabled_now == stored.disabled {
         return Ok(false);
-    };
+    }
     let instance = Uuid::parse_str(instance_id)?;
-    db.insert_or_update_user_network_config((user_id, device_id), instance, desired, stored.source)
+    if let Some(desired) = desired {
+        db.insert_or_update_user_network_config(
+            (user_id, device_id),
+            instance,
+            desired,
+            stored.source,
+        )
         .await?;
+    }
     // Saving enables a configuration; a stopped network stays stopped.
-    db.update_network_config_state((user_id, device_id), instance, stored.disabled)
+    db.update_network_config_state((user_id, device_id), instance, disabled_now)
         .await?;
     manager
         .invalidate_applied_config_revision(user_id, device_id)
@@ -397,6 +437,8 @@ pub enum MemberSyncStatus {
     Pending,
     /// Changed elsewhere since it was read; not written.
     Conflict,
+    /// Locked against this console's batch edits; not written.
+    Locked,
     Failed,
 }
 
@@ -553,18 +595,11 @@ pub(crate) async fn apply(
     Ok(results)
 }
 
-/// Whether a missed change may still be sent: the member was not changed
-/// on the node since the console last saw it, and it holds nothing newer
-/// than the change. Another console's write counts as newer only when its
-/// stamp is.
-fn replay_applies(current: &CoreSettings, current_stamp: u64, replay: &MeshCoreReplay) -> bool {
-    let base_stamp = replay.base_sync_at.unwrap_or(0) as u64;
-    let target_stamp = replay.target_sync_at as u64;
-    let untouched = serde_json::from_str::<CoreSettings>(&replay.base)
-        .is_ok_and(|base| base == *current)
-        && current_stamp <= base_stamp;
-    let rewritten_by_older_console = current_stamp > base_stamp && current_stamp < target_stamp;
-    untouched || rewritten_by_older_console
+/// Whether a missed change is still sent: only another console's newer
+/// change keeps it away. Edits on the node carry no stamp, so they are
+/// overwritten like an older console's change.
+pub(super) fn replay_applies(current_stamp: Option<u64>, target_stamp: u64) -> bool {
+    current_stamp.is_none_or(|stamp| stamp <= target_stamp)
 }
 
 /// Send each missed change once to members that came back online.
@@ -597,9 +632,8 @@ pub(crate) async fn replay_user(db: &Db, manager: &ClientManager, user_id: UserI
         };
         let config = entry.config.as_ref().expect("ready entries carry a config");
         let current = CoreSettings::of(config);
-        let current_stamp = config.network_sync_at.unwrap_or(0);
-        if !replay_applies(&current, current_stamp, &replay) {
-            tracing::info!(user_id, %device_id, instance_id = replay.instance_id, "missed core change no longer applies");
+        if !replay_applies(config.network_sync_at, replay.target_sync_at as u64) {
+            tracing::info!(user_id, %device_id, instance_id = replay.instance_id, "another console changed the core settings later");
             continue;
         }
         let Ok(change) = serde_json::from_str::<CoreChange>(&replay.change) else {
@@ -737,21 +771,6 @@ mod tests {
         }
     }
 
-    fn replay(
-        base: &CoreSettings,
-        base_sync_at: Option<i64>,
-        target_sync_at: i64,
-    ) -> MeshCoreReplay {
-        MeshCoreReplay {
-            device_id: String::new(),
-            instance_id: String::new(),
-            base: serde_json::to_string(base).unwrap(),
-            base_sync_at,
-            change: "{}".to_owned(),
-            target_sync_at,
-        }
-    }
-
     #[test]
     fn patches_only_differing_core_fields_and_keeps_node_keys() {
         let mut current = config("office", Some("old"));
@@ -843,21 +862,14 @@ mod tests {
     }
 
     #[test]
-    fn replay_applies_only_to_untouched_or_older_console_writes() {
-        let base = CoreSettings::of(&config("office", Some("old")));
-        let pending = replay(&base, Some(100), 300);
-        // Untouched since the console saw it.
-        assert!(replay_applies(&base, 100, &pending));
-        // Edited on the node: the stamp stays but the values changed.
-        let edited = CoreSettings::of(&config("office", Some("hand-edited")));
-        assert!(!replay_applies(&edited, 100, &pending));
-        // Another console wrote an older change after the console saw it.
-        assert!(replay_applies(&edited, 200, &pending));
+    fn replays_overwrite_node_edits_and_older_consoles_but_not_newer_ones() {
+        // Never stamped, or edited on the node: edits carry no stamp.
+        assert!(replay_applies(None, 300));
+        assert!(replay_applies(Some(100), 300));
+        // Our own write landed already.
+        assert!(replay_applies(Some(300), 300));
         // Another console already wrote a newer change.
-        assert!(!replay_applies(&edited, 400, &pending));
-        // A member never stamped before.
-        let unstamped = replay(&base, None, 300);
-        assert!(replay_applies(&base, 0, &unstamped));
+        assert!(!replay_applies(Some(400), 300));
     }
 
     #[test]

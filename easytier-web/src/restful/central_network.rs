@@ -4,17 +4,19 @@ use axum::{
     Extension, Json, Router,
     extract::Path,
     http::StatusCode,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
 };
 use uuid::Uuid;
 
 use super::{AppStateInner, Error, HttpHandleError, authed_user_id, users::AuthSession};
 use crate::central_network::{
+    advanced::AdvancedChange,
     core_sync::{CoreChange, MemberSyncResult},
+    mesh_network::{JoinResult, MeshNetworkView, Preset},
     service::{
-        AddMembersReq, CentralNetworkService, CentralNetworkServiceError, GenerateCredentialReq,
-        MemberInfo, MembersView, MeshMemberInfo, NetworkCredentialInfo, NetworkDetail,
-        NetworkSettings, NetworkSummary, UpdateMemberReq, UpdateNetworkReq,
+        AddMembersReq, CentralNetworkService, CentralNetworkServiceError, CreateMeshNetworkReq,
+        GenerateCredentialReq, MemberInfo, MembersView, MeshMemberInfo, NetworkCredentialInfo,
+        NetworkDetail, NetworkSettings, NetworkSummary, UpdateMemberReq, UpdateNetworkReq,
     },
 };
 
@@ -76,6 +78,37 @@ struct ApplyCoreJsonReq {
 #[derive(Debug, serde::Serialize)]
 struct ApplyCoreJsonResp {
     results: Vec<MemberSyncResult>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct MeshNetworksJsonResp {
+    networks: Vec<MeshNetworkView>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct JoinJsonResp {
+    results: Vec<JoinResult>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct JoinJsonReq {
+    devices: Vec<Uuid>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AutoJoinJsonReq {
+    enabled: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ApplyAdvancedJsonReq {
+    network_name: String,
+    change: AdvancedChange,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct LockJsonReq {
+    locked: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -296,6 +329,117 @@ impl CentralNetworkApi {
         Ok(Json(ApplyCoreJsonResp { results }))
     }
 
+    async fn list_mesh_networks(
+        auth: AuthSession,
+        Extension(service): Service,
+    ) -> Result<Json<MeshNetworksJsonResp>, HttpHandleError> {
+        let networks = service
+            .list_mesh_networks(user_id(&auth)?)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(MeshNetworksJsonResp { networks }))
+    }
+
+    async fn create_mesh_network(
+        auth: AuthSession,
+        Extension(service): Service,
+        Json(request): Json<CreateMeshNetworkReq>,
+    ) -> Result<Json<JoinJsonResp>, HttpHandleError> {
+        let results = service
+            .create_mesh_network(user_id(&auth)?, request)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(JoinJsonResp { results }))
+    }
+
+    async fn get_mesh_network(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path(network_name): Path<String>,
+    ) -> Result<Json<MeshNetworkView>, HttpHandleError> {
+        service
+            .get_mesh_network(user_id(&auth)?, &network_name)
+            .await
+            .map(Json)
+            .map_err(convert_error)
+    }
+
+    async fn delete_mesh_network(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path(network_name): Path<String>,
+    ) -> Result<Json<ApplyCoreJsonResp>, HttpHandleError> {
+        let results = service
+            .delete_mesh_network(user_id(&auth)?, &network_name)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(ApplyCoreJsonResp { results }))
+    }
+
+    async fn save_mesh_preset(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path(network_name): Path<String>,
+        Json(preset): Json<Preset>,
+    ) -> Result<Json<MeshNetworkView>, HttpHandleError> {
+        service
+            .save_mesh_preset(user_id(&auth)?, &network_name, preset)
+            .await
+            .map(Json)
+            .map_err(convert_error)
+    }
+
+    async fn set_mesh_auto_join(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path(network_name): Path<String>,
+        Json(request): Json<AutoJoinJsonReq>,
+    ) -> Result<Json<MeshNetworkView>, HttpHandleError> {
+        service
+            .set_mesh_auto_join(user_id(&auth)?, &network_name, request.enabled)
+            .await
+            .map(Json)
+            .map_err(convert_error)
+    }
+
+    async fn join_mesh_devices(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path(network_name): Path<String>,
+        Json(request): Json<JoinJsonReq>,
+    ) -> Result<Json<JoinJsonResp>, HttpHandleError> {
+        let results = service
+            .join_mesh_devices(user_id(&auth)?, &network_name, &request.devices)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(JoinJsonResp { results }))
+    }
+
+    async fn apply_advanced(
+        auth: AuthSession,
+        Extension(service): Service,
+        Json(request): Json<ApplyAdvancedJsonReq>,
+    ) -> Result<Json<ApplyCoreJsonResp>, HttpHandleError> {
+        let results = service
+            .apply_mesh_advanced(user_id(&auth)?, &request.network_name, request.change)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(ApplyCoreJsonResp { results }))
+    }
+
+    async fn set_mesh_lock(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path((device_id, instance_id)): Path<(Uuid, Uuid)>,
+        Json(request): Json<LockJsonReq>,
+    ) -> Result<StatusCode, HttpHandleError> {
+        service
+            .set_mesh_lock(user_id(&auth)?, device_id, instance_id, request.locked)
+            .await
+            .map_err(convert_error)?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     async fn gateway_info(Extension(service): Service) -> Json<GatewayInfoJsonResp> {
         let config = service.gateway_config();
         Json(GatewayInfoJsonResp {
@@ -314,6 +458,31 @@ impl CentralNetworkApi {
             .route("/api/v1/networks/gateway-info", get(Self::gateway_info))
             .route("/api/v1/mesh/members", get(Self::mesh_members))
             .route("/api/v1/mesh/core", post(Self::apply_core))
+            .route("/api/v1/mesh/advanced", post(Self::apply_advanced))
+            .route(
+                "/api/v1/mesh/networks",
+                get(Self::list_mesh_networks).post(Self::create_mesh_network),
+            )
+            .route(
+                "/api/v1/mesh/networks/{network-name}",
+                get(Self::get_mesh_network).delete(Self::delete_mesh_network),
+            )
+            .route(
+                "/api/v1/mesh/networks/{network-name}/preset",
+                put(Self::save_mesh_preset),
+            )
+            .route(
+                "/api/v1/mesh/networks/{network-name}/auto-join",
+                put(Self::set_mesh_auto_join),
+            )
+            .route(
+                "/api/v1/mesh/networks/{network-name}/join",
+                post(Self::join_mesh_devices),
+            )
+            .route(
+                "/api/v1/mesh/locks/{device-id}/{instance-id}",
+                put(Self::set_mesh_lock),
+            )
             .route(
                 "/api/v1/networks/{network-id}",
                 get(Self::get_network)
