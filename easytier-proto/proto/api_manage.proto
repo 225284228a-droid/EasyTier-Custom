@@ -150,6 +150,9 @@ message NetworkConfig {
   // share (network name, secret, secure mode, encryption) that a console
   // published. Consoles order competing changes by it; the runtime ignores it.
   optional uint64 network_sync_at = 50085;
+  // The name shown for this configuration (TOML instance_name). Unset shows
+  // the network name; a console writes the network's display name here.
+  optional string instance_name = 50086;
 }
 
 // One destination subnet mapped to exactly one virtual node address.

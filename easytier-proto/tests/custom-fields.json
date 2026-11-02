@@ -108,6 +108,7 @@
     {"message":"api.manage.NetworkConfig","field":"disable_parallel_connections","number":50083,"type":8,"type_name":"","label":1,"proto3_optional":true,"previous_number":50083},
     {"message":"api.manage.NetworkConfig","field":"traffic_disguise","number":50084,"type":9,"type_name":"","label":1,"proto3_optional":true,"previous_number":50084},
     {"message":"api.manage.NetworkConfig","field":"network_sync_at","number":50085,"type":4,"type_name":"","label":1,"proto3_optional":true,"previous_number":50085},
+    {"message":"api.manage.NetworkConfig","field":"instance_name","number":50086,"type":9,"type_name":"","label":1,"proto3_optional":true,"previous_number":50086},
     {"message":"core.peer.PeerInfo","field":"parallel_connections","number":50001,"type":11,"type_name":".common.ParallelConnectionStatus","label":1,"proto3_optional":false,"previous_number":50001},
     {"message":"api.instance.PeerInfo","field":"parallel_connections","number":50001,"type":11,"type_name":".common.ParallelConnectionStatus","label":1,"proto3_optional":false,"previous_number":50001},
     {"message":"common.ParallelConnectionStatus","field":"target","number":50001,"type":13,"type_name":"","label":1,"proto3_optional":false,"previous_number":50001},

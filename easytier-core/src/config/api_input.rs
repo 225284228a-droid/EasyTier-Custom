@@ -58,6 +58,13 @@ pub fn add_proxy_network_to_config(
 pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
 
+/// The display name a configuration carries, when it names its instance
+/// differently from its network.
+pub(crate) fn display_name(config: &impl ConfigLoader, network_name: &str) -> Option<String> {
+    let name = config.get_inst_name();
+    (name != network_name && name != super::toml::default_instance_name()).then_some(name)
+}
+
 pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.latency_first = flags.latency_first;
     result.dev_name = flags.dev_name;
@@ -127,6 +134,7 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "disable_parallel_connections",
     "traffic_disguise",
     "network_sync_at",
+    "instance_name",
     "instance_id",
     "ipv4",
     "ipv6_public_addr_provider",
@@ -170,7 +178,8 @@ pub(crate) fn merge_network_config_toml(
             generated.insert(key.clone(), value.clone());
         }
     }
-    if !original.contains_key("instance_name") {
+    // Without a display name the file keeps naming the instance as it did.
+    if !original.contains_key("instance_name") && config.instance_name.is_none() {
         generated.remove("instance_name");
     }
 
@@ -284,7 +293,13 @@ impl NetworkConfigExt for NetworkConfig {
         {
             cfg.set_dhcpv6_config(super::DhcpConfig::from_cidr(cidr)?);
         }
-        cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
+        cfg.set_inst_name(
+            self.instance_name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| self.network_name.clone())
+                .unwrap_or_default(),
+        );
 
         // The web UI does not expose credential inputs directly, but imported/saved
         // NetworkConfig objects still need to preserve credential-mode instances via
@@ -648,6 +663,7 @@ impl NetworkConfigExt for NetworkConfig {
 
         let network_identity = config.get_network_identity();
         result.network_name = Some(network_identity.network_name.clone());
+        result.instance_name = display_name(&config, &network_identity.network_name);
         result.network_secret = network_identity.network_secret;
 
         if let Some(ipv4) = config.get_ipv4() {
@@ -1425,6 +1441,32 @@ private_mode = false
                 );
             }
         }
+    }
+
+    #[test]
+    fn display_name_names_the_instance_and_round_trips() {
+        let mut config = NetworkConfig {
+            network_name: Some("office".into()),
+            network_secret: Some("secret".into()),
+            networking_method: Some(manage::NetworkingMethod::Standalone as i32),
+            ..Default::default()
+        };
+        let toml = config.gen_config().unwrap();
+        assert_eq!(toml.get_inst_name(), "office");
+        assert_eq!(
+            NetworkConfig::new_from_config(&toml).unwrap().instance_name,
+            None
+        );
+        config.instance_name = Some("Head office".into());
+        let toml = config.gen_config().unwrap();
+        assert_eq!(toml.get_inst_name(), "Head office");
+        assert_eq!(
+            NetworkConfig::new_from_config(&toml)
+                .unwrap()
+                .instance_name
+                .as_deref(),
+            Some("Head office")
+        );
     }
 
     #[cfg(feature = "browser-config")]
