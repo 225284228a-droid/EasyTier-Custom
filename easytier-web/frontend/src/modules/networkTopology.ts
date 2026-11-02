@@ -114,6 +114,15 @@ function networkNameFrom(snapshot: NetworkSnapshot): string | undefined {
 }
 
 /**
+ * Identity of a network known by its name. The network page groups device
+ * configurations with the same key, so a network on the page and the same
+ * network on the globe are one identity.
+ */
+export function networkNameIdentity(name: string): string {
+  return `name:${name}`
+}
+
+/**
  * Get the network identity without looking at a web-console URL or an
  * underlay address. The peer connection's network name is the strongest
  * runtime signal; an instance id is only a fallback for older peers that do
@@ -122,7 +131,7 @@ function networkNameFrom(snapshot: NetworkSnapshot): string | undefined {
 export function networkIdentity(snapshot: NetworkSnapshot): string {
   const name = networkNameFrom(snapshot)
   if (name)
-    return `name:${name}`
+    return networkNameIdentity(name)
   const instanceId = cleanText(snapshot.instanceId)
   if (instanceId)
     return `instance:${instanceId}`
@@ -135,12 +144,12 @@ function networkIdentityWithInheritedName(
 ): string {
   const ownName = networkNameFrom(snapshot)
   if (ownName)
-    return `name:${ownName}`
+    return networkNameIdentity(ownName)
   const instanceId = cleanText(snapshot.instanceId)
   const inheritedNames = instanceId ? namesByInstance.get(instanceId) : undefined
   const inheritedName = inheritedNames?.size === 1 ? [...inheritedNames][0] : undefined
   if (inheritedName)
-    return `name:${inheritedName}`
+    return networkNameIdentity(inheritedName)
   return networkIdentity(snapshot)
 }
 

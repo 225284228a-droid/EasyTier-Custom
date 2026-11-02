@@ -23,7 +23,8 @@ import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
 import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
-import ApiClient, { type BlockedDevice, type CentralNetworkSummary } from '../modules/api';
+import ApiClient, { type BlockedDevice } from '../modules/api';
+import { createNetworkDiscovery, provideNetworkDiscovery } from '../modules/networkDiscovery';
 import { getApiBase } from '../modules/api-host';
 
 const { t } = useI18n()
@@ -63,18 +64,13 @@ const userMenuItems = computed(() => [
 ]);
 
 // Networks are first-class navigation targets: each network gets a direct
-// entry so managing one is a single click from anywhere.
-const networks = ref<CentralNetworkSummary[]>([]);
+// entry so managing one is a single click from anywhere. They are recognized
+// from the devices' own configurations; every page shares this one scan.
+const discovery = createNetworkDiscovery(api, () => centralEnabled.value);
+provideNetworkDiscovery(discovery);
+const networks = computed(() => discovery.networks.value ?? []);
 // Blocked devices that still try to come online raise the bell badge.
 const blockedDevices = ref<BlockedDevice[]>([]);
-const loadNetworks = async () => {
-    if (!centralEnabled.value) return;
-    try {
-        networks.value = (await api.list_networks()) ?? [];
-    } catch (e) {
-        // Keep the last known list; the workspace links stay usable.
-    }
-};
 const loadBlockedDevices = async () => {
     if (!centralEnabled.value) return;
     try {
@@ -93,13 +89,17 @@ const loadNavigation = async () => {
             return;
         }
     }
-    await Promise.all([loadNetworks(), loadBlockedDevices()]);
+    await loadBlockedDevices();
 };
 onMounted(() => {
     loadNavigation();
     networkTimer = window.setInterval(loadNavigation, 10_000);
+    discovery.start();
 });
-onUnmounted(() => window.clearInterval(networkTimer));
+onUnmounted(() => {
+    window.clearInterval(networkTimer);
+    discovery.stop();
+});
 
 // Device enrollment info: the config-server command devices run to join
 // this console. Also identifies whether central management is available.
@@ -108,7 +108,9 @@ const enrollInfo = ref<import('../modules/api').ConsoleInfo | null>(null);
 const enrollLoading = ref(false);
 const centralEnabled = computed(() => enrollInfo.value?.webhook_auth === false);
 watch([() => enrollInfo.value?.webhook_auth, () => route.name], ([external, name]) => {
-    if (external && (name === 'networkList' || name === 'networkDetail')) {
+    // Only central network pages need the central service; recognized
+    // networks work in either mode.
+    if (external && name === 'networkDetail') {
         router.replace({ name: 'dashboard' });
     }
 });
@@ -172,26 +174,30 @@ const workspaceNavigation = computed<NavItem[]>(() => [
 const networkNavigation = computed<NavItem[]>(() => [
     { key: 'networkList', label: t('web.main.network_list'), icon: 'pi pi-globe', to: { name: 'networkList' } },
     ...networks.value.map(network => ({
-        key: `network:${network.network_id}`,
-        label: network.display_name || network.network_name,
-        icon: 'pi pi-sitemap',
-        to: { name: 'networkDetail', params: { networkId: network.network_id } },
-        badge: `${network.online_member_count}/${network.member_count}`,
+        key: `mesh:${network.name}`,
+        label: network.name,
+        icon: network.central ? 'pi pi-sitemap' : 'pi pi-share-alt',
+        to: { name: 'meshNetwork', params: { networkName: network.name } },
+        badge: `${network.runningCount}/${network.members.length}`,
         child: true,
     })),
 ]);
 
 const activeKey = computed(() => {
-    if (route.name === 'networkDetail') return `network:${route.params.networkId}`;
+    if (route.name === 'meshNetwork') return `mesh:${route.params.networkName}`;
+    if (route.name === 'networkDetail') {
+        const network = networks.value.find(item => item.central?.network_id === route.params.networkId);
+        return network ? `mesh:${network.name}` : 'networkList';
+    }
     if (route.name === 'deviceManagement') return 'deviceList';
     if (typeof route.name === 'string') return route.name;
     return '';
 });
 const pageTitle = computed(() => {
+    if (route.name === 'meshNetwork') return String(route.params.networkName);
     if (route.name === 'networkDetail') {
-        const network = networks.value.find(item => `network:${item.network_id}` === activeKey.value);
-        if (network) return network.display_name || network.network_name;
-        return t('web.main.network_list');
+        const network = networks.value.find(item => item.central?.network_id === route.params.networkId);
+        return network?.central?.display_name || t('web.main.network_list');
     }
     return [...workspaceNavigation.value, ...networkNavigation.value]
         .find(item => item.key === activeKey.value)?.label;
@@ -222,8 +228,8 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                         </RouterLink>
                     </template>
                 </Menu>
-                <div v-if="centralEnabled" class="nav-caption">{{ t('web.main.network_list') }}</div>
-                    <Menu v-if="centralEnabled" :model="networkNavigation" :aria-label="t('web.main.network_list')" class="console-navigation">
+                <div class="nav-caption">{{ t('web.main.network_list') }}</div>
+                    <Menu :model="networkNavigation" :aria-label="t('web.main.network_list')" class="console-navigation">
                         <template #item="{ item, props }">
                             <RouterLink :to="item.to" custom v-slot="{ href, navigate }">
                                 <a v-bind="props.action" :href="href" @click="navigate"
@@ -252,8 +258,8 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                         </RouterLink>
                     </template>
                 </Menu>
-                <div v-if="centralEnabled" class="nav-caption">{{ t('web.main.network_list') }}</div>
-                    <Menu v-if="centralEnabled" :model="networkNavigation" :aria-label="t('web.main.network_list')" class="console-navigation">
+                <div class="nav-caption">{{ t('web.main.network_list') }}</div>
+                    <Menu :model="networkNavigation" :aria-label="t('web.main.network_list')" class="console-navigation">
                         <template #item="{ item, props }">
                             <RouterLink :to="item.to" custom v-slot="{ href, navigate }">
                                 <a v-bind="props.action" :href="href" @click="navigate($event); forceShowSideBar = false"
@@ -334,7 +340,7 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
                 <RouterView v-slot="{ Component }">
                     <!-- Keep the device list and drawer mounted when selecting devices or instances.
                          Central network details still need fresh state when switching networks. -->
-                    <component :is="Component" :key="`${api.persistenceScope}:${route.params.networkId ?? ''}`" :api="api" :central-enabled="centralEnabled" />
+                    <component :is="Component" :key="`${api.persistenceScope}:${route.params.networkId ?? ''}:${route.params.networkName ?? ''}`" :api="api" :central-enabled="centralEnabled" />
                 </RouterView>
             </main>
         </div>

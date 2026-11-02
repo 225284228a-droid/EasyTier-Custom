@@ -418,7 +418,7 @@ web:
     devices_description: "查看接入的设备，管理设备上的网络实例。"
     device_count: "设备"
     online_device_count: "在线设备"
-    network_count: "管理网络"
+    network_count: "网络"
     instance_count: "运行实例"
     device_note: "注册过的设备总数"
     online_device_note: "当前在线的设备数量"
@@ -440,7 +440,7 @@ web:
     blocked_attempted: "{time} 尝试接入，已拦截（共 {count} 次）"
     blocked_no_attempt: "已拉黑，暂无接入尝试。"
     unblock: "解除拉黑"
-    network_note: "集中管理的网络数量"
+    network_note: "设备上识别到的网络数量"
     instance_note: "接入设备上的运行实例"
     view_all: "查看全部"
     refresh: "刷新"
@@ -448,8 +448,8 @@ web:
     load_failed: "数据刷新失败，已显示的数据来自上次成功刷新。"
     devices_empty: "还没有设备"
     devices_empty_hint: "将 EasyTier 客户端连接至此控制器，即可在这里管理设备。"
-    networks_empty: "还没有管理网络"
-    networks_empty_hint: "创建网络后，添加设备来建立连接。"
+    networks_empty: "设备上还没有网络"
+    networks_empty_hint: "在选中的设备上批量创建同名网络，或在设备管理中创建后会自动出现在这里。"
     search_devices: "搜索名称或地址"
     search_networks: "搜索网络"
     no_results: "没有匹配结果"
@@ -710,6 +710,59 @@ web:
     instance_state: 实例状态
     running: 运行中
     stopped: 未运行
+
+  mesh_network:
+    list_hint: 网络由设备上的配置自动识别：同一网络名的实例即为同一网络，与拓扑图使用相同的识别方式
+    devices: 设备
+    running: 运行中
+    stopped: 已停止
+    offline: 离线
+    central: 中心托管
+    central_hint: 中心托管网络的配置由控制台下发。在这里批量修改会直接写入设备上的配置文件，中心发布时将保留这些本地修改并报告冲突
+    open_central: 中心管理
+    scan_partial: '{count} 台设备的配置暂时无法读取'
+    no_members: 当前没有在线设备运行或保存了该网络
+    not_found: 未在在线设备上发现网络 {name}
+    members: 成员实例
+    instance: 实例
+    status: 状态
+    select_all: 全选
+    selected: '已选 {count} 个'
+    batch_edit: 批量修改
+    batch_start: 启动
+    batch_stop: 停止
+    open_device: 设备管理
+    topology: 网络拓扑
+    nodes: 拓扑节点
+    topology_hint: 只显示网络 {name} 的节点与连接
+    readonly: 只读
+    batch_title: 批量修改 · {name}
+    batch_loading: 正在读取 {count} 个成员的配置…
+    batch_template: 表单以 {device} 的配置为模板。只有你改动的字段会写入所有选中的成员，其余字段保持每个成员各自的值。
+    batch_varied: 这些字段在成员间取值不同，未改动时各自保留：
+    batch_load_failed: '{count} 个成员的配置无法读取，将不会被修改'
+    batch_apply: 应用到 {count} 个成员
+    batch_no_changes: 没有改动任何字段
+    batch_per_device_title: 包含设备专属字段
+    batch_per_device_confirm: '以下字段通常每台设备各不相同：{fields}。继续将使所有选中成员使用相同的值。'
+    batch_result: 修改结果
+    batch_done: '{ok} 个成功，{failed} 个失败'
+    result_saved: 已保存
+    result_conflict: 配置已在别处被修改，未写入
+    result_apply_failed: 已保存，但网络未能以新配置启动，节点保留了原配置
+    result_failed: 失败
+    renamed: 网络已改名为 {name}
+    create: 批量创建网络
+    create_central: 创建中心托管网络
+    create_hint: 为每台选中的设备各创建一份同名网络配置；之后可以在网络页批量修改
+    network_name: 网络名称
+    network_secret: 网络密码
+    target_devices: 目标设备
+    no_online_devices: 暂无在线设备
+    start_after_create: 创建后立即启动
+    listeners: 监听地址
+    create_done: '已在 {ok} 台设备上创建，{failed} 台失败'
+    name_exists: 已存在同名网络，新建的配置将加入该网络
 
   acl:
     trust_hint: 永久成员属于可信管理员。ACL 用于管理其正常流量，不能防止设备管理员修改身份或策略。不可信设备请使用临时凭据接入。

@@ -18,6 +18,7 @@ import * as Api from './modules/api';
 import * as Utils from './modules/utils';
 import * as Capabilities from './modules/capabilities';
 import * as LocalConfigs from './modules/localConfigPatch';
+import * as ConfigStores from './modules/configStore';
 import * as StatusDisplay from './modules/statusDisplay';
 
 export interface FrontendLibOptions {
@@ -74,4 +75,4 @@ const EasytierFrontendLib: { install: (app: App, options?: FrontendLibOptions) =
 
 export default EasytierFrontendLib;
 
-export { Config, ConfigEditDialog, RemoteManagement, Status, UrlListInput, I18nUtils, NetworkTypes, Api, Utils, Capabilities, LocalConfigs, StatusDisplay };
+export { Config, ConfigEditDialog, RemoteManagement, Status, UrlListInput, I18nUtils, NetworkTypes, Api, Utils, Capabilities, LocalConfigs, ConfigStores, StatusDisplay };

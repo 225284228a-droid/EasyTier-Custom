@@ -418,7 +418,7 @@ web:
     devices_description: "Inspect connected devices and manage their network instances."
     device_count: "Devices"
     online_device_count: "Online"
-    network_count: "Managed networks"
+    network_count: "Networks"
     instance_count: "Running instances"
     device_note: "Total registered devices"
     online_device_note: "Devices currently online"
@@ -440,7 +440,7 @@ web:
     blocked_attempted: "{time} connection attempt blocked ({count} total)"
     blocked_no_attempt: "Blocked, no connection attempts so far."
     unblock: "Unblock"
-    network_note: "Centrally managed networks"
+    network_note: "Networks recognized on devices"
     instance_note: "Across connected devices"
     view_all: "View all"
     refresh: "Refresh"
@@ -448,8 +448,8 @@ web:
     load_failed: "Unable to refresh data. Any displayed data is from the last successful refresh."
     devices_empty: "No devices yet"
     devices_empty_hint: "Connect an EasyTier client to this controller to start managing it here."
-    networks_empty: "No managed networks yet"
-    networks_empty_hint: "Create a network, then add devices to connect them."
+    networks_empty: "No networks on any device yet"
+    networks_empty_hint: "Create one on selected devices, or create it in device management and it appears here."
     search_devices: "Search name or address"
     search_networks: "Search networks"
     no_results: "No matching results"
@@ -710,6 +710,59 @@ web:
     instance_state: Instance State
     running: Running
     stopped: Stopped
+
+  mesh_network:
+    list_hint: Networks are recognized from device configurations. Instances with the same network name form one network, the same way the topology identifies them
+    devices: Devices
+    running: Running
+    stopped: Stopped
+    offline: Offline
+    central: Central
+    central_hint: The console publishes this central network's configuration. Batch edits here write the device configuration files directly; central publication keeps those local changes and reports a conflict
+    open_central: Central management
+    scan_partial: 'Configurations of {count} device(s) are temporarily unavailable'
+    no_members: No online device runs or saves this network
+    not_found: Network {name} was not found on any online device
+    members: Member instances
+    instance: Instance
+    status: Status
+    select_all: Select all
+    selected: '{count} selected'
+    batch_edit: Batch edit
+    batch_start: Start
+    batch_stop: Stop
+    open_device: Device management
+    topology: Network topology
+    nodes: Topology nodes
+    topology_hint: Only the nodes and connections of network {name}
+    readonly: Read-only
+    batch_title: Batch edit · {name}
+    batch_loading: Reading configurations of {count} member(s)…
+    batch_template: The form starts from the configuration of {device}. Only the fields you change are written to every selected member; other fields keep each member's own value.
+    batch_varied: 'These fields differ between members and stay as they are unless you change them:'
+    batch_load_failed: '{count} member configuration(s) could not be read and will not be changed'
+    batch_apply: Apply to {count} member(s)
+    batch_no_changes: No field was changed
+    batch_per_device_title: Device-specific fields
+    batch_per_device_confirm: 'These fields usually differ per device: {fields}. Continuing gives every selected member the same value.'
+    batch_result: Results
+    batch_done: '{ok} succeeded, {failed} failed'
+    result_saved: Saved
+    result_conflict: Changed elsewhere; not written
+    result_apply_failed: Saved, but the network could not start with it; the node kept its previous file
+    result_failed: Failed
+    renamed: The network was renamed to {name}
+    create: Create on devices
+    create_central: Create central network
+    create_hint: Creates one configuration with this network name on each selected device; edit them together on the network page afterwards
+    network_name: Network name
+    network_secret: Network secret
+    target_devices: Target devices
+    no_online_devices: No online devices
+    start_after_create: Start after creating
+    listeners: Listeners
+    create_done: 'Created on {ok} device(s), {failed} failed'
+    name_exists: A network with this name exists; the new configurations join it
 
   acl:
     trust_hint: Permanent members are trusted administrators. ACL rules manage their traffic but do not prevent a device administrator from changing its identity or policy. Use temporary credentials for untrusted devices.

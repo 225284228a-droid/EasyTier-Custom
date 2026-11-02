@@ -1,35 +1,40 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Button, Column, DataTable, Dialog, InputSwitch, InputText, Message, Skeleton, Tag, useToast } from 'primevue';
-import { useRoute, useRouter } from 'vue-router';
+import { computed, onMounted, ref } from 'vue';
+import { v4 as uuidv4 } from 'uuid';
+import { Button, Checkbox, Column, DataTable, Dialog, InputSwitch, InputText, Message, Skeleton, Tag, useToast } from 'primevue';
+import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
-import ApiClient, { type CentralNetworkSettings, type CentralNetworkSummary, type GatewayInfo } from '../modules/api';
+import ApiClient, { type CentralNetworkSettings, type GatewayInfo } from '../modules/api';
 import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
+import { deviceConfigStore, failureMessage, useNetworkDiscovery, type DiscoveredNetwork } from '../modules/networkDiscovery';
 
 const { t } = useI18n()
-const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 
 const props = defineProps({
     api: ApiClient,
+    centralEnabled: Boolean,
 });
 
 const api = props.api;
 
-const networks = ref<CentralNetworkSummary[] | undefined>(undefined);
+// Networks are recognized from the configurations on the devices, the same
+// way the topology recognizes running peers.
+const discovery = useNetworkDiscovery();
+const networks = discovery.networks;
+const refreshing = discovery.refreshing;
 const gatewayInfo = ref<GatewayInfo | undefined>(undefined);
 const advancedMode = ref(false);
 const search = ref('');
-const loadError = ref(false);
-const refreshing = ref(false);
 const filteredNetworks = computed(() => {
     const query = search.value.trim().toLocaleLowerCase();
     return (networks.value ?? []).filter(network =>
-        `${network.display_name} ${network.network_name}`.toLocaleLowerCase().includes(query)
-    ).sort((a, b) => a.display_name.localeCompare(b.display_name));
+        `${network.name} ${network.central?.display_name ?? ''}`.toLocaleLowerCase().includes(query));
 });
+const deviceCount = (network: DiscoveredNetwork) => new Set(network.members.map(member => member.device.machine_id)).size;
+const loadNetworks = () => discovery.refresh();
 
 const gatewayEnabled = computed(() => gatewayInfo.value?.enabled === true);
 
@@ -56,39 +61,14 @@ const createForm = ref({
 // Initial nodes in advanced mode, same model as the GUI config form.
 const initialNodes = ref<string[]>([]);
 
-const loadNetworks = async () => {
-    if (refreshing.value) return;
-    refreshing.value = true;
-    try {
-        networks.value = await api?.list_networks();
-        loadError.value = false;
-    } catch (e) {
-        loadError.value = true;
-        console.error(e);
-    } finally {
-        refreshing.value = false;
-    }
-};
-
-const periodFunc = new Utils.PeriodicTask(async () => {
-    try {
-        await loadNetworks();
-    } catch (e) {
-        console.error(e);
-    }
-}, 2000);
-
 onMounted(async () => {
-    periodFunc.start();
+    void loadNetworks();
+    if (!props.centralEnabled) return;
     try {
         gatewayInfo.value = await api?.get_gateway_info();
     } catch (e) {
         gatewayInfo.value = { enabled: false, relay_data: false };
     }
-});
-
-onUnmounted(() => {
-    periodFunc.stop();
 });
 
 const openCreate = () => {
@@ -136,7 +116,7 @@ const createNetwork = async () => {
         createVisible.value = false;
         await loadNetworks();
         if (detail) {
-            router.push({ name: 'networkDetail', params: { ...route.params, networkId: detail.network_id } });
+            router.push({ name: 'networkDetail', params: { networkId: detail.network_id } });
         }
     } catch (e: any) {
         toast.add({ severity: 'error', summary: t('web.network.create'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
@@ -157,8 +137,72 @@ const toggleAdvancedMode = () => {
     createForm.value.secure_mode = !advancedMode.value;
 };
 
-const openNetwork = (network: CentralNetworkSummary) => {
-    router.push({ name: 'networkDetail', params: { ...route.params, networkId: network.network_id } });
+const openNetwork = (network: DiscoveredNetwork) => {
+    router.push({ name: 'meshNetwork', params: { networkName: network.name } });
+};
+
+// --- batch creation: one configuration with the same name on each device ---
+
+const batchVisible = ref(false);
+const batchCreating = ref(false);
+const batchDevices = ref<Utils.DeviceInfo[]>([]);
+const batchSelected = ref<string[]>([]);
+const batchForm = ref({ network_name: '', network_secret: '', start: true });
+const batchPeers = ref<string[]>([]);
+const batchListeners = ref<string[]>([]);
+const batchNameExists = computed(() =>
+    (networks.value ?? []).some(network => network.name === batchForm.value.network_name.trim()));
+
+const openBatchCreate = async () => {
+    batchForm.value = { network_name: '', network_secret: uuidv4().replace(/-/g, '').slice(0, 16), start: true };
+    batchPeers.value = [];
+    batchListeners.value = [...NetworkTypes.DEFAULT_NETWORK_CONFIG().listener_urls];
+    batchSelected.value = [];
+    batchVisible.value = true;
+    try {
+        batchDevices.value = (await api?.list_machines() ?? [])
+            .map(Utils.buildDeviceInfo)
+            .filter(device => device.machine_id && device.online !== false)
+            .sort((a, b) => (a.alias || a.hostname || '').localeCompare(b.alias || b.hostname || ''));
+    } catch (e) {
+        console.error(e);
+        batchDevices.value = [];
+    }
+};
+
+
+const batchCreate = async () => {
+    const name = batchForm.value.network_name.trim();
+    const devices = batchDevices.value.filter(device => batchSelected.value.includes(device.machine_id));
+    if (!name || !devices.length || !api) return;
+    batchCreating.value = true;
+    try {
+        const results = await Promise.allSettled(devices.map(async device => {
+            const config = NetworkTypes.DEFAULT_NETWORK_CONFIG();
+            config.network_name = name;
+            config.network_secret = batchForm.value.network_secret;
+            config.peer_urls = [...batchPeers.value];
+            config.listener_urls = [...batchListeners.value];
+            const { store } = await deviceConfigStore(api, device);
+            await store.create(config, batchForm.value.start, true);
+        }));
+        const failed = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+        failed.forEach(result => console.error(result.reason));
+        toast.add({
+            severity: failed.length ? 'warn' : 'success',
+            summary: t('web.mesh_network.create'),
+            detail: t('web.mesh_network.create_done', { ok: results.length - failed.length, failed: failed.length })
+                + (failed.length ? `: ${failed.map(result => failureMessage(result.reason)).join('; ')}` : ''),
+            life: failed.length ? 8000 : 3000,
+        });
+        if (failed.length < results.length) {
+            batchVisible.value = false;
+            await loadNetworks();
+            router.push({ name: 'meshNetwork', params: { networkName: name } });
+        }
+    } finally {
+        batchCreating.value = false;
+    }
 };
 </script>
 
@@ -166,30 +210,33 @@ const openNetwork = (network: CentralNetworkSummary) => {
     <div class="console-page">
         <header class="page-heading">
             <div><h1>{{ t('web.network_list.title') }}</h1></div>
-            <Button :label="t('web.network_list.create')" icon="pi pi-plus" @click="openCreate" />
+            <div class="flex flex-wrap gap-2">
+                <Button v-if="centralEnabled" :label="t('web.mesh_network.create_central')" icon="pi pi-sitemap" severity="secondary" outlined @click="openCreate" />
+                <Button :label="t('web.mesh_network.create')" icon="pi pi-plus" @click="openBatchCreate" />
+            </div>
         </header>
-        <Message v-if="loadError" severity="warn" :closable="false">{{ t('web.console.load_failed') }}</Message>
+        <p class="page-hint">{{ t('web.mesh_network.list_hint') }}</p>
+        <Message v-if="discovery.failedDevices.value" severity="warn" :closable="false">{{ t('web.mesh_network.scan_partial', { count: discovery.failedDevices.value }) }}</Message>
         <section class="console-panel">
             <div class="list-toolbar">
                 <div class="search-field"><i class="pi pi-search" aria-hidden="true"></i><InputText v-model="search" :placeholder="t('web.console.search_networks')" :aria-label="t('web.console.search_networks')" /></div>
                 <div class="flex items-center gap-3"><span v-if="networks" class="table-count">{{ t('web.console.items', { count: filteredNetworks.length }) }}</span><Button icon="pi pi-refresh" text severity="secondary" :aria-label="t('web.console.refresh')" :loading="refreshing" @click="loadNetworks" /></div>
             </div>
-            <div v-if="networks === undefined && !loadError" class="loading-rows"><Skeleton v-for="i in 4" :key="i" height="2rem" /></div>
-            <div v-else-if="networks === undefined" class="console-empty-state"><Button :label="t('web.console.retry')" severity="secondary" @click="loadNetworks" /></div>
-            <div v-else-if="networks.length === 0" class="console-empty-state"><i class="pi pi-globe" aria-hidden="true"></i><h2>{{ t('web.console.networks_empty') }}</h2><p>{{ t('web.console.networks_empty_hint') }}</p><Button :label="t('web.network_list.create')" icon="pi pi-plus" @click="openCreate" /></div>
+            <div v-if="networks === undefined" class="loading-rows"><Skeleton v-for="i in 4" :key="i" height="2rem" /></div>
+            <div v-else-if="networks.length === 0" class="console-empty-state"><i class="pi pi-globe" aria-hidden="true"></i><h2>{{ t('web.console.networks_empty') }}</h2><p>{{ t('web.console.networks_empty_hint') }}</p><Button :label="t('web.mesh_network.create')" icon="pi pi-plus" @click="openBatchCreate" /></div>
             <div v-else-if="filteredNetworks.length === 0" class="console-empty-state"><h2>{{ t('web.console.no_results') }}</h2><Button :label="t('web.console.clear_search')" text @click="search = ''" /></div>
             <template v-else>
-                <DataTable :value="filteredNetworks" dataKey="network_id" class="console-table desktop-list" size="small" scrollable :paginator="filteredNetworks.length > 20" :rows="20">
-                    <Column field="display_name" :header="t('web.network_list.display_name')" sortable><template #body="{ data }"><button class="entity-link" @click="openNetwork(data)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ data.display_name }}</button></template></Column>
-                    <Column field="networking_method" :header="t('networking_method')"><template #body="{ data }"><Tag :value="networkingMethodLabel(data.networking_method)" severity="secondary" /></template></Column>
-                    <Column field="online_member_count" :header="t('web.console.online_members')" sortable><template #body="{ data }">{{ data.online_member_count }} <span class="muted">/ {{ data.member_count }}</span></template></Column>
-                    <Column :header="t('web.console.manage')"><template #body="{ data }"><Button icon="pi pi-arrow-up-right" text severity="secondary" :aria-label="`${t('web.console.manage')} ${data.display_name}`" @click="openNetwork(data)" /></template></Column>
+                <DataTable :value="filteredNetworks" dataKey="identity" class="console-table desktop-list" size="small" scrollable :paginator="filteredNetworks.length > 20" :rows="20">
+                    <Column field="name" :header="t('web.mesh_network.network_name')" sortable><template #body="{ data }"><button class="entity-link" @click="openNetwork(data)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ data.name }}</button></template></Column>
+                    <Column :header="t('web.mesh_network.devices')"><template #body="{ data }">{{ deviceCount(data) }}</template></Column>
+                    <Column field="runningCount" :header="t('web.mesh_network.running')" sortable><template #body="{ data }">{{ data.runningCount }} <span class="muted">/ {{ data.members.length }}</span></template></Column>
+                    <Column :header="t('networking_method')"><template #body="{ data }"><Tag v-if="data.central" :value="`${t('web.mesh_network.central')} · ${networkingMethodLabel(data.central.networking_method)}`" severity="info" /></template></Column>
+                    <Column :header="t('web.console.manage')"><template #body="{ data }"><Button icon="pi pi-arrow-up-right" text severity="secondary" :aria-label="`${t('web.console.manage')} ${data.name}`" @click="openNetwork(data)" /></template></Column>
                 </DataTable>
                 <div class="mobile-list">
-                    <article v-for="network in filteredNetworks" :key="network.network_id" class="mobile-list-item">
-                        <div class="flex items-center justify-between gap-3"><button class="entity-link" @click="openNetwork(network)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ network.display_name }}</button><Tag :value="networkingMethodLabel(network.networking_method)" severity="secondary" /></div>
-                        <p class="preview-secondary">{{ t('web.console.online_members') }} · {{ network.online_member_count }} / {{ network.member_count }}</p>
-                        <details><summary>{{ t('web.console.details') }}</summary><p class="mono-value mt-2">{{ network.network_name }}</p></details>
+                    <article v-for="network in filteredNetworks" :key="network.identity" class="mobile-list-item">
+                        <div class="flex items-center justify-between gap-3"><button class="entity-link" @click="openNetwork(network)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ network.name }}</button><Tag v-if="network.central" :value="t('web.mesh_network.central')" severity="info" /></div>
+                        <p class="preview-secondary">{{ t('web.mesh_network.devices') }} · {{ deviceCount(network) }} · {{ t('web.mesh_network.running') }} {{ network.runningCount }} / {{ network.members.length }}</p>
                     </article>
                 </div>
             </template>
@@ -245,5 +292,58 @@ const openNetwork = (network: CentralNetworkSummary) => {
                 <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="creating" @click="createNetwork" />
             </template>
         </Dialog>
+
+        <Dialog v-model:visible="batchVisible" modal class="console-dialog" :header="t('web.mesh_network.create')" :style="{ width: '36rem' }">
+            <div class="flex flex-col gap-3">
+                <div class="flex flex-col gap-1">
+                    <label for="batch-network-name">{{ t('web.mesh_network.network_name') }}</label>
+                    <InputText id="batch-network-name" v-model="batchForm.network_name" class="font-mono" />
+                    <small v-if="batchNameExists" class="text-sm text-500">{{ t('web.mesh_network.name_exists') }}</small>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label for="batch-network-secret">{{ t('web.mesh_network.network_secret') }}</label>
+                    <InputText id="batch-network-secret" v-model="batchForm.network_secret" class="font-mono" />
+                </div>
+                <div class="flex items-center">
+                    <label for="batch-initial-nodes">{{ t('initial_nodes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('initial_nodes_help')"></span>
+                </div>
+                <UrlListInput id="batch-initial-nodes" v-model="batchPeers" :protos="protos"
+                    defaultUrl="tcp://:11010" :add-label="t('add_initial_node')" :placeholder="t('initial_node_placeholder')" />
+                <label for="batch-listeners">{{ t('web.mesh_network.listeners') }}</label>
+                <UrlListInput id="batch-listeners" v-model="batchListeners" :protos="protos"
+                    defaultUrl="tcp://0.0.0.0:11010" :add-label="t('web.common.add')" placeholder="tcp://0.0.0.0:11010" />
+                <div class="flex flex-col gap-1">
+                    <span>{{ t('web.mesh_network.target_devices') }}</span>
+                    <div v-if="batchDevices.length === 0" class="text-sm text-500">{{ t('web.mesh_network.no_online_devices') }}</div>
+                    <div v-else class="batch-device-grid">
+                        <div v-for="device in batchDevices" :key="device.machine_id" class="batch-device">
+                            <Checkbox v-model="batchSelected" :value="device.machine_id" :inputId="`batch-device-${device.machine_id}`" />
+                            <label :for="`batch-device-${device.machine_id}`" class="min-w-0"><span class="preview-name">{{ device.alias || device.hostname || device.machine_id }}</span>
+                                <span class="preview-secondary">{{ t('web.console.instances') }} · {{ device.running_network_count }}</span></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <InputSwitch inputId="batch-start" v-model="batchForm.start" />
+                    <label for="batch-start" class="text-sm">{{ t('web.mesh_network.start_after_create') }}</label>
+                </div>
+                <div class="text-sm text-500">{{ t('web.mesh_network.create_hint') }}</div>
+            </div>
+            <template #footer>
+                <Button :label="t('web.common.cancel')" icon="pi pi-times" text severity="secondary" @click="batchVisible = false" />
+                <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="batchCreating"
+                    :disabled="!batchForm.network_name.trim() || batchSelected.length === 0" @click="batchCreate" />
+            </template>
+        </Dialog>
     </div>
 </template>
+
+<style scoped>
+.page-hint { margin: -8px 0 0; font-size: 13px; color: var(--p-text-muted-color); }
+.batch-device-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); gap: 8px; max-height: 14rem; overflow: auto; }
+.batch-device { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 10px; border: 1px solid var(--console-border); border-radius: 6px; }
+.batch-device label { cursor: pointer; }
+.batch-device .preview-name { display: block; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-device .preview-secondary { display: block; font-size: 11px; }
+</style>
