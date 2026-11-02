@@ -294,8 +294,15 @@ type NetworkConfig struct {
 	ParallelConnections        *uint32 `protobuf:"varint,50082,opt,name=parallel_connections,json=parallelConnections,proto3,oneof" json:"parallel_connections,omitempty"`
 	DisableParallelConnections *bool   `protobuf:"varint,50083,opt,name=disable_parallel_connections,json=disableParallelConnections,proto3,oneof" json:"disable_parallel_connections,omitempty"`
 	TrafficDisguise            *string `protobuf:"bytes,50084,opt,name=traffic_disguise,json=trafficDisguise,proto3,oneof" json:"traffic_disguise,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// UTC Unix milliseconds of the last change to the settings peers must
+	// share (network name, secret, secure mode, encryption) that a console
+	// published. Consoles order competing changes by it; the runtime ignores it.
+	NetworkSyncAt *uint64 `protobuf:"varint,50085,opt,name=network_sync_at,json=networkSyncAt,proto3,oneof" json:"network_sync_at,omitempty"`
+	// The name shown for this configuration (TOML instance_name). Unset shows
+	// the network name; a console writes the network's display name here.
+	InstanceName  *string `protobuf:"bytes,50086,opt,name=instance_name,json=instanceName,proto3,oneof" json:"instance_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *NetworkConfig) Reset() {
@@ -896,6 +903,20 @@ func (x *NetworkConfig) GetDisableParallelConnections() bool {
 func (x *NetworkConfig) GetTrafficDisguise() string {
 	if x != nil && x.TrafficDisguise != nil {
 		return *x.TrafficDisguise
+	}
+	return ""
+}
+
+func (x *NetworkConfig) GetNetworkSyncAt() uint64 {
+	if x != nil && x.NetworkSyncAt != nil {
+		return *x.NetworkSyncAt
+	}
+	return 0
+}
+
+func (x *NetworkConfig) GetInstanceName() string {
+	if x != nil && x.InstanceName != nil {
+		return *x.InstanceName
 	}
 	return ""
 }
@@ -3339,7 +3360,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xca+\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xcb,\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3433,7 +3454,9 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tHBR\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
 	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rHCR\x13parallelConnections\x88\x01\x01\x12G\n" +
 	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bHDR\x1adisableParallelConnections\x88\x01\x01\x120\n" +
-	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHER\x0ftrafficDisguise\x88\x01\x01B\x0e\n" +
+	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHER\x0ftrafficDisguise\x88\x01\x01\x12-\n" +
+	"\x0fnetwork_sync_at\x18\xa5\x87\x03 \x01(\x04HFR\rnetworkSyncAt\x88\x01\x01\x12*\n" +
+	"\rinstance_name\x18\xa6\x87\x03 \x01(\tHGR\finstanceName\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3503,7 +3526,9 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x12_p2p_disguise_modeB\x17\n" +
 	"\x15_parallel_connectionsB\x1f\n" +
 	"\x1d_disable_parallel_connectionsB\x13\n" +
-	"\x11_traffic_disguiseJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
+	"\x11_traffic_disguiseB\x12\n" +
+	"\x10_network_sync_atB\x10\n" +
+	"\x0e_instance_nameJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
 	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xc0\x01\n" +
