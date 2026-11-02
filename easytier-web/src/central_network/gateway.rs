@@ -79,6 +79,8 @@ pub(crate) struct GatewayRuntimeSpec {
     mesh_name: String,
     network_secret: String,
     secure_mode: bool,
+    disable_encryption: bool,
+    encryption_algorithm: Option<String>,
     relay_data: bool,
     credentials: Vec<ManagedCredentialConfig>,
 }
@@ -120,6 +122,8 @@ impl GatewayRuntimeSpec {
             mesh_name: intent.network_name.clone(),
             network_secret: intent.network_secret.clone(),
             secure_mode: intent.secure_mode,
+            disable_encryption: intent.disable_encryption,
+            encryption_algorithm: intent.encryption_algorithm.clone(),
             relay_data,
             credentials,
         }
@@ -181,6 +185,11 @@ impl GatewayRuntimeFactory for NativeGatewayRuntimeFactory {
         flags.no_tun = true;
         flags.disable_relay_data = !spec.relay_data;
         flags.bind_device = false;
+        // The gateway is a peer of the mesh, so it shares its encryption.
+        flags.enable_encryption = !spec.disable_encryption;
+        if let Some(algorithm) = &spec.encryption_algorithm {
+            flags.encryption_algorithm = algorithm.clone();
+        }
         config.set_flags(flags);
 
         if spec.secure_mode {
@@ -544,6 +553,8 @@ mod tests {
             },
             virtual_cidr: None,
             secure_mode: false,
+            disable_encryption: false,
+            encryption_algorithm: None,
             members: Vec::new(),
             credentials: Vec::new(),
             acl_policy: None,

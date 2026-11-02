@@ -186,35 +186,34 @@ export interface ConsoleInfo {
     webhook_auth: boolean;
 }
 
-export type AclSelector =
-    | { type: 'all' }
-    | { type: 'member'; member_id: string }
-    | { type: 'subnet'; member_id: string; cidrs: string[] }
-    | { type: 'group'; name: string };
-
-export interface AclProtocolTarget {
-    protocol: 'tcp' | 'udp' | 'icmp' | 'icmpv6' | 'any';
-    ports: string[];
-    stateful: boolean;
+/** The settings peers must share; the others keep each member's value. */
+export interface MeshCoreChange {
+    network_name?: string;
+    network_secret?: string;
+    secure_mode?: boolean;
+    disable_encryption?: boolean;
+    /** An empty string selects the default algorithm. */
+    encryption_algorithm?: string;
 }
 
-export interface AclPolicyRule {
-    id: string;
-    name: string;
-    enabled: boolean;
-    action: 'allow' | 'deny';
-    sources: AclSelector[];
-    destinations: AclSelector[];
-    protocols: AclProtocolTarget[];
+export type MeshSyncStatus = 'saved' | 'unchanged' | 'pending' | 'conflict' | 'failed';
+
+export interface MeshSyncResult {
+    device_id: string;
+    instance_id: string;
+    status: MeshSyncStatus;
+    message?: string;
 }
 
-export interface AclPolicy {
-    default_action: 'allow' | 'deny';
-    rules: AclPolicyRule[];
-}
-
-export interface AclPolicyInfo {
-    policy: AclPolicy;
+/** A network instance the console has seen on a device. */
+export interface MeshMember {
+    device_id: string;
+    instance_id: string;
+    network_name: string;
+    online: boolean;
+    pending: boolean;
+    sync_at?: number | null;
+    credential: boolean;
 }
 
 export class ApiClient {
@@ -428,22 +427,25 @@ export class ApiClient {
         await this.client.post(`/networks/${network_id}/members`, { device_ids, temporary, ttl_seconds });
     }
 
-    public async get_network_acl_policy(network_id: string): Promise<AclPolicyInfo> {
-        const response = await this.client.get<any, AclPolicyInfo>(`/networks/${network_id}/acl-policy`);
-        return response;
-    }
-
-    public async update_network_acl_policy(network_id: string, policy: AclPolicy): Promise<AclPolicyInfo> {
-        const response = await this.client.put<any, AclPolicyInfo>(`/networks/${network_id}/acl-policy`, policy);
-        return response;
-    }
-
     public async update_network_member(network_id: string, device_id: string, update: { hostname_override?: string | null, virtual_ipv4?: string | null, proxy_cidrs?: string[] }): Promise<CentralNetworkMember> {
         return await this.client.patch<any, CentralNetworkMember>(`/networks/${network_id}/members/${device_id}`, update);
     }
 
     public async remove_network_member(network_id: string, device_id: string): Promise<undefined> {
         await this.client.delete(`/networks/${network_id}/members/${device_id}`);
+    }
+
+    // --- Core settings of recognized networks ---
+
+    public async list_mesh_members(): Promise<MeshMember[]> {
+        const response = await this.client.get<any, { members: MeshMember[] }>('/mesh/members');
+        return response.members;
+    }
+
+    /** Write core settings to every member the console knows; offline ones get them once on return. */
+    public async apply_mesh_core(network_name: string, change: MeshCoreChange): Promise<MeshSyncResult[]> {
+        const response = await this.client.post<any, { results: MeshSyncResult[] }>('/mesh/core', { network_name, change });
+        return response.results;
     }
 
     // --- Node runtime detail (per network instance, via proxy-rpc) ---

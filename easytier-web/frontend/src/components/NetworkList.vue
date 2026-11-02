@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { v4 as uuidv4 } from 'uuid';
 import { Button, Checkbox, Column, DataTable, Dialog, InputSwitch, InputText, Message, Password, Skeleton, Tag, useToast } from 'primevue';
 import { useRouter } from 'vue-router';
@@ -31,7 +31,7 @@ const search = ref('');
 const filteredNetworks = computed(() => {
     const query = search.value.trim().toLocaleLowerCase();
     return (networks.value ?? []).filter(network =>
-        `${network.name} ${network.central?.display_name ?? ''}`.toLocaleLowerCase().includes(query));
+        `${network.name} ${network.label}`.toLocaleLowerCase().includes(query));
 });
 const deviceCount = (network: DiscoveredNetwork) => new Set(network.members.map(member => member.device.machine_id)).size;
 const loadNetworks = () => discovery.refresh();
@@ -64,14 +64,20 @@ const createForm = ref({
 // Initial nodes in advanced mode, same model as the GUI config form.
 const initialNodes = ref<string[]>([]);
 
-onMounted(async () => {
-    void loadNetworks();
-    if (!props.centralEnabled) return;
+const loadGatewayInfo = async () => {
+    if (!props.centralEnabled || gatewayInfo.value) return;
     try {
         gatewayInfo.value = await api?.get_gateway_info();
     } catch (e) {
         gatewayInfo.value = { enabled: false, relay_data: false };
     }
+};
+// The console mode can become known after the page opened.
+watch(() => props.centralEnabled, () => void loadGatewayInfo());
+
+onMounted(() => {
+    void loadNetworks();
+    void loadGatewayInfo();
 });
 
 const openCreate = () => {
@@ -235,7 +241,7 @@ const batchCreate = async () => {
             <div v-else-if="filteredNetworks.length === 0" class="console-empty-state"><h2>{{ t('web.console.no_results') }}</h2><Button :label="t('web.console.clear_search')" text @click="search = ''" /></div>
             <template v-else>
                 <DataTable :value="filteredNetworks" dataKey="identity" class="console-table desktop-list" size="small" scrollable :paginator="filteredNetworks.length > 20" :rows="20">
-                    <Column field="name" :header="t('web.mesh_network.network_name')" sortable><template #body="{ data }"><button class="entity-link" @click="openNetwork(data)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ data.name }}</button></template></Column>
+                    <Column field="name" :header="t('web.mesh_network.network_name')" sortable><template #body="{ data }"><button class="entity-link" @click="openNetwork(data)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ data.label }}</button><span v-if="data.label !== data.name" class="preview-secondary mono-value block">{{ data.name }}</span></template></Column>
                     <Column :header="t('web.mesh_network.devices')"><template #body="{ data }">{{ deviceCount(data) }}</template></Column>
                     <Column field="runningCount" :header="t('web.mesh_network.running')" sortable><template #body="{ data }">{{ data.runningCount }} <span class="muted">/ {{ data.members.length }}</span></template></Column>
                     <Column :header="t('networking_method')"><template #body="{ data }"><Tag v-if="data.central" :value="`${t('web.mesh_network.central')} · ${networkingMethodLabel(data.central.networking_method)}`" severity="info" /></template></Column>
@@ -243,7 +249,7 @@ const batchCreate = async () => {
                 </DataTable>
                 <div class="mobile-list">
                     <article v-for="network in filteredNetworks" :key="network.identity" class="mobile-list-item">
-                        <div class="flex items-center justify-between gap-3"><button class="entity-link" @click="openNetwork(network)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ network.name }}</button><Tag v-if="network.central" :value="t('web.mesh_network.central')" severity="info" /></div>
+                        <div class="flex items-center justify-between gap-3"><button class="entity-link" @click="openNetwork(network)"><i class="pi pi-globe entity-icon" aria-hidden="true"></i>{{ network.label }}</button><Tag v-if="network.central" :value="t('web.mesh_network.central')" severity="info" /></div>
                         <p class="preview-secondary">{{ t('web.mesh_network.devices') }} · {{ deviceCount(network) }} · {{ t('web.mesh_network.running') }} {{ network.runningCount }} / {{ network.members.length }}</p>
                     </article>
                 </div>

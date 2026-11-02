@@ -15,7 +15,8 @@ const { t } = useI18n();
 const summary = ref<Summary>();
 const devices = ref<Utils.DeviceInfo[]>();
 // The same recognized networks as the network page and the topology below.
-const networks = injectNetworkDiscovery()?.networks ?? ref<DiscoveredNetwork[]>();
+const discovery = injectNetworkDiscovery();
+const networks = discovery?.networks ?? ref<DiscoveredNetwork[]>();
 const loadError = ref(false);
 const refreshing = ref(false);
 const deviceViewMode = ref<'list' | 'card'>(localStorage.getItem('dashboard.devices.viewMode') === 'list' ? 'list' : 'card');
@@ -57,8 +58,10 @@ const loadSummary = async (manual = false) => {
         const results = await Promise.allSettled([
             api.get_summary().then(value => { if (current()) summary.value = value; }),
             api.list_machines().then(value => { if (current()) devices.value = value.map(Utils.buildDeviceInfo); }),
+            // Recognized networks follow their own slower scan unless asked.
+            ...(manual && discovery ? [discovery.refresh()] : []),
         ]);
-        if (current()) loadError.value = results.some(result => result.status === 'rejected');
+        if (current()) loadError.value = results.some(result => result.status === 'rejected') || !!discovery?.listFailed.value;
     } finally {
         if (summaryRequestGeneration === generation) {
             summaryRequestGeneration = undefined;
@@ -150,7 +153,7 @@ const stats = computed(() => [
                     <RouterLink :to="{ name: 'networkList' }" class="entity-link">{{ t('web.mesh_network.create') }}<i class="pi pi-arrow-right" aria-hidden="true"></i></RouterLink>
                 </div>
                 <RouterLink v-for="network in networkPreview" :key="network.identity" class="preview-row" :to="{ name: 'meshNetwork', params: { networkName: network.name } }">
-                    <div class="entity-link"><i class="pi pi-globe entity-icon" aria-hidden="true"></i><div class="min-w-0"><div class="preview-name">{{ network.name }}</div><div class="preview-secondary">{{ network.central ? t('web.mesh_network.central') : t('web.mesh_network.members') + ' · ' + network.members.length }}</div></div></div>
+                    <div class="entity-link"><i class="pi pi-globe entity-icon" aria-hidden="true"></i><div class="min-w-0"><div class="preview-name">{{ network.label }}</div><div class="preview-secondary">{{ network.central ? t('web.mesh_network.central') : t('web.mesh_network.members') + ' · ' + network.members.length }}</div></div></div>
                     <div class="preview-number">{{ network.runningCount }} / {{ network.members.length }}<div class="preview-secondary">{{ t('web.mesh_network.running') }}</div></div>
                 </RouterLink>
             </section>

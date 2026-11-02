@@ -5,7 +5,6 @@ import { Button, Checkbox, Column, ConfirmDialog, DataTable, Dialog, Drawer, Inp
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { Config, NetworkTypes, UrlListInput, Utils, StatusDisplay } from 'easytier-frontend-lib';
-import AclPolicyTab from './AclPolicyTab.vue';
 import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
 import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
 import { toNetworkCidr } from '../modules/cidr';
@@ -111,12 +110,13 @@ const openAddMember = async () => {
         candidateDevices.value = [];
     }
     selectedDevices.value = [];
-    addTemporary.value = false;
+    addTemporary.value = true;
     addTtlHours.value = 7 * 24;
     addMemberVisible.value = true;
 };
 
-const addTemporary = ref(false);
+// Permanent members run the network from their own configuration.
+const addTemporary = ref(true);
 const addTtlHours = ref(7 * 24);
 const addTtlOptions = [
     { label: t('web.network_detail.ttl_24h'), value: 24 },
@@ -359,7 +359,7 @@ const saveSettings = async () => {
             : initialNodes.value.length > 0 ? 'Manual' : 'Standalone';
         const settings = {
             display_name: settingsForm.value.display_name,
-            network_name: settingsForm.value.network_name.trim() || null,
+            network_name: (settingsForm.value.network_name ?? '').trim() || null,
             networking_method: method,
             public_server_url: method === 'PublicServer' ? initialNodes.value[0] : null,
             peer_urls: method === 'Manual' ? initialNodes.value : [],
@@ -941,7 +941,6 @@ const switchTab = async (tab: string) => {
         <Tabs v-if="network !== undefined" :value="activeTab" @update:value="switchTab(String($event))" lazy class="console-panel network-tabs">
             <TabList>
                 <Tab value="members">{{ t('web.network_detail.tab_members') }}</Tab>
-                <Tab value="acl">{{ t('web.acl.tab') }}</Tab>
                 <Tab v-if="network.secure_mode" value="credentials">{{ t('web.network_detail.tab_credentials') }}</Tab>
                 <Tab value="settings">{{ t('web.network_detail.tab_settings') }}</Tab>
             </TabList>
@@ -1138,10 +1137,6 @@ const switchTab = async (tab: string) => {
             </TabPanel>
 
             <!-- credentials -->
-            <TabPanel value="acl" class="flex flex-col gap-3">
-                <p class="text-sm muted">{{ t('web.acl.trust_hint') }}</p>
-                <AclPolicyTab v-if="api" :api="api" :network-id="networkId" :members="members" />
-            </TabPanel>
             <TabPanel value="credentials" class="flex flex-col gap-3">
                 <div class="flex flex-wrap justify-between items-center gap-3">
                     <div class="text-sm muted flex-1 min-w-48">{{ t('web.network_detail.credentials_hint') }}</div>
@@ -1289,15 +1284,9 @@ const switchTab = async (tab: string) => {
                 <Column field="easytier_version" :header="t('web.device.version')" />
             </DataTable>
             <div class="flex flex-col gap-2 mt-2">
+                <Message v-if="!network?.secure_mode" severity="warn" size="small" :closable="false">{{ t('web.network_detail.add_temporary_needs_secure') }}</Message>
+                <p v-else class="text-sm muted m-0">{{ t('web.network_detail.add_temporary_hint') }}</p>
                 <div class="flex items-center gap-2">
-                    <InputSwitch inputId="add-temporary" v-model="addTemporary" :disabled="!network?.secure_mode" />
-                    <label for="add-temporary" class="text-sm"
-                        :class="{ 'text-500': !network?.secure_mode }">{{ t('web.network_detail.add_temporary_member') }}</label>
-                    <span class="pi pi-question-circle text-sm" v-tooltip.top="network?.secure_mode
-                        ? t('web.network_detail.add_temporary_hint')
-                        : t('web.network_detail.add_temporary_needs_secure')"></span>
-                </div>
-                <div v-if="addTemporary" class="flex items-center gap-2">
                     <label for="add-ttl" class="text-sm">{{ t('web.network_detail.credential_ttl') }}</label>
                     <SelectButton v-model="addTtlHours" :options="addTtlOptions"
                         optionLabel="label" optionValue="value" size="small" />
@@ -1305,7 +1294,7 @@ const switchTab = async (tab: string) => {
             </div>
             <template #footer>
                 <Button :label="t('web.common.cancel')" icon="pi pi-times" text severity="secondary" @click="addMemberVisible = false" />
-                <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="adding" :disabled="selectedDevices.length === 0"
+                <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="adding" :disabled="selectedDevices.length === 0 || !network?.secure_mode"
                     @click="addMembers" />
             </template>
         </Dialog>

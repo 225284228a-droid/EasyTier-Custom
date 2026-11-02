@@ -4,17 +4,17 @@ use axum::{
     Extension, Json, Router,
     extract::Path,
     http::StatusCode,
-    routing::{delete, get, patch},
+    routing::{delete, get, patch, post},
 };
 use uuid::Uuid;
 
 use super::{AppStateInner, Error, HttpHandleError, authed_user_id, users::AuthSession};
 use crate::central_network::{
-    model::AclPolicy,
+    core_sync::{CoreChange, MemberSyncResult},
     service::{
         AddMembersReq, CentralNetworkService, CentralNetworkServiceError, GenerateCredentialReq,
-        MemberInfo, MembersView, NetworkCredentialInfo, NetworkDetail, NetworkSettings,
-        NetworkSummary, UpdateMemberReq, UpdateNetworkReq,
+        MemberInfo, MembersView, MeshMemberInfo, NetworkCredentialInfo, NetworkDetail,
+        NetworkSettings, NetworkSummary, UpdateMemberReq, UpdateNetworkReq,
     },
 };
 
@@ -63,8 +63,19 @@ struct SetMemberConfigJsonReq {
 }
 
 #[derive(Debug, serde::Serialize)]
-struct AclPolicyInfo {
-    policy: AclPolicy,
+struct MeshMembersJsonResp {
+    members: Vec<MeshMemberInfo>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ApplyCoreJsonReq {
+    network_name: String,
+    change: CoreChange,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ApplyCoreJsonResp {
+    results: Vec<MemberSyncResult>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -225,31 +236,6 @@ impl CentralNetworkApi {
         Ok(StatusCode::NO_CONTENT)
     }
 
-    async fn get_acl_policy(
-        auth: AuthSession,
-        Extension(service): Service,
-        Path(network_id): Path<Uuid>,
-    ) -> Result<Json<AclPolicyInfo>, HttpHandleError> {
-        let policy = service
-            .get_acl_policy(user_id(&auth)?, network_id)
-            .await
-            .map_err(convert_error)?;
-        Ok(Json(AclPolicyInfo { policy }))
-    }
-
-    async fn update_acl_policy(
-        auth: AuthSession,
-        Extension(service): Service,
-        Path(network_id): Path<Uuid>,
-        Json(policy): Json<AclPolicy>,
-    ) -> Result<Json<AclPolicyInfo>, HttpHandleError> {
-        let policy = service
-            .update_acl_policy(user_id(&auth)?, network_id, policy)
-            .await
-            .map_err(convert_error)?;
-        Ok(Json(AclPolicyInfo { policy }))
-    }
-
     async fn list_credentials(
         auth: AuthSession,
         Extension(service): Service,
@@ -287,6 +273,29 @@ impl CentralNetworkApi {
         Ok(StatusCode::NO_CONTENT)
     }
 
+    async fn mesh_members(
+        auth: AuthSession,
+        Extension(service): Service,
+    ) -> Result<Json<MeshMembersJsonResp>, HttpHandleError> {
+        let members = service
+            .mesh_members(user_id(&auth)?)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(MeshMembersJsonResp { members }))
+    }
+
+    async fn apply_core(
+        auth: AuthSession,
+        Extension(service): Service,
+        Json(request): Json<ApplyCoreJsonReq>,
+    ) -> Result<Json<ApplyCoreJsonResp>, HttpHandleError> {
+        let results = service
+            .apply_core_change(user_id(&auth)?, &request.network_name, request.change)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(ApplyCoreJsonResp { results }))
+    }
+
     async fn gateway_info(Extension(service): Service) -> Json<GatewayInfoJsonResp> {
         let config = service.gateway_config();
         Json(GatewayInfoJsonResp {
@@ -303,15 +312,13 @@ impl CentralNetworkApi {
                 get(Self::list_networks).post(Self::create_network),
             )
             .route("/api/v1/networks/gateway-info", get(Self::gateway_info))
+            .route("/api/v1/mesh/members", get(Self::mesh_members))
+            .route("/api/v1/mesh/core", post(Self::apply_core))
             .route(
                 "/api/v1/networks/{network-id}",
                 get(Self::get_network)
                     .patch(Self::update_network)
                     .delete(Self::delete_network),
-            )
-            .route(
-                "/api/v1/networks/{network-id}/acl-policy",
-                get(Self::get_acl_policy).put(Self::update_acl_policy),
             )
             .route(
                 "/api/v1/networks/{network-id}/members",

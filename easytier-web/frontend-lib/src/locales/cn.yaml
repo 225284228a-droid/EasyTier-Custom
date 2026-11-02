@@ -723,6 +723,13 @@ web:
     stopped: 未运行
 
   mesh_network:
+    pending: 待补发
+    pending_hint: 修改核心设置时该成员离线，它下次上线时会补发一次；之后在设备上的修改不会被覆盖
+    temporary: 临时节点
+    result_unchanged: 无需修改
+    result_pending: 离线，上线时补发一次
+    core_hint: 网络名、密码、安全模式和加密设置由控制台统一下发，离线成员在下次上线时补发一次；其他字段只写入当前在线并选中的成员。
+    core_hint_local: 当前不是中心管理模式，所有字段只写入当前在线并选中的成员。
     list_hint: 网络由设备上的配置自动识别：同一网络名的实例即为同一网络，与拓扑图使用相同的识别方式
     devices: 设备
     running: 运行中

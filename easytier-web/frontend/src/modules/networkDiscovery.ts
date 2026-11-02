@@ -1,13 +1,14 @@
 import { inject, provide, ref, type InjectionKey, type Ref } from 'vue'
 import { Api as LibApi, ConfigStores, LocalConfigs, NetworkTypes, Utils } from 'easytier-frontend-lib'
 import type ApiClient from './api'
-import type { CentralNetworkSummary } from './api'
+import type { CentralNetworkSummary, MeshMember } from './api'
 import { networkNameIdentity } from './networkTopology'
 
 /**
  * A network is whatever the devices run: every device configuration with the
  * same network name is one network, identified like the topology identifies
- * running peers. The console stores no network state of its own here.
+ * running peers. The console only remembers what it last saw on each device,
+ * so offline members stay visible.
  */
 export interface NetworkMember {
   key: string
@@ -16,11 +17,19 @@ export interface NetworkMember {
   running: boolean
   /** Configuration file permission flags reported by the node. */
   permission: number
+  /** Its configuration was read now; an offline member is only remembered. */
+  online: boolean
+  /** A missed core-setting change waits for it to connect. */
+  pending?: boolean
+  /** A temporary member: a central add-on authenticated by a credential. */
+  credential?: boolean
 }
 
 export interface DiscoveredNetwork {
   identity: string
   name: string
+  /** What people call it: a central network's display name, else its name. */
+  label: string
   members: NetworkMember[]
   runningCount: number
   /** A central network publishes configurations under this name. */
@@ -49,12 +58,17 @@ export async function scanDeviceNetworks(api: ApiClient, device: Utils.DeviceInf
   return { device, running, disabled, metas }
 }
 
-export function groupNetworks(scans: DeviceNetworkScan[], central: CentralNetworkSummary[] = []): DiscoveredNetwork[] {
+export function groupNetworks(
+  scans: DeviceNetworkScan[],
+  central: CentralNetworkSummary[] = [],
+  remembered: MeshMember[] = [],
+  devices: Utils.DeviceInfo[] = [],
+): DiscoveredNetwork[] {
   const networks = new Map<string, DiscoveredNetwork>()
   const network = (name: string) => {
     let entry = networks.get(name)
     if (!entry) {
-      entry = { identity: networkNameIdentity(name), name, members: [], runningCount: 0 }
+      entry = { identity: networkNameIdentity(name), name, label: name, members: [], runningCount: 0 }
       networks.set(name, entry)
     }
     return entry
@@ -73,13 +87,44 @@ export function groupNetworks(scans: DeviceNetworkScan[], central: CentralNetwor
         instanceId,
         running: isRunning,
         permission: scan.metas[instanceId]?.config_permission ?? 0,
+        online: true,
       })
       if (isRunning) entry.runningCount++
     }
   }
+  // Remembered instances add what a scan cannot show: offline members,
+  // a pending change, and which members are temporary.
+  const scanned = new Map([...networks.values()].flatMap(entry => entry.members.map(member => [member.key, member] as const)))
+  const scannedDevices = new Set(scans.map(scan => scan.device.machine_id))
+  for (const member of remembered) {
+    const key = `${member.device_id}/${member.instance_id}`
+    const known = scanned.get(key)
+    if (known) {
+      known.pending = member.pending || undefined
+      known.credential = member.credential || undefined
+      continue
+    }
+    // A scanned device no longer has this instance.
+    if (scannedDevices.has(member.device_id) || !member.network_name) continue
+    const device = devices.find(device => device.machine_id === member.device_id)
+      ?? { machine_id: member.device_id, hostname: member.device_id, running_network_count: 0 } as Utils.DeviceInfo
+    network(member.network_name).members.push({
+      key,
+      device,
+      instanceId: member.instance_id,
+      running: false,
+      permission: 0,
+      online: false,
+      pending: member.pending || undefined,
+      credential: member.credential || undefined,
+    })
+  }
   // A central network stays visible while none of its members are online.
   for (const summary of central) {
-    if (summary.network_name) network(summary.network_name).central = summary
+    if (!summary.network_name) continue
+    const entry = network(summary.network_name)
+    entry.central = summary
+    entry.label = summary.display_name || summary.network_name
   }
   const deviceName = (member: NetworkMember) => member.device.alias || member.device.hostname || member.device.machine_id
   for (const entry of networks.values()) {
@@ -151,6 +196,8 @@ export interface NetworkDiscovery {
   refreshing: Ref<boolean>
   /** Devices whose configurations could not be read in the last refresh. */
   failedDevices: Ref<number>
+  /** The device or central network list could not be read in the last refresh. */
+  listFailed: Ref<boolean>
   refresh(): Promise<void>
   start(): void
   stop(): void
@@ -162,10 +209,15 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
   const networks = ref<DiscoveredNetwork[]>()
   const refreshing = ref(false)
   const failedDevices = ref(0)
+  const listFailed = ref(false)
+  // A failed read keeps showing what the console reported last.
+  let lastCentral: CentralNetworkSummary[] = []
+  let lastRemembered: MeshMember[] = []
   // The last successful scan stands in for a device that briefly fails.
   const scans = new Map<string, DeviceNetworkScan>()
   let scope = api.persistenceScope
   let pending: Promise<void> | undefined
+  let again: Promise<void> | undefined
   let timer: number | undefined
   let running = false
 
@@ -173,16 +225,29 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
     if (scope !== api.persistenceScope) {
       scope = api.persistenceScope
       scans.clear()
+      lastCentral = []
+      lastRemembered = []
       networks.value = undefined
     }
     const requestScope = scope
     refreshing.value = true
     try {
-      const [machines, central] = await Promise.all([
+      let centralFailed = false
+      const keep = <T>(last: T[]) => (cause: unknown) => {
+        centralFailed = true
+        console.warn('Failed to read central networks', cause)
+        return last
+      }
+      const central = centralEnabled()
+      const [machines, centralNetworks, remembered] = await Promise.all([
         api.list_machines({ timeout: 8_000 }),
-        centralEnabled() ? api.list_networks().catch(() => []) : Promise.resolve([]),
+        central ? api.list_networks().catch(keep(lastCentral)) : Promise.resolve([]),
+        central ? api.list_mesh_members().catch(keep(lastRemembered)) : Promise.resolve([]),
       ])
       if (requestScope !== api.persistenceScope) return
+      lastCentral = centralNetworks ?? []
+      lastRemembered = remembered ?? []
+      listFailed.value = centralFailed
       const devices = machines.map(Utils.buildDeviceInfo).filter(device => device.machine_id)
       const online = devices.filter(device => device.online !== false)
       for (const machineId of scans.keys()) {
@@ -203,9 +268,10 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
       }))
       if (requestScope !== api.persistenceScope) return
       failedDevices.value = failed
-      networks.value = groupNetworks([...scans.values()], central ?? [])
+      networks.value = groupNetworks([...scans.values()], lastCentral, lastRemembered, devices)
     } catch (cause) {
       console.warn('Failed to discover networks', cause)
+      listFailed.value = true
       networks.value ??= []
     } finally {
       refreshing.value = false
@@ -217,9 +283,17 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
     if (running) timer = window.setTimeout(() => void refresh(), interval)
   }
 
-  const refresh = async () => {
-    // Concurrent callers share the refresh in flight.
-    pending ??= collect().finally(() => {
+  const refresh = async (): Promise<void> => {
+    // A request during a refresh needs a later one: what it asks for (a
+    // new mode, a write it just made) may not be in the running one.
+    if (pending) {
+      again ??= pending.then(() => {
+        again = undefined
+        return refresh()
+      })
+      return again
+    }
+    pending = collect().finally(() => {
       pending = undefined
       schedule()
     })
@@ -230,6 +304,7 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
     networks,
     refreshing,
     failedDevices,
+    listFailed,
     refresh,
     start() {
       running = true

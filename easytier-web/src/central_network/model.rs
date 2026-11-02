@@ -14,6 +14,12 @@ pub struct CentralNetworkIntent {
     pub mode: NetworkMode,
     pub virtual_cidr: Option<String>,
     pub secure_mode: bool,
+    /// Encryption settings every peer must share; temporary members and the
+    /// Gateway follow them.
+    #[serde(default)]
+    pub disable_encryption: bool,
+    #[serde(default)]
+    pub encryption_algorithm: Option<String>,
     pub members: Vec<NetworkMemberIntent>,
     pub credentials: Vec<NetworkCredentialIntent>,
     pub acl_policy: Option<AclPolicy>,

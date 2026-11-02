@@ -143,6 +143,8 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                     Vec::new()
                 },
                 acl: acl.get(&member.id).cloned().flatten(),
+                disable_encryption: intent.disable_encryption.then_some(true),
+                encryption_algorithm: intent.encryption_algorithm.clone(),
                 ..Default::default()
             };
             let network_config =
@@ -497,7 +499,9 @@ fn normalized_grant(grant: &CredentialGrant) -> CredentialGrant {
     grant
 }
 
-fn compile_managed_credential(credential: &NetworkCredentialIntent) -> ManagedCredentialConfig {
+pub(crate) fn compile_managed_credential(
+    credential: &NetworkCredentialIntent,
+) -> ManagedCredentialConfig {
     let grant = normalized_grant(&credential.grant);
     ManagedCredentialConfig {
         credential_id: credential.id.clone(),
@@ -850,6 +854,8 @@ mod tests {
             },
             virtual_cidr: Some("10.42.0.0/29".to_owned()),
             secure_mode: true,
+            disable_encryption: false,
+            encryption_algorithm: None,
             members: vec![temporary.clone(), member(1, "device-a", None)],
             credentials: vec![
                 credential("temporary", Some(temporary.id)),

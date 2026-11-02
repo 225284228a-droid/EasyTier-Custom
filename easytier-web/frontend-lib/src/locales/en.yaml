@@ -723,6 +723,13 @@ web:
     stopped: Stopped
 
   mesh_network:
+    pending: Pending
+    pending_hint: This member was offline when the core settings changed; it receives the change once when it next connects, and later edits on the device are kept
+    temporary: Temporary
+    result_unchanged: Already up to date
+    result_pending: Offline; sent once when it connects
+    core_hint: The console writes the network name, secret, secure mode and encryption to every member and sends a missed change once to offline members when they return. Other fields are written only to the selected online members.
+    core_hint_local: Central management is off, so every field is written only to the selected online members.
     list_hint: Networks are recognized from device configurations. Instances with the same network name form one network, the same way the topology identifies them
     devices: Devices
     running: Running

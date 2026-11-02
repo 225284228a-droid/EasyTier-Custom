@@ -4,7 +4,7 @@ import { Button, Column, ConfirmDialog, DataTable, Dialog, Message, ProgressSpin
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { Api as LibApi, Config, ConfigStores, LocalConfigs, NetworkTypes } from 'easytier-frontend-lib';
-import ApiClient from '../modules/api';
+import ApiClient, { type MeshCoreChange, type MeshSyncResult } from '../modules/api';
 import { useMeshTopology } from '../modules/useMeshTopology';
 import { networkNameIdentity } from '../modules/networkTopology';
 import {
@@ -26,7 +26,10 @@ const network = computed(() => discovery.networks.value?.find(entry => entry.nam
 const members = computed(() => network.value?.members ?? []);
 const deviceName = (member: NetworkMember) => member.device.alias || member.device.hostname || member.device.machine_id;
 const editable = (member: NetworkMember) => LibApi.ConfigFilePermission.isEditable(member.permission);
-const selectable = ({ data }: { data: NetworkMember }) => editable(data);
+// Only members whose configuration was read now can be edited from here;
+// temporary members follow their central network.
+const actionable = (member: NetworkMember) => member.online && !member.credential && editable(member);
+const selectable = ({ data }: { data: NetworkMember }) => actionable(data);
 
 onMounted(() => void discovery.refresh());
 
@@ -53,7 +56,7 @@ let selectionSeeded = false;
 watch(members, list => {
     if (selectionSeeded || !list.length) return;
     selectionSeeded = true;
-    selection.value = list.filter(editable);
+    selection.value = list.filter(actionable);
 }, { immediate: true });
 
 const openDevice = (member: NetworkMember) => router.push({
@@ -63,7 +66,7 @@ const openDevice = (member: NetworkMember) => router.push({
 
 const busyState = ref(false);
 const setEnabled = async (enabled: boolean) => {
-    const targets = selectedMembers.value.filter(member => member.running !== enabled && editable(member));
+    const targets = selectedMembers.value.filter(member => member.running !== enabled && actionable(member));
     if (!targets.length) return;
     busyState.value = true;
     try {
@@ -94,9 +97,26 @@ interface LoadedMember {
 }
 interface MemberResult {
     member: NetworkMember;
-    status: 'saved' | 'conflict' | 'apply_failed' | 'failed';
+    status: 'saved' | 'unchanged' | 'pending' | 'conflict' | 'apply_failed' | 'failed';
     message?: string;
 }
+
+// Peers must share these to stay connected. The console writes them to
+// every member it knows and replays a missed change once to an offline one.
+const CORE_FIELDS = ['network_name', 'network_secret', 'secure_mode', 'disable_encryption', 'encryption_algorithm'];
+
+const coreChangeOf = (source: NetworkTypes.NetworkConfig, fields: string[]): MeshCoreChange => {
+    const backend = NetworkTypes.toBackendNetworkConfig(source) as Record<string, any>;
+    const change: MeshCoreChange = {};
+    if (fields.includes('network_name')) change.network_name = String(backend.network_name ?? '').trim();
+    if (fields.includes('network_secret')) change.network_secret = String(backend.network_secret ?? '');
+    if (fields.includes('secure_mode')) change.secure_mode = !!backend.secure_mode?.enabled;
+    if (fields.includes('disable_encryption')) change.disable_encryption = !!backend.disable_encryption;
+    if (fields.includes('encryption_algorithm')) change.encryption_algorithm = String(backend.encryption_algorithm ?? '');
+    return change;
+};
+
+const serverStatus = (result: MeshSyncResult): MemberResult['status'] => result.status;
 
 const batchVisible = ref(false);
 const batchLoading = ref(false);
@@ -165,21 +185,60 @@ const applyBatch = async () => {
 
 const writeBatch = async (fields: string[]) => {
     const source = template.value!;
+    const coreFields = fields.filter(field => CORE_FIELDS.includes(field));
+    const otherFields = fields.filter(field => !CORE_FIELDS.includes(field));
     batchApplying.value = true;
     try {
-        const settled = await Promise.allSettled(loaded.value.map(({ member, store, document }) =>
-            store.save(document, mergeConfigFields(document.config, source, fields), {
+        // Core settings go through the console, which also reaches offline
+        // members. Without central management they are written here instead.
+        const written = new Map<string, MeshSyncResult>();
+        if (coreFields.length && props.centralEnabled) {
+            try {
+                for (const result of await props.api.apply_mesh_core(networkName.value, coreChangeOf(source, coreFields))) {
+                    written.set(`${result.device_id}/${result.instance_id}`, result);
+                }
+            } catch (error) {
+                toast.add({ severity: 'warn', summary: t('web.mesh_network.batch_edit'), detail: failureMessage(error), life: 5000 });
+            }
+        }
+        const settled = await Promise.allSettled(loaded.value.map(async ({ member, store, document }) => {
+            // Official nodes are not reachable by the console's core writes.
+            const clientFields = written.has(member.key) ? otherFields : fields;
+            if (!clientFields.length) return document;
+            // A core write by the console gave the file a new revision.
+            const base = written.get(member.key)?.status === 'saved' ? await store.load(member.instanceId) : document;
+            return store.save(base, mergeConfigFields(base.config, source, clientFields), {
                 running: member.running,
                 persist: LibApi.ConfigFilePermission.isRemoveSaveable(member.permission),
-            })));
-        results.value = settled.map((result, index): MemberResult => {
-            const member = loaded.value[index].member;
-            if (result.status === 'fulfilled') return { member, status: 'saved' };
-            const reason = result.reason;
-            if (reason instanceof ConfigStores.ConfigConflictError) return { member, status: 'conflict' };
-            if (reason instanceof ConfigStores.ConfigApplyError) return { member, status: 'apply_failed', message: reason.message };
-            return { member, status: 'failed', message: failureMessage(reason) };
-        });
+            });
+        }));
+        const loadedKeys = new Set(loaded.value.map(entry => entry.member.key));
+        results.value = [
+            ...settled.map((result, index): MemberResult => {
+                const member = loaded.value[index].member;
+                const core = written.get(member.key);
+                if (core && core.status !== 'saved' && core.status !== 'unchanged') {
+                    return { member, status: serverStatus(core), message: core.message };
+                }
+                if (result.status === 'fulfilled') {
+                    const clientWrote = (written.has(member.key) ? otherFields : fields).length > 0;
+                    return { member, status: clientWrote || core?.status === 'saved' ? 'saved' : 'unchanged' };
+                }
+                const reason = result.reason;
+                if (reason instanceof ConfigStores.ConfigConflictError) return { member, status: 'conflict' };
+                if (reason instanceof ConfigStores.ConfigApplyError) return { member, status: 'apply_failed', message: reason.message };
+                return { member, status: 'failed', message: failureMessage(reason) };
+            }),
+            // Members only the console reached: offline ones and unselected ones.
+            ...[...written.values()]
+                .filter(result => !loadedKeys.has(`${result.device_id}/${result.instance_id}`))
+                .map((result): MemberResult => ({
+                    member: members.value.find(member => member.key === `${result.device_id}/${result.instance_id}`)
+                        ?? { key: `${result.device_id}/${result.instance_id}`, device: { machine_id: result.device_id, hostname: result.device_id } as any, instanceId: result.instance_id, running: false, permission: 0, online: false },
+                    status: serverStatus(result),
+                    message: result.message,
+                })),
+        ];
         // Later edits start from what each member stores now.
         loaded.value = loaded.value.map((entry, index) => {
             const result = settled[index];
@@ -187,7 +246,7 @@ const writeBatch = async (fields: string[]) => {
         });
         templateBase.value = cloneConfig(source);
         differing.value = variedFields(loaded.value.map(entry => entry.document.config));
-        const failed = results.value.filter(result => result.status !== 'saved').length;
+        const failed = results.value.filter(result => !['saved', 'unchanged', 'pending'].includes(result.status)).length;
         toast.add({
             severity: failed ? 'warn' : 'success',
             summary: t('web.mesh_network.batch_result'),
@@ -206,7 +265,8 @@ const writeBatch = async (fields: string[]) => {
     }
 };
 
-const resultSeverity = (status: MemberResult['status']) => status === 'saved' ? 'success' : status === 'failed' ? 'danger' : 'warn';
+const resultSeverity = (status: MemberResult['status']) => status === 'saved' || status === 'unchanged' ? 'success'
+    : status === 'pending' ? 'info' : status === 'failed' ? 'danger' : 'warn';
 const resultLabel = (status: MemberResult['status']) => t(`web.mesh_network.result_${status}`);
 </script>
 
@@ -216,7 +276,8 @@ const resultLabel = (status: MemberResult['status']) => t(`web.mesh_network.resu
         <header class="page-heading">
             <div class="min-w-0">
                 <RouterLink :to="{ name: 'networkList' }" class="entity-link text-xs"><i class="pi pi-arrow-left" aria-hidden="true"></i>{{ t('web.main.network_list') }}</RouterLink>
-                <h1 class="mesh-title"><i class="pi pi-globe" aria-hidden="true"></i><span>{{ networkName }}</span>
+                <h1 class="mesh-title"><i class="pi pi-globe" aria-hidden="true"></i><span>{{ network?.label ?? networkName }}</span>
+                    <span v-if="network && network.label !== networkName" class="mono-value muted">{{ networkName }}</span>
                     <Tag v-if="network?.central" :value="t('web.mesh_network.central')" severity="info" /></h1>
             </div>
             <div class="flex flex-wrap gap-2">
@@ -272,7 +333,10 @@ const resultLabel = (status: MemberResult['status']) => t(`web.mesh_network.resu
                 <Column :header="t('web.mesh_network.status')">
                     <template #body="{ data }">
                         <div class="flex flex-wrap gap-1">
-                            <Tag :value="data.running ? t('web.mesh_network.running') : t('web.mesh_network.stopped')" :severity="data.running ? 'success' : 'secondary'" />
+                            <Tag v-if="!data.online" :value="t('web.mesh_network.offline')" severity="secondary" />
+                            <Tag v-else :value="data.running ? t('web.mesh_network.running') : t('web.mesh_network.stopped')" :severity="data.running ? 'success' : 'secondary'" />
+                            <Tag v-if="data.pending" :value="t('web.mesh_network.pending')" severity="info" v-tooltip.top="t('web.mesh_network.pending_hint')" />
+                            <Tag v-if="data.credential" :value="t('web.mesh_network.temporary')" severity="contrast" />
                             <Tag v-if="!editable(data)" :value="t('web.mesh_network.readonly')" severity="warn" />
                         </div>
                     </template>
@@ -308,6 +372,7 @@ const resultLabel = (status: MemberResult['status']) => t(`web.mesh_network.resu
                 <template v-if="template">
                     <Message severity="info" :closable="false">
                         {{ t('web.mesh_network.batch_template', { device: templateDevice }) }}
+                        <div class="mt-2">{{ centralEnabled ? t('web.mesh_network.core_hint') : t('web.mesh_network.core_hint_local') }}</div>
                         <div v-if="differing.length" class="batch-varied">
                             <span>{{ t('web.mesh_network.batch_varied') }}</span>
                             <Tag v-for="field in differing" :key="field" :value="t(field)" severity="secondary" />

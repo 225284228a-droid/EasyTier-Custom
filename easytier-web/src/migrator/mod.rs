@@ -12,6 +12,7 @@ mod m20261001_000010_member_ip_allocation;
 mod m20261008_000011_local_config_snapshots;
 mod m20261014_000012_central_local_delivery;
 mod m20261026_000013_drop_local_config_snapshots;
+mod m20261102_000014_mesh_core_sync;
 
 pub struct Migrator;
 
@@ -30,6 +31,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261008_000011_local_config_snapshots::Migration),
             Box::new(m20261014_000012_central_local_delivery::Migration),
             Box::new(m20261026_000013_drop_local_config_snapshots::Migration),
+            Box::new(m20261102_000014_mesh_core_sync::Migration),
         ]
     }
 }

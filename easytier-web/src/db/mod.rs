@@ -5,10 +5,12 @@ mod devices;
 #[allow(unused_imports)]
 pub mod entity;
 pub(crate) mod local_config_mode;
+mod mesh;
 
 pub(crate) use central_intent::{CentralIntentError, CentralOwnedRuntimeConfig};
 pub(crate) use central_local_delivery::CentralLocalDelivery;
 pub use devices::DeviceHeartbeatRecord;
+pub(crate) use mesh::{MeshCoreReplay, MeshObservation};
 
 use easytier::common::config::{ConfigSource, NetworkConfig};
 use easytier_core::management::remote_client::{ListNetworkProps, Storage};

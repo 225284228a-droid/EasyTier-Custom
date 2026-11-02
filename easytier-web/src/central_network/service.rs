@@ -18,11 +18,14 @@ use rand::{RngCore as _, rngs::OsRng};
 use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter as _, QueryOrder as _};
 use uuid::Uuid;
 
-use super::model::{
-    AclPolicy, CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
-    NetworkMode, member_group_name,
-};
 pub use super::temporary_peers::TemporaryPeerInfo;
+use super::{
+    core_sync::{self, CoreChange, CoreSettings, MemberSyncResult},
+    model::{
+        CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
+        NetworkMode, member_group_name,
+    },
+};
 use crate::{
     client_manager::ClientManager,
     db::{CentralIntentError, Db, UserIdInDb},
@@ -199,6 +202,20 @@ pub struct NetworkCredentialInfo {
     pub expiry_unix: i64,
     pub reusable: bool,
     pub online_peers: Vec<TemporaryPeerInfo>,
+}
+
+/// A network instance seen on a device, without its secret.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MeshMemberInfo {
+    pub device_id: String,
+    pub instance_id: String,
+    pub network_name: String,
+    pub online: bool,
+    /// A missed core change waits for this member to connect.
+    pub pending: bool,
+    pub sync_at: Option<i64>,
+    /// A temporary member, authenticated by a credential.
+    pub credential: bool,
 }
 
 #[derive(Clone)]
@@ -429,6 +446,8 @@ impl CentralNetworkService {
             mode,
             virtual_cidr: settings.virtual_cidr,
             secure_mode: settings.secure_mode,
+            disable_encryption: false,
+            encryption_algorithm: None,
             members: Vec::new(),
             credentials: Vec::new(),
             acl_policy: None,
@@ -468,6 +487,7 @@ impl CentralNetworkService {
         let _mutation = self.lock_mutations(user_id).await;
         request.settings.normalize_virtual_cidr();
         let mut intent = self.load(user_id, network_id).await?;
+        let before = intent_core(&intent);
         let mode = mode_from_settings(&request.settings, self.gateway_config())?;
         intent.display_name = request.settings.display_name;
         if let Some(network_name) = request.settings.network_name {
@@ -492,8 +512,109 @@ impl CentralNetworkService {
         {
             intent.network_secret = secret;
         }
+        let change = core_change(&before, &intent_core(&intent));
         self.persist(intent).await?;
+        // The settings are the network's, so its permanent members follow.
+        if !change.is_empty()
+            && let Err(error) = core_sync::apply(
+                &self.db,
+                &self.client_manager,
+                user_id,
+                &before.network_name,
+                &change,
+            )
+            .await
+        {
+            tracing::warn!(user_id, %network_id, %error, "members did not all receive the network settings");
+        }
         self.get_network(user_id, network_id).await
+    }
+
+    /// Change the core settings of the network named `network_name` on every
+    /// member this console knows. A central network of that name follows,
+    /// so its temporary members and Gateway keep matching.
+    pub async fn apply_core_change(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+        change: CoreChange,
+    ) -> Result<Vec<MemberSyncResult>, CentralNetworkServiceError> {
+        let _mutation = self.lock_mutations(user_id).await;
+        if let Some(mut intent) = self.load_by_name(user_id, network_name).await? {
+            let core = change.apply_to(&intent_core(&intent));
+            intent.network_name = core.network_name;
+            if let Some(secret) = core.network_secret {
+                intent.network_secret = secret;
+            }
+            intent.secure_mode = core.secure_mode;
+            intent.disable_encryption = core.disable_encryption;
+            intent.encryption_algorithm = core.encryption_algorithm;
+            self.persist(intent).await?;
+        }
+        core_sync::apply(
+            &self.db,
+            &self.client_manager,
+            user_id,
+            network_name,
+            &change,
+        )
+        .await
+        .map_err(|error| CentralNetworkServiceError::Invalid(error.to_string()))
+    }
+
+    /// Instances this console has seen on its devices, for the network page.
+    pub async fn mesh_members(
+        &self,
+        user_id: UserIdInDb,
+    ) -> Result<Vec<MeshMemberInfo>, CentralNetworkServiceError> {
+        let pending: std::collections::HashSet<_> = self
+            .db
+            .list_mesh_core_replays(user_id)
+            .await?
+            .into_iter()
+            .map(|replay| (replay.device_id, replay.instance_id))
+            .collect();
+        let online: std::collections::HashSet<_> = self
+            .client_manager
+            .list_sessions_by_user_id(user_id)
+            .await
+            .into_iter()
+            .map(|token| token.machine_id.to_string())
+            .collect();
+        Ok(self
+            .db
+            .list_mesh_observations(user_id, None)
+            .await?
+            .into_iter()
+            .map(|member| MeshMemberInfo {
+                online: online.contains(&member.device_id),
+                pending: pending.contains(&(member.device_id.clone(), member.instance_id.clone())),
+                device_id: member.device_id,
+                instance_id: member.instance_id,
+                network_name: member.network_name,
+                sync_at: member.sync_at,
+                credential: member.credential,
+            })
+            .collect())
+    }
+
+    async fn load_by_name(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+    ) -> Result<Option<CentralNetworkIntent>, CentralNetworkServiceError> {
+        use crate::db::entity::networks;
+        let Some(row) = networks::Entity::find()
+            .filter(networks::Column::UserId.eq(user_id))
+            .filter(networks::Column::NetworkName.eq(network_name))
+            .one(self.db.orm_db())
+            .await?
+        else {
+            return Ok(None);
+        };
+        let network_id = Uuid::parse_str(&row.id)
+            .map_err(|error| CentralNetworkServiceError::Database(error.to_string()))?;
+        self.load(user_id, network_id).await.map(Some)
     }
 
     pub async fn delete_network(
@@ -628,6 +749,14 @@ impl CentralNetworkService {
                 "device_ids must not be empty".into(),
             ));
         }
+        // Permanent members run the network from their own configuration and
+        // are recognized on the devices; only temporary members belong here.
+        if !request.temporary {
+            return Err(CentralNetworkServiceError::Invalid(
+                "only temporary members can be added; create the network on the device instead"
+                    .into(),
+            ));
+        }
         if request.temporary && !intent.secure_mode {
             return Err(CentralNetworkServiceError::Invalid(
                 "temporary members require secure mode".into(),
@@ -680,8 +809,7 @@ impl CentralNetworkService {
                 allocated_ipv4: None,
                 config_override: None,
                 credential_id,
-                acl_group_secret: (!request.temporary && intent.acl_policy.is_some())
-                    .then(random_secret),
+                acl_group_secret: None,
             });
         }
         self.persist(intent).await?;
@@ -773,36 +901,6 @@ impl CentralNetworkService {
         sync_member_credential_proxy_cidrs(&mut intent, position)?;
         self.persist(intent).await?;
         Ok(())
-    }
-
-    pub async fn update_acl_policy(
-        &self,
-        user_id: UserIdInDb,
-        network_id: Uuid,
-        policy: AclPolicy,
-    ) -> Result<AclPolicy, CentralNetworkServiceError> {
-        let _mutation = self.lock_mutations(user_id).await;
-        let mut intent = self.load(user_id, network_id).await?;
-        for member in &mut intent.members {
-            if member.credential_id.is_none() && member.acl_group_secret.is_none() {
-                member.acl_group_secret = Some(random_secret());
-            }
-        }
-        intent.acl_policy = Some(policy.clone());
-        self.persist(intent).await?;
-        Ok(policy)
-    }
-
-    pub async fn get_acl_policy(
-        &self,
-        user_id: UserIdInDb,
-        network_id: Uuid,
-    ) -> Result<AclPolicy, CentralNetworkServiceError> {
-        Ok(self
-            .load(user_id, network_id)
-            .await?
-            .acl_policy
-            .unwrap_or_default())
     }
 
     pub async fn generate_credential(
@@ -1214,7 +1312,59 @@ impl CentralNetworkService {
                 }
             }
         }
+        core_sync::observe_user(&self.db, &self.client_manager, user_id).await;
+        core_sync::replay_user(&self.db, &self.client_manager, user_id).await;
+        for intent in &intents {
+            let credentials: Vec<_> = if intent.secure_mode {
+                let mut credentials: Vec<_> = intent
+                    .credentials
+                    .iter()
+                    .map(super::compiler::compile_managed_credential)
+                    .collect();
+                credentials.sort_by(|left, right| left.credential_id.cmp(&right.credential_id));
+                credentials
+            } else {
+                Vec::new()
+            };
+            if let Err(error) = core_sync::deliver_credentials(
+                &self.db,
+                &self.client_manager,
+                user_id,
+                intent.id,
+                &intent.network_name,
+                &credentials,
+            )
+            .await
+            {
+                tracing::warn!(user_id, network_id = %intent.id, %error, "temporary-node credentials will be retried");
+            }
+        }
         Ok(())
+    }
+}
+
+fn intent_core(intent: &CentralNetworkIntent) -> CoreSettings {
+    CoreSettings {
+        network_name: intent.network_name.clone(),
+        network_secret: Some(intent.network_secret.clone()),
+        secure_mode: intent.secure_mode,
+        disable_encryption: intent.disable_encryption,
+        encryption_algorithm: intent.encryption_algorithm.clone(),
+    }
+}
+
+fn core_change(before: &CoreSettings, after: &CoreSettings) -> CoreChange {
+    CoreChange {
+        network_name: (before.network_name != after.network_name)
+            .then(|| after.network_name.clone()),
+        network_secret: (before.network_secret != after.network_secret)
+            .then(|| after.network_secret.clone())
+            .flatten(),
+        secure_mode: (before.secure_mode != after.secure_mode).then_some(after.secure_mode),
+        disable_encryption: (before.disable_encryption != after.disable_encryption)
+            .then_some(after.disable_encryption),
+        encryption_algorithm: (before.encryption_algorithm != after.encryption_algorithm)
+            .then(|| after.encryption_algorithm.clone().unwrap_or_default()),
     }
 }
 
@@ -1683,7 +1833,7 @@ mod tests {
                 network_id,
                 AddMembersReq {
                     device_ids: vec![device_id.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -1751,17 +1901,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passwordless_secure_networks_publish_restartable_member_configs() {
+    async fn passwordless_secure_networks_publish_restartable_temporary_configs() {
         use easytier::common::config::NetworkConfigExt as _;
         use easytier_core::management::remote_client::{PersistentConfig as _, Storage as _};
 
         for create_without_password in [true, false] {
             let (service, user_id, _) = service().await;
-            let permanent_device = Uuid::new_v4();
+            // Permanent members run the network from their own files; the
+            // persisted passwordless identity is covered by Core's tests.
             let temporary_device = Uuid::new_v4();
-            for device_id in [permanent_device, temporary_device] {
-                register_device(&service, user_id, device_id).await;
-            }
+            register_device(&service, user_id, temporary_device).await;
             let network = service
                 .create_network(
                     user_id,
@@ -1771,20 +1920,18 @@ mod tests {
                 .await
                 .unwrap();
             let network_id = Uuid::parse_str(&network.network_id).unwrap();
-            for (device_id, temporary) in [(permanent_device, false), (temporary_device, true)] {
-                service
-                    .add_members(
-                        user_id,
-                        network_id,
-                        AddMembersReq {
-                            device_ids: vec![device_id.to_string()],
-                            temporary,
-                            ttl_seconds: Some(300),
-                        },
-                    )
-                    .await
-                    .unwrap();
-            }
+            service
+                .add_members(
+                    user_id,
+                    network_id,
+                    AddMembersReq {
+                        device_ids: vec![temporary_device.to_string()],
+                        temporary: true,
+                        ttl_seconds: Some(300),
+                    },
+                )
+                .await
+                .unwrap();
             if !create_without_password {
                 service
                     .update_network(
@@ -1801,30 +1948,6 @@ mod tests {
             let saved_network = service.get_network(user_id, network_id).await.unwrap();
             assert!(saved_network.secure_mode);
             assert!(saved_network.network_secret.is_empty());
-
-            let saved_config = service
-                .db
-                .get_network_config((user_id, permanent_device), &network_id.to_string())
-                .await
-                .unwrap()
-                .unwrap();
-            let config = saved_config
-                .get_network_config()
-                .unwrap()
-                .gen_config()
-                .unwrap();
-            let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
-            assert_eq!(
-                restored.get_network_identity().network_secret.as_deref(),
-                Some("")
-            );
-            assert_eq!(restored.get_secure_mode(), config.get_secure_mode());
-            assert_eq!(
-                restored.get_managed_credentials(),
-                config.get_managed_credentials()
-            );
-            assert_eq!(restored.get_managed_credentials().len(), 1);
-            easytier_core::instance::CoreInstanceConfig::from_toml(&restored).unwrap();
 
             let saved_temporary = service
                 .db
@@ -1977,7 +2100,7 @@ mod tests {
                 id,
                 AddMembersReq {
                     device_ids: devices.iter().map(ToString::to_string).collect(),
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2075,7 +2198,7 @@ mod tests {
                     network_id,
                     AddMembersReq {
                         device_ids: vec![device.to_string()],
-                        temporary: false,
+                        temporary: true,
                         ttl_seconds: None,
                     },
                 )
@@ -2140,7 +2263,7 @@ mod tests {
                 id,
                 AddMembersReq {
                     device_ids: devices.iter().map(ToString::to_string).collect(),
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2319,7 +2442,7 @@ mod tests {
                 network_id,
                 AddMembersReq {
                     device_ids: vec![device.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2377,7 +2500,7 @@ mod tests {
                 network_id,
                 AddMembersReq {
                     device_ids: vec![replacement.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2410,7 +2533,7 @@ mod tests {
                 Uuid::parse_str(&alpha.network_id).unwrap(),
                 AddMembersReq {
                     device_ids: vec![device_id.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2430,7 +2553,7 @@ mod tests {
                 Uuid::parse_str(&beta.network_id).unwrap(),
                 AddMembersReq {
                     device_ids: vec![device_id.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2450,7 +2573,7 @@ mod tests {
                 Uuid::parse_str(&other.network_id).unwrap(),
                 AddMembersReq {
                     device_ids: vec![device_id.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2549,7 +2672,7 @@ mod tests {
                 network_id,
                 AddMembersReq {
                     device_ids: vec![device_id.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2626,7 +2749,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn temporary_member_gets_exclusive_group_credential_without_acl_secret() {
+    async fn permanent_members_are_rejected_and_temporary_ones_get_exclusive_credentials() {
         let (service, user_id, _) = service().await;
         let permanent_device = Uuid::new_v4();
         let temporary_device = Uuid::new_v4();
@@ -2638,7 +2761,7 @@ mod tests {
             .unwrap();
         let network_id = Uuid::parse_str(&network.network_id).unwrap();
 
-        service
+        let error = service
             .add_members(
                 user_id,
                 network_id,
@@ -2649,15 +2772,8 @@ mod tests {
                 },
             )
             .await
-            .unwrap();
-        service
-            .update_acl_policy(
-                user_id,
-                network_id,
-                crate::central_network::model::AclPolicy::default(),
-            )
-            .await
-            .unwrap();
+            .unwrap_err();
+        assert!(matches!(error, CentralNetworkServiceError::Invalid(_)));
         service
             .add_members(
                 user_id,
@@ -2677,17 +2793,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let permanent = intent
-            .members
-            .iter()
-            .find(|member| member.device_id == permanent_device.to_string())
-            .unwrap();
-        assert!(permanent.acl_group_secret.is_some());
-        let temporary = intent
-            .members
-            .iter()
-            .find(|member| member.device_id == temporary_device.to_string())
-            .unwrap();
+        assert_eq!(intent.members.len(), 1);
+        let temporary = &intent.members[0];
         assert!(temporary.acl_group_secret.is_none());
         let credential = intent
             .credentials
@@ -2811,7 +2918,7 @@ mod tests {
                 network_id,
                 AddMembersReq {
                     device_ids: vec![device_id.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2866,7 +2973,7 @@ mod tests {
                 network_b_id,
                 AddMembersReq {
                     device_ids: vec![device_b.to_string()],
-                    temporary: false,
+                    temporary: true,
                     ttl_seconds: None,
                 },
             )
@@ -2991,7 +3098,7 @@ mod tests {
                     network_id,
                     AddMembersReq {
                         device_ids: vec![valid_device.to_string(), Uuid::new_v4().to_string()],
-                        temporary: false,
+                        temporary: true,
                         ttl_seconds: None,
                     },
                 )
@@ -3031,7 +3138,7 @@ mod tests {
                         network_id,
                         AddMembersReq {
                             device_ids: vec![first_device.to_string()],
-                            temporary: false,
+                            temporary: true,
                             ttl_seconds: None,
                         },
                     )
@@ -3047,7 +3154,7 @@ mod tests {
                         network_id,
                         AddMembersReq {
                             device_ids: vec![second_device.to_string()],
-                            temporary: false,
+                            temporary: true,
                             ttl_seconds: None,
                         },
                     )
@@ -3296,7 +3403,7 @@ mod tests {
                     network_id,
                     AddMembersReq {
                         device_ids: vec![device_id.to_string()],
-                        temporary: false,
+                        temporary: true,
                         ttl_seconds: None,
                     },
                 )
@@ -3401,68 +3508,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removing_member_revokes_published_credentials_and_clears_its_configs() {
-        use easytier_core::management::remote_client::{
-            ListNetworkProps, PersistentConfig as _, Storage as _,
-        };
+    async fn removing_member_revokes_its_credential_and_clears_its_configs() {
+        use easytier_core::management::remote_client::{ListNetworkProps, Storage as _};
         let (service, user_id, _) = service().await;
-        let permanent = Uuid::new_v4();
         let temporary = Uuid::new_v4();
-        for device_id in [permanent, temporary] {
-            register_device(&service, user_id, device_id).await;
-        }
-        let mut settings = standalone_settings();
-        settings.secure_mode = true;
+        register_device(&service, user_id, temporary).await;
         let network = service
-            .create_network(user_id, settings, None)
+            .create_network(user_id, standalone_settings(), None)
             .await
             .unwrap();
         let network_id = Uuid::parse_str(&network.network_id).unwrap();
-        for (device_id, is_temporary) in [(permanent, false), (temporary, true)] {
-            service
-                .add_members(
-                    user_id,
-                    network_id,
-                    AddMembersReq {
-                        device_ids: vec![device_id.to_string()],
-                        temporary: is_temporary,
-                        ttl_seconds: None,
-                    },
-                )
-                .await
-                .unwrap();
-        }
-        let before = service
-            .db
-            .get_network_config((user_id, permanent), &network_id.to_string())
+        service
+            .add_members(
+                user_id,
+                network_id,
+                AddMembersReq {
+                    device_ids: vec![temporary.to_string()],
+                    temporary: true,
+                    ttl_seconds: None,
+                },
+            )
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(
-            before
-                .get_network_config()
-                .unwrap()
-                .managed_credentials
-                .len(),
-            1
-        );
+        let intent = service.load(user_id, network_id).await.unwrap();
+        assert_eq!(intent.credentials.len(), 1);
         service
             .remove_member(user_id, network_id, temporary)
             .await
             .unwrap();
-        let after = service
-            .db
-            .get_network_config((user_id, permanent), &network_id.to_string())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            after
-                .get_network_config()
-                .unwrap()
-                .managed_credentials
-                .is_empty()
-        );
+        let intent = service.load(user_id, network_id).await.unwrap();
+        assert!(intent.credentials.is_empty());
         assert!(
             service
                 .db

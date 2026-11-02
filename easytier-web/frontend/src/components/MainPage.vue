@@ -107,6 +107,8 @@ const enrollBell = ref();
 const enrollInfo = ref<import('../modules/api').ConsoleInfo | null>(null);
 const enrollLoading = ref(false);
 const centralEnabled = computed(() => enrollInfo.value?.webhook_auth === false);
+// Central networks join the recognized ones as soon as the mode is known.
+watch(centralEnabled, enabled => { if (enabled) void discovery.refresh(); });
 watch([() => enrollInfo.value?.webhook_auth, () => route.name], ([external, name]) => {
     // Only central network pages need the central service; recognized
     // networks work in either mode.
@@ -175,7 +177,7 @@ const networkNavigation = computed<NavItem[]>(() => [
     { key: 'networkList', label: t('web.main.network_list'), icon: 'pi pi-globe', to: { name: 'networkList' } },
     ...networks.value.map(network => ({
         key: `mesh:${network.name}`,
-        label: network.name,
+        label: network.label,
         icon: network.central ? 'pi pi-sitemap' : 'pi pi-share-alt',
         to: { name: 'meshNetwork', params: { networkName: network.name } },
         badge: `${network.runningCount}/${network.members.length}`,

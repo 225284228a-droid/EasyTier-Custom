@@ -127,13 +127,18 @@ share its mutation lock so ownership checks cannot race with enrollment.
 Internal Console APIs retain their upstream behavior and central routes and
 publication workers are disabled in Console mode.
 
-The Web console's network page does not read central network state. It
-recognizes networks from the devices' own configurations by `network_name`,
-using the same `name:<network_name>` identity as the topology, and edits a
-network as a batch: only the fields changed in a template are merged into each
-member's own configuration and saved through that device's configuration
-store. Central networks appear there through the instances they publish. See
-`docs/decentralized-networks.md`.
+The Web console's network page recognizes networks from the devices' own
+configurations by `network_name`, using the same `name:<network_name>`
+identity as the topology. The console manages only the core settings peers
+must share to stay connected (network name, secret, secure mode switch,
+encryption switch and algorithm). It writes a change of them to the members
+it can reach and sends a missed change once to a member that was offline,
+the next time it connects; a later change on the node is never reverted.
+Each write stamps `network_sync_at` (UTC Unix milliseconds) on the node so
+several consoles managing one node order competing changes. Other fields are
+batch-edited in the browser for online members only. Central networks keep
+only temporary members, their credentials and the Gateway; ACL policies are
+not managed. See `docs/decentralized-networks.md`.
 
 Device deletion uses the upstream disconnect semantics: an already in-flight
 validation may register the device again. A persisted ban rejects subsequent
