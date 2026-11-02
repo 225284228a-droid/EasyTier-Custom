@@ -300,9 +300,13 @@ type NetworkConfig struct {
 	NetworkSyncAt *uint64 `protobuf:"varint,50085,opt,name=network_sync_at,json=networkSyncAt,proto3,oneof" json:"network_sync_at,omitempty"`
 	// The name shown for this configuration (TOML instance_name). Unset shows
 	// the network name; a console writes the network's display name here.
-	InstanceName  *string `protobuf:"bytes,50086,opt,name=instance_name,json=instanceName,proto3,oneof" json:"instance_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	InstanceName *string `protobuf:"bytes,50086,opt,name=instance_name,json=instanceName,proto3,oneof" json:"instance_name,omitempty"`
+	// UTC Unix milliseconds of the last batch edit of advanced settings (feature
+	// switches and transport parameters) that a console published. Consoles
+	// order competing edits by it; the runtime ignores it.
+	AdvancedSyncAt *uint64 `protobuf:"varint,50087,opt,name=advanced_sync_at,json=advancedSyncAt,proto3,oneof" json:"advanced_sync_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NetworkConfig) Reset() {
@@ -919,6 +923,13 @@ func (x *NetworkConfig) GetInstanceName() string {
 		return *x.InstanceName
 	}
 	return ""
+}
+
+func (x *NetworkConfig) GetAdvancedSyncAt() uint64 {
+	if x != nil && x.AdvancedSyncAt != nil {
+		return *x.AdvancedSyncAt
+	}
+	return 0
 }
 
 // One destination subnet mapped to exactly one virtual node address.
@@ -3360,7 +3371,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\xcb,\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\x91-\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3456,7 +3467,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bHDR\x1adisableParallelConnections\x88\x01\x01\x120\n" +
 	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHER\x0ftrafficDisguise\x88\x01\x01\x12-\n" +
 	"\x0fnetwork_sync_at\x18\xa5\x87\x03 \x01(\x04HFR\rnetworkSyncAt\x88\x01\x01\x12*\n" +
-	"\rinstance_name\x18\xa6\x87\x03 \x01(\tHGR\finstanceName\x88\x01\x01B\x0e\n" +
+	"\rinstance_name\x18\xa6\x87\x03 \x01(\tHGR\finstanceName\x88\x01\x01\x12/\n" +
+	"\x10advanced_sync_at\x18\xa7\x87\x03 \x01(\x04HHR\x0eadvancedSyncAt\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3528,7 +3540,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x1d_disable_parallel_connectionsB\x13\n" +
 	"\x11_traffic_disguiseB\x12\n" +
 	"\x10_network_sync_atB\x10\n" +
-	"\x0e_instance_nameJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
+	"\x0e_instance_nameB\x13\n" +
+	"\x11_advanced_sync_atJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
 	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xc0\x01\n" +
