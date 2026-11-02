@@ -93,6 +93,7 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "disable_parallel_connections" => vec!["disable_parallel_connections"],
         "traffic_disguise" => vec!["traffic_disguise"],
         "network_sync_at" => vec!["network_sync_at"],
+        "advanced_sync_at" => vec!["advanced_sync_at"],
         "instance_name" => vec!["instance_name"],
         "dhcp" => vec!["dhcp", "ipv4"],
         "dhcp_ipv4_cidr" => vec!["dhcp"],

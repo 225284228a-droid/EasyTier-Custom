@@ -66,6 +66,10 @@ pub trait ConfigLoader: Send + Sync {
         None
     }
     fn set_network_sync_at(&self, _stamp: Option<u64>) {}
+    fn get_advanced_sync_at(&self) -> Option<u64> {
+        None
+    }
+    fn set_advanced_sync_at(&self, _stamp: Option<u64>) {}
 
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
@@ -477,6 +481,7 @@ struct Config {
     disable_parallel_connections: Option<bool>,
     traffic_disguise: Option<String>,
     network_sync_at: Option<u64>,
+    advanced_sync_at: Option<u64>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -984,6 +989,14 @@ impl ConfigLoader for TomlConfig {
         self.config.lock().unwrap().network_sync_at = stamp;
     }
 
+    fn get_advanced_sync_at(&self) -> Option<u64> {
+        self.config.lock().unwrap().advanced_sync_at
+    }
+
+    fn set_advanced_sync_at(&self, stamp: Option<u64>) {
+        self.config.lock().unwrap().advanced_sync_at = stamp;
+    }
+
     fn get_netns(&self) -> Option<String> {
         self.config.lock().unwrap().netns.clone()
     }
@@ -1441,9 +1454,12 @@ mod tests {
         let config = TomlConfig::new_from_str("").unwrap();
         assert_eq!(config.get_network_sync_at(), None);
         assert!(!config.dump().contains("network_sync_at"));
+        assert!(!config.dump().contains("advanced_sync_at"));
         config.set_network_sync_at(Some(1_793_587_936_027));
+        config.set_advanced_sync_at(Some(1_793_587_936_028));
         let restored = TomlConfig::new_from_str(&config.dump()).unwrap();
         assert_eq!(restored.get_network_sync_at(), Some(1_793_587_936_027));
+        assert_eq!(restored.get_advanced_sync_at(), Some(1_793_587_936_028));
         #[cfg(feature = "web-client")]
         assert_eq!(
             crate::config::api::network_config_from_toml(&restored).network_sync_at,

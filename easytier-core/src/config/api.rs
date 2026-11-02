@@ -41,6 +41,7 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
         result.traffic_disguise = Some(config.get_traffic_disguise());
     }
     result.network_sync_at = config.get_network_sync_at();
+    result.advanced_sync_at = config.get_advanced_sync_at();
 
     let network_identity = config.get_network_identity();
     result.instance_name = super::api_input::display_name(config, &network_identity.network_name);

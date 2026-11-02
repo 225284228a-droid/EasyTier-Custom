@@ -153,6 +153,10 @@ message NetworkConfig {
   // The name shown for this configuration (TOML instance_name). Unset shows
   // the network name; a console writes the network's display name here.
   optional string instance_name = 50086;
+  // UTC Unix milliseconds of the last batch edit of advanced settings (feature
+  // switches and transport parameters) that a console published. Consoles
+  // order competing edits by it; the runtime ignores it.
+  optional uint64 advanced_sync_at = 50087;
 }
 
 // One destination subnet mapped to exactly one virtual node address.

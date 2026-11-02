@@ -66,6 +66,7 @@ export type NetworkConfig = Omit<
   | 'instance_id'
   | 'instance_recv_bps_limit'
   | 'network_sync_at'
+  | 'advanced_sync_at'
   | 'mtu'
   | 'networking_method'
 > & {
@@ -74,6 +75,7 @@ export type NetworkConfig = Omit<
   instance_recv_bps_limit: number | string | null
   /// UTC Unix milliseconds of the last core-setting change a console published.
   network_sync_at?: number | string | null
+  advanced_sync_at?: number | string | null
   networking_method: NetworkingMethod | string
   /// Form-only field: an admin-issued credential secret for joining as a
   /// temporary device. Saved as secure_mode.local_private_key with an empty
@@ -229,6 +231,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mtu: null,
     instance_recv_bps_limit: null,
     network_sync_at: null,
+    advanced_sync_at: null,
     mapped_listeners: [],
     tld_dns_zone: 'et.net.',
     port_forwards: [],
@@ -402,6 +405,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
     normalized.instance_recv_bps_limit as any,
   )
   normalized.network_sync_at = normalizeUint64ForInput(normalized.network_sync_at as any)
+  normalized.advanced_sync_at = normalizeUint64ForInput(normalized.advanced_sync_at as any)
   normalized.proxy_cidrs ??= []
   normalized.listener_urls ??= []
   normalized.relay_network_whitelist ??= []
@@ -442,6 +446,7 @@ export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: rea
   backend.mtu = normalizeNumberForInput(config.mtu) ?? undefined
   backend.instance_recv_bps_limit = toBackendUint64(config.instance_recv_bps_limit)
   backend.network_sync_at = toBackendUint64(config.network_sync_at)
+  backend.advanced_sync_at = toBackendUint64(config.advanced_sync_at)
   if (config.acl === undefined || isAclEmpty(config.acl)) {
     backend.acl = undefined
   }
