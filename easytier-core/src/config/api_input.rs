@@ -59,10 +59,14 @@ pub type NetworkingMethod = easytier_proto::api::manage::NetworkingMethod;
 pub type NetworkConfig = easytier_proto::api::manage::NetworkConfig;
 
 /// The display name a configuration carries, when it names its instance
-/// differently from its network.
+/// differently from its network. Placeholder names (the default, or the
+/// instance id a console-created file starts with) are not display names.
 pub(crate) fn display_name(config: &impl ConfigLoader, network_name: &str) -> Option<String> {
     let name = config.get_inst_name();
-    (name != network_name && name != super::toml::default_instance_name()).then_some(name)
+    (name != network_name
+        && name != super::toml::default_instance_name()
+        && name != config.get_id().to_string())
+    .then_some(name)
 }
 
 pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
@@ -1466,6 +1470,12 @@ private_mode = false
                 .instance_name
                 .as_deref(),
             Some("Head office")
+        );
+        // A console-created file starts named by its instance id.
+        toml.set_inst_name(toml.get_id().to_string());
+        assert_eq!(
+            NetworkConfig::new_from_config(&toml).unwrap().instance_name,
+            None
         );
     }
 

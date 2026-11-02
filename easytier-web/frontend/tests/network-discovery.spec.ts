@@ -46,6 +46,16 @@ describe('network discovery', () => {
     expect(networks[0].members).toEqual([])
   })
 
+  it('labels a network by its display name but not by placeholder instance names', () => {
+    const named = (id: string, instance: string, instanceName: string): DeviceNetworkScan => {
+      const result = scan(id, { [instance]: 'office' })
+      result.metas[instance] = { ...result.metas[instance], instance_name: instanceName }
+      return result
+    }
+    expect(groupNetworks([named('a', 'i1', 'Head office')])[0].label).toBe('Head office')
+    expect(groupNetworks([named('a', 'i1', 'i1'), named('b', 'i2', 'default')])[0].label).toBe('office')
+  })
+
   it('skips configurations without a network name', () => {
     expect(groupNetworks([scan('a', { i1: ' ' })])).toEqual([])
   })

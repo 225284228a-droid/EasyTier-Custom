@@ -85,7 +85,7 @@ export function groupNetworks(
       if (!name) continue
       const entry = network(name)
       const isRunning = running.has(instanceId)
-      const shown = LibApi.configDisplayName(scan.metas[instanceId])
+      const shown = LibApi.configDisplayName(scan.metas[instanceId], instanceId)
       if (shown !== name) displayNames.set(name, [...(displayNames.get(name) ?? []), shown])
       entry.members.push({
         key: `${scan.device.machine_id}/${instanceId}`,

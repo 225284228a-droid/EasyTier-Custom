@@ -54,9 +54,14 @@ export interface NetworkMeta {
     instance_name?: string;
 }
 
-/** A configuration is shown by its display name, else by its network name. */
-export function configDisplayName(meta: Pick<NetworkMeta, 'network_name' | 'instance_name'>): string {
-    return meta.instance_name && meta.instance_name !== 'default' ? meta.instance_name : meta.network_name;
+/**
+ * A configuration is shown by its display name, else by its network name.
+ * Placeholder names (the default, or the instance id a console-created file
+ * starts with) are not display names.
+ */
+export function configDisplayName(meta: Pick<NetworkMeta, 'network_name' | 'instance_name'>, instanceId?: string): string {
+    const name = meta.instance_name;
+    return name && name !== 'default' && name !== instanceId ? name : meta.network_name;
 }
 
 export interface GetNetworkMetasResponse {

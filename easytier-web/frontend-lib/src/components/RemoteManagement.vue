@@ -618,7 +618,7 @@ const editorMerged = editor.merged;
                                         <span class="truncate block">
                                             &nbsp;
                                             <span v-if="slotProps.value.meta">
-                                                {{ Api.configDisplayName(slotProps.value.meta) }} ({{ slotProps.value.uuid }})
+                                                {{ Api.configDisplayName(slotProps.value.meta, slotProps.value.uuid) }} ({{ slotProps.value.uuid }})
                                             </span>
                                             <span v-else>
                                                 {{ slotProps.value.uuid }}
@@ -638,8 +638,8 @@ const editorMerged = editor.merged;
                                     <div class="flex items-center min-w-0">
                                         <div class="mr-4 min-w-0 flex-1">
                                             <span class="truncate block">{{ slotProps.option.meta
-                                                ? Api.configDisplayName(slotProps.option.meta) : slotProps.option.uuid }}</span>
-                                            <span v-if="slotProps.option.meta && Api.configDisplayName(slotProps.option.meta) !== slotProps.option.meta.network_name"
+                                                ? Api.configDisplayName(slotProps.option.meta, slotProps.option.uuid) : slotProps.option.uuid }}</span>
+                                            <span v-if="slotProps.option.meta && Api.configDisplayName(slotProps.option.meta, slotProps.option.uuid) !== slotProps.option.meta.network_name"
                                                 class="truncate block text-xs opacity-70">{{ t('network_name') }}: {{ slotProps.option.meta.network_name }}</span>
                                         </div>
                                         <Tag class="my-auto leading-3 shrink-0"
