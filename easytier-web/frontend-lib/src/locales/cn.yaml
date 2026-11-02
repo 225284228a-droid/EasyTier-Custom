@@ -191,6 +191,10 @@ loss_rate: 丢包率
 nat_type: NAT 类型
 
 flags_switch: 功能开关
+advanced_lock: 锁定高级设置
+advanced_unlock: 解锁高级设置
+advanced_locked_hint: 已锁定：控制台的批量编辑不会修改这份配置的高级设置、功能开关和启停状态
+advanced_unlocked_hint: 锁定后，控制台的批量编辑不会修改这份配置的高级设置、功能开关和启停状态
 
 latency_first: 开启延迟优先模式
 latency_first_help: 忽略中转跳数，选择总延迟最低的路径
@@ -723,66 +727,97 @@ web:
     stopped: 未运行
 
   mesh_network:
+    sections: 网络页面
+    section_overview: 概览
+    section_members: 成员
+    section_settings: 网络设置
+    section_advanced: 高级设置
+    section_preset: 预下发配置
+    section_temporary: 临时设备
+    needs_central: 控制台接入了外部 webhook（--webhook-url），设备和配置由外部系统管理，此页不可用
     display_name: 网络显示名称
     display_name_hint: 设备上显示的配置名称，留空则显示网络名称；不影响组网
+    network_name: 网络名称
+    network_name_hint: 组网身份，与网络密码一起决定节点能否互联；修改后所有成员一起改名
+    network_secret: 网络密码
+    secret_generated: 留空自动生成
+    secure_mode: 安全模式
+    encryption: 加密
+    encryption_algorithm: 加密算法
+    settings_hint: 这些是成员之间不一致就会失联的核心设置。保存后控制台写入所有在线成员；离线成员在下次上线时补发一次，期间在设备上手动改过的也会被覆盖，只有其他控制台更晚的修改会保留。补发之后设备上的修改不会被改回。
+    core_hint: 控制台会把修改写入所有在线成员（包括已锁定的），离线成员在下次上线时补发一次。
+    apply_settings: 保存并下发
+    discard: 放弃修改
+    delete: 删除网络
+    delete_hint: 删除控制台保存的预下发配置、临时设备和凭证。成员设备上的配置会保留但全部暂停，离线成员在下次上线时暂停；已锁定的成员保持原状。
+    delete_confirm: 删除网络 {name}？成员设备上的配置会保留并暂停，临时设备会被移除。
+    delete_done: '{count} 个成员已暂停或将在上线时暂停，{failed} 个失败'
+    advanced_hint: 只会写入你改动过的设置，没动过的设置保持每个成员各自的值。已锁定的成员会被跳过；离线成员在下次上线时补发一次，期间在设备上手动改过的也会被覆盖，只有其他控制台更晚的修改会保留。每项下方是当前成员的取值分布。
+    apply_advanced: 应用 {count} 项到 {members} 个成员
+    locked_skipped: '{count} 个已锁定，跳过'
+    parameters: 传输参数
+    compression: 压缩算法
+    compress_none: 不压缩
+    compress_zstd: Zstd
+    value_keep: 不改
+    value_default: 默认
+    value_on: 开
+    value_off: 关
+    preset_hint: 新设备加入网络时使用的初始配置，只对新加入的设备生效，不会修改或覆盖已有成员。
+    preset_core_hint: 网络名称、密码、安全模式、加密和显示名称取网络当前的核心设置；虚拟 IP 使用 DHCP 自动分配。
+    listeners: 监听地址
+    auto_join: 新设备自动加入
+    auto_join_label: 新设备首次连上控制台时自动加入此网络
+    auto_join_hint: 开启后，第一次连上本控制台的设备会按预下发配置自动加入并启动，每台设备只加入一次；开启前已经连接过的设备不会自动加入。
+    auto_join_on: 自动加入
+    members: 成员
+    members_hint: 启动/停止只作用于选中的在线成员，已锁定的成员不会被批量操作。点击设备名在当前页面打开设备管理。
+    locked: 已锁定
     pending: 待补发
-    pending_hint: 修改核心设置时该成员离线，它下次上线时会补发一次；之后在设备上的修改不会被覆盖
-    temporary: 临时节点
+    pending_hint: 修改时该成员离线，下次上线时补发一次（覆盖期间的手动修改，其他控制台更晚的修改除外）；补发之后在设备上的修改不会被改回
+    temporary: 临时设备
+    add_device: 加入设备
+    add_device_hint: 选中的设备会按网络的核心设置和预下发配置创建一份配置并启动；已经是成员的设备不会被修改。
+    add_device_confirm: 加入 {count} 台设备
+    no_candidate_devices: 没有可加入的在线设备
+    temporary_settings: 接入设置
+    temporary_settings_hint: 只影响临时设备。网络名称、密码和安全模式跟随网络设置。
+    temporary_empty: 还没有临时设备
+    temporary_empty_hint: 临时设备的配置由控制台整份下发，使用凭证而不是网络密码接入，到期或移除后失效。
+    temporary_needs_secure: 临时设备需要安全模式，请先在网络设置中开启：
+    add_temporary: 添加临时设备
+    result_saved: 已保存
     result_unchanged: 无需修改
     result_pending: 离线，上线时补发一次
-    core_hint: 网络名、密码、安全模式和加密设置由控制台统一下发，离线成员在下次上线时补发一次；其他字段只写入当前在线并选中的成员。
-    core_hint_local: 当前不是中心管理模式，所有字段只写入当前在线并选中的成员。
+    result_conflict: 配置已在别处被修改，未写入
+    result_locked: 已锁定，跳过
+    result_failed: 失败
+    batch_result: 下发结果
+    batch_done: '{ok} 个成功，{failed} 个失败'
+    batch_start: 启动
+    batch_stop: 停止
     list_hint: 网络由设备上的配置自动识别：同一网络名的实例即为同一网络，与拓扑图使用相同的识别方式
     devices: 设备
     running: 运行中
     stopped: 已停止
     offline: 离线
-    central: 中心托管
-    central_hint: 中心托管网络的配置由控制台下发。在这里批量修改会直接写入设备上的配置文件，中心发布时将保留这些本地修改并报告冲突
-    open_central: 中心管理
     scan_partial: '{count} 台设备的配置暂时无法读取'
-    no_members: 当前没有在线设备运行或保存了该网络
-    not_found: 未在在线设备上发现网络 {name}
-    members: 成员实例
+    no_members: 当前没有设备运行或保存了该网络
     instance: 实例
     status: 状态
     select_all: 全选
     selected: '已选 {count} 个'
-    batch_edit: 批量修改
-    batch_start: 启动
-    batch_stop: 停止
     open_device: 设备管理
     topology: 网络拓扑
     nodes: 拓扑节点
     topology_hint: 只显示网络 {name} 的节点与连接
     readonly: 只读
-    batch_title: 批量修改 · {name}
-    batch_loading: 正在读取 {count} 个成员的配置…
-    batch_template: 表单以 {device} 的配置为模板。只有你改动的字段会写入所有选中的成员，其余字段保持每个成员各自的值。
-    batch_varied: 这些字段在成员间取值不同，未改动时各自保留：
-    batch_load_failed: '{count} 个成员的配置无法读取，将不会被修改'
-    batch_apply: 应用到 {count} 个成员
-    batch_no_changes: 没有改动任何字段
-    batch_per_device_title: 包含设备专属字段
-    batch_per_device_confirm: '以下字段通常每台设备各不相同：{fields}。继续将使所有选中成员使用相同的值。'
-    batch_result: 修改结果
-    batch_done: '{ok} 个成功，{failed} 个失败'
-    result_saved: 已保存
-    result_conflict: 配置已在别处被修改，未写入
-    result_apply_failed: 已保存，但网络未能以新配置启动，节点保留了原配置
-    result_failed: 失败
-    renamed: 网络已改名为 {name}
-    create: 批量创建网络
-    create_central: 创建中心托管网络
-    create_hint: 为每台选中的设备各创建一份同名网络配置；之后可以在网络页批量修改
-    network_name: 网络名称
-    network_secret: 网络密码
-    target_devices: 目标设备
+    create: 新建网络
+    created: 已创建网络 {name}
+    create_devices_optional: 可选。选中的设备会立即加入并启动；也可以稍后在成员页加入。
+    create_devices_required: 控制台接入了外部 webhook，不保存网络记录，网络只存在于设备的配置中，至少选择一台设备。
     no_online_devices: 暂无在线设备
-    start_after_create: 创建后立即启动
-    listeners: 监听地址
-    create_done: '已在 {ok} 台设备上创建，{failed} 台失败'
-    name_exists: 已存在同名网络，新建的配置将加入该网络
+    name_exists: 已存在同名网络
 
   acl:
     trust_hint: 永久成员属于可信管理员。ACL 用于管理其正常流量，不能防止设备管理员修改身份或策略。不可信设备请使用临时凭据接入。

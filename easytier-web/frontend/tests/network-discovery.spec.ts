@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { NetworkTypes } from 'easytier-frontend-lib'
-import { groupNetworks, mergeConfigFields, variedFields, type DeviceNetworkScan } from '../src/modules/networkDiscovery'
+import { groupNetworks, type DeviceNetworkScan } from '../src/modules/networkDiscovery'
+import { ADVANCED_SWITCHES, advancedDistribution, touchedSettings } from '../src/modules/meshAdvanced'
 import { buildTopology, networkNameIdentity } from '../src/modules/networkTopology'
 
 const device = (id: string) => ({ machine_id: id, hostname: id, running_network_count: 0 }) as any
@@ -13,7 +13,6 @@ const scan = (id: string, running: Record<string, string>, disabled: Record<stri
     .map(([instance, name]) => [instance, { network_name: name, config_permission: 0 }])),
 })
 
-const config = (patch: Partial<NetworkTypes.NetworkConfig>) => ({ ...NetworkTypes.DEFAULT_NETWORK_CONFIG(), ...patch })
 
 describe('network discovery', () => {
   it('groups device configurations by network name, running or stopped', () => {
@@ -56,48 +55,49 @@ describe('network discovery', () => {
     expect(groupNetworks([named('a', 'i1', 'i1'), named('b', 'i2', 'default')])[0].label).toBe('office')
   })
 
+  it('keeps a network the console records before its first member', () => {
+    const networks = groupNetworks([], [], [], [], [{
+      network_name: 'lab',
+      core: { network_name: 'lab', network_secret: 's', secure_mode: false, disable_encryption: false, display_name: 'Lab' },
+      preset: { peers: [], listeners: [], advanced: {} },
+      auto_join: true,
+    }])
+    expect(networks.map(network => network.name)).toEqual(['lab'])
+    expect(networks[0].label).toBe('Lab')
+    expect(networks[0].record?.auto_join).toBe(true)
+  })
+
+  it('marks locked members', () => {
+    const [network] = groupNetworks([scan('a', { i1: 'office' })], [], [{
+      device_id: 'a', instance_id: 'i1', network_name: 'office', online: true, pending: false, credential: false, locked: true,
+    }])
+    expect(network.members[0].locked).toBe(true)
+  })
+
   it('skips configurations without a network name', () => {
     expect(groupNetworks([scan('a', { i1: ' ' })])).toEqual([])
   })
 })
 
-describe('batch merge', () => {
-  it('copies only the edited fields and keeps per-device values', () => {
-    const target = config({ hostname: 'node-a', virtual_ipv4: '10.0.0.2', dhcp: false, network_secret: 'old', peer_urls: ['tcp://1.1.1.1:11010'] })
-    const source = config({ hostname: 'node-b', virtual_ipv4: '10.0.0.3', dhcp: false, network_secret: 'new', peer_urls: ['tcp://2.2.2.2:11010'] })
-    const merged = mergeConfigFields(target, source, ['network_secret', 'peer_urls'])
-    expect(merged.instance_id).toBe(target.instance_id)
-    expect(merged.network_secret).toBe('new')
-    expect(merged.peer_urls).toEqual(['tcp://2.2.2.2:11010'])
-    expect(merged.hostname).toBe('node-a')
-    expect(merged.virtual_ipv4).toBe('10.0.0.2')
+describe('advanced settings', () => {
+  it('counts how members hold each setting', () => {
+    const distribution = advancedDistribution([
+      { latency_first: true, mtu: 1300 },
+      { latency_first: null, mtu: 1300 },
+      {},
+    ])
+    expect(Object.fromEntries(distribution.latency_first)).toEqual({ true: 1, default: 2 })
+    expect(Object.fromEntries(distribution.mtu)).toEqual({ 1300: 2, default: 1 })
   })
 
-  it('treats a value cleared in the template as a reset', () => {
-    const target = config({ peer_urls: ['tcp://1.1.1.1:11010'], latency_first: true })
-    const source = config({ peer_urls: [], latency_first: false })
-    const merged = mergeConfigFields(target, source, ['peer_urls', 'latency_first'])
-    expect(merged.peer_urls).toEqual([])
-    expect(merged.latency_first).toBe(false)
+  it('sends only touched settings, a reset included', () => {
+    expect(touchedSettings({ latency_first: true, mtu: undefined, lazy_p2p: null }))
+      .toEqual({ latency_first: true, lazy_p2p: null })
   })
 
-  it('shares the secure mode switch but not the node key', () => {
-    const target = config({ network_secret: 's', secure_mode: { enabled: false, local_private_key: 'key-a' } as any })
-    const source = config({ network_secret: 's', secure_mode: { enabled: true, local_private_key: 'key-b' } as any })
-    const merged = mergeConfigFields(target, source, ['secure_mode'])
-    expect(merged.secure_mode?.enabled).toBe(true)
-    expect(merged.secure_mode?.local_private_key).toBe('key-a')
-  })
-
-  it('lists fields that differ between members', () => {
-    expect(variedFields([
-      config({ hostname: 'a', network_secret: 's' }),
-      config({ hostname: 'b', network_secret: 's' }),
-    ])).toEqual(['hostname'])
-    expect(variedFields([config({})])).toEqual([])
-    expect(variedFields([
-      config({ peer_urls: ['tcp://1.1.1.1:11010'] }),
-      config({ peer_urls: [] }),
-    ])).toEqual(['peer_urls'])
+  it('never offers device settings, private mode or encryption', () => {
+    for (const field of ['enable_exit_node', 'no_tun', 'use_smoltcp', 'bind_device', 'proxy_forward_by_system', 'enable_private_mode', 'disable_encryption']) {
+      expect(ADVANCED_SWITCHES).not.toContain(field)
+    }
   })
 })

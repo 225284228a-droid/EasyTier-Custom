@@ -198,7 +198,7 @@ export interface MeshCoreChange {
     display_name?: string;
 }
 
-export type MeshSyncStatus = 'saved' | 'unchanged' | 'pending' | 'conflict' | 'failed';
+export type MeshSyncStatus = 'saved' | 'unchanged' | 'pending' | 'conflict' | 'locked' | 'failed';
 
 export interface MeshSyncResult {
     device_id: string;
@@ -217,6 +217,54 @@ export interface MeshMember {
     pending: boolean;
     sync_at?: number | null;
     credential: boolean;
+    /** Batch edits from this console leave its advanced settings and running state alone. */
+    locked?: boolean;
+    /** The advanced settings it held when last seen. */
+    advanced?: MeshAdvancedValues;
+}
+
+/** The core settings of a network as the console knows them. */
+export interface MeshCoreSettings {
+    network_name: string;
+    network_secret?: string | null;
+    secure_mode: boolean;
+    disable_encryption: boolean;
+    encryption_algorithm?: string | null;
+    display_name?: string | null;
+}
+
+/** Advanced settings by field; null leaves a setting at the core's default. */
+export type MeshAdvancedValues = Record<string, boolean | number | string | null>;
+
+/** What a device receives when it joins, besides the core settings. */
+export interface MeshPreset {
+    peers: string[];
+    listeners: string[];
+    advanced: MeshAdvancedValues;
+}
+
+export interface MeshNetworkView {
+    network_name: string;
+    core: MeshCoreSettings;
+    preset: MeshPreset;
+    auto_join: boolean;
+}
+
+export interface CreateMeshNetworkRequest {
+    network_name: string;
+    display_name?: string;
+    /** Unset generates one; an empty string is a passwordless network. */
+    network_secret?: string;
+    secure_mode?: boolean;
+    preset?: MeshPreset;
+    devices?: string[];
+}
+
+export interface MeshJoinResult {
+    device_id: string;
+    instance_id?: string;
+    status: MeshSyncStatus;
+    message?: string;
 }
 
 export class ApiClient {
@@ -449,6 +497,49 @@ export class ApiClient {
     public async apply_mesh_core(network_name: string, change: MeshCoreChange): Promise<MeshSyncResult[]> {
         const response = await this.client.post<any, { results: MeshSyncResult[] }>('/mesh/core', { network_name, change });
         return response.results;
+    }
+
+    public async list_mesh_networks(): Promise<MeshNetworkView[]> {
+        const response = await this.client.get<any, { networks: MeshNetworkView[] }>('/mesh/networks');
+        return response.networks;
+    }
+
+    public async get_mesh_network(network_name: string): Promise<MeshNetworkView> {
+        return await this.client.get<any, MeshNetworkView>(`/mesh/networks/${encodeURIComponent(network_name)}`);
+    }
+
+    public async create_mesh_network(request: CreateMeshNetworkRequest): Promise<MeshJoinResult[]> {
+        const response = await this.client.post<any, { results: MeshJoinResult[] }>('/mesh/networks', request);
+        return response.results;
+    }
+
+    /** Forget the network: members keep their configurations and are paused. */
+    public async delete_mesh_network(network_name: string): Promise<MeshSyncResult[]> {
+        const response = await this.client.delete<any, { results: MeshSyncResult[] }>(`/mesh/networks/${encodeURIComponent(network_name)}`);
+        return response.results;
+    }
+
+    public async save_mesh_preset(network_name: string, preset: MeshPreset): Promise<MeshNetworkView> {
+        return await this.client.put<any, MeshNetworkView>(`/mesh/networks/${encodeURIComponent(network_name)}/preset`, preset);
+    }
+
+    public async set_mesh_auto_join(network_name: string, enabled: boolean): Promise<MeshNetworkView> {
+        return await this.client.put<any, MeshNetworkView>(`/mesh/networks/${encodeURIComponent(network_name)}/auto-join`, { enabled });
+    }
+
+    public async join_mesh_devices(network_name: string, devices: string[]): Promise<MeshJoinResult[]> {
+        const response = await this.client.post<any, { results: MeshJoinResult[] }>(`/mesh/networks/${encodeURIComponent(network_name)}/join`, { devices });
+        return response.results;
+    }
+
+    /** Write the touched advanced settings to every unlocked member. */
+    public async apply_mesh_advanced(network_name: string, change: MeshAdvancedValues): Promise<MeshSyncResult[]> {
+        const response = await this.client.post<any, { results: MeshSyncResult[] }>('/mesh/advanced', { network_name, change });
+        return response.results;
+    }
+
+    public async set_mesh_lock(device_id: string, instance_id: string, locked: boolean): Promise<void> {
+        await this.client.put(`/mesh/locks/${device_id}/${instance_id}`, { locked });
     }
 
     // --- Node runtime detail (per network instance, via proxy-rpc) ---

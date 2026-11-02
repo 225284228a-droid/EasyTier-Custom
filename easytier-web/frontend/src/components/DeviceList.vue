@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Button, Checkbox, Column, DataTable, Dialog, Drawer, InputText, SelectButton, Skeleton, useToast } from 'primevue';
+import { Button, Checkbox, Column, DataTable, Dialog, InputText, SelectButton, Skeleton, useToast } from 'primevue';
 import Tooltip from 'primevue/tooltip';
-import { useRoute, useRouter } from 'vue-router';
 import { Utils } from 'easytier-frontend-lib';
 import DeviceDetails from './DeviceDetails.vue';
 import { useI18n } from 'vue-i18n'
 import ApiClient from '../modules/api';
+import { useDevicePopup } from '../modules/devicePopup';
 
 const { t } = useI18n()
 
@@ -19,9 +19,8 @@ const props = defineProps({
 });
 
 const api = props.api;
-const route = useRoute();
-const router = useRouter();
 const toast = useToast();
+const devicePopup = useDevicePopup();
 
 const deviceList = ref<Array<Utils.DeviceInfo> | undefined>(undefined);
 const search = ref('');
@@ -93,32 +92,9 @@ onUnmounted(() => {
     periodFunc.stop();
 });
 
-const selectedDeviceId = computed<string | undefined>(() => route.params.deviceId as string);
-
-const deviceManageVisible = computed<boolean>({
-    get: () => !!selectedDeviceId.value,
-    set: (value) => {
-        if (!value) {
-            router.push({ name: 'deviceList', params: { deviceId: undefined } });
-        }
-    }
-});
-
-const selectedDeviceHostname = computed<string | undefined>(() => {
-    const device = deviceList.value?.find((device) => device.machine_id === selectedDeviceId.value);
-    return device ? deviceName(device) : undefined;
-});
-
-// 处理设备管理
+// 设备管理在当前页面上方打开，关闭后停留在原位置
 const handleDeviceManagement = (device: Utils.DeviceInfo) => {
-    const instanceId = device.running_network_instances?.[0];
-    router.push({
-        name: 'deviceManagement',
-        params: {
-            deviceId: device.machine_id,
-            instanceId: instanceId
-        }
-    });
+    devicePopup.open(device.machine_id, device.running_network_instances?.[0]);
 };
 
 // 删除设备：若还是网络成员会连带移出并回收托管配置；可选同时拉黑
@@ -359,19 +335,6 @@ const locationText = (device: Utils.DeviceInfo) => {
             </template>
         </Dialog>
 
-        <Drawer v-model:visible="deviceManageVisible" position="right" class="console-device-drawer" :baseZIndex="1000">
-            <template #header>
-                <div class="drawer-heading flex items-baseline gap-3 min-w-0">
-                    <h2 class="truncate">{{ selectedDeviceHostname }}</h2>
-                    <p class="mono-value truncate">{{ selectedDeviceId }}</p>
-                </div>
-            </template>
-            <RouterView v-slot="{ Component }">
-                <!-- Reset only the editor/status content, leaving the list and drawer in place. -->
-                <component :is="Component" :key="`${route.params.deviceId}:${route.params.instanceId ?? ''}`"
-                    :api="api" :deviceList="deviceList" @update="loadDevices" />
-            </RouterView>
-        </Drawer>
     </div>
 </template>
 

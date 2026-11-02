@@ -1,7 +1,7 @@
 import { inject, provide, ref, type InjectionKey, type Ref } from 'vue'
-import { Api as LibApi, ConfigStores, LocalConfigs, NetworkTypes, Utils } from 'easytier-frontend-lib'
+import { Api as LibApi, ConfigStores, Utils } from 'easytier-frontend-lib'
 import type ApiClient from './api'
-import type { CentralNetworkSummary, MeshMember } from './api'
+import type { CentralNetworkSummary, MeshMember, MeshNetworkView } from './api'
 import { networkNameIdentity } from './networkTopology'
 
 /**
@@ -23,6 +23,8 @@ export interface NetworkMember {
   pending?: boolean
   /** A temporary member: a central add-on authenticated by a credential. */
   credential?: boolean
+  /** Batch edits from this console leave its advanced settings and running state alone. */
+  locked?: boolean
 }
 
 export interface DiscoveredNetwork {
@@ -35,8 +37,10 @@ export interface DiscoveredNetwork {
   label: string
   members: NetworkMember[]
   runningCount: number
-  /** A central network publishes configurations under this name. */
+  /** The central record behind its temporary devices. */
   central?: CentralNetworkSummary
+  /** What the console keeps for it: core settings, preset, joining on their own. */
+  record?: MeshNetworkView
 }
 
 /** Network configurations found on one device. */
@@ -66,6 +70,7 @@ export function groupNetworks(
   central: CentralNetworkSummary[] = [],
   remembered: MeshMember[] = [],
   devices: Utils.DeviceInfo[] = [],
+  records: MeshNetworkView[] = [],
 ): DiscoveredNetwork[] {
   const networks = new Map<string, DiscoveredNetwork>()
   const network = (name: string) => {
@@ -108,6 +113,7 @@ export function groupNetworks(
     if (known) {
       known.pending = member.pending || undefined
       known.credential = member.credential || undefined
+      known.locked = member.locked || undefined
       continue
     }
     // A scanned device no longer has this instance.
@@ -124,6 +130,7 @@ export function groupNetworks(
       online: false,
       pending: member.pending || undefined,
       credential: member.credential || undefined,
+      locked: member.locked || undefined,
     })
   }
   // The name most members show labels the network.
@@ -139,69 +146,18 @@ export function groupNetworks(
     entry.central = summary
     entry.label = summary.display_name || summary.network_name
   }
+  // So does a network the console keeps a record of, before its first member.
+  for (const record of records) {
+    if (!record.network_name) continue
+    const entry = network(record.network_name)
+    entry.record = record
+    if (record.core.display_name) entry.label = record.core.display_name
+  }
   const deviceName = (member: NetworkMember) => member.device.alias || member.device.hostname || member.device.machine_id
   for (const entry of networks.values()) {
     entry.members.sort((a, b) => deviceName(a).localeCompare(deviceName(b)) || a.instanceId.localeCompare(b.instanceId))
   }
   return [...networks.values()].sort((a, b) => a.name.localeCompare(b.name))
-}
-
-/**
- * Fields that describe one device rather than the network. A batch edit
- * that changes them would give every selected member the same value.
- */
-export const PER_DEVICE_FIELDS: readonly string[] = [
-  'hostname', 'virtual_ipv4', 'dhcp', 'network_length', 'proxy_cidrs', 'dev_name', 'bind_device',
-  'credential_file', 'managed_credentials', 'vpn_portal_config', 'port_forwards', 'mapped_listeners',
-  'socket_mark', 'ipv6_public_addr_prefix', 'dhcp_ipv4_cidr', 'dhcp_ipv6_cidr',
-]
-
-/** Fields whose values differ between the given configurations. */
-export function variedFields(configs: NetworkTypes.NetworkConfig[]): string[] {
-  const [first, ...others] = configs
-  if (!first) return []
-  const fields = new Set<string>()
-  for (const other of others) {
-    for (const field of LocalConfigs.changedConfigFields(first, other)) fields.add(field)
-  }
-  // The structured peer list mirrors the initial peer URLs.
-  if (fields.has('peer_urls')) fields.delete('peers')
-  return [...fields].sort()
-}
-
-/**
- * Copy the edited fields from the batch template into one member's
- * configuration; every other field keeps the member's own value.
- */
-export function mergeConfigFields(
-  target: NetworkTypes.NetworkConfig,
-  source: NetworkTypes.NetworkConfig,
-  fields: readonly string[],
-): NetworkTypes.NetworkConfig {
-  const merged = NetworkTypes.toBackendNetworkConfig(target) as unknown as Record<string, unknown>
-  const values = NetworkTypes.toBackendNetworkConfig(source) as unknown as Record<string, unknown>
-  const copied = new Set(fields)
-  // Both describe the initial peers; normalizing refills one from the other.
-  if (copied.has('peer_urls') || copied.has('peers')) {
-    copied.add('peer_urls')
-    copied.add('peers')
-  }
-  for (const field of copied) {
-    if (field === 'secure_mode') {
-      // Only the switch is shared; each node keeps its own key pair.
-      const own = (merged.secure_mode ?? {}) as Record<string, unknown>
-      const enabled = (values.secure_mode as { enabled?: boolean } | undefined)?.enabled ?? false
-      merged.secure_mode = enabled ? { ...own, enabled } : undefined
-    } else if (values[field] === undefined) {
-      // JSON omits default values, so an absent value is a reset.
-      delete merged[field]
-    } else {
-      merged[field] = structuredClone(values[field])
-    }
-  }
-  const config = NetworkTypes.normalizeNetworkConfig(merged as unknown as NetworkTypes.NetworkConfig)
-  config.instance_id = target.instance_id
-  return config
 }
 
 export interface NetworkDiscovery {
@@ -226,6 +182,7 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
   // A failed read keeps showing what the console reported last.
   let lastCentral: CentralNetworkSummary[] = []
   let lastRemembered: MeshMember[] = []
+  let lastRecords: MeshNetworkView[] = []
   // The last successful scan stands in for a device that briefly fails.
   const scans = new Map<string, DeviceNetworkScan>()
   let scope = api.persistenceScope
@@ -240,6 +197,7 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
       scans.clear()
       lastCentral = []
       lastRemembered = []
+      lastRecords = []
       networks.value = undefined
     }
     const requestScope = scope
@@ -252,14 +210,16 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
         return last
       }
       const central = centralEnabled()
-      const [machines, centralNetworks, remembered] = await Promise.all([
+      const [machines, centralNetworks, remembered, records] = await Promise.all([
         api.list_machines({ timeout: 8_000 }),
         central ? api.list_networks().catch(keep(lastCentral)) : Promise.resolve([]),
         central ? api.list_mesh_members().catch(keep(lastRemembered)) : Promise.resolve([]),
+        central ? api.list_mesh_networks().catch(keep(lastRecords)) : Promise.resolve([]),
       ])
       if (requestScope !== api.persistenceScope) return
       lastCentral = centralNetworks ?? []
       lastRemembered = remembered ?? []
+      lastRecords = records ?? []
       listFailed.value = centralFailed
       const devices = machines.map(Utils.buildDeviceInfo).filter(device => device.machine_id)
       const online = devices.filter(device => device.online !== false)
@@ -281,7 +241,7 @@ export function createNetworkDiscovery(api: ApiClient, centralEnabled: () => boo
       }))
       if (requestScope !== api.persistenceScope) return
       failedDevices.value = failed
-      networks.value = groupNetworks([...scans.values()], lastCentral, lastRemembered, devices)
+      networks.value = groupNetworks([...scans.values()], lastCentral, lastRemembered, devices, lastRecords)
     } catch (cause) {
       console.warn('Failed to discover networks', cause)
       listFailed.value = true

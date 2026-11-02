@@ -2,6 +2,7 @@
 import { Button, Message, SelectButton, Skeleton } from 'primevue';
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 import { Utils } from 'easytier-frontend-lib';
 import ApiClient, { type Summary } from '../modules/api';
 import { injectNetworkDiscovery, type DiscoveredNetwork } from '../modules/networkDiscovery';
@@ -12,6 +13,8 @@ const NetworkTopologyGlobe = defineAsyncComponent(() => import('./NetworkTopolog
 const props = defineProps<{ api: ApiClient; centralEnabled?: boolean }>();
 const { topology, manualRefreshing, error: topologyError, persistenceKey, loadTopology } = useMeshTopology(computed(() => props.api));
 const { t } = useI18n();
+// Device links open the device popup over this page.
+const route = useRoute();
 const summary = ref<Summary>();
 const devices = ref<Utils.DeviceInfo[]>();
 // The same recognized networks as the network page and the topology below.
@@ -130,14 +133,14 @@ const stats = computed(() => [
                 </div>
                 <div v-else-if="deviceViewMode === 'card' && devicePreview.length" ref="deviceGrid" class="dashboard-device-grid">
                     <RouterLink v-for="device in devicePreview" :key="device.machine_id" class="dashboard-device-card"
-                        :to="{ name: 'deviceManagement', params: { deviceId: device.machine_id, instanceId: device.running_network_instances?.[0] } }">
+                        :to="{ query: { ...route?.query, device: device.machine_id, instance: device.running_network_instances?.[0] } }">
                         <span class="preview-name" :title="device.alias || device.hostname || device.machine_id">{{ device.alias || device.hostname || device.machine_id }}</span>
                         <span class="preview-secondary mono-value">{{ device.public_ip || '—' }}</span>
                     </RouterLink>
                 </div>
                 <template v-else>
                     <RouterLink v-for="device in devicePreview" :key="device.machine_id" class="preview-row"
-                        :to="{ name: 'deviceManagement', params: { deviceId: device.machine_id, instanceId: device.running_network_instances?.[0] } }">
+                        :to="{ query: { ...route?.query, device: device.machine_id, instance: device.running_network_instances?.[0] } }">
                         <div class="entity-link"><i class="pi pi-server entity-icon" aria-hidden="true"></i><div class="min-w-0"><div class="preview-name">{{ device.alias || device.hostname || device.machine_id }}</div><div class="preview-secondary mono-value">{{ device.public_ip || '—' }}</div></div></div>
                         <div class="preview-number">{{ device.running_network_count }}<div class="preview-secondary">{{ t('web.console.instances') }}</div></div>
                     </RouterLink>
@@ -153,7 +156,7 @@ const stats = computed(() => [
                     <RouterLink :to="{ name: 'networkList' }" class="entity-link">{{ t('web.mesh_network.create') }}<i class="pi pi-arrow-right" aria-hidden="true"></i></RouterLink>
                 </div>
                 <RouterLink v-for="network in networkPreview" :key="network.identity" class="preview-row" :to="{ name: 'meshNetwork', params: { networkName: network.name } }">
-                    <div class="entity-link"><i class="pi pi-globe entity-icon" aria-hidden="true"></i><div class="min-w-0"><div class="preview-name">{{ network.label }}</div><div class="preview-secondary">{{ network.central ? t('web.mesh_network.central') : t('web.mesh_network.members') + ' · ' + network.members.length }}</div></div></div>
+                    <div class="entity-link"><i class="pi pi-globe entity-icon" aria-hidden="true"></i><div class="min-w-0"><div class="preview-name">{{ network.label }}</div><div class="preview-secondary">{{ t('web.mesh_network.members') + ' · ' + network.members.length }}</div></div></div>
                     <div class="preview-number">{{ network.runningCount }} / {{ network.members.length }}<div class="preview-secondary">{{ t('web.mesh_network.running') }}</div></div>
                 </RouterLink>
             </section>

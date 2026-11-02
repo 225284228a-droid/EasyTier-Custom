@@ -190,6 +190,10 @@ loss_rate: Loss Rate
 nat_type: NAT Type
 
 flags_switch: Feature Switch
+advanced_lock: Lock advanced settings
+advanced_unlock: Unlock advanced settings
+advanced_locked_hint: "Locked: the console's batch edits leave this configuration's advanced settings, switches and running state alone"
+advanced_unlocked_hint: Lock to keep the console's batch edits away from this configuration's advanced settings, switches and running state
 
 latency_first: Enable Latency-First Mode
 latency_first_help: Ignore hop count and select the path with the lowest total latency
@@ -723,66 +727,97 @@ web:
     stopped: Stopped
 
   mesh_network:
+    sections: Network pages
+    section_overview: Overview
+    section_members: Members
+    section_settings: Network settings
+    section_advanced: Advanced settings
+    section_preset: Preset for new devices
+    section_temporary: Temporary devices
+    needs_central: The console uses an external webhook (--webhook-url), so an external system manages devices and configurations; this page is unavailable
     display_name: Network display name
     display_name_hint: The name devices show for this configuration; empty shows the network name. It does not affect joining
+    network_name: Network name
+    network_name_hint: The network's identity; with the secret it decides which nodes can connect. Renaming renames every member
+    network_secret: Network secret
+    secret_generated: Leave empty to generate one
+    secure_mode: Secure mode
+    encryption: Encryption
+    encryption_algorithm: Encryption algorithm
+    settings_hint: Members that disagree on these core settings lose each other. Saving writes them to every online member; an offline member receives the change once when it next connects, overwriting edits made on the device meanwhile unless another console changed it later. Edits after that are kept.
+    core_hint: The console writes the change to every online member, locked ones included; offline members receive it once when they next connect.
+    apply_settings: Save and apply
+    discard: Discard changes
+    delete: Delete network
+    delete_hint: Deletes the preset, temporary devices and credentials the console keeps. Members keep their configurations but are paused; offline members are paused when they next connect, and locked members are left alone.
+    delete_confirm: Delete network {name}? Members keep their configurations and are paused; temporary devices are removed.
+    delete_done: '{count} member(s) paused or paused when they connect, {failed} failed'
+    advanced_hint: Only the settings you change are written; every other setting keeps each member's own value. Locked members are skipped; offline members receive the change once when they next connect, overwriting edits made on the device meanwhile unless another console changed them later. Below each setting is how current members hold it.
+    apply_advanced: Apply {count} setting(s) to {members} member(s)
+    locked_skipped: '{count} locked, skipped'
+    parameters: Transport parameters
+    compression: Compression
+    compress_none: None
+    compress_zstd: Zstd
+    value_keep: Keep
+    value_default: Default
+    value_on: 'On'
+    value_off: 'Off'
+    preset_hint: The configuration a device starts with when it joins. It only reaches devices that join; existing members are never changed.
+    preset_core_hint: Network name, secret, secure mode, encryption and display name come from the network's current core settings; the virtual IP is assigned by DHCP.
+    listeners: Listeners
+    auto_join: New devices join automatically
+    auto_join_label: Devices that connect to the console for the first time join this network
+    auto_join_hint: When on, a device connecting to this console for the first time joins with the preset and starts, once. Devices that connected before it was switched on never join on their own.
+    auto_join_on: Auto join
+    members: Members
+    members_hint: Start and stop apply to the selected online members; locked members are never part of a batch. Click a device to manage it over this page.
+    locked: Locked
     pending: Pending
-    pending_hint: This member was offline when the core settings changed; it receives the change once when it next connects, and later edits on the device are kept
-    temporary: Temporary
+    pending_hint: This member was offline during a change; it receives the change once when it next connects, overwriting edits made meanwhile unless another console changed it later. Edits after that are kept
+    temporary: Temporary devices
+    add_device: Add devices
+    add_device_hint: Each selected device gets a configuration from the network's core settings and preset, and starts it. Devices that are already members are not changed.
+    add_device_confirm: Add {count} device(s)
+    no_candidate_devices: No online device can be added
+    temporary_settings: Access settings
+    temporary_settings_hint: These only affect temporary devices. Network name, secret and secure mode follow the network settings.
+    temporary_empty: No temporary devices yet
+    temporary_empty_hint: The console publishes a temporary device's whole configuration. It joins with a credential instead of the secret and stops working when it expires or is removed.
+    temporary_needs_secure: 'Temporary devices need secure mode; turn it on in the network settings:'
+    add_temporary: Add temporary devices
+    result_saved: Saved
     result_unchanged: Already up to date
     result_pending: Offline; sent once when it connects
-    core_hint: The console writes the network name, secret, secure mode and encryption to every member and sends a missed change once to offline members when they return. Other fields are written only to the selected online members.
-    core_hint_local: Central management is off, so every field is written only to the selected online members.
+    result_conflict: Changed elsewhere; not written
+    result_locked: Locked; skipped
+    result_failed: Failed
+    batch_result: Results
+    batch_done: '{ok} succeeded, {failed} failed'
+    batch_start: Start
+    batch_stop: Stop
     list_hint: Networks are recognized from device configurations. Instances with the same network name form one network, the same way the topology identifies them
     devices: Devices
     running: Running
     stopped: Stopped
     offline: Offline
-    central: Central
-    central_hint: The console publishes this central network's configuration. Batch edits here write the device configuration files directly; central publication keeps those local changes and reports a conflict
-    open_central: Central management
     scan_partial: 'Configurations of {count} device(s) are temporarily unavailable'
-    no_members: No online device runs or saves this network
-    not_found: Network {name} was not found on any online device
-    members: Member instances
+    no_members: No device runs or saves this network
     instance: Instance
     status: Status
     select_all: Select all
     selected: '{count} selected'
-    batch_edit: Batch edit
-    batch_start: Start
-    batch_stop: Stop
     open_device: Device management
     topology: Network topology
     nodes: Topology nodes
     topology_hint: Only the nodes and connections of network {name}
     readonly: Read-only
-    batch_title: Batch edit · {name}
-    batch_loading: Reading configurations of {count} member(s)…
-    batch_template: The form starts from the configuration of {device}. Only the fields you change are written to every selected member; other fields keep each member's own value.
-    batch_varied: 'These fields differ between members and stay as they are unless you change them:'
-    batch_load_failed: '{count} member configuration(s) could not be read and will not be changed'
-    batch_apply: Apply to {count} member(s)
-    batch_no_changes: No field was changed
-    batch_per_device_title: Device-specific fields
-    batch_per_device_confirm: 'These fields usually differ per device: {fields}. Continuing gives every selected member the same value.'
-    batch_result: Results
-    batch_done: '{ok} succeeded, {failed} failed'
-    result_saved: Saved
-    result_conflict: Changed elsewhere; not written
-    result_apply_failed: Saved, but the network could not start with it; the node kept its previous file
-    result_failed: Failed
-    renamed: The network was renamed to {name}
-    create: Create on devices
-    create_central: Create central network
-    create_hint: Creates one configuration with this network name on each selected device; edit them together on the network page afterwards
-    network_name: Network name
-    network_secret: Network secret
-    target_devices: Target devices
+    create: New network
+    created: Network {name} created
+    create_devices_optional: Optional. Selected devices join and start right away; you can also add devices later on the members page.
+    create_devices_required: The console uses an external webhook and keeps no network records, so the network exists only in device configurations; select at least one device.
     no_online_devices: No online devices
-    start_after_create: Start after creating
-    listeners: Listeners
-    create_done: 'Created on {ok} device(s), {failed} failed'
-    name_exists: A network with this name exists; the new configurations join it
+    name_exists: A network with this name already exists
 
   acl:
     trust_hint: Permanent members are trusted administrators. ACL rules manage their traffic but do not prevent a device administrator from changing its identity or policy. Use temporary credentials for untrusted devices.

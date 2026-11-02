@@ -1,43 +1,25 @@
 <script setup lang="ts">
 import { NetworkTypes, Utils, Api, RemoteManagement } from 'easytier-frontend-lib';
 import { computed } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
 import ApiClient from '../modules/api';
 
-
+// The device's configurations, shown in the device popup over any page.
 const props = defineProps<{
     api: ApiClient;
+    deviceId: string;
     deviceList: Array<Utils.DeviceInfo> | undefined;
+    /** Instances locked against this console's batch edits; unset offers no lock. */
+    lockedInstances?: string[];
 }>();
 
-const emits = defineEmits(['update']);
-
-const route = useRoute();
-const router = useRouter();
-
-const deviceId = computed<string>(() => {
-    return route.params.deviceId as string;
-});
-
-const instanceId = computed<string>(() => {
-    return route.params.instanceId as string;
-});
+const instanceId = defineModel<string | undefined>('instanceId');
+const emits = defineEmits(['update', 'toggle-lock']);
 
 const deviceInfo = computed<Utils.DeviceInfo | undefined | null>(() => {
-    return deviceId.value ? props.deviceList?.find((device) => device.machine_id === deviceId.value) : null;
+    return props.deviceId ? props.deviceList?.find((device) => device.machine_id === props.deviceId) : null;
 });
 
-const selectedInstanceId = computed({
-    get() {
-        return instanceId.value;
-    },
-    set(value: string) {
-        console.log("selectedInstanceId", value);
-        router.push({ name: 'deviceManagement', params: { deviceId: deviceId.value, instanceId: value } });
-    }
-});
-
-const remoteClient = computed<Api.RemoteClient>(() => props.api.get_remote_client(deviceId.value));
+const remoteClient = computed<Api.RemoteClient>(() => props.api.get_remote_client(props.deviceId));
 
 const newConfigGenerator = () => {
     const config = NetworkTypes.DEFAULT_NETWORK_CONFIG();
@@ -48,8 +30,9 @@ const newConfigGenerator = () => {
 </script>
 
 <template>
-    <RemoteManagement :api="remoteClient" v-model:instance-id="selectedInstanceId"
-        :new-config-generator="newConfigGenerator" />
+    <RemoteManagement :api="remoteClient" v-model:instance-id="instanceId"
+        :new-config-generator="newConfigGenerator" :locked-instances="lockedInstances"
+        @update="emits('update')" @toggle-lock="(id: string, locked: boolean) => emits('toggle-lock', id, locked)" />
 </template>
 
 <style scoped>

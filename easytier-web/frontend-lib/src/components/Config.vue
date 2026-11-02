@@ -34,9 +34,13 @@ const props = defineProps<{
   /// Central members save their clients through the configuration owner.
   editVpnPortalClients?: boolean
   runtimeCapabilities?: readonly string[]
+  /// Offer a lock next to the advanced settings that keeps a console's
+  /// batch edits away from them; `advancedLocked` is its state.
+  lockable?: boolean
+  advancedLocked?: boolean
 }>()
 
-defineEmits(['runNetwork'])
+defineEmits(['runNetwork', 'update:advancedLocked'])
 
 const curNetwork = defineModel('curNetwork', {
   type: Object as () => NetworkConfig,
@@ -446,6 +450,14 @@ function removeVpnPortalClient(index: number) {
           <Divider />
 
           <Panel :header="t('advanced_settings')" toggleable collapsed>
+            <template v-if="props.lockable" #icons>
+              <Button :icon="props.advancedLocked ? 'pi pi-lock' : 'pi pi-lock-open'" text rounded size="small"
+                :severity="props.advancedLocked ? 'warn' : 'secondary'"
+                :aria-label="t(props.advancedLocked ? 'advanced_unlock' : 'advanced_lock')"
+                :aria-pressed="props.advancedLocked"
+                v-tooltip.top="t(props.advancedLocked ? 'advanced_locked_hint' : 'advanced_unlocked_hint')"
+                @click="$emit('update:advancedLocked', !props.advancedLocked)" />
+            </template>
             <div class="flex flex-col gap-y-2">
 
               <div class="flex flex-row gap-x-9 flex-wrap">

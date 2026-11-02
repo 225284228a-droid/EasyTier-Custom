@@ -16,6 +16,8 @@ const props = defineProps<{
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
     pauseAutoRefresh?: boolean;
     scopeKey?: string;
+    /** Instances locked against a console's batch edits; unset offers no lock. */
+    lockedInstances?: string[];
 }>();
 
 const instanceId = defineModel('instanceId', {
@@ -23,7 +25,7 @@ const instanceId = defineModel('instanceId', {
     required: false,
 })
 
-const emits = defineEmits(['update']);
+const emits = defineEmits(['update', 'toggle-lock']);
 
 const toast = useToast();
 
@@ -726,6 +728,9 @@ const editorMerged = editor.merged;
 
                 <Config :cur-network="formConfig" :config-invalid="!formConfig || busy || !!editorRemote"
                     :runtime-capabilities="runtimeCapabilities"
+                    :lockable="props.lockedInstances !== undefined && !!instanceId"
+                    :advanced-locked="!!instanceId && !!props.lockedInstances?.includes(instanceId)"
+                    @update:advanced-locked="emits('toggle-lock', instanceId, $event)"
                     @run-network="submitForm"></Config>
             </div>
 

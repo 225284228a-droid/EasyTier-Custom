@@ -21,6 +21,7 @@ import { Button, Dialog, Drawer, Menu, OverlayBadge, Popover, TieredMenu, useToa
 import { useRoute, useRouter } from 'vue-router';
 import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
+import DevicePopup from './DevicePopup.vue';
 import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
 import ApiClient, { type BlockedDevice } from '../modules/api';
@@ -109,13 +110,6 @@ const enrollLoading = ref(false);
 const centralEnabled = computed(() => enrollInfo.value?.webhook_auth === false);
 // Central networks join the recognized ones as soon as the mode is known.
 watch(centralEnabled, enabled => { if (enabled) void discovery.refresh(); });
-watch([() => enrollInfo.value?.webhook_auth, () => route.name], ([external, name]) => {
-    // Only central network pages need the central service; recognized
-    // networks work in either mode.
-    if (external && name === 'networkDetail') {
-        router.replace({ name: 'dashboard' });
-    }
-});
 
 const enrollCommand = computed(() => {
     if (!enrollInfo.value) return '';
@@ -186,20 +180,14 @@ const networkNavigation = computed<NavItem[]>(() => [
 ]);
 
 const activeKey = computed(() => {
-    if (route.name === 'meshNetwork') return `mesh:${route.params.networkName}`;
-    if (route.name === 'networkDetail') {
-        const network = networks.value.find(item => item.central?.network_id === route.params.networkId);
-        return network ? `mesh:${network.name}` : 'networkList';
-    }
-    if (route.name === 'deviceManagement') return 'deviceList';
+    if (route.params.networkName) return `mesh:${route.params.networkName}`;
     if (typeof route.name === 'string') return route.name;
     return '';
 });
 const pageTitle = computed(() => {
-    if (route.name === 'meshNetwork') return String(route.params.networkName);
-    if (route.name === 'networkDetail') {
-        const network = networks.value.find(item => item.central?.network_id === route.params.networkId);
-        return network?.central?.display_name || t('web.main.network_list');
+    if (route.params.networkName) {
+        const name = String(route.params.networkName);
+        return networks.value.find(item => item.name === name)?.label ?? name;
     }
     return [...workspaceNavigation.value, ...networkNavigation.value]
         .find(item => item.key === activeKey.value)?.label;
@@ -340,11 +328,12 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
             </header>
             <main ref="mainContent" id="main-content" class="console-content" tabindex="-1">
                 <RouterView v-slot="{ Component }">
-                    <!-- Keep the device list and drawer mounted when selecting devices or instances.
-                         Central network details still need fresh state when switching networks. -->
-                    <component :is="Component" :key="`${api.persistenceScope}:${route.params.networkId ?? ''}:${route.params.networkName ?? ''}`" :api="api" :central-enabled="centralEnabled" />
+                    <!-- The device popup lives in the query, so opening and closing it
+                         keeps the page mounted where it was. -->
+                    <component :is="Component" :key="`${api.persistenceScope}:${route.params.networkName ?? ''}`" :api="api" :central-enabled="centralEnabled" />
                 </RouterView>
             </main>
+            <DevicePopup :api="api" :central-enabled="centralEnabled" />
         </div>
     </div>
     <Dialog v-model:visible="showCredits" :header="t('web.main.about')" modal

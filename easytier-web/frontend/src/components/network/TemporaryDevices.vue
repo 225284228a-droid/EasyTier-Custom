@@ -1,27 +1,32 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { v4 as uuidv4 } from 'uuid';
-import { Button, Checkbox, Column, ConfirmDialog, DataTable, Dialog, Drawer, InputSwitch, InputText, Message, Password, ProgressSpinner, ScrollPanel, Select, SelectButton, Skeleton, Tab, TabList, TabPanel, TabPanels, Tabs, Tag, useConfirm, useToast } from 'primevue';
-import { useRoute, useRouter } from 'vue-router';
+import { Button, Column, ConfirmDialog, DataTable, Dialog, Drawer, InputSwitch, InputText, Message, ProgressSpinner, ScrollPanel, Select, SelectButton, Skeleton, Tab, TabList, TabPanel, TabPanels, Tabs, Tag, useConfirm, useToast } from 'primevue';
 import { useI18n } from 'vue-i18n';
 import { Config, NetworkTypes, UrlListInput, Utils, StatusDisplay } from 'easytier-frontend-lib';
-import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../modules/api';
-import { normalizeVirtualSubnet } from '../modules/virtual-subnet';
-import { toNetworkCidr } from '../modules/cidr';
+import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../../modules/api';
+import { normalizeVirtualSubnet } from '../../modules/virtual-subnet';
+import { toNetworkCidr } from '../../modules/cidr';
 
+// Temporary devices of one network: devices whose whole configuration the
+// console publishes, authenticated by credentials instead of the secret.
+// The network's name, secret and secure mode follow its core settings.
 const { t } = useI18n()
-const route = useRoute();
-const router = useRouter();
 const toast = useToast();
 const confirm = useConfirm();
 
-const props = defineProps({
-    api: ApiClient,
-});
+const props = defineProps<{
+    api: ApiClient;
+    /** The central record that backs the temporary devices. */
+    networkId: string;
+    /** Open the add dialog once loaded. */
+    autoAdd?: boolean;
+    /** Devices that already run the network from their own configuration. */
+    memberDevices?: string[];
+}>();
 
 const api = props.api;
 
-const networkId = computed(() => route.params.networkId as string);
+const networkId = computed(() => props.networkId);
 
 const network = ref<CentralNetworkDetail | undefined>(undefined);
 const members = ref<CentralNetworkMember[] | undefined>(undefined);
@@ -71,6 +76,7 @@ onMounted(async () => {
     // network before the gateway info is available.
     await Promise.all([loadAll(), loadGatewayInfo()]);
     periodFunc.start();
+    if (props.autoAdd) await openAddMember();
 });
 
 onUnmounted(() => {
@@ -84,10 +90,10 @@ onUnmounted(() => {
 // --- members tab ---
 
 // 成员列表的表格/卡片视图切换，选择持久化；移动端始终使用紧凑列表
-const viewMode = ref<'table' | 'card'>(localStorage.getItem('networkMembers.viewMode') === 'card' ? 'card' : 'table');
+const viewMode = ref<'table' | 'card'>(localStorage.getItem('networkMembers.viewMode') === 'table' ? 'table' : 'card');
 const viewModeOptions = [
-    { value: 'table', icon: 'pi pi-table' },
     { value: 'card', icon: 'pi pi-th-large' },
+    { value: 'table', icon: 'pi pi-table' },
 ];
 const viewModeLabel = (value: string) => t(value === 'card' ? 'web.console.view_card' : 'web.console.view_table');
 watch(viewMode, (mode) => localStorage.setItem('networkMembers.viewMode', mode));
@@ -97,7 +103,12 @@ const adding = ref(false);
 const candidateDevices = ref<Utils.DeviceInfo[]>([]);
 const selectedDevices = ref<Utils.DeviceInfo[]>([]);
 
-const memberDeviceIds = computed(() => new Set((members.value ?? []).map((member) => member.device_id)));
+// A device joins a network once, either from its own configuration or as a
+// temporary device.
+const memberDeviceIds = computed(() => new Set([
+    ...(members.value ?? []).map((member) => member.device_id),
+    ...(props.memberDevices ?? []),
+]));
 
 const openAddMember = async () => {
     try {
@@ -288,12 +299,6 @@ const settingsSecretMissing = computed(() =>
     && settingsForm.value.network_secret.trim() === ''
     && (settingsForm.value.network_secret !== settingsSecretBaseline.value
         || settingsSecretBaseline.value === ''));
-const setSettingsNoPassword = (noPassword: boolean) => {
-    settingsNoPassword.value = noPassword;
-    if (!noPassword && settingsForm.value.network_secret.trim() === '') {
-        settingsForm.value.network_secret = uuidv4();
-    }
-};
 // Initial nodes in the same model as the GUI config form; an empty list
 // means Standalone.
 const initialNodes = ref<string[]>([]);
@@ -885,25 +890,6 @@ const copyText = async (text: string, what: string) => {
     }
 };
 
-// --- danger zone ---
-
-const deleteNetwork = () => {
-    confirm.require({
-        header: t('web.network_detail.delete'),
-        message: t('web.network_detail.delete_confirm', { name: network.value?.display_name ?? '' }),
-        acceptLabel: t('web.common.confirm'),
-        rejectLabel: t('web.common.cancel'),
-        accept: async () => {
-            try {
-                await api?.delete_network(networkId.value);
-                router.push({ name: 'networkList' });
-            } catch (e: any) {
-                toast.add({ severity: 'error', summary: t('web.network_detail.delete'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
-            }
-        },
-    });
-};
-
 const switchTab = async (tab: string) => {
     activeTab.value = tab;
     await switchTabWithCredentials(tab);
@@ -918,18 +904,8 @@ const switchTab = async (tab: string) => {
 </script>
 
 <template>
-    <div class="console-page">
+    <div class="temporary-devices">
         <ConfirmDialog />
-        <header class="page-heading">
-          <div class="flex items-center gap-3 min-w-0">
-            <Button icon="pi pi-arrow-left" text rounded severity="secondary"
-                :aria-label="t('web.console.back_networks')" @click="router.push({ name: 'networkList' })" />
-            <div class="min-w-0">
-                <h1>{{ network?.display_name ?? networkId }}</h1>
-            </div>
-          </div>
-        </header>
-
         <div v-if="loadError !== undefined">
             <Message severity="warn" :closable="false">{{ t('web.console.load_failed') }} <Button :label="t('web.console.retry')" text size="small" @click="loadAll" /></Message>
         </div>
@@ -942,7 +918,7 @@ const switchTab = async (tab: string) => {
             <TabList>
                 <Tab value="members">{{ t('web.network_detail.tab_members') }}</Tab>
                 <Tab v-if="network.secure_mode" value="credentials">{{ t('web.network_detail.tab_credentials') }}</Tab>
-                <Tab value="settings">{{ t('web.network_detail.tab_settings') }}</Tab>
+                <Tab value="settings">{{ t('web.mesh_network.temporary_settings') }}</Tab>
             </TabList>
             <TabPanels>
             <!-- members -->
@@ -1194,15 +1170,7 @@ const switchTab = async (tab: string) => {
             <TabPanel value="settings">
               <div v-if="!settingsLoaded" class="loading-rows"><Skeleton v-for="i in 4" :key="i" height="2rem" /></div>
               <div v-else class="settings-form">
-                <div class="flex flex-col gap-1">
-                    <label for="settings-display-name">{{ t('web.network_list.display_name') }}</label>
-                    <InputText id="settings-display-name" v-model="settingsForm.display_name" />
-                </div>
-                <div class="flex flex-col gap-1">
-                    <label for="settings-network-name">{{ t('web.network_detail.mesh_name') }}</label>
-                    <InputText id="settings-network-name" v-model="settingsForm.network_name" class="font-mono"
-                        :placeholder="t('web.network_list.network_name_placeholder')" />
-                </div>
+                <p class="text-sm muted m-0">{{ t('web.mesh_network.temporary_settings_hint') }}</p>
                 <div class="flex flex-col gap-1">
                     <div class="flex items-center">
                         <label for="settings-virtual-cidr">{{ t('web.network_list.virtual_cidr') }}</label>
@@ -1211,33 +1179,6 @@ const switchTab = async (tab: string) => {
                     <InputText id="settings-virtual-cidr" v-model="settingsForm.virtual_cidr" class="font-mono"
                         @blur="settingsForm.virtual_cidr = normalizeVirtualSubnet(settingsForm.virtual_cidr)"
                         :placeholder="t('web.network_list.virtual_cidr_placeholder')" />
-                </div>
-                <div class="flex flex-col gap-1">
-                    <div class="flex items-center">
-                        <label for="settings-secure-mode">{{ t('web.network_list.secure_mode') }}</label>
-                        <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('web.network_list.secure_mode_hint')"></span>
-                    </div>
-                    <InputSwitch inputId="settings-secure-mode" v-model="settingsForm.secure_mode" />
-                </div>
-                <div class="flex flex-col gap-1">
-                    <label for="settings-network-secret">{{ t('network_secret') }}</label>
-                    <div class="flex flex-col sm:flex-row gap-2">
-                        <Password inputId="settings-network-secret" v-model="settingsForm.network_secret"
-                            toggleMask :feedback="false" fluid
-                            class="flex-1 min-w-0" :disabled="savingSettings || settingsNoPassword" :invalid="settingsSecretMissing"
-                            :inputProps="{ autocomplete: 'new-password', 'aria-describedby': 'settings-network-secret-hint' }" />
-                        <Button :label="t('web.network_detail.regenerate_secret')" icon="pi pi-refresh"
-                            severity="secondary" outlined :disabled="savingSettings || settingsNoPassword"
-                            @click="settingsForm.network_secret = uuidv4()" />
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <Checkbox inputId="settings-no-password" :modelValue="settingsNoPassword" @update:modelValue="setSettingsNoPassword" :binary="true" :disabled="savingSettings" />
-                        <label for="settings-no-password" class="text-sm">{{ t('web.network_detail.no_password') }}</label>
-                    </div>
-                    <small v-if="settingsSecretMissing" class="text-red-500">{{ t('web.network_detail.network_secret_required') }}</small>
-                    <small v-if="settingsNoPassword" class="text-500">{{ t('web.network_detail.no_password_hint') }}</small>
-                    <Message v-if="settingsNoPassword && settingsForm.secure_mode" severity="warn" size="small" :closable="false">{{ t('web.network_detail.secure_no_password_warning') }}</Message>
-                    <small id="settings-network-secret-hint" class="text-500">{{ t('web.network_detail.network_secret_hint') }}</small>
                 </div>
                 <div v-if="gatewayFollowed()" class="flex items-start gap-2 p-3 surface-100 rounded-md">
                     <i class="pi pi-check-circle text-green-500 mt-0.5"></i>
@@ -1254,14 +1195,6 @@ const switchTab = async (tab: string) => {
                 </div>
                 <div class="flex gap-2">
                     <Button :label="t('web.common.save')" icon="pi pi-check" :loading="savingSettings" :disabled="settingsSecretMissing" @click="saveSettings" />
-                </div>
-                <div class="mt-6 pt-4 border-t border-red-200 flex flex-col gap-2">
-                    <div class="text-lg font-semibold text-red-500">{{ t('web.network_detail.danger_zone') }}</div>
-                    <div class="text-sm text-500">{{ t('web.network_detail.delete_hint') }}</div>
-                    <div>
-                        <Button :label="t('web.network_detail.delete')" icon="pi pi-trash" severity="danger" outlined
-                            @click="deleteNetwork" />
-                    </div>
                 </div>
             </div>
 

@@ -14,11 +14,15 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import MainPage from './components/MainPage.vue'
 import Login from './components/Login.vue'
 import DeviceList from './components/DeviceList.vue'
-import DeviceManagement from './components/DeviceManagement.vue'
 import Dashboard from './components/Dashboard.vue'
 import NetworkList from './components/NetworkList.vue'
-import NetworkDetail from './components/NetworkDetail.vue'
-import MeshNetworkDetail from './components/MeshNetworkDetail.vue'
+import NetworkShell from './components/network/NetworkShell.vue'
+import NetworkOverview from './components/network/NetworkOverview.vue'
+import NetworkMembers from './components/network/NetworkMembers.vue'
+import NetworkSettings from './components/network/NetworkSettings.vue'
+import NetworkAdvanced from './components/network/NetworkAdvanced.vue'
+import NetworkPreset from './components/network/NetworkPreset.vue'
+import NetworkTemporary from './components/network/NetworkTemporary.vue'
 import DialogService from 'primevue/dialogservice';
 import ToastService from 'primevue/toastservice';
 
@@ -52,13 +56,15 @@ const routes = [
                 path: 'deviceList',
                 name: 'deviceList',
                 component: DeviceList,
-                children: [
-                    {
-                        path: 'device/:deviceId/:instanceId?',
-                        name: 'deviceManagement',
-                        component: DeviceManagement,
-                    }
-                ]
+            },
+            {
+                // Device management opens over the page it was opened from.
+                path: 'deviceList/device/:deviceId/:instanceId?',
+                name: 'deviceManagement',
+                redirect: (to: any) => ({
+                    name: 'deviceList',
+                    query: { device: to.params.deviceId, instance: to.params.instanceId || undefined },
+                }),
             },
             {
                 path: 'networks',
@@ -67,13 +73,20 @@ const routes = [
             },
             {
                 path: 'networks/view/:networkName',
-                name: 'meshNetwork',
-                component: MeshNetworkDetail,
+                component: NetworkShell,
+                children: [
+                    { path: '', name: 'meshNetwork', component: NetworkOverview },
+                    { path: 'members', name: 'meshMembers', component: NetworkMembers },
+                    { path: 'settings', name: 'meshSettings', component: NetworkSettings },
+                    { path: 'advanced', name: 'meshAdvanced', component: NetworkAdvanced },
+                    { path: 'preset', name: 'meshPreset', component: NetworkPreset },
+                    { path: 'temporary', name: 'meshTemporary', component: NetworkTemporary },
+                ],
             },
             {
+                // A network has one page; central records no longer have their own.
                 path: 'networks/:networkId',
-                name: 'networkDetail',
-                component: NetworkDetail,
+                redirect: { name: 'networkList' },
             },
         ]
     },
