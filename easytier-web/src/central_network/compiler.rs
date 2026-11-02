@@ -145,6 +145,8 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 acl: acl.get(&member.id).cloned().flatten(),
                 disable_encryption: intent.disable_encryption.then_some(true),
                 encryption_algorithm: intent.encryption_algorithm.clone(),
+                instance_name: Some(intent.display_name.clone())
+                    .filter(|name| !name.trim().is_empty()),
                 ..Default::default()
             };
             let network_config =

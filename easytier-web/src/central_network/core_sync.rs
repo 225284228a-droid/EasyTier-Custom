@@ -1,13 +1,18 @@
 //! Core settings are the few values every peer of a network must share to
 //! stay connected: the network name, the secret, the secure mode switch and
-//! encryption. A console writes a change of them to the members it can reach
-//! now. A member that was offline receives the missed change once, the next
-//! time it connects, and never again; a change made on the node is never
-//! reverted. Nothing else in a member's configuration is touched.
+//! encryption. The network's display name travels with them: it names each
+//! member's configuration (`instance_name`) and never joins or splits peers.
+//!
+//! A console writes a change to the members it can reach now. A member that
+//! was offline receives the missed change once, the next time it connects,
+//! and never again; a change made on the node is never reverted. Nothing
+//! else in a member's configuration is touched.
 //!
 //! Several consoles can manage one node. Each change carries a UTC timestamp
 //! stored on the node (`network_sync_at`), so a late replay never overwrites
-//! a newer change another console already made.
+//! a newer change another console already made. Official nodes connect to
+//! one console, which stores their configurations itself: a change is
+//! written over that copy and reaches the node whenever it is online.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,6 +25,11 @@ use easytier::proto::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use easytier::common::config::ConfigSource;
+use easytier_core::management::remote_client::{
+    ListNetworkProps, PersistentConfig as _, Storage as _,
+};
+
 use crate::{
     client_manager::{
         ClientManager,
@@ -29,6 +39,7 @@ use crate::{
 };
 
 pub(crate) const SYNC_CAPABILITY: &str = "config:network-sync-v1";
+pub(crate) const DISPLAY_NAME_CAPABILITY: &str = "config:instance-name-v1";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreSettings {
@@ -38,6 +49,9 @@ pub struct CoreSettings {
     pub secure_mode: bool,
     pub disable_encryption: bool,
     pub encryption_algorithm: Option<String>,
+    /// The configuration's shown name; unset shows the network name.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 impl CoreSettings {
@@ -51,6 +65,10 @@ impl CoreSettings {
                 .encryption_algorithm
                 .clone()
                 .filter(|algorithm| !algorithm.is_empty()),
+            display_name: config
+                .instance_name
+                .clone()
+                .filter(|name| !name.trim().is_empty()),
         }
     }
 }
@@ -69,6 +87,9 @@ pub struct CoreChange {
     /// An empty string selects the default algorithm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption_algorithm: Option<String>,
+    /// An empty string shows the network name again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 impl CoreChange {
@@ -93,6 +114,10 @@ impl CoreChange {
         if let Some(algorithm) = &self.encryption_algorithm {
             settings.encryption_algorithm = (!algorithm.is_empty()).then(|| algorithm.clone());
         }
+        if let Some(name) = &self.display_name {
+            let name = name.trim();
+            settings.display_name = (!name.is_empty()).then(|| name.to_owned());
+        }
         settings
     }
 
@@ -107,6 +132,7 @@ impl CoreChange {
                 .encryption_algorithm
                 .clone()
                 .or(self.encryption_algorithm.clone()),
+            display_name: later.display_name.clone().or(self.display_name.clone()),
         }
     }
 
@@ -138,6 +164,7 @@ fn core_patch(
     config: &NetworkConfig,
     target: &CoreSettings,
     stamp: Option<u64>,
+    display_name: bool,
 ) -> Option<(NetworkConfig, Vec<String>)> {
     let current = CoreSettings::of(config);
     let mut desired = config.clone();
@@ -165,6 +192,10 @@ fn core_patch(
     if current.encryption_algorithm != target.encryption_algorithm {
         desired.encryption_algorithm = target.encryption_algorithm.clone();
         mask.push("encryption_algorithm".to_owned());
+    }
+    if display_name && current.display_name != target.display_name {
+        desired.instance_name = target.display_name.clone();
+        mask.push("instance_name".to_owned());
     }
     if mask.is_empty() {
         return None;
@@ -208,6 +239,22 @@ fn instance_entry(view: &LocalConfigView, instance_id: &str) -> Option<Persisted
         .cloned()
 }
 
+fn observation(
+    device_id: Uuid,
+    instance_id: String,
+    config: &NetworkConfig,
+) -> anyhow::Result<MeshObservation> {
+    let core = CoreSettings::of(config);
+    Ok(MeshObservation {
+        device_id: device_id.to_string(),
+        instance_id,
+        network_name: core.network_name.clone(),
+        core: serde_json::to_string(&core)?,
+        sync_at: config.network_sync_at.map(|stamp| stamp as i64),
+        credential: is_credential_member(config),
+    })
+}
+
 fn observations_of(view: &LocalConfigView) -> anyhow::Result<Vec<MeshObservation>> {
     let mut observations = Vec::new();
     for entry in &view.snapshot.entries {
@@ -217,21 +264,79 @@ fn observations_of(view: &LocalConfigView) -> anyhow::Result<Vec<MeshObservation
         if entry.status != "ready" {
             continue;
         }
-        let core = CoreSettings::of(config);
-        observations.push(MeshObservation {
-            device_id: view.machine_id.to_string(),
-            instance_id: Uuid::from(instance_id).to_string(),
-            network_name: core.network_name.clone(),
-            core: serde_json::to_string(&core)?,
-            sync_at: config.network_sync_at.map(|stamp| stamp as i64),
-            credential: is_credential_member(config),
-        });
+        observations.push(observation(
+            view.machine_id,
+            Uuid::from(instance_id).to_string(),
+            config,
+        )?);
     }
     Ok(observations)
 }
 
-/// Record what each online revision-capable device holds now. Offline
-/// devices keep their last observation.
+/// A configuration the console stores for a node without its own catalog.
+struct StoredConfig {
+    instance_id: String,
+    config: NetworkConfig,
+    disabled: bool,
+    source: ConfigSource,
+}
+
+async fn stored_configs(
+    db: &Db,
+    user_id: UserIdInDb,
+    device_id: Uuid,
+) -> anyhow::Result<Vec<StoredConfig>> {
+    db.list_network_configs((user_id, device_id), ListNetworkProps::All)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(StoredConfig {
+                instance_id: row.get_network_inst_id().to_owned(),
+                config: row.get_network_config()?,
+                disabled: row.disabled,
+                source: row.get_network_config_source(),
+            })
+        })
+        .collect()
+}
+
+/// Write the core settings over the console's copy of an official node's
+/// configuration. The console applies its copy whenever the node is online,
+/// so an offline node receives it on connection; nothing competes with it
+/// because an official node connects to one console only.
+async fn force_stored(
+    db: &Db,
+    manager: &ClientManager,
+    user_id: UserIdInDb,
+    device_id: Uuid,
+    instance_id: &str,
+    change: &CoreChange,
+) -> anyhow::Result<bool> {
+    let stored = stored_configs(db, user_id, device_id)
+        .await?
+        .into_iter()
+        .find(|stored| stored.instance_id == instance_id)
+        .ok_or_else(|| anyhow::anyhow!("configuration no longer exists"))?;
+    let target = change.apply_to(&CoreSettings::of(&stored.config));
+    // Official cores neither keep the stamp nor a separate display name.
+    let Some((desired, _)) = core_patch(&stored.config, &target, None, false) else {
+        return Ok(false);
+    };
+    let instance = Uuid::parse_str(instance_id)?;
+    db.insert_or_update_user_network_config((user_id, device_id), instance, desired, stored.source)
+        .await?;
+    // Saving enables a configuration; a stopped network stays stopped.
+    db.update_network_config_state((user_id, device_id), instance, stored.disabled)
+        .await?;
+    manager
+        .invalidate_applied_config_revision(user_id, device_id)
+        .await;
+    Ok(true)
+}
+
+/// Record the core settings of every instance this console can see:
+/// revision-capable devices while online, and the stored copies of official
+/// nodes. Offline revision-capable devices keep their last observation.
 pub(crate) async fn observe_user(db: &Db, manager: &ClientManager, user_id: UserIdInDb) {
     let devices = match db.list_user_device_ids(user_id).await {
         Ok(devices) => devices,
@@ -241,6 +346,25 @@ pub(crate) async fn observe_user(db: &Db, manager: &ClientManager, user_id: User
         }
     };
     for device_id in devices {
+        if !manager.supports_local_configs(&(user_id, device_id)).await {
+            let result = async {
+                let observations = stored_configs(db, user_id, device_id)
+                    .await?
+                    .iter()
+                    .map(|stored| {
+                        observation(device_id, stored.instance_id.clone(), &stored.config)
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                db.replace_mesh_observations(user_id, device_id, &observations)
+                    .await
+                    .map_err(anyhow::Error::from)
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(user_id, %device_id, %error, "cannot record stored configuration");
+            }
+            continue;
+        }
         let view = match manager.local_configs(user_id, device_id).await {
             Ok(Some(view)) if view.online && !view.stale => view,
             Ok(_) => continue,
@@ -295,12 +419,15 @@ async fn write_core(
     stamp: u64,
 ) -> Result<bool, LocalConfigError> {
     let config = entry.config.as_ref().expect("ready entries carry a config");
-    let stamp = view
-        .capabilities
-        .iter()
-        .any(|capability| capability == SYNC_CAPABILITY)
-        .then_some(stamp);
-    let Some((desired, mask)) = core_patch(config, target, stamp) else {
+    let supports = |name: &str| {
+        view.capabilities
+            .iter()
+            .any(|capability| capability == name)
+    };
+    let stamp = supports(SYNC_CAPABILITY).then_some(stamp);
+    let Some((desired, mask)) =
+        core_patch(config, target, stamp, supports(DISPLAY_NAME_CAPABILITY))
+    else {
         return Ok(false);
     };
     manager
@@ -354,6 +481,23 @@ pub(crate) async fn apply(
             status,
             message,
         };
+        if !manager.supports_local_configs(&(user_id, device_id)).await {
+            let online = manager
+                .get_session_by_machine_id(user_id, &device_id)
+                .is_some();
+            results.push(
+                match force_stored(db, manager, user_id, device_id, &member.instance_id, change)
+                    .await
+                {
+                    Ok(true) if online => result(MemberSyncStatus::Saved, None),
+                    // Applied by the console when the node connects.
+                    Ok(true) => result(MemberSyncStatus::Pending, None),
+                    Ok(false) => result(MemberSyncStatus::Unchanged, None),
+                    Err(error) => result(MemberSyncStatus::Failed, Some(error.to_string())),
+                },
+            );
+            continue;
+        }
         let view = manager
             .local_configs(user_id, device_id)
             .await
@@ -622,7 +766,7 @@ mod tests {
             ..Default::default()
         };
         let target = change.apply_to(&CoreSettings::of(&current));
-        let (desired, mask) = core_patch(&current, &target, Some(42)).unwrap();
+        let (desired, mask) = core_patch(&current, &target, Some(42), true).unwrap();
         assert_eq!(mask, ["network_secret", "secure_mode", "network_sync_at"]);
         assert_eq!(desired.network_secret.as_deref(), Some("new"));
         let secure = desired.secure_mode.unwrap();
@@ -632,9 +776,30 @@ mod tests {
         assert_eq!(desired.peer_urls, current.peer_urls);
         assert_eq!(desired.network_sync_at, Some(42));
 
-        assert!(core_patch(&current, &CoreSettings::of(&current), Some(43)).is_none());
-        let (_, mask) = core_patch(&current, &target, None).unwrap();
+        assert!(core_patch(&current, &CoreSettings::of(&current), Some(43), true).is_none());
+        let (_, mask) = core_patch(&current, &target, None, true).unwrap();
         assert!(!mask.contains(&"network_sync_at".to_owned()));
+    }
+
+    #[test]
+    fn display_names_reach_only_nodes_that_keep_them() {
+        let current = config("office", Some("secret"));
+        let change = CoreChange {
+            display_name: Some("Head office".into()),
+            ..Default::default()
+        };
+        let target = change.apply_to(&CoreSettings::of(&current));
+        let (desired, mask) = core_patch(&current, &target, None, true).unwrap();
+        assert_eq!(mask, ["instance_name"]);
+        assert_eq!(desired.instance_name.as_deref(), Some("Head office"));
+        assert_eq!(desired.network_name.as_deref(), Some("office"));
+        // Official cores always name the instance after the network.
+        assert!(core_patch(&current, &target, None, false).is_none());
+        let reset = CoreChange {
+            display_name: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(reset.apply_to(&target).display_name, None);
     }
 
     #[test]

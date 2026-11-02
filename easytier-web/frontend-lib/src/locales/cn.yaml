@@ -723,6 +723,8 @@ web:
     stopped: 未运行
 
   mesh_network:
+    display_name: 网络显示名称
+    display_name_hint: 设备上显示的配置名称，留空则显示网络名称；不影响组网
     pending: 待补发
     pending_hint: 修改核心设置时该成员离线，它下次上线时会补发一次；之后在设备上的修改不会被覆盖
     temporary: 临时节点

@@ -723,6 +723,8 @@ web:
     stopped: Stopped
 
   mesh_network:
+    display_name: Network display name
+    display_name_hint: The name devices show for this configuration; empty shows the network name. It does not affect joining
     pending: Pending
     pending_hint: This member was offline when the core settings changed; it receives the change once when it next connects, and later edits on the device are kept
     temporary: Temporary

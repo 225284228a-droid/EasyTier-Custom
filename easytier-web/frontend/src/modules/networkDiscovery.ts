@@ -28,7 +28,10 @@ export interface NetworkMember {
 export interface DiscoveredNetwork {
   identity: string
   name: string
-  /** What people call it: a central network's display name, else its name. */
+  /**
+   * What people call it: the display name its configurations show (a central
+   * network's display name first), else the network name.
+   */
   label: string
   members: NetworkMember[]
   runningCount: number
@@ -73,6 +76,7 @@ export function groupNetworks(
     }
     return entry
   }
+  const displayNames = new Map<string, string[]>()
   for (const scan of scans) {
     const running = new Set(scan.running)
     for (const instanceId of [...scan.running, ...scan.disabled]) {
@@ -81,6 +85,8 @@ export function groupNetworks(
       if (!name) continue
       const entry = network(name)
       const isRunning = running.has(instanceId)
+      const shown = LibApi.configDisplayName(scan.metas[instanceId])
+      if (shown !== name) displayNames.set(name, [...(displayNames.get(name) ?? []), shown])
       entry.members.push({
         key: `${scan.device.machine_id}/${instanceId}`,
         device: scan.device,
@@ -106,6 +112,7 @@ export function groupNetworks(
     }
     // A scanned device no longer has this instance.
     if (scannedDevices.has(member.device_id) || !member.network_name) continue
+    if (member.display_name) displayNames.set(member.network_name, [...(displayNames.get(member.network_name) ?? []), member.display_name])
     const device = devices.find(device => device.machine_id === member.device_id)
       ?? { machine_id: member.device_id, hostname: member.device_id, running_network_count: 0 } as Utils.DeviceInfo
     network(member.network_name).members.push({
@@ -118,6 +125,12 @@ export function groupNetworks(
       pending: member.pending || undefined,
       credential: member.credential || undefined,
     })
+  }
+  // The name most members show labels the network.
+  for (const [name, shown] of displayNames) {
+    const counts = new Map<string, number>()
+    for (const value of shown) counts.set(value, (counts.get(value) ?? 0) + 1)
+    network(name).label = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]
   }
   // A central network stays visible while none of its members are online.
   for (const summary of central) {

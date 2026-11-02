@@ -135,7 +135,11 @@ encryption switch and algorithm). It writes a change of them to the members
 it can reach and sends a missed change once to a member that was offline,
 the next time it connects; a later change on the node is never reverted.
 Each write stamps `network_sync_at` (UTC Unix milliseconds) on the node so
-several consoles managing one node order competing changes. Other fields are
+several consoles managing one node order competing changes. The network's
+display name travels with them as each member's `instance_name`, the name its
+configuration shows; the network name alone identifies the network. Official
+nodes connect to one console that stores their configurations, so their core
+settings are written over that copy and applied whenever they are online. Other fields are
 batch-edited in the browser for online members only. Central networks keep
 only temporary members, their credentials and the Gateway; ACL policies are
 not managed. See `docs/decentralized-networks.md`.

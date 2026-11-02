@@ -161,14 +161,14 @@ const batchVisible = ref(false);
 const batchCreating = ref(false);
 const batchDevices = ref<Utils.DeviceInfo[]>([]);
 const batchSelected = ref<string[]>([]);
-const batchForm = ref({ network_name: '', network_secret: '', start: true });
+const batchForm = ref({ display_name: '', network_name: '', network_secret: '', start: true });
 const batchPeers = ref<string[]>([]);
 const batchListeners = ref<string[]>([]);
 const batchNameExists = computed(() =>
     (networks.value ?? []).some(network => network.name === batchForm.value.network_name.trim()));
 
 const openBatchCreate = async () => {
-    batchForm.value = { network_name: '', network_secret: uuidv4().replace(/-/g, '').slice(0, 16), start: true };
+    batchForm.value = { display_name: '', network_name: '', network_secret: uuidv4().replace(/-/g, '').slice(0, 16), start: true };
     batchPeers.value = [];
     batchListeners.value = [...NetworkTypes.DEFAULT_NETWORK_CONFIG().listener_urls];
     batchSelected.value = [];
@@ -194,6 +194,9 @@ const batchCreate = async () => {
         const results = await Promise.allSettled(devices.map(async device => {
             const config = NetworkTypes.DEFAULT_NETWORK_CONFIG();
             config.network_name = name;
+            // Each device shows the configuration by the display name.
+            const displayName = batchForm.value.display_name.trim();
+            if (displayName) config.instance_name = displayName;
             config.network_secret = batchForm.value.network_secret;
             config.peer_urls = [...batchPeers.value];
             config.listener_urls = [...batchListeners.value];
@@ -332,6 +335,10 @@ const batchCreate = async () => {
 
         <Dialog v-model:visible="batchVisible" modal class="console-dialog" :header="t('web.mesh_network.create')" :style="{ width: '36rem' }">
             <div class="flex flex-col gap-3">
+                <div class="flex flex-col gap-1">
+                    <label for="batch-display-name">{{ t('web.mesh_network.display_name') }}</label>
+                    <InputText id="batch-display-name" v-model="batchForm.display_name" :placeholder="batchForm.network_name" />
+                </div>
                 <div class="flex flex-col gap-1">
                     <label for="batch-network-name">{{ t('web.mesh_network.network_name') }}</label>
                     <InputText id="batch-network-name" v-model="batchForm.network_name" class="font-mono" />

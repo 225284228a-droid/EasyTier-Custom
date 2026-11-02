@@ -50,6 +50,13 @@ export namespace ConfigFilePermission {
 export interface NetworkMeta {
     network_name: string;
     config_permission: ConfigFilePermission.Flags;
+    /** The name the configuration shows; equals the network name unless a display name was set. */
+    instance_name?: string;
+}
+
+/** A configuration is shown by its display name, else by its network name. */
+export function configDisplayName(meta: Pick<NetworkMeta, 'network_name' | 'instance_name'>): string {
+    return meta.instance_name && meta.instance_name !== 'default' ? meta.instance_name : meta.network_name;
 }
 
 export interface GetNetworkMetasResponse {

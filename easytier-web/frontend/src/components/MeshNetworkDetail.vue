@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, toRaw, watch } from 'vue';
-import { Button, Column, ConfirmDialog, DataTable, Dialog, Message, ProgressSpinner, Skeleton, Tag, useConfirm, useToast } from 'primevue';
+import { Button, Column, ConfirmDialog, DataTable, Dialog, InputText, Message, ProgressSpinner, Skeleton, Tag, useConfirm, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { Api as LibApi, Config, ConfigStores, LocalConfigs, NetworkTypes } from 'easytier-frontend-lib';
@@ -103,7 +103,8 @@ interface MemberResult {
 
 // Peers must share these to stay connected. The console writes them to
 // every member it knows and replays a missed change once to an offline one.
-const CORE_FIELDS = ['network_name', 'network_secret', 'secure_mode', 'disable_encryption', 'encryption_algorithm'];
+// The display name travels with them; it names each member's configuration.
+const CORE_FIELDS = ['network_name', 'network_secret', 'secure_mode', 'disable_encryption', 'encryption_algorithm', 'instance_name'];
 
 const coreChangeOf = (source: NetworkTypes.NetworkConfig, fields: string[]): MeshCoreChange => {
     const backend = NetworkTypes.toBackendNetworkConfig(source) as Record<string, any>;
@@ -113,6 +114,7 @@ const coreChangeOf = (source: NetworkTypes.NetworkConfig, fields: string[]): Mes
     if (fields.includes('secure_mode')) change.secure_mode = !!backend.secure_mode?.enabled;
     if (fields.includes('disable_encryption')) change.disable_encryption = !!backend.disable_encryption;
     if (fields.includes('encryption_algorithm')) change.encryption_algorithm = String(backend.encryption_algorithm ?? '');
+    if (fields.includes('instance_name')) change.display_name = String(source.instance_name ?? '').trim();
     return change;
 };
 
@@ -386,6 +388,11 @@ const resultLabel = (status: MemberResult['status']) => t(`web.mesh_network.resu
                             <span v-if="result.message" class="preview-secondary">{{ result.message }}</span>
                         </div>
                     </div>
+                    <div class="batch-display-name">
+                        <label for="batch-display-name">{{ t('web.mesh_network.display_name') }}</label>
+                        <InputText id="batch-display-name" v-model="template.instance_name" :placeholder="String(template.network_name ?? '')" />
+                        <small class="muted">{{ t('web.mesh_network.display_name_hint') }}</small>
+                    </div>
                     <Config v-model:cur-network="template" :config-invalid="batchApplying" :runtime-capabilities="templateCapabilities"
                         :action-label="t('web.mesh_network.batch_apply', { count: loaded.length })" @run-network="applyBatch" />
                 </template>
@@ -404,6 +411,7 @@ const resultLabel = (status: MemberResult['status']) => t(`web.mesh_network.resu
 .dashboard-error { margin: 0 0 16px; font-size: 13px; color: var(--p-orange-600); overflow-wrap: anywhere; }
 .batch-varied { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
 .batch-failures { margin: 6px 0 0; padding-left: 18px; }
+.batch-display-name { display: flex; flex-direction: column; gap: 4px; max-width: 32rem; }
 .batch-results { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--console-border); border-radius: 6px; }
 .batch-results h3 { margin: 0 0 4px; font-size: 14px; }
 .batch-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }

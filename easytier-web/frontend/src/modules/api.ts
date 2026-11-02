@@ -194,6 +194,8 @@ export interface MeshCoreChange {
     disable_encryption?: boolean;
     /** An empty string selects the default algorithm. */
     encryption_algorithm?: string;
+    /** The name each member's configuration shows; empty shows the network name. */
+    display_name?: string;
 }
 
 export type MeshSyncStatus = 'saved' | 'unchanged' | 'pending' | 'conflict' | 'failed';
@@ -210,6 +212,7 @@ export interface MeshMember {
     device_id: string;
     instance_id: string;
     network_name: string;
+    display_name?: string | null;
     online: boolean;
     pending: boolean;
     sync_at?: number | null;

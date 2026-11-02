@@ -210,6 +210,8 @@ pub struct MeshMemberInfo {
     pub device_id: String,
     pub instance_id: String,
     pub network_name: String,
+    /// The name its configuration shows, when it has its own.
+    pub display_name: Option<String>,
     pub online: bool,
     /// A missed core change waits for this member to connect.
     pub pending: bool,
@@ -549,6 +551,9 @@ impl CentralNetworkService {
             intent.secure_mode = core.secure_mode;
             intent.disable_encryption = core.disable_encryption;
             intent.encryption_algorithm = core.encryption_algorithm;
+            if let Some(display_name) = core.display_name {
+                intent.display_name = display_name;
+            }
             self.persist(intent).await?;
         }
         core_sync::apply(
@@ -589,6 +594,9 @@ impl CentralNetworkService {
             .map(|member| MeshMemberInfo {
                 online: online.contains(&member.device_id),
                 pending: pending.contains(&(member.device_id.clone(), member.instance_id.clone())),
+                display_name: serde_json::from_str::<CoreSettings>(&member.core)
+                    .ok()
+                    .and_then(|core| core.display_name),
                 device_id: member.device_id,
                 instance_id: member.instance_id,
                 network_name: member.network_name,
@@ -1350,6 +1358,8 @@ fn intent_core(intent: &CentralNetworkIntent) -> CoreSettings {
         secure_mode: intent.secure_mode,
         disable_encryption: intent.disable_encryption,
         encryption_algorithm: intent.encryption_algorithm.clone(),
+        // The network's display name names each member's configuration.
+        display_name: Some(intent.display_name.clone()).filter(|name| !name.trim().is_empty()),
     }
 }
 
@@ -1365,6 +1375,8 @@ fn core_change(before: &CoreSettings, after: &CoreSettings) -> CoreChange {
             .then_some(after.disable_encryption),
         encryption_algorithm: (before.encryption_algorithm != after.encryption_algorithm)
             .then(|| after.encryption_algorithm.clone().unwrap_or_default()),
+        display_name: (before.display_name != after.display_name)
+            .then(|| after.display_name.clone().unwrap_or_default()),
     }
 }
 
@@ -2746,6 +2758,66 @@ mod tests {
             Err(CentralNetworkServiceError::Invalid(message))
                 if message.contains("Gateway runtime is disabled")
         ));
+    }
+
+    #[tokio::test]
+    async fn offline_official_nodes_get_core_changes_forced_into_their_stored_config() {
+        use easytier_core::management::remote_client::{
+            ListNetworkProps, PersistentConfig as _, Storage as _,
+        };
+        let (service, user_id, _) = service().await;
+        let device_id = Uuid::new_v4();
+        register_device(&service, user_id, device_id).await;
+        let instance_id = Uuid::new_v4();
+        service
+            .db
+            .insert_or_update_user_network_config(
+                (user_id, device_id),
+                instance_id,
+                NetworkConfig {
+                    instance_id: Some(instance_id.to_string()),
+                    network_name: Some("office".into()),
+                    network_secret: Some("old".into()),
+                    hostname: Some("official-node".into()),
+                    ..Default::default()
+                },
+                easytier::common::config::ConfigSource::Web,
+            )
+            .await
+            .unwrap();
+        service
+            .db
+            .update_network_config_state((user_id, device_id), instance_id, true)
+            .await
+            .unwrap();
+
+        let results = service
+            .apply_core_change(
+                user_id,
+                "office",
+                CoreChange {
+                    network_secret: Some("new".into()),
+                    display_name: Some("Head office".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, core_sync::MemberSyncStatus::Pending);
+
+        let stored = service
+            .db
+            .list_network_configs((user_id, device_id), ListNetworkProps::All)
+            .await
+            .unwrap()
+            .remove(0);
+        let config = stored.get_network_config().unwrap();
+        assert_eq!(config.network_secret.as_deref(), Some("new"));
+        assert_eq!(config.hostname.as_deref(), Some("official-node"));
+        // Official cores cannot keep a separate display name.
+        assert_eq!(config.instance_name, None);
+        assert!(stored.disabled, "a stopped network stays stopped");
     }
 
     #[tokio::test]
