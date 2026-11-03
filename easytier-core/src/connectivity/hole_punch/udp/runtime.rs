@@ -444,14 +444,8 @@ pub trait UdpHolePunchPeerSource: Send + Sync {
     fn p2p_policy_flags(&self) -> P2pPolicyFlags;
     fn reserve_parallel_slot_for_protocol(
         &self,
-        peer_id: crate::config::PeerId,
-        _protocol: &str,
-    ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
-        self.reserve_parallel_slot(peer_id)
-    }
-    fn reserve_parallel_slot(
-        &self,
         _peer_id: crate::config::PeerId,
+        _protocol: &str,
     ) -> Option<crate::peers::conn::parallel::ParallelDialReservation> {
         None
     }

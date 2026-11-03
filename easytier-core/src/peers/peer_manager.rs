@@ -1719,17 +1719,6 @@ impl PeerManagerCore {
                 .has_connection_at_least_as_preferred(peer_id, target_scheme, use_disguise)
     }
 
-    pub(crate) fn reserve_parallel_slot(
-        &self,
-        peer_id: PeerId,
-    ) -> Option<super::conn::parallel::ParallelDialReservation> {
-        self.peers.reserve_parallel_slot(peer_id).or_else(|| {
-            self.foreign_network_client
-                .get_peer_map()
-                .reserve_parallel_slot(peer_id)
-        })
-    }
-
     pub(crate) fn parallel_connection_target(&self, peer_id: PeerId) -> u32 {
         self.peers
             .parallel_connection_status(peer_id)
