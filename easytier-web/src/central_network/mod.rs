@@ -3,6 +3,7 @@
 pub(crate) mod advanced;
 pub mod compiler;
 pub(crate) mod core_sync;
+mod delivery;
 pub mod device_auth;
 pub mod gateway;
 pub(crate) mod local_delivery;

@@ -164,14 +164,17 @@ const stats = computed(() => [
         <section class="console-panel dashboard">
             <header class="section-heading"><h2>{{ t('web.dashboard.topology') }}</h2></header>
             <div class="dashboard-body">
-                <div class="dashboard-summary">
-                    <span>{{ t('web.dashboard.networks') }}: <strong>{{ topology.networkIdentities.length }}</strong></span>
-                    <span>{{ t('web.dashboard.nodes') }}: <strong>{{ topology.nodes.length }}</strong></span>
-                    <span>{{ t('web.dashboard.connections') }}: <strong>{{ topology.links.length }}</strong></span>
-                </div>
                 <p v-if="topologyError" role="status" class="dashboard-error">{{ topologyError }}</p>
                 <NetworkTopologyGlobe :nodes="topology.nodes" :links="topology.links" :loading="manualRefreshing"
-                    :persistence-key="persistenceKey" @refresh="loadTopology(true)" />
+                    :persistence-key="persistenceKey" @refresh="loadTopology(true)">
+                    <template #summary>
+                        <div class="dashboard-summary">
+                            <span>{{ t('web.dashboard.networks') }}: <strong>{{ topology.networkIdentities.length }}</strong></span>
+                            <span>{{ t('web.dashboard.nodes') }}: <strong>{{ topology.nodes.length }}</strong></span>
+                            <span>{{ t('web.dashboard.connections') }}: <strong>{{ topology.links.length }}</strong></span>
+                        </div>
+                    </template>
+                </NetworkTopologyGlobe>
             </div>
         </section>
     </div>
@@ -186,8 +189,8 @@ const stats = computed(() => [
 .dashboard-device-card .preview-name { font-size: 13px; font-weight: 550; }
 .dashboard-device-card .preview-secondary { font-size: 11px; }
 .dashboard { min-width: 0; }
-.dashboard-body { min-width: 0; padding: 16px 20px 20px; }
-.dashboard-summary { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 16px; color: var(--p-text-muted-color); font-size: 13px; }
+.dashboard-body { min-width: 0; padding: 8px 20px 20px; }
+.dashboard-summary { display: flex; flex-wrap: wrap; gap: 8px 24px; min-width: 0; color: var(--p-text-muted-color); font-size: 13px; }
 .dashboard-summary strong { color: var(--p-text-color); }
 .dashboard-error { margin: 0 0 16px; font-size: 13px; color: var(--p-orange-600); overflow-wrap: anywhere; }
 </style>

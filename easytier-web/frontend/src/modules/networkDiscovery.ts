@@ -330,3 +330,30 @@ export async function deviceConfigStore(api: ApiClient, device: Utils.DeviceInfo
   const revision = ConfigStores.supportsRevisionStore(remote, capabilities, listed.support_local_config_revision)
   return { store: ConfigStores.createConfigStore(remote, capabilities, revision), capabilities }
 }
+
+/** Pauses before the second and third try of a device write. */
+const RETRY_PAUSES = [1000, 3000]
+
+/** Whether a failed device write may pass when tried again. */
+function retryable(reason: unknown): boolean {
+  if (reason instanceof ConfigStores.ConfigApplyError) return false
+  const status = (reason as { response?: { status?: number } } | undefined)?.response?.status
+  return status === undefined || status === 408 || status === 409 || status === 429 || status >= 500
+}
+
+/**
+ * Run a device write up to three times over an unsteady connection. `write`
+ * reads the device again on each try, so it must only send what is still
+ * needed (setting a state, not creating something).
+ */
+export async function retryDeviceWrite<T>(write: () => Promise<T>, pauses = RETRY_PAUSES): Promise<T> {
+  for (const pause of pauses) {
+    try {
+      return await write()
+    } catch (reason) {
+      if (!retryable(reason)) throw reason
+      await new Promise(resolve => setTimeout(resolve, pause))
+    }
+  }
+  return write()
+}

@@ -23,6 +23,25 @@ impl ClientManager {
         session.local_configs().await.map(Some)
     }
 
+    /// The node's config directory read again now, past the cached
+    /// observation.
+    pub(crate) async fn observe_local_configs(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: Uuid,
+    ) -> Result<LocalConfigView, LocalConfigError> {
+        let session = self
+            .get_session_by_machine_id(user_id, &machine_id)
+            .ok_or(LocalConfigError::Offline)?;
+        if !session.has_local_revision_capability().await {
+            return Err(LocalConfigError::Unsupported);
+        }
+        session
+            .observe_local_configs()
+            .await
+            .map_err(|_| LocalConfigError::Observation)
+    }
+
     pub(crate) async fn patch_local_config(
         &self,
         user_id: UserIdInDb,

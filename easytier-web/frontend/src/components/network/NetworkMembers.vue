@@ -4,7 +4,7 @@ import { Button, Checkbox, Column, DataTable, Dialog, Message, SelectButton, Ske
 import { useI18n } from 'vue-i18n';
 import { Api as LibApi, Utils } from 'easytier-frontend-lib';
 import type { MeshJoinResult } from '../../modules/api';
-import { deviceConfigStore, failureMessage, type NetworkMember } from '../../modules/networkDiscovery';
+import { deviceConfigStore, failureMessage, retryDeviceWrite, type NetworkMember } from '../../modules/networkDiscovery';
 import { deviceName, failedResults, resultSeverity, useMeshNetwork } from '../../modules/meshNetworkContext';
 import { useDevicePopup } from '../../modules/devicePopup';
 
@@ -47,8 +47,9 @@ const setEnabled = async (enabled: boolean) => {
     if (!targets.length) return;
     busy.value = true;
     try {
-        const results = await Promise.allSettled(targets.map(member =>
-            deviceConfigStore(api, member.device).then(({ store }) => store.setEnabled(member.instanceId, enabled))));
+        // Devices are reached at once; each retries over an unsteady link.
+        const results = await Promise.allSettled(targets.map(member => retryDeviceWrite(() =>
+            deviceConfigStore(api, member.device).then(({ store }) => store.setEnabled(member.instanceId, enabled)))));
         const failed = results.flatMap((result, index) => result.status === 'rejected'
             ? [`${deviceName(targets[index])}: ${failureMessage(result.reason)}`] : []);
         toast.add({
@@ -64,7 +65,7 @@ const setEnabled = async (enabled: boolean) => {
     }
 };
 
-// The name opens the network's status; "device management" opens its form.
+// The name opens the network's status; "edit configuration" opens its form.
 const openStatus = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId);
 const openEditor = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId, true);
 
@@ -190,12 +191,11 @@ const candidateName = (deviceId: string) => {
                     <Tag v-if="!editable(member) && member.online" :value="t('web.mesh_network.readonly')" severity="warn" />
                 </div>
                 <div class="member-facts">
-                    <span v-if="virtualIp(member)" class="mono-value" v-tooltip.top="t('web.mesh_network.virtual_ip')">{{ virtualIp(member) }}</span>
-                    <span v-if="member.device.public_ip" class="mono-value" v-tooltip.top="t('web.mesh_network.public_ip')">{{ member.device.public_ip }}</span>
+                    <span v-if="virtualIp(member)" class="mono-value">{{ virtualIp(member) }}</span>
                     <span v-if="member.device.easytier_version">v{{ member.device.easytier_version.split('-')[0] }}</span>
                 </div>
                 <div class="member-card-actions">
-                    <Button icon="pi pi-pencil" :label="t('web.mesh_network.open_device')" text size="small" severity="secondary" @click="openEditor(member)" />
+                    <Button icon="pi pi-pencil" :label="t('web.mesh_network.edit_config')" text size="small" severity="secondary" @click="openEditor(member)" />
                 </div>
             </article>
         </div>
@@ -209,7 +209,6 @@ const candidateName = (deviceId: string) => {
                 </template>
             </Column>
             <Column :header="t('web.mesh_network.virtual_ip')"><template #body="{ data }"><span class="mono-value">{{ virtualIp(data) || '—' }}</span></template></Column>
-            <Column :header="t('web.mesh_network.public_ip')"><template #body="{ data }"><span class="mono-value">{{ data.device.public_ip || '—' }}</span></template></Column>
             <Column :header="t('web.mesh_network.status')">
                 <template #body="{ data }">
                     <div class="flex flex-wrap gap-1">
@@ -224,7 +223,7 @@ const candidateName = (deviceId: string) => {
             </Column>
             <Column field="device.easytier_version" :header="t('web.device.version')" />
             <Column :header="t('web.console.manage')">
-                <template #body="{ data }"><Button icon="pi pi-pencil" text severity="secondary" v-tooltip="t('web.mesh_network.open_device')" :aria-label="t('web.mesh_network.open_device')" @click="openEditor(data)" /></template>
+                <template #body="{ data }"><Button icon="pi pi-pencil" :label="t('web.mesh_network.edit_config')" text size="small" severity="secondary" @click="openEditor(data)" /></template>
             </Column>
         </DataTable>
     </section>

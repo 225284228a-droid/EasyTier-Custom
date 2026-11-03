@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { groupNetworks, type DeviceNetworkScan } from '../src/modules/networkDiscovery'
+import { groupNetworks, retryDeviceWrite, type DeviceNetworkScan } from '../src/modules/networkDiscovery'
 import { ADVANCED_SWITCHES, advancedDistribution, touchedSettings } from '../src/modules/meshAdvanced'
 import { buildTopology, networkNameIdentity } from '../src/modules/networkTopology'
 
@@ -99,5 +99,33 @@ describe('advanced settings', () => {
     for (const field of ['enable_exit_node', 'no_tun', 'use_smoltcp', 'bind_device', 'proxy_forward_by_system', 'enable_private_mode', 'disable_encryption']) {
       expect(ADVANCED_SWITCHES).not.toContain(field)
     }
+  })
+})
+
+describe('device writes over an unsteady link', () => {
+  const failing = (failures: unknown[]) => {
+    let calls = 0
+    const write = async () => {
+      calls++
+      const failure = failures.shift()
+      if (failure) throw failure
+      return 'done'
+    }
+    return { write, calls: () => calls }
+  }
+
+  it('tries a timed-out or conflicting write again', async () => {
+    const { write, calls } = failing([new Error('timeout'), { response: { status: 409 } }])
+    await expect(retryDeviceWrite(write, [0, 0])).resolves.toBe('done')
+    expect(calls()).toBe(3)
+  })
+
+  it('stops after three tries and on a request the device refused', async () => {
+    const lasting = failing([new Error('a'), new Error('b'), new Error('c')])
+    await expect(retryDeviceWrite(lasting.write, [0, 0])).rejects.toThrow('c')
+    expect(lasting.calls()).toBe(3)
+    const refused = failing([{ response: { status: 403 } }])
+    await expect(retryDeviceWrite(refused.write, [0, 0])).rejects.toEqual({ response: { status: 403 } })
+    expect(refused.calls()).toBe(1)
   })
 })

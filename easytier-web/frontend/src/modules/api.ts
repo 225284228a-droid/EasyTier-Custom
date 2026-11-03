@@ -196,6 +196,8 @@ export interface MeshCoreChange {
     encryption_algorithm?: string;
     /** The name each member's configuration shows; empty shows the network name. */
     display_name?: string;
+    /** The network's IPv4 subnet: static members keep their host parts, DHCP members follow. */
+    virtual_subnet?: string;
 }
 
 export type MeshSyncStatus = 'saved' | 'unchanged' | 'pending' | 'conflict' | 'locked' | 'failed';
@@ -221,6 +223,8 @@ export interface MeshMember {
     locked?: boolean;
     /** The advanced settings it held when last seen. */
     advanced?: MeshAdvancedValues;
+    /** Its static address with the prefix; DHCP members have none. */
+    virtual_ipv4?: string | null;
 }
 
 /** The core settings of a network as the console knows them. */
@@ -231,6 +235,8 @@ export interface MeshCoreSettings {
     disable_encryption: boolean;
     encryption_algorithm?: string | null;
     display_name?: string | null;
+    /** The network's subnet, e.g. 10.126.126.0/24, when it is known. */
+    virtual_ipv4?: string | null;
 }
 
 /** Advanced settings by field; null leaves a setting at the core's default. */
@@ -257,6 +263,8 @@ export interface CreateMeshNetworkRequest {
     network_secret?: string;
     secure_mode?: boolean;
     preset?: MeshPreset;
+    /** The network's IPv4 subnet; unset leaves DHCP at its default. */
+    virtual_subnet?: string;
     devices?: string[];
 }
 

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { v4 as uuidv4 } from 'uuid';
 import { Button, Checkbox, ConfirmDialog, InputSwitch, InputText, Message, Password, Select, Skeleton, Tag, useConfirm, useToast } from 'primevue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import type { MeshCoreChange, MeshSyncResult } from '../../modules/api';
+import type { MeshCoreChange, MeshMember, MeshSyncResult } from '../../modules/api';
+import { moveIntoSubnet, parseVirtualSubnet, toNetworkCidr } from '../../modules/cidr';
 import { failureMessage } from '../../modules/networkDiscovery';
 import { failedResults, resultSeverity, useMeshNetwork } from '../../modules/meshNetworkContext';
 
@@ -32,6 +33,7 @@ interface Form {
     secure_mode: boolean;
     disable_encryption: boolean;
     encryption_algorithm: string;
+    virtual_subnet: string;
 }
 const form = ref<Form>();
 const formOf = (): Form | undefined => view.value && {
@@ -42,6 +44,7 @@ const formOf = (): Form | undefined => view.value && {
     secure_mode: view.value.core.secure_mode,
     disable_encryption: view.value.core.disable_encryption,
     encryption_algorithm: view.value.core.encryption_algorithm || DEFAULT_ALGORITHM,
+    virtual_subnet: (view.value.core.virtual_ipv4 && toNetworkCidr(view.value.core.virtual_ipv4)) || '',
 };
 // Reload the form only when the console's view changes, not on every poll.
 watch(() => JSON.stringify(view.value?.core), () => { form.value = formOf(); }, { immediate: true });
@@ -60,16 +63,50 @@ const change = computed<MeshCoreChange>(() => {
     if (after.encryption_algorithm !== before.encryption_algorithm) {
         result.encryption_algorithm = after.encryption_algorithm === DEFAULT_ALGORITHM ? '' : after.encryption_algorithm;
     }
+    if (subnet.value && subnet.value !== before.virtual_subnet) result.virtual_subnet = subnet.value;
     return result;
 });
+
+// The subnet moves static members and keeps their host parts; running DHCP
+// members restart into it. An empty field leaves it as it is.
+const parsedSubnet = computed(() => parseVirtualSubnet(form.value?.virtual_subnet ?? ''));
+const subnet = computed(() => parsedSubnet.value ?? undefined);
+const subnetInvalid = computed(() => parsedSubnet.value === null);
+const permanentMembers = ref<MeshMember[]>([]);
+const loadMembers = async () => {
+    try {
+        permanentMembers.value = (await api.list_mesh_members())
+            .filter(member => member.network_name === networkName.value && !member.credential);
+    } catch (error) {
+        console.debug('Failed to read members', error);
+    }
+};
+onMounted(loadMembers);
+const subnetPreview = computed(() => {
+    const target = change.value.virtual_subnet;
+    if (!target) return [];
+    const rows = permanentMembers.value.filter(member => member.virtual_ipv4).map(member => ({
+        key: `${member.device_id}/${member.instance_id}`,
+        from: member.virtual_ipv4!,
+        to: moveIntoSubnet(member.virtual_ipv4!, target),
+    }));
+    const addresses = rows.map(row => row.to?.split('/')[0]);
+    return rows.map(row => ({
+        ...row,
+        problem: !row.to ? 'no_host' : addresses.filter(address => address === row.to!.split('/')[0]).length > 1 ? 'conflict' : undefined,
+    }));
+});
+const dhcpCount = computed(() => permanentMembers.value.filter(member => !member.virtual_ipv4).length);
+
 const invalid = computed(() => !form.value?.network_name.trim()
-    || (!form.value.no_password && !form.value.network_secret.trim()));
+    || (!form.value.no_password && !form.value.network_secret.trim())
+    || subnetInvalid.value || subnetPreview.value.some(row => row.problem));
 
 const saving = ref(false);
 const results = ref<MeshSyncResult[]>([]);
-const memberName = (result: MeshSyncResult) => {
-    const member = network.value?.members.find(member => member.key === `${result.device_id}/${result.instance_id}`);
-    return member ? member.device.alias || member.device.hostname || member.device.machine_id : result.device_id;
+const memberName = (key: string) => {
+    const member = network.value?.members.find(member => member.key === key);
+    return member ? member.device.alias || member.device.hostname || member.device.machine_id : key.split('/')[0];
 };
 const save = async () => {
     if (!Object.keys(change.value).length || invalid.value) return;
@@ -87,7 +124,7 @@ const save = async () => {
         if (renamed && renamed !== networkName.value) {
             await router.replace({ name: 'meshSettings', params: { networkName: renamed } });
         }
-        await reload();
+        await Promise.all([reload(), loadMembers()]);
     } catch (error) {
         toast.add({ severity: 'error', summary: t('web.mesh_network.section_settings'), detail: failureMessage(error), life: 5000 });
     } finally {
@@ -166,6 +203,22 @@ const deleteNetwork = () => confirm.require({
                 <Select input-id="settings-algorithm" v-model="form.encryption_algorithm" :options="algorithms" option-label="label"
                     option-value="value" :disabled="form.disable_encryption" class="w-full sm:w-80" />
             </div>
+            <div class="field">
+                <label for="settings-virtual-subnet">{{ t('web.mesh_network.virtual_subnet') }}</label>
+                <InputText id="settings-virtual-subnet" v-model="form.virtual_subnet" class="font-mono w-full sm:w-80"
+                    :placeholder="t('web.mesh_network.virtual_subnet_default')" :invalid="subnetInvalid" />
+                <small v-if="subnetInvalid" class="text-red-500">{{ t('web.mesh_network.virtual_subnet_invalid') }}</small>
+                <small v-else class="muted">{{ t('web.mesh_network.virtual_subnet_hint') }}</small>
+                <div v-if="change.virtual_subnet && (subnetPreview.length || dhcpCount)" class="subnet-preview">
+                    <h3>{{ t('web.mesh_network.virtual_subnet_preview') }}</h3>
+                    <div v-for="row in subnetPreview" :key="row.key" class="subnet-row">
+                        <span class="preview-name">{{ memberName(row.key) }}</span>
+                        <span class="mono-value">{{ row.from }} → {{ row.to ?? '—' }}</span>
+                        <Tag v-if="row.problem" :value="t(`web.mesh_network.virtual_subnet_${row.problem}`)" severity="danger" />
+                    </div>
+                    <span v-if="dhcpCount" class="preview-secondary">{{ t('web.mesh_network.virtual_subnet_dhcp', { count: dhcpCount }) }}</span>
+                </div>
+            </div>
             <Message v-if="Object.keys(change).length" severity="info" :closable="false">{{ t('web.mesh_network.core_hint') }}</Message>
             <div class="flex gap-2">
                 <Button :label="t('web.mesh_network.apply_settings')" icon="pi pi-check" :loading="saving"
@@ -176,7 +229,7 @@ const deleteNetwork = () => confirm.require({
             <div v-if="results.length" class="sync-results">
                 <h3>{{ t('web.mesh_network.batch_result') }}</h3>
                 <div v-for="result in results" :key="`${result.device_id}/${result.instance_id}`" class="sync-result">
-                    <span class="preview-name">{{ memberName(result) }}</span>
+                    <span class="preview-name">{{ memberName(`${result.device_id}/${result.instance_id}`) }}</span>
                     <Tag :value="t(`web.mesh_network.result_${result.status}`)" :severity="resultSeverity(result.status)" />
                     <span v-if="result.message" class="preview-secondary">{{ result.message }}</span>
                 </div>
@@ -201,4 +254,7 @@ const deleteNetwork = () => confirm.require({
 .sync-results { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--console-border); border-radius: 6px; }
 .sync-results h3 { margin: 0 0 4px; font-size: 14px; }
 .sync-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.subnet-preview { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; padding: 12px; border: 1px solid var(--console-border); border-radius: 6px; }
+.subnet-preview h3 { margin: 0 0 4px; font-size: 14px; }
+.subnet-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
 </style>

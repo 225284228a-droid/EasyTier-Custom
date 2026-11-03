@@ -21,7 +21,7 @@ use uuid::Uuid;
 pub use super::temporary_peers::TemporaryPeerInfo;
 use super::{
     advanced::AdvancedChange,
-    core_sync::{self, CoreChange, CoreSettings, MemberSyncResult},
+    core_sync::{self, CoreChange, CoreSettings, Ipv4Inet, MemberSyncResult},
     mesh_network::{self, JoinResult, MeshNetworkView, Preset},
     model::{
         CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
@@ -225,6 +225,8 @@ pub struct MeshMemberInfo {
     pub locked: bool,
     /// The advanced settings it held when last seen.
     pub advanced: super::advanced::AdvancedValues,
+    /// Its static address with the prefix; DHCP members have none.
+    pub virtual_ipv4: Option<String>,
 }
 
 /// A new network: only the name is required.
@@ -240,6 +242,9 @@ pub struct CreateMeshNetworkReq {
     pub secure_mode: bool,
     #[serde(default)]
     pub preset: Option<Preset>,
+    /// The network's IPv4 subnet; unset leaves DHCP at its default.
+    #[serde(default)]
+    pub virtual_subnet: Option<String>,
     /// Devices that join right away.
     #[serde(default)]
     pub devices: Vec<Uuid>,
@@ -251,7 +256,7 @@ pub struct CentralNetworkService {
     client_manager: Arc<ClientManager>,
     /// One mutation lock per user id. Central data (networks, devices,
     /// members) is user-scoped, so serializing mutations per account keeps
-    /// every invariant a global lock did — while a slow device interaction
+    /// every invariant a global lock did 鈥?while a slow device interaction
     /// in one account, such as waiting up to 30s for a deleted device to
     /// stop its managed instances, no longer blocks other accounts.
     mutation_locks: Arc<Mutex<HashMap<UserIdInDb, Arc<tokio::sync::Mutex<()>>>>>,
@@ -579,6 +584,25 @@ impl CentralNetworkService {
             if let Some(display_name) = core.display_name {
                 intent.display_name = display_name;
             }
+            // Temporary devices with their own addresses move along and keep
+            // their host parts; on DHCP they follow on their own.
+            if let Some(subnet) = change.virtual_subnet.as_deref().and_then(Ipv4Inet::parse)
+                && intent.virtual_cidr.is_some()
+            {
+                let subnet = subnet.network();
+                intent.virtual_cidr = Some(subnet.to_string());
+                let moved = |address: &mut Option<String>| {
+                    *address = address
+                        .as_deref()
+                        .and_then(|address| address.parse().ok())
+                        .and_then(|address| subnet.host(address))
+                        .map(|address| address.to_string());
+                };
+                for member in &mut intent.members {
+                    moved(&mut member.virtual_ipv4);
+                    moved(&mut member.allocated_ipv4);
+                }
+            }
             self.persist(intent).await?;
         }
         let before = mesh_network::current_core(&self.db, user_id, network_name)
@@ -650,6 +674,25 @@ impl CentralNetworkService {
                 .display_name
                 .map(|name| name.trim().to_owned())
                 .filter(|name| !name.is_empty()),
+            virtual_ipv4: match request
+                .virtual_subnet
+                .as_deref()
+                .map(str::trim)
+                .filter(|subnet| !subnet.is_empty())
+            {
+                Some(subnet) => Some(
+                    Ipv4Inet::parse(subnet)
+                        .filter(|subnet| (1..=30).contains(&subnet.prefix))
+                        .ok_or_else(|| {
+                            CentralNetworkServiceError::Invalid(
+                                "virtual subnet must look like 10.126.126.0/24".to_owned(),
+                            )
+                        })?
+                        .network()
+                        .to_string(),
+                ),
+                None => None,
+            },
             ..Default::default()
         };
         let preset = request
@@ -669,21 +712,25 @@ impl CentralNetworkService {
         network_name: &str,
         devices: &[Uuid],
     ) -> Vec<JoinResult> {
-        let mut results = Vec::with_capacity(devices.len());
-        for device_id in devices {
-            results.push(
-                mesh_network::join(
-                    &self.db,
-                    &self.client_manager,
-                    user_id,
-                    network_name,
-                    *device_id,
-                    true,
-                    self.gateway_peer(),
-                )
-                .await,
-            );
+        // Every join reads the record; make it before they run together.
+        if let Err(error) =
+            mesh_network::ensure_record(&self.db, user_id, network_name, self.gateway_peer()).await
+        {
+            tracing::debug!(user_id, network_name, %error, "joins report the missing network");
         }
+        let results = futures::future::join_all(devices.iter().map(|device_id| {
+            mesh_network::join(
+                &self.db,
+                &self.client_manager,
+                user_id,
+                network_name,
+                *device_id,
+                true,
+                self.gateway_peer(),
+            )
+        }))
+        .await;
+        core_sync::observe_user(&self.db, &self.client_manager, user_id).await;
         results
     }
 
@@ -833,19 +880,23 @@ impl CentralNetworkService {
             .list_mesh_observations(user_id, None)
             .await?
             .into_iter()
-            .map(|member| MeshMemberInfo {
-                online: online.contains(&member.device_id),
-                pending: pending.contains(&(member.device_id.clone(), member.instance_id.clone())),
-                locked: locked.contains(&(member.device_id.clone(), member.instance_id.clone())),
-                advanced: serde_json::from_str(&member.advanced).unwrap_or_default(),
-                display_name: serde_json::from_str::<CoreSettings>(&member.core)
-                    .ok()
-                    .and_then(|core| core.display_name),
-                device_id: member.device_id,
-                instance_id: member.instance_id,
-                network_name: member.network_name,
-                sync_at: member.sync_at,
-                credential: member.credential,
+            .map(|member| {
+                let core = serde_json::from_str::<CoreSettings>(&member.core).ok();
+                MeshMemberInfo {
+                    online: online.contains(&member.device_id),
+                    pending: pending
+                        .contains(&(member.device_id.clone(), member.instance_id.clone())),
+                    locked: locked
+                        .contains(&(member.device_id.clone(), member.instance_id.clone())),
+                    advanced: serde_json::from_str(&member.advanced).unwrap_or_default(),
+                    virtual_ipv4: core.as_ref().and_then(|core| core.virtual_ipv4.clone()),
+                    display_name: core.and_then(|core| core.display_name),
+                    device_id: member.device_id,
+                    instance_id: member.instance_id,
+                    network_name: member.network_name,
+                    sync_at: member.sync_at,
+                    credential: member.credential,
+                }
             })
             .collect())
     }
@@ -1625,6 +1676,9 @@ fn intent_core(intent: &CentralNetworkIntent) -> CoreSettings {
         encryption_algorithm: intent.encryption_algorithm.clone(),
         // The network's display name names each member's configuration.
         display_name: Some(intent.display_name.clone()).filter(|name| !name.trim().is_empty()),
+        // Temporary devices follow the network's subnet, not the other way round.
+        virtual_ipv4: None,
+        dhcp_ipv4_cidr: None,
     }
 }
 
@@ -1642,6 +1696,7 @@ fn core_change(before: &CoreSettings, after: &CoreSettings) -> CoreChange {
             .then(|| after.encryption_algorithm.clone().unwrap_or_default()),
         display_name: (before.display_name != after.display_name)
             .then(|| after.display_name.clone().unwrap_or_default()),
+        virtual_subnet: None,
     }
 }
 
@@ -3086,6 +3141,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subnet_moves_keep_host_parts_and_leave_dhcp_members_alone() {
+        use easytier_core::management::remote_client::{
+            ListNetworkProps, PersistentConfig as _, Storage as _,
+        };
+        let (service, user_id, _) = service().await;
+        // Temporary devices with their own subnet follow the network's.
+        let temporary_devices = [Uuid::new_v4(), Uuid::new_v4()];
+        for device in temporary_devices {
+            register_device(&service, user_id, device).await;
+        }
+        let network = service
+            .create_network(user_id, standalone_settings(), None)
+            .await
+            .unwrap();
+        let network_id = Uuid::parse_str(&network.network_id).unwrap();
+        service
+            .add_members(
+                user_id,
+                network_id,
+                AddMembersReq {
+                    device_ids: temporary_devices.iter().map(ToString::to_string).collect(),
+                    temporary: true,
+                    ttl_seconds: None,
+                },
+            )
+            .await
+            .unwrap();
+        let before: Vec<_> = service
+            .load(user_id, network_id)
+            .await
+            .unwrap()
+            .members
+            .into_iter()
+            .map(|member| member.allocated_ipv4.unwrap())
+            .collect();
+
+        let mut members = Vec::new();
+        for (address, dhcp) in [(Some("10.88.0.5"), false), (None, true)] {
+            let device_id = Uuid::new_v4();
+            register_device(&service, user_id, device_id).await;
+            let instance_id = Uuid::new_v4();
+            service
+                .db
+                .insert_or_update_user_network_config(
+                    (user_id, device_id),
+                    instance_id,
+                    NetworkConfig {
+                        instance_id: Some(instance_id.to_string()),
+                        network_name: Some("engineering".into()),
+                        network_secret: Some("secret".into()),
+                        dhcp: Some(dhcp),
+                        virtual_ipv4: address.map(str::to_owned),
+                        network_length: address.map(|_| 24),
+                        ..Default::default()
+                    },
+                    easytier::common::config::ConfigSource::Web,
+                )
+                .await
+                .unwrap();
+            members.push(device_id);
+        }
+
+        let results = service
+            .apply_core_change(
+                user_id,
+                "engineering",
+                CoreChange {
+                    virtual_subnet: Some("10.20.30.0/24".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut stored = Vec::new();
+        for device_id in &members {
+            stored.push(
+                service
+                    .db
+                    .list_network_configs((user_id, *device_id), ListNetworkProps::All)
+                    .await
+                    .unwrap()
+                    .remove(0)
+                    .get_network_config()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(stored[0].virtual_ipv4.as_deref(), Some("10.20.30.5"));
+        assert_eq!(stored[0].network_length, Some(24));
+        assert_eq!(stored[1].virtual_ipv4, None);
+        assert_eq!(stored[1].dhcp, Some(true));
+        assert!(
+            results
+                .iter()
+                .any(|result| result.device_id == members[1].to_string()
+                    && result.status == core_sync::MemberSyncStatus::Unchanged)
+        );
+
+        let after = service.load(user_id, network_id).await.unwrap();
+        assert_eq!(after.virtual_cidr.as_deref(), Some("10.20.30.0/24"));
+        let after: Vec<_> = after
+            .members
+            .into_iter()
+            .map(|member| member.allocated_ipv4.unwrap())
+            .collect();
+        for (before, after) in before.iter().zip(&after) {
+            assert_eq!(before.rsplit('.').next(), after.rsplit('.').next());
+            assert!(after.starts_with("10.20.30."), "{after}");
+        }
+    }
+
+    #[tokio::test]
     async fn permanent_members_are_rejected_and_temporary_ones_get_exclusive_credentials() {
         let (service, user_id, _) = service().await;
         let permanent_device = Uuid::new_v4();
@@ -3974,6 +4140,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_network_subnet_is_optional_and_otherwise_read_from_its_members() {
+        let (service, user_id, _) = service().await;
+        let request = |name: &str, subnet: Option<&str>| CreateMeshNetworkReq {
+            network_name: name.into(),
+            display_name: None,
+            network_secret: None,
+            secure_mode: false,
+            preset: None,
+            devices: Vec::new(),
+            virtual_subnet: subnet.map(str::to_owned),
+        };
+        assert!(
+            service
+                .create_mesh_network(user_id, request("bad", Some("10.20.30.0")))
+                .await
+                .is_err(),
+            "a subnet needs its prefix length"
+        );
+        service
+            .create_mesh_network(user_id, request("lab", Some("10.20.30.9/24")))
+            .await
+            .unwrap();
+        let lab = service.get_mesh_network(user_id, "lab").await.unwrap();
+        assert_eq!(lab.core.virtual_ipv4.as_deref(), Some("10.20.30.0/24"));
+        service
+            .create_mesh_network(user_id, request("default", None))
+            .await
+            .unwrap();
+        let default = service.get_mesh_network(user_id, "default").await.unwrap();
+        assert_eq!(default.core.virtual_ipv4, None, "empty means the default");
+
+        // A network found on devices: its static members say where it is,
+        // else its DHCP members' configured subnet does.
+        let observed = |instance: &str, core: CoreSettings| crate::db::MeshObservation {
+            device_id: Uuid::new_v4().to_string(),
+            instance_id: instance.to_owned(),
+            network_name: core.network_name.clone(),
+            core: serde_json::to_string(&core).unwrap(),
+            sync_at: None,
+            credential: false,
+            advanced: "{}".to_owned(),
+            advanced_sync_at: None,
+        };
+        let core = |name: &str, address: Option<&str>, range: Option<&str>| CoreSettings {
+            network_name: name.into(),
+            network_secret: Some("secret".into()),
+            virtual_ipv4: address.map(str::to_owned),
+            dhcp_ipv4_cidr: range.map(str::to_owned),
+            ..Default::default()
+        };
+        for (instance, member) in [
+            ("a", core("found", Some("10.9.9.5/24"), None)),
+            ("b", core("found", Some("10.9.9.6/24"), None)),
+            ("c", core("found", None, Some("10.7.7.0/24"))),
+            ("d", core("dhcp", None, Some("10.7.7.0/24"))),
+            ("e", core("plain", None, None)),
+        ] {
+            let observation = observed(instance, member);
+            let device_id = Uuid::parse_str(&observation.device_id).unwrap();
+            register_device(&service, user_id, device_id).await;
+            service
+                .db
+                .replace_mesh_observations(user_id, device_id, &[observation])
+                .await
+                .unwrap();
+        }
+        let subnet = |name: &'static str| {
+            let service = &service;
+            async move {
+                service
+                    .get_mesh_network(user_id, name)
+                    .await
+                    .unwrap()
+                    .core
+                    .virtual_ipv4
+            }
+        };
+        assert_eq!(subnet("found").await.as_deref(), Some("10.9.9.0/24"));
+        assert_eq!(subnet("dhcp").await.as_deref(), Some("10.7.7.0/24"));
+        assert_eq!(subnet("plain").await, None);
+    }
+
+    #[tokio::test]
     async fn a_network_needs_only_a_name_and_devices_join_with_its_preset() {
         let (service, user_id, _) = service().await;
         let results = service
@@ -3986,6 +4235,7 @@ mod tests {
                     secure_mode: false,
                     preset: None,
                     devices: Vec::new(),
+                    virtual_subnet: None,
                 },
             )
             .await
@@ -4000,7 +4250,11 @@ mod tests {
                 .is_some_and(|secret| !secret.is_empty()),
             "a secret is generated"
         );
-        assert_eq!(network.preset.listeners.len(), 3);
+        assert_eq!(
+            network.preset.listeners,
+            ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"],
+            "new networks do not listen for WireGuard"
+        );
         assert_eq!(service.list_mesh_networks(user_id).await.unwrap().len(), 1);
         let duplicate = service
             .create_mesh_network(
@@ -4012,6 +4266,7 @@ mod tests {
                     secure_mode: false,
                     preset: None,
                     devices: Vec::new(),
+                    virtual_subnet: None,
                 },
             )
             .await;
@@ -4199,6 +4454,7 @@ mod tests {
                     secure_mode: false,
                     preset: None,
                     devices: Vec::new(),
+                    virtual_subnet: None,
                 },
             )
             .await

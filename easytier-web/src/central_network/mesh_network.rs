@@ -11,12 +11,14 @@
 //! member that was offline receives the edit once when it next connects,
 //! unless it changed those settings itself in the meantime.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use easytier::{
     common::config::ConfigSource,
     proto::{
-        api::manage::{NetworkConfig, NetworkingMethod, PatchPersistedConfigRequest},
+        api::manage::{
+            NetworkConfig, NetworkingMethod, PatchPersistedConfigRequest, PersistedConfigEntry,
+        },
         common::SecureModeConfig,
     },
 };
@@ -27,20 +29,20 @@ use uuid::Uuid;
 use super::{
     advanced::{self, AdvancedChange, AdvancedValues},
     core_sync::{
-        self, CoreSettings, DISPLAY_NAME_CAPABILITY, MemberSyncResult, MemberSyncStatus,
+        self, CoreSettings, DISPLAY_NAME_CAPABILITY, Ipv4Inet, MemberSyncResult, MemberSyncStatus,
         SYNC_CAPABILITY,
     },
+    delivery,
 };
 use crate::{
-    client_manager::{ClientManager, session::local_configs::LocalConfigError},
+    client_manager::{
+        ClientManager,
+        session::local_configs::{LocalConfigError, LocalConfigView},
+    },
     db::{Db, MeshAdvancedReplay, MeshNetworkRecord, MeshObservation, UserIdInDb},
 };
 
-pub(crate) const DEFAULT_LISTENERS: [&str; 3] = [
-    "tcp://0.0.0.0:11010",
-    "udp://0.0.0.0:11010",
-    "wg://0.0.0.0:11011",
-];
+pub(crate) const DEFAULT_LISTENERS: [&str; 2] = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"];
 
 /// What a device receives when it joins, besides the core settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -117,14 +119,38 @@ pub(crate) async fn current_core(
         (Some(record), _) => Some((record.core.as_str(), record.sync_at)),
         (None, newest) => newest,
     };
-    chosen
-        .map(|(core, sync_at)| Ok((serde_json::from_str(core)?, sync_at)))
-        .transpose()
+    let Some((core, sync_at)) = chosen else {
+        return Ok(None);
+    };
+    let mut core: CoreSettings = serde_json::from_str(core)?;
+    // The network's subnet: the one most static members use, else the one
+    // most DHCP members are configured with, else the last one this console
+    // wrote. None means the default.
+    let cores: Vec<CoreSettings> = members
+        .iter()
+        .filter_map(|member| serde_json::from_str(&member.core).ok())
+        .collect();
+    let subnet = most_common(cores.iter().filter_map(CoreSettings::subnet))
+        .or_else(|| most_common(cores.iter().filter_map(CoreSettings::dhcp_subnet)))
+        .or_else(|| core.subnet());
+    core.virtual_ipv4 = subnet.map(|subnet| subnet.to_string());
+    Ok(Some((core, sync_at)))
+}
+
+fn most_common(subnets: impl Iterator<Item = Ipv4Inet>) -> Option<Ipv4Inet> {
+    let mut counts = HashMap::new();
+    for subnet in subnets {
+        *counts.entry(subnet.to_string()).or_insert(0usize) += 1;
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0)))
+        .and_then(|(subnet, _)| Ipv4Inet::parse(&subnet))
 }
 
 /// The console's record for `network_name`, created from what its members
 /// hold when the console has none yet.
-async fn ensure_record(
+pub(crate) async fn ensure_record(
     db: &Db,
     user_id: UserIdInDb,
     network_name: &str,
@@ -328,6 +354,11 @@ fn joined_config(
     ]
     .map(str::to_owned)
     .to_vec();
+    // The network's subnet is where a joining device starts before it sees a peer.
+    if let Some(subnet) = core.subnet() {
+        config.dhcp_ipv4_cidr = Some(subnet.to_string());
+        mask.push("dhcp_ipv4_cidr".to_owned());
+    }
     if supports(DISPLAY_NAME_CAPABILITY) && core.display_name.is_some() {
         config.instance_name = core.display_name.clone();
         mask.push("instance_name".to_owned());
@@ -345,7 +376,8 @@ fn joined_config(
 }
 
 /// Create the network's configuration on `device_id` from its current core
-/// settings and preset. Existing members are left alone.
+/// settings and preset. Existing members are left alone. The caller observes
+/// the devices afterwards.
 pub(crate) async fn join(
     db: &Db,
     manager: &ClientManager,
@@ -424,35 +456,26 @@ pub(crate) async fn join(
         };
         let (config, field_mask) =
             joined_config(instance_id, &core, &preset, Some(stamp), supports)?;
-        let written = manager
-            .patch_local_config(
-                user_id,
-                device_id,
-                PatchPersistedConfigRequest {
+        let instance = instance_id.to_string();
+        // A creation whose outcome was lost shows up in the next read.
+        delivery::patch(manager, user_id, device_id, Some(view), |view| {
+            Ok(core_sync::instance_entry(view, &instance)
+                .is_none()
+                .then(|| PatchPersistedConfigRequest {
                     inst_id: Some(instance_id.into()),
                     expected_revision: String::new(),
-                    config: Some(config),
-                    field_mask,
+                    config: Some(config.clone()),
+                    field_mask: field_mask.clone(),
                     toml: None,
-                },
-            )
-            .await?;
-        if start && let Some(entry) = core_sync::instance_entry(&written, &instance_id.to_string())
-        {
-            manager
-                .mutate_local_config_lifecycle(
-                    user_id,
-                    device_id,
-                    instance_id,
-                    entry.revision,
-                    Some(true),
-                )
-                .await?;
+                }))
+        })
+        .await?;
+        if start {
+            delivery::set_enabled(manager, user_id, device_id, &instance, None, true).await?;
         }
         Ok::<_, anyhow::Error>((MemberSyncStatus::Saved, Some(instance_id)))
     }
     .await;
-    core_sync::observe_user(db, manager, user_id).await;
     match outcome {
         Ok((status, instance_id)) => result(status, instance_id, None),
         Err(error) => result(MemberSyncStatus::Failed, None, Some(error.to_string())),
@@ -501,6 +524,8 @@ pub(crate) async fn apply_advanced(
             .map(|stamp| stamp as u64),
     );
     let mut results = Vec::new();
+    // Online revision members, written together once all are known.
+    let mut online = Vec::new();
     for member in members {
         if locked.contains(&(member.device_id.clone(), member.instance_id.clone())) {
             results.push(sync_result(&member, MemberSyncStatus::Locked, None));
@@ -565,48 +590,67 @@ pub(crate) async fn apply_advanced(
         // A direct write supersedes an edit the member was still waiting for.
         db.delete_mesh_advanced_replay(user_id, &member.device_id, &member.instance_id)
             .await?;
-        let Some(entry) = core_sync::instance_entry(&view, &member.instance_id) else {
-            results.push(sync_result(
-                &member,
-                MemberSyncStatus::Failed,
-                Some("configuration no longer exists".to_owned()),
-            ));
-            continue;
-        };
-        let supports = |name: &str| {
-            view.capabilities
-                .iter()
-                .any(|capability| capability == name)
-        };
-        let config = entry.config.as_ref().expect("ready entries carry a config");
-        let Some((desired, field_mask)) = advanced::patch(config, change, supports, Some(stamp))?
-        else {
-            results.push(sync_result(&member, MemberSyncStatus::Unchanged, None));
-            continue;
-        };
-        let written = manager
-            .patch_local_config(
-                user_id,
-                device_id,
-                PatchPersistedConfigRequest {
-                    inst_id: entry.inst_id,
-                    expected_revision: entry.revision.clone(),
-                    config: Some(desired),
-                    field_mask,
-                    toml: None,
-                },
-            )
+        online.push((device_id, (view, member.instance_id.clone(), results.len())));
+        results.push(sync_result(&member, MemberSyncStatus::Unchanged, None));
+    }
+    let written = delivery::per_device(online, |device_id, members| async move {
+        let mut written = Vec::with_capacity(members.len());
+        for (view, instance_id, index) in members {
+            let outcome = delivery::patch(manager, user_id, device_id, Some(view), |view| {
+                let entry = core_sync::instance_entry(view, &instance_id).ok_or_else(|| {
+                    LocalConfigError::NotFound("configuration no longer exists".to_owned())
+                })?;
+                let config = entry.config.as_ref().expect("ready entries carry a config");
+                // Another console's newer edit is kept.
+                if config.advanced_sync_at.is_some_and(|seen| seen > stamp) {
+                    return Err(LocalConfigError::Conflict(None));
+                }
+                advanced_request(view, &entry, change, stamp)
+            })
             .await;
-        results.push(match written {
-            Ok(_) => sync_result(&member, MemberSyncStatus::Saved, None),
-            Err(LocalConfigError::Conflict(_)) => {
-                sync_result(&member, MemberSyncStatus::Conflict, None)
-            }
-            Err(error) => sync_result(&member, MemberSyncStatus::Failed, Some(error.to_string())),
-        });
+            written.push((index, outcome));
+        }
+        written
+    })
+    .await;
+    for (index, outcome) in written {
+        let (status, message) = match outcome {
+            Ok(true) => (MemberSyncStatus::Saved, None),
+            Ok(false) => (MemberSyncStatus::Unchanged, None),
+            Err(LocalConfigError::Conflict(_)) => (MemberSyncStatus::Conflict, None),
+            Err(error) => (MemberSyncStatus::Failed, Some(error.to_string())),
+        };
+        results[index].status = status;
+        results[index].message = message;
     }
     core_sync::observe_user(db, manager, user_id).await;
     Ok(results)
+}
+
+/// The write that gives the entry the touched advanced settings, if any differ.
+fn advanced_request(
+    view: &LocalConfigView,
+    entry: &PersistedConfigEntry,
+    change: &AdvancedChange,
+    stamp: u64,
+) -> Result<Option<PatchPersistedConfigRequest>, LocalConfigError> {
+    let supports = |name: &str| {
+        view.capabilities
+            .iter()
+            .any(|capability| capability == name)
+    };
+    let config = entry.config.as_ref().expect("ready entries carry a config");
+    let patch = advanced::patch(config, change, supports, Some(stamp))
+        .map_err(|error| LocalConfigError::Invalid(error.to_string()))?;
+    Ok(
+        patch.map(|(desired, field_mask)| PatchPersistedConfigRequest {
+            inst_id: entry.inst_id,
+            expected_revision: entry.revision.clone(),
+            config: Some(desired),
+            field_mask,
+            toml: None,
+        }),
+    )
 }
 
 /// Send each missed advanced edit and pause once to members that came back
@@ -626,6 +670,7 @@ async fn replay_advanced(
     user_id: UserIdInDb,
 ) -> anyhow::Result<()> {
     let locked = locks(db, user_id).await?;
+    let mut due = Vec::new();
     for replay in db.list_mesh_advanced_replays(user_id).await? {
         let Ok(device_id) = Uuid::parse_str(&replay.device_id) else {
             continue;
@@ -645,42 +690,31 @@ async fn replay_advanced(
         if locked.contains(&(replay.device_id.clone(), replay.instance_id.clone())) {
             continue;
         }
-        let Some(entry) = core_sync::instance_entry(&view, &replay.instance_id) else {
-            continue;
-        };
-        let config = entry.config.as_ref().expect("ready entries carry a config");
-        let target = replay.target_sync_at as u64;
-        // Edits on the node are overwritten; another console's later edit is kept.
-        if !core_sync::replay_applies(config.advanced_sync_at, target) {
-            continue;
-        }
         let change: AdvancedChange = serde_json::from_str(&replay.change)?;
-        let supports = |name: &str| {
-            view.capabilities
-                .iter()
-                .any(|capability| capability == name)
-        };
-        let Some((desired, field_mask)) = advanced::patch(config, &change, supports, Some(target))?
-        else {
-            continue;
-        };
-        if let Err(error) = manager
-            .patch_local_config(
-                user_id,
-                device_id,
-                PatchPersistedConfigRequest {
-                    inst_id: entry.inst_id,
-                    expected_revision: entry.revision.clone(),
-                    config: Some(desired),
-                    field_mask,
-                    toml: None,
-                },
-            )
-            .await
-        {
-            tracing::warn!(user_id, %device_id, instance_id = replay.instance_id, %error, "missed advanced settings were not applied");
-        }
+        due.push((device_id, (view, replay, change)));
     }
+    delivery::per_device(due, |device_id, replays| async move {
+        for (view, replay, change) in replays {
+            let target = replay.target_sync_at as u64;
+            let written = delivery::patch(manager, user_id, device_id, Some(view), |view| {
+                let Some(entry) = core_sync::instance_entry(view, &replay.instance_id) else {
+                    return Ok(None);
+                };
+                let config = entry.config.as_ref().expect("ready entries carry a config");
+                // Edits on the node are overwritten; another console's later edit is kept.
+                if !core_sync::replay_applies(config.advanced_sync_at, target) {
+                    return Ok(None);
+                }
+                advanced_request(view, &entry, &change, target)
+            })
+            .await;
+            if let Err(error) = written {
+                tracing::warn!(user_id, %device_id, instance_id = replay.instance_id, %error, "missed advanced settings were not applied");
+            }
+        }
+        Vec::<()>::new()
+    })
+    .await;
     Ok(())
 }
 
@@ -689,6 +723,7 @@ async fn replay_pauses(
     manager: &ClientManager,
     user_id: UserIdInDb,
 ) -> anyhow::Result<()> {
+    let mut due = Vec::new();
     for (device, instance) in db.list_mesh_pause_replays(user_id).await? {
         let Ok(device_id) = Uuid::parse_str(&device) else {
             continue;
@@ -704,36 +739,23 @@ async fn replay_pauses(
         };
         db.set_mesh_pause_replay(user_id, &device, &instance, false)
             .await?;
-        if let Some(entry) = core_sync::instance_entry(&view, &instance)
-            && entry.enabled
-            && let Err(error) = pause_entry(manager, user_id, device_id, &entry).await
-        {
-            tracing::warn!(user_id, %device_id, instance, %error, "missed pause was not applied");
+        if core_sync::instance_entry(&view, &instance).is_some() {
+            due.push((device_id, (view, instance)));
         }
     }
+    delivery::per_device(due, |device_id, pauses| async move {
+        for (view, instance) in pauses {
+            if let Err(error) =
+                delivery::set_enabled(manager, user_id, device_id, &instance, Some(view), false)
+                    .await
+            {
+                tracing::warn!(user_id, %device_id, instance, %error, "missed pause was not applied");
+            }
+        }
+        Vec::<()>::new()
+    })
+    .await;
     Ok(())
-}
-
-async fn pause_entry(
-    manager: &ClientManager,
-    user_id: UserIdInDb,
-    device_id: Uuid,
-    entry: &easytier::proto::api::manage::PersistedConfigEntry,
-) -> Result<(), LocalConfigError> {
-    let instance = entry
-        .inst_id
-        .map(Uuid::from)
-        .ok_or_else(|| LocalConfigError::Invalid("configuration has no identity".to_owned()))?;
-    manager
-        .mutate_local_config_lifecycle(
-            user_id,
-            device_id,
-            instance,
-            entry.revision.clone(),
-            Some(false),
-        )
-        .await
-        .map(|_| ())
 }
 
 /// Join devices that connected for the first time since a network let new
@@ -784,6 +806,7 @@ pub(crate) async fn auto_join_user(
                     gateway_peer,
                 )
                 .await;
+                core_sync::observe_user(db, manager, user_id).await;
                 tracing::info!(user_id, %device_id, network = record.network_name, status = ?joined.status, message = ?joined.message, "new device joined on its own");
             }
         }
@@ -807,6 +830,7 @@ pub(crate) async fn pause_members(
     core_sync::observe_user(db, manager, user_id).await;
     let locked = locks(db, user_id).await?;
     let mut results = Vec::new();
+    let mut online = Vec::new();
     for member in permanent(
         db.list_mesh_observations(user_id, Some(network_name))
             .await?,
@@ -852,18 +876,31 @@ pub(crate) async fn pause_members(
             results.push(sync_result(&member, MemberSyncStatus::Pending, None));
             continue;
         };
-        let status = match core_sync::instance_entry(&view, &member.instance_id) {
-            Some(entry) if entry.enabled => {
-                match pause_entry(manager, user_id, device_id, &entry).await {
-                    Ok(()) => sync_result(&member, MemberSyncStatus::Saved, None),
-                    Err(error) => {
-                        sync_result(&member, MemberSyncStatus::Failed, Some(error.to_string()))
-                    }
-                }
+        if core_sync::instance_entry(&view, &member.instance_id).is_some() {
+            online.push((device_id, (view, member.instance_id.clone(), results.len())));
+        }
+        results.push(sync_result(&member, MemberSyncStatus::Unchanged, None));
+    }
+    let paused = delivery::per_device(online, |device_id, members| async move {
+        let mut paused = Vec::with_capacity(members.len());
+        for (view, instance_id, index) in members {
+            let outcome =
+                delivery::set_enabled(manager, user_id, device_id, &instance_id, Some(view), false)
+                    .await;
+            paused.push((index, outcome));
+        }
+        paused
+    })
+    .await;
+    for (index, outcome) in paused {
+        match outcome {
+            Ok(true) => results[index].status = MemberSyncStatus::Saved,
+            Ok(false) => {}
+            Err(error) => {
+                results[index].status = MemberSyncStatus::Failed;
+                results[index].message = Some(error.to_string());
             }
-            _ => sync_result(&member, MemberSyncStatus::Unchanged, None),
-        };
-        results.push(status);
+        }
     }
     db.delete_mesh_network(user_id, network_name).await?;
     core_sync::observe_user(db, manager, user_id).await;
@@ -905,6 +942,20 @@ mod tests {
         let (official, mask) = joined_config(id, &core, &preset, Some(7), |_| false).unwrap();
         assert!(official.instance_name.is_none() && official.network_sync_at.is_none());
         assert!(!mask.contains(&"instance_name".to_owned()));
+        assert!(
+            config.dhcp_ipv4_cidr.is_none(),
+            "no subnet leaves DHCP at its default"
+        );
+
+        // A network with a subnet starts joining devices there.
+        let core = CoreSettings {
+            virtual_ipv4: Some("10.20.30.0/24".into()),
+            ..core
+        };
+        let (config, mask) = joined_config(id, &core, &preset, Some(7), |_| true).unwrap();
+        assert_eq!(config.dhcp, Some(true));
+        assert_eq!(config.dhcp_ipv4_cidr.as_deref(), Some("10.20.30.0/24"));
+        assert!(mask.contains(&"dhcp_ipv4_cidr".to_owned()));
     }
 
     #[test]

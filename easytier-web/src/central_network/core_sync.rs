@@ -2,6 +2,9 @@
 //! stay connected: the network name, the secret, the secure mode switch and
 //! encryption. The network's display name travels with them: it names each
 //! member's configuration (`instance_name`) and never joins or splits peers.
+//! So does its IPv4 subnet: moving it rewrites the network part of each
+//! static member's address and keeps the host part. DHCP members keep the
+//! subnet their peers advertise, so they are restarted to take the new one.
 //!
 //! A console writes a change to the members it can reach now. A member that
 //! was offline receives the missed change once, the next time it connects:
@@ -15,7 +18,11 @@
 //! one console, which stores their configurations itself: a change is
 //! written over that copy and reaches the node whenever it is online.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fmt,
+    net::Ipv4Addr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use easytier::proto::{
     api::manage::{
@@ -31,6 +38,7 @@ use easytier_core::management::remote_client::{
     ListNetworkProps, PersistentConfig as _, Storage as _,
 };
 
+use super::delivery;
 use crate::{
     client_manager::{
         ClientManager,
@@ -41,6 +49,66 @@ use crate::{
 
 pub(crate) const SYNC_CAPABILITY: &str = "config:network-sync-v1";
 pub(crate) const DISPLAY_NAME_CAPABILITY: &str = "config:instance-name-v1";
+
+/// An IPv4 address with its prefix length, written `a.b.c.d/len`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Ipv4Inet {
+    pub address: Ipv4Addr,
+    pub prefix: u8,
+}
+
+impl Ipv4Inet {
+    pub fn parse(value: &str) -> Option<Self> {
+        let (address, prefix) = value.trim().split_once('/')?;
+        Some(Self {
+            address: address.parse().ok()?,
+            prefix: prefix.parse().ok().filter(|prefix| *prefix <= 32)?,
+        })
+    }
+
+    fn mask(self) -> u32 {
+        u32::MAX.checked_shl(32 - self.prefix as u32).unwrap_or(0)
+    }
+
+    pub fn network(self) -> Self {
+        Self {
+            address: Ipv4Addr::from(u32::from(self.address) & self.mask()),
+            ..self
+        }
+    }
+
+    /// `address` under this subnet: its host bits are kept, unless they make
+    /// the subnet's network or broadcast address.
+    pub fn host(self, address: Ipv4Addr) -> Option<Ipv4Addr> {
+        let mask = self.mask();
+        let host = u32::from(address) & !mask;
+        (self.prefix >= 31 || (host != 0 && host != !mask))
+            .then(|| Ipv4Addr::from((u32::from(self.address) & mask) | host))
+    }
+}
+
+impl fmt::Display for Ipv4Inet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.address, self.prefix)
+    }
+}
+
+fn uses_dhcp(config: &NetworkConfig) -> bool {
+    config.dhcp.unwrap_or(config.dhcp_ipv4_cidr.is_some())
+}
+
+/// The address a member sets itself; DHCP members have none.
+fn static_ipv4(config: &NetworkConfig) -> Option<Ipv4Inet> {
+    if uses_dhcp(config) {
+        return None;
+    }
+    Some(Ipv4Inet {
+        address: config.virtual_ipv4.as_deref()?.parse().ok()?,
+        prefix: u8::try_from(config.network_length.unwrap_or(24))
+            .ok()
+            .filter(|prefix| *prefix <= 32)?,
+    })
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoreSettings {
@@ -53,6 +121,15 @@ pub struct CoreSettings {
     /// The configuration's shown name; unset shows the network name.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// A static member's address with its prefix; the network's own settings
+    /// hold its subnet. Either way its network part is the network's subnet.
+    /// DHCP members have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_ipv4: Option<String>,
+    /// A DHCP member's configured subnet; it only names where the member
+    /// starts when no peer advertises one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dhcp_ipv4_cidr: Option<String>,
 }
 
 impl CoreSettings {
@@ -70,7 +147,30 @@ impl CoreSettings {
                 .instance_name
                 .clone()
                 .filter(|name| !name.trim().is_empty()),
+            virtual_ipv4: static_ipv4(config).map(|inet| inet.to_string()),
+            dhcp_ipv4_cidr: config
+                .dhcp_ipv4_cidr
+                .as_deref()
+                .filter(|_| uses_dhcp(config))
+                .and_then(Ipv4Inet::parse)
+                .map(|cidr| cidr.network().to_string()),
         }
+    }
+
+    /// The network part of its address, e.g. `10.126.126.0/24`.
+    pub fn subnet(&self) -> Option<Ipv4Inet> {
+        self.virtual_ipv4
+            .as_deref()
+            .and_then(Ipv4Inet::parse)
+            .map(Ipv4Inet::network)
+    }
+
+    /// The configured subnet of a DHCP member.
+    pub fn dhcp_subnet(&self) -> Option<Ipv4Inet> {
+        self.dhcp_ipv4_cidr
+            .as_deref()
+            .and_then(Ipv4Inet::parse)
+            .map(Ipv4Inet::network)
     }
 }
 
@@ -91,6 +191,9 @@ pub struct CoreChange {
     /// An empty string shows the network name again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// The network's IPv4 subnet, e.g. `10.20.30.0/24`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_subnet: Option<String>,
 }
 
 impl CoreChange {
@@ -119,6 +222,17 @@ impl CoreChange {
             let name = name.trim();
             settings.display_name = (!name.is_empty()).then(|| name.to_owned());
         }
+        if let Some(subnet) = self.virtual_subnet.as_deref().and_then(Ipv4Inet::parse) {
+            let subnet = subnet.network();
+            // A static member keeps its host part; anything else holds the subnet.
+            let moved = base
+                .virtual_ipv4
+                .as_deref()
+                .and_then(Ipv4Inet::parse)
+                .and_then(|current| subnet.host(current.address))
+                .map(|address| Ipv4Inet { address, ..subnet });
+            settings.virtual_ipv4 = Some(moved.unwrap_or(subnet).to_string());
+        }
         settings
     }
 
@@ -134,6 +248,7 @@ impl CoreChange {
                 .clone()
                 .or(self.encryption_algorithm.clone()),
             display_name: later.display_name.clone().or(self.display_name.clone()),
+            virtual_subnet: later.virtual_subnet.clone().or(self.virtual_subnet.clone()),
         }
     }
 
@@ -145,6 +260,12 @@ impl CoreChange {
             anyhow::ensure!(
                 secret.is_empty() || !secret.trim().is_empty(),
                 "network secret must not consist only of whitespace"
+            );
+        }
+        if let Some(subnet) = &self.virtual_subnet {
+            anyhow::ensure!(
+                Ipv4Inet::parse(subnet).is_some_and(|subnet| (1..=30).contains(&subnet.prefix)),
+                "virtual subnet must look like 10.126.126.0/24"
             );
         }
         Ok(())
@@ -197,6 +318,16 @@ fn core_patch(
     if display_name && current.display_name != target.display_name {
         desired.instance_name = target.display_name.clone();
         mask.push("instance_name".to_owned());
+    }
+    // Only the subnet is shared: a static member keeps its host part, and a
+    // DHCP member follows the others on its own.
+    if let (Some(current), Some(subnet)) = (static_ipv4(config), target.subnet())
+        && current.network() != subnet
+        && let Some(address) = subnet.host(current.address)
+    {
+        desired.virtual_ipv4 = Some(address.to_string());
+        desired.network_length = Some(subnet.prefix as i32);
+        mask.push("virtual_ipv4".to_owned());
     }
     if mask.is_empty() {
         return None;
@@ -451,15 +582,13 @@ pub struct MemberSyncResult {
     pub message: Option<String>,
 }
 
-async fn write_core(
-    manager: &ClientManager,
-    user_id: UserIdInDb,
-    device_id: Uuid,
+/// The write that gives the entry the `target` core settings, if any differ.
+fn core_request(
     view: &LocalConfigView,
     entry: &PersistedConfigEntry,
     target: &CoreSettings,
     stamp: u64,
-) -> Result<bool, LocalConfigError> {
+) -> Option<PatchPersistedConfigRequest> {
     let config = entry.config.as_ref().expect("ready entries carry a config");
     let supports = |name: &str| {
         view.capabilities
@@ -467,25 +596,50 @@ async fn write_core(
             .any(|capability| capability == name)
     };
     let stamp = supports(SYNC_CAPABILITY).then_some(stamp);
-    let Some((desired, mask)) =
-        core_patch(config, target, stamp, supports(DISPLAY_NAME_CAPABILITY))
-    else {
-        return Ok(false);
-    };
-    manager
-        .patch_local_config(
-            user_id,
-            device_id,
-            PatchPersistedConfigRequest {
-                inst_id: entry.inst_id,
-                expected_revision: entry.revision.clone(),
-                config: Some(desired),
-                field_mask: mask,
-                toml: None,
-            },
-        )
-        .await?;
-    Ok(true)
+    let (desired, mask) = core_patch(config, target, stamp, supports(DISPLAY_NAME_CAPABILITY))?;
+    Some(PatchPersistedConfigRequest {
+        inst_id: entry.inst_id,
+        expected_revision: entry.revision.clone(),
+        config: Some(desired),
+        field_mask: mask,
+        toml: None,
+    })
+}
+
+fn no_longer_exists() -> LocalConfigError {
+    LocalConfigError::NotFound("configuration no longer exists".to_owned())
+}
+
+/// Give one online member `change`, computed again from a fresh read before
+/// each retry. Another console's newer change ends it as a conflict.
+async fn write_change(
+    manager: &ClientManager,
+    user_id: UserIdInDb,
+    device_id: Uuid,
+    view: LocalConfigView,
+    instance_id: &str,
+    change: &CoreChange,
+    stamp: u64,
+) -> Result<bool, LocalConfigError> {
+    delivery::patch(manager, user_id, device_id, Some(view), |view| {
+        let entry = instance_entry(view, instance_id).ok_or_else(no_longer_exists)?;
+        let config = entry.config.as_ref().expect("ready entries carry a config");
+        if config.network_sync_at.is_some_and(|seen| seen > stamp) {
+            return Err(LocalConfigError::Conflict(None));
+        }
+        let target = change.apply_to(&CoreSettings::of(config));
+        Ok(core_request(view, &entry, &target, stamp))
+    })
+    .await
+}
+
+fn sync_status(written: Result<bool, LocalConfigError>) -> (MemberSyncStatus, Option<String>) {
+    match written {
+        Ok(true) => (MemberSyncStatus::Saved, None),
+        Ok(false) => (MemberSyncStatus::Unchanged, None),
+        Err(LocalConfigError::Conflict(_)) => (MemberSyncStatus::Conflict, None),
+        Err(error) => (MemberSyncStatus::Failed, Some(error.to_string())),
+    }
 }
 
 /// Write `change` to every permanent member of `network_name` this console
@@ -515,6 +669,11 @@ pub(crate) async fn apply(
             .map(|stamp| stamp as u64),
     );
     let mut results = Vec::with_capacity(members.len());
+    // Online members with a static address, and online DHCP members by result.
+    let mut static_online = false;
+    let mut dhcp_online = Vec::new();
+    // Online revision members, written together once all are known.
+    let mut online = Vec::new();
     for member in members {
         let device_id = Uuid::parse_str(&member.device_id)?;
         let result = |status, message: Option<String>| MemberSyncResult {
@@ -527,6 +686,9 @@ pub(crate) async fn apply(
             let online = manager
                 .get_session_by_machine_id(user_id, &device_id)
                 .is_some();
+            static_online |= online
+                && serde_json::from_str::<CoreSettings>(&member.core)
+                    .is_ok_and(|core| core.virtual_ipv4.is_some());
             results.push(
                 match force_stored(db, manager, user_id, device_id, &member.instance_id, change)
                     .await
@@ -581,18 +743,143 @@ pub(crate) async fn apply(
             continue;
         };
         let config = entry.config.as_ref().expect("ready entries carry a config");
-        let target = change.apply_to(&CoreSettings::of(config));
-        results.push(
-            match write_core(manager, user_id, device_id, &view, &entry, &target, stamp).await {
-                Ok(true) => result(MemberSyncStatus::Saved, None),
-                Ok(false) => result(MemberSyncStatus::Unchanged, None),
-                Err(LocalConfigError::Conflict(_)) => result(MemberSyncStatus::Conflict, None),
-                Err(error) => result(MemberSyncStatus::Failed, Some(error.to_string())),
-            },
-        );
+        if static_ipv4(config).is_some() {
+            static_online = true;
+        } else if uses_dhcp(config) {
+            dhcp_online.push((device_id, (member.instance_id.clone(), results.len())));
+        }
+        online.push((device_id, (view, member.instance_id.clone(), results.len())));
+        results.push(result(MemberSyncStatus::Unchanged, None));
+    }
+    let written = delivery::per_device(online, |device_id, members| async move {
+        let mut written = Vec::with_capacity(members.len());
+        for (view, instance_id, index) in members {
+            let outcome = write_change(
+                manager,
+                user_id,
+                device_id,
+                view,
+                &instance_id,
+                change,
+                stamp,
+            )
+            .await;
+            written.push((index, sync_status(outcome)));
+        }
+        written
+    })
+    .await;
+    for (index, (status, message)) in written {
+        results[index].status = status;
+        results[index].message = message;
+    }
+    if let Some(subnet) = change.virtual_subnet.as_deref().and_then(Ipv4Inet::parse) {
+        restart_dhcp_members(
+            manager,
+            user_id,
+            subnet.network(),
+            !static_online,
+            dhcp_online,
+            &mut results,
+        )
+        .await;
     }
     observe_user(db, manager, user_id).await;
     Ok(results)
+}
+
+/// DHCP members keep the subnet their peers advertise, so a moved network
+/// restarts its running ones together: all are stopped first, then started
+/// again, so they come back in the subnet the others now use. Without an
+/// online static member, the first of them takes the subnet as its DHCP
+/// subnet and starts first, so the network has a node there.
+async fn restart_dhcp_members(
+    manager: &ClientManager,
+    user_id: UserIdInDb,
+    subnet: Ipv4Inet,
+    seed: bool,
+    members: Vec<(Uuid, (String, usize))>,
+    results: &mut [MemberSyncResult],
+) {
+    let mut running = Vec::new();
+    for (device_id, (instance_id, index)) in members {
+        if let Ok(Some(view)) = manager.local_configs(user_id, device_id).await
+            && instance_entry(&view, &instance_id).is_some_and(|entry| entry.running)
+        {
+            running.push((device_id, (instance_id, index)));
+        }
+    }
+    let mut failures = Vec::new();
+    if seed && let Some((device_id, (instance_id, index))) = running.first() {
+        let seeded = delivery::patch(manager, user_id, *device_id, None, |view| {
+            let entry = instance_entry(view, instance_id).ok_or_else(no_longer_exists)?;
+            let config = entry.config.as_ref().expect("ready entries carry a config");
+            if config.dhcp_ipv4_cidr.as_deref() == Some(subnet.to_string().as_str()) {
+                return Ok(None);
+            }
+            let mut desired = config.clone();
+            desired.dhcp = Some(true);
+            desired.dhcp_ipv4_cidr = Some(subnet.to_string());
+            Ok(Some(PatchPersistedConfigRequest {
+                inst_id: entry.inst_id,
+                expected_revision: entry.revision.clone(),
+                config: Some(desired),
+                field_mask: vec!["dhcp_ipv4_cidr".to_owned()],
+                toml: None,
+            }))
+        })
+        .await;
+        if let Err(error) = seeded {
+            failures.push((*index, error));
+        }
+    }
+    let toggle = |enabled: bool, members: Vec<(Uuid, (String, usize))>| {
+        delivery::per_device(members, move |device_id, members| async move {
+            let mut toggled = Vec::new();
+            for (instance_id, index) in members {
+                let outcome =
+                    delivery::set_enabled(manager, user_id, device_id, &instance_id, None, enabled)
+                        .await;
+                toggled.push((instance_id, index, outcome));
+            }
+            toggled
+        })
+    };
+    let mut stopped = Vec::new();
+    for (instance_id, index, outcome) in toggle(false, running.clone()).await {
+        match outcome {
+            Ok(_) => stopped.push((instance_id, index)),
+            Err(error) => failures.push((index, error)),
+        }
+    }
+    let stopped: Vec<_> = running
+        .into_iter()
+        .filter(|(_, (instance_id, index))| {
+            stopped
+                .iter()
+                .any(|(stopped, at)| stopped == instance_id && at == index)
+        })
+        .collect();
+    // The seed comes back first; the others find it when they start.
+    let (first, rest) = match seed {
+        true => stopped.split_at(stopped.len().min(1)),
+        false => stopped.split_at(0),
+    };
+    let mut started = toggle(true, first.to_vec()).await;
+    started.extend(toggle(true, rest.to_vec()).await);
+    for (_, index, outcome) in started {
+        match outcome {
+            Ok(_) if results[index].status == MemberSyncStatus::Unchanged => {
+                results[index].status = MemberSyncStatus::Saved;
+            }
+            Ok(_) => {}
+            Err(error) => failures.push((index, error)),
+        }
+    }
+    for (index, error) in failures {
+        results[index].status = MemberSyncStatus::Failed;
+        results[index].message = Some(error.to_string());
+    }
 }
 
 /// Whether a missed change is still sent: only another console's newer
@@ -611,6 +898,7 @@ pub(crate) async fn replay_user(db: &Db, manager: &ClientManager, user_id: UserI
             return;
         }
     };
+    let mut due = Vec::new();
     for replay in replays {
         let Ok(device_id) = Uuid::parse_str(&replay.device_id) else {
             continue;
@@ -627,42 +915,66 @@ pub(crate) async fn replay_user(db: &Db, manager: &ClientManager, user_id: UserI
             tracing::warn!(user_id, %device_id, %error, "cannot consume pending core change");
             continue;
         }
+        let Ok(change) = serde_json::from_str::<CoreChange>(&replay.change) else {
+            continue;
+        };
         let Some(entry) = instance_entry(&view, &replay.instance_id) else {
             continue;
         };
         let config = entry.config.as_ref().expect("ready entries carry a config");
-        let current = CoreSettings::of(config);
-        if !replay_applies(config.network_sync_at, replay.target_sync_at as u64) {
-            tracing::info!(user_id, %device_id, instance_id = replay.instance_id, "another console changed the core settings later");
-            continue;
-        }
-        let Ok(change) = serde_json::from_str::<CoreChange>(&replay.change) else {
-            continue;
-        };
-        let mut target = change.apply_to(&current);
-        let mut stamp = replay.target_sync_at as u64;
+        let target_name = change.apply_to(&CoreSettings::of(config)).network_name;
         // Catch up to the newest settings this console has seen for the
         // network, even when another console made that change.
-        if let Ok(peers) = db
-            .list_mesh_observations(user_id, Some(&target.network_name))
-            .await
-            && let Some(newest) = peers
-                .iter()
+        let newest = match db.list_mesh_observations(user_id, Some(&target_name)).await {
+            Ok(peers) => peers
+                .into_iter()
                 .filter(|peer| !peer.credential && peer.instance_id != replay.instance_id)
-                .filter(|peer| peer.sync_at.is_some_and(|seen| seen as u64 > stamp))
+                .filter(|peer| {
+                    peer.sync_at
+                        .is_some_and(|seen| seen > replay.target_sync_at)
+                })
                 .max_by_key(|peer| peer.sync_at)
-            && let Ok(settings) = serde_json::from_str::<CoreSettings>(&newest.core)
-        {
-            target = settings;
-            stamp = newest.sync_at.unwrap_or_default() as u64;
-        }
-        match write_core(manager, user_id, device_id, &view, &entry, &target, stamp).await {
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(user_id, %device_id, instance_id = replay.instance_id, %error, "missed core change was not applied")
+                .and_then(|peer| {
+                    let settings = serde_json::from_str::<CoreSettings>(&peer.core).ok()?;
+                    Some((settings, peer.sync_at.unwrap_or_default() as u64))
+                }),
+            Err(_) => None,
+        };
+        due.push((device_id, (view, replay, change, newest)));
+    }
+    delivery::per_device(due, |device_id, replays| async move {
+        for (view, replay, change, newest) in replays {
+            let missed = replay.target_sync_at as u64;
+            let written = delivery::patch(manager, user_id, device_id, Some(view), |view| {
+                let Some(entry) = instance_entry(view, &replay.instance_id) else {
+                    return Ok(None);
+                };
+                let config = entry.config.as_ref().expect("ready entries carry a config");
+                if !replay_applies(config.network_sync_at, missed) {
+                    tracing::info!(user_id, %device_id, instance_id = replay.instance_id, "another console changed the core settings later");
+                    return Ok(None);
+                }
+                let mut target = change.apply_to(&CoreSettings::of(config));
+                let mut stamp = missed;
+                if let Some((settings, seen)) = &newest {
+                    let mut settings = settings.clone();
+                    // A DHCP member does not say which subnet the network uses.
+                    if settings.virtual_ipv4.is_none() {
+                        settings.virtual_ipv4 = target.virtual_ipv4.take();
+                    }
+                    target = settings;
+                    stamp = *seen;
+                }
+                Ok(core_request(view, &entry, &target, stamp))
+            })
+            .await;
+            if let Err(error) = written {
+                tracing::warn!(user_id, %device_id, instance_id = replay.instance_id, %error, "missed core change was not applied");
             }
         }
-    }
+        Vec::<()>::new()
+    })
+    .await;
     observe_user(db, manager, user_id).await;
 }
 
@@ -879,6 +1191,73 @@ mod tests {
         assert!(stamp >= now);
         let future = now + 3_600_000;
         assert_eq!(next_stamp([future]), future + 1);
+    }
+
+    #[test]
+    fn subnet_changes_keep_host_parts_of_static_members_only() {
+        let mut current = config("office", Some("s1"));
+        current.dhcp = Some(false);
+        current.virtual_ipv4 = Some("10.126.126.5".into());
+        current.network_length = Some(24);
+        let change = CoreChange {
+            virtual_subnet: Some("10.20.30.7/24".into()),
+            ..Default::default()
+        };
+        let target = change.apply_to(&CoreSettings::of(&current));
+        assert_eq!(target.virtual_ipv4.as_deref(), Some("10.20.30.5/24"));
+        let (desired, mask) = core_patch(&current, &target, Some(42), true).unwrap();
+        assert_eq!(desired.virtual_ipv4.as_deref(), Some("10.20.30.5"));
+        assert_eq!(desired.network_length, Some(24));
+        assert_eq!(mask, ["virtual_ipv4", "network_sync_at"]);
+
+        // Any prefix: the host bits under the new one are kept.
+        let wide = CoreChange {
+            virtual_subnet: Some("172.16.0.0/16".into()),
+            ..Default::default()
+        };
+        let wide = wide.apply_to(&CoreSettings::of(&current));
+        let (desired, _) = core_patch(&current, &wide, None, true).unwrap();
+        assert_eq!(desired.virtual_ipv4.as_deref(), Some("172.16.126.5"));
+        assert_eq!(desired.network_length, Some(16));
+
+        // A replay may carry another member's address: only its subnet counts.
+        let mut peer = CoreSettings::of(&current);
+        peer.virtual_ipv4 = Some("10.20.30.9/24".into());
+        let (desired, _) = core_patch(&current, &peer, None, true).unwrap();
+        assert_eq!(desired.virtual_ipv4.as_deref(), Some("10.20.30.5"));
+
+        // DHCP members follow the others on their own.
+        let mut dhcp = config("office", Some("s1"));
+        dhcp.dhcp = Some(true);
+        let target = change.apply_to(&CoreSettings::of(&dhcp));
+        assert!(core_patch(&dhcp, &target, None, true).is_none());
+
+        // The network's own settings hold the subnet.
+        let record = change.apply_to(&CoreSettings::default());
+        assert_eq!(record.virtual_ipv4.as_deref(), Some("10.20.30.0/24"));
+
+        // A host part that would be the new subnet's network address stays put.
+        let narrow = CoreChange {
+            virtual_subnet: Some("10.20.30.0/30".into()),
+            ..Default::default()
+        };
+        current.virtual_ipv4 = Some("10.126.126.4".into());
+        let target = narrow.apply_to(&CoreSettings::of(&current));
+        assert!(core_patch(&current, &target, None, true).is_none());
+
+        // A DHCP member's configured subnet is recorded apart from addresses.
+        let mut ranged = config("office", Some("s1"));
+        ranged.dhcp = Some(true);
+        ranged.dhcp_ipv4_cidr = Some("10.55.0.9/24".into());
+        let settings = CoreSettings::of(&ranged);
+        assert_eq!(settings.virtual_ipv4, None);
+        assert_eq!(settings.dhcp_ipv4_cidr.as_deref(), Some("10.55.0.0/24"));
+
+        let missing_prefix = CoreChange {
+            virtual_subnet: Some("10.20.30.0".into()),
+            ..Default::default()
+        };
+        assert!(missing_prefix.validate().is_err());
     }
 
     #[test]

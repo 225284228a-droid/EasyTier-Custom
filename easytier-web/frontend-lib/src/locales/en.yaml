@@ -745,6 +745,15 @@ web:
     needs_central: The console uses an external webhook (--webhook-url), so an external system manages devices and configurations; this page is unavailable
     network_name: Network name
     network_name_hint: The network's identity; with the secret it decides which nodes can connect. Renaming renames every member
+    virtual_subnet: Virtual subnet
+    virtual_subnet_hint: Members with a static IP change only the network part and keep the host part, e.g. 10.126.126.5 → 10.20.30.5; running DHCP members restart their network to move
+    virtual_subnet_invalid: Enter a subnet such as 10.126.126.0/24 (prefix length 1–30)
+    virtual_subnet_preview: New addresses of static members
+    virtual_subnet_dhcp: '{count} DHCP members: running ones restart their network'
+    virtual_subnet_conflict: Duplicate address
+    virtual_subnet_no_host: Host part is not usable in the new subnet
+    virtual_subnet_create_hint: Optional. New devices take a DHCP address in this subnet; empty uses the default
+    virtual_subnet_default: Default (DHCP, starting at 10.126.126.0/24)
     network_secret: Network secret
     secret_generated: Leave empty to generate one
     secure_mode: Secure mode
@@ -770,7 +779,7 @@ web:
     value_on: 'On'
     value_off: 'Off'
     preset_hint: The configuration a device starts with when it joins. It only reaches devices that join; existing members are never changed.
-    preset_core_hint: Network name, secret, secure mode, encryption and display name come from the network's current core settings; the virtual IP is assigned by DHCP.
+    preset_core_hint: Network name, secret, secure mode, encryption and display name come from the network's current core settings; the virtual IP is assigned by DHCP, within the network's subnet when it has one.
     listeners: Listeners
     auto_join: New devices join automatically
     auto_join_label: Devices that connect to the console for the first time join this network
@@ -812,11 +821,10 @@ web:
     display_name: Network display name
     display_name_hint: The name devices show for this configuration; empty shows the network name. It does not affect joining
     virtual_ip: Virtual IP
-    public_ip: Public IP
     status: Status
     select_all: Select all
     selected: '{count} selected'
-    open_device: Device management
+    edit_config: Edit configuration
     topology: Network topology
     nodes: Topology nodes
     readonly: Read-only

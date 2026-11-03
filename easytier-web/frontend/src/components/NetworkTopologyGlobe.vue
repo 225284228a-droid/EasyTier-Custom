@@ -861,8 +861,9 @@ onUnmounted(() => {
 
 <template>
   <section class="topology">
-    <!-- The page around the globe titles it and counts its nodes and links. -->
+    <!-- The page around the globe titles it; its counts sit beside the tools. -->
     <header class="topology-header">
+      <slot name="summary" />
       <div class="topology-tools">
         <Button :icon="rotating ? 'pi pi-pause' : 'pi pi-play'" text severity="secondary"
           :aria-label="t(rotating ? 'web.dashboard.pause' : 'web.dashboard.rotate')"
@@ -952,8 +953,8 @@ onUnmounted(() => {
   --globe-leader: rgba(187, 215, 213, 0.4);
   --globe-traffic-leader: rgba(187, 215, 213, 0.82);
 }
-.topology-header { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 12px; }
-.topology-tools { display: flex; flex-shrink: 0; }
+.topology-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.topology-tools { display: flex; flex-shrink: 0; margin-left: auto; }
 .topology-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: start; }
 .globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: var(--globe-surface); overflow: hidden; }
 .globe-stage :deep(canvas) { display: block; width: 100%; height: 100%; touch-action: none; }

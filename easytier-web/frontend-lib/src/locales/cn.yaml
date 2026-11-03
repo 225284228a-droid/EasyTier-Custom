@@ -745,6 +745,15 @@ web:
     needs_central: 控制台接入了外部 webhook（--webhook-url），设备和配置由外部系统管理，此页不可用
     network_name: 网络名称
     network_name_hint: 组网身份，与网络密码一起决定节点能否互联；修改后所有成员一起改名
+    virtual_subnet: 虚拟网段
+    virtual_subnet_hint: 设置了静态 IP 的成员只改网段、保留主机位，如 10.126.126.5 → 10.20.30.5；运行中的 DHCP 成员会重启网络，切换到新网段
+    virtual_subnet_invalid: 请输入网段，如 10.126.126.0/24（前缀长度 1–30）
+    virtual_subnet_preview: 静态 IP 成员的新地址
+    virtual_subnet_dhcp: '{count} 个 DHCP 成员：运行中的会重启网络'
+    virtual_subnet_conflict: 地址重复
+    virtual_subnet_no_host: 主机位在新网段中不可用
+    virtual_subnet_create_hint: 可选。新设备用 DHCP 在这个网段里取地址；留空使用默认
+    virtual_subnet_default: 默认（DHCP 自动，10.126.126.0/24 起）
     network_secret: 网络密码
     secret_generated: 留空自动生成
     secure_mode: 安全模式
@@ -770,7 +779,7 @@ web:
     value_on: 开
     value_off: 关
     preset_hint: 新设备加入网络时使用的初始配置，只对新加入的设备生效，不会修改或覆盖已有成员。
-    preset_core_hint: 网络名称、密码、安全模式、加密和显示名称取网络当前的核心设置；虚拟 IP 使用 DHCP 自动分配。
+    preset_core_hint: 网络名称、密码、安全模式、加密和显示名称取网络当前的核心设置；虚拟 IP 使用 DHCP 自动分配，网络有网段时在网段内分配。
     listeners: 监听地址
     auto_join: 新设备自动加入
     auto_join_label: 新设备首次连上控制台时自动加入此网络
@@ -812,11 +821,10 @@ web:
     display_name: 网络显示名称
     display_name_hint: 设备上显示的配置名称，留空则显示网络名称；不影响组网
     virtual_ip: 虚拟 IP
-    public_ip: 公网 IP
     status: 状态
     select_all: 全选
     selected: '已选 {count} 个'
-    open_device: 设备管理
+    edit_config: 编辑配置
     topology: 网络拓扑
     nodes: 拓扑节点
     readonly: 只读

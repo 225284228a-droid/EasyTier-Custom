@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
 import ApiClient, { type GatewayInfo } from '../modules/api';
+import { parseVirtualSubnet } from '../modules/cidr';
 import { deviceConfigStore, failureMessage, useNetworkDiscovery, type DiscoveredNetwork } from '../modules/networkDiscovery';
 import { failedResults } from '../modules/meshNetworkContext';
 
@@ -54,7 +55,9 @@ onMounted(() => {
 const protos = NetworkTypes.PEER_PROTOCOLS;
 const createVisible = ref(false);
 const creating = ref(false);
-const form = ref({ network_name: '', display_name: '', network_secret: '', no_password: false, secure_mode: false });
+const form = ref({ network_name: '', display_name: '', network_secret: '', no_password: false, secure_mode: false, virtual_subnet: '' });
+// Empty leaves DHCP at its default; devices start in the subnet otherwise.
+const subnet = computed(() => parseVirtualSubnet(form.value.virtual_subnet));
 const peers = ref<string[]>([]);
 const listeners = ref<string[]>([]);
 const devices = ref<Utils.DeviceInfo[]>();
@@ -64,10 +67,11 @@ const nameExists = computed(() => (networks.value ?? []).some(network => network
 const needsDevices = computed(() => !props.centralEnabled);
 
 const openCreate = async () => {
-    form.value = { network_name: '', display_name: '', network_secret: '', no_password: false, secure_mode: false };
+    form.value = { network_name: '', display_name: '', network_secret: '', no_password: false, secure_mode: false, virtual_subnet: '' };
     await loadGatewayInfo();
     peers.value = gatewayInfo.value?.enabled && gatewayInfo.value.peer_url ? [gatewayInfo.value.peer_url] : [];
-    listeners.value = [...NetworkTypes.DEFAULT_NETWORK_CONFIG().listener_urls];
+    // A new network listens on TCP and UDP; WireGuard is opt-in per device.
+    listeners.value = NetworkTypes.DEFAULT_NETWORK_CONFIG().listener_urls.filter(url => !url.startsWith('wg://'));
     selectedDevices.value = [];
     devices.value = undefined;
     createVisible.value = true;
@@ -93,6 +97,7 @@ const createOnDevices = async (name: string) => {
         config.network_secret = secret;
         config.peer_urls = [...peers.value];
         config.listener_urls = [...listeners.value];
+        if (subnet.value) config.dhcp_ipv4_cidr = subnet.value;
         const { store } = await deviceConfigStore(props.api, device);
         await store.create(config, true, true);
     }));
@@ -101,7 +106,7 @@ const createOnDevices = async (name: string) => {
 
 const create = async () => {
     const name = form.value.network_name.trim();
-    if (!name || nameExists.value) return;
+    if (!name || nameExists.value || subnet.value === null) return;
     creating.value = true;
     try {
         let failures: string[];
@@ -112,6 +117,7 @@ const create = async () => {
                 network_secret: form.value.no_password ? '' : form.value.network_secret.trim() || undefined,
                 secure_mode: form.value.secure_mode,
                 preset: { peers: [...peers.value], listeners: [...listeners.value], advanced: {} },
+                virtual_subnet: subnet.value,
                 devices: selectedDevices.value,
             });
             failures = failedResults(results).map(result => result.message ?? result.status);
@@ -176,7 +182,6 @@ const create = async () => {
                     <div class="network-card-footer">
                         <div class="flex flex-wrap gap-1">
                             <Tag v-if="network.record?.auto_join" :value="t('web.mesh_network.auto_join_on')" severity="info" />
-                            <Tag v-if="network.record?.core.secure_mode" :value="t('web.mesh_network.secure_mode')" severity="secondary" />
                         </div>
                         <Button icon="pi pi-arrow-right" :label="t('web.console.manage')" text size="small" severity="secondary" @click="openNetwork(network)" />
                     </div>
@@ -221,6 +226,13 @@ const create = async () => {
                     <label for="create-secure-mode" class="text-sm">{{ t('web.mesh_network.secure_mode') }}</label>
                     <span class="pi pi-question-circle text-sm" v-tooltip.top="t('web.network_list.secure_mode_hint')"></span>
                 </div>
+                <div class="flex flex-col gap-1">
+                    <label for="create-virtual-subnet">{{ t('web.mesh_network.virtual_subnet') }}</label>
+                    <InputText id="create-virtual-subnet" v-model="form.virtual_subnet" class="font-mono"
+                        :placeholder="t('web.mesh_network.virtual_subnet_default')" :invalid="subnet === null" :disabled="creating" />
+                    <small v-if="subnet === null" class="text-red-500">{{ t('web.mesh_network.virtual_subnet_invalid') }}</small>
+                    <small v-else class="muted">{{ t('web.mesh_network.virtual_subnet_create_hint') }}</small>
+                </div>
                 <fieldset class="create-group">
                     <legend>{{ t('web.mesh_network.section_preset') }}</legend>
                     <p class="text-xs muted m-0">{{ t('web.mesh_network.preset_hint') }}</p>
@@ -251,7 +263,7 @@ const create = async () => {
             <template #footer>
                 <Button :label="t('web.common.cancel')" icon="pi pi-times" text severity="secondary" @click="createVisible = false" />
                 <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="creating"
-                    :disabled="!form.network_name.trim() || nameExists || (needsDevices && !selectedDevices.length)" @click="create" />
+                    :disabled="!form.network_name.trim() || nameExists || subnet === null || (needsDevices && !selectedDevices.length)" @click="create" />
             </template>
         </Dialog>
     </div>
