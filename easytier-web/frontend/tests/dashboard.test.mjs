@@ -397,6 +397,8 @@ test('dashboard topology shares the panel heading inset and documentation links 
     await page.locator('.dashboard .topology-header').waitFor();
     assert.equal(await page.locator('.globe-legend').count(), 0, 'the globe legend is removed');
     assert.equal(await page.locator('.page-footnote').count(), 0, 'the automatic refresh footnote is removed');
+    assert.deepEqual(await page.locator('.dashboard h2').allTextContents(), ['Node Connections'], 'the globe adds no second title');
+    assert.match(await page.locator('.dashboard-summary').innerText(), /Running Networks: 0\s+Nodes: 0\s+Connections: 0/);
     for (const width of [1440, 390]) {
         await page.setViewportSize({ width, height: 960 });
         const bounds = await page.locator('.dashboard').evaluate(panel => {
@@ -901,9 +903,18 @@ test('members default to cards, skip locked ones and open devices over the page'
         state.meshMembers = [{ device_id: id(1), instance_id: id(100), network_name: 'Engineering', online: true, pending: false, credential: false, locked: true }];
         state.networks[0].network_name = 'Engineering';
     });
+    await page.route('**/api/v1/topology/networks', route => route.fulfill({ json: { machines: { [id(1)]: { info: { info: { map: {
+        [id(100)]: { running: true, my_node_info: { virtual_ipv4: { address: { addr: 0x0a7e7e05 }, network_length: 24 } } },
+    } } } } } } }));
+    // An editable configuration, so device management can open its form.
+    await page.route('**/machines/*/networks/metas', route => route.fulfill({ json: { metas: {
+        [id(100)]: { network_name: 'Engineering', config_permission: 0 },
+    } } }));
     await page.goto(`${base}/#/h/networks/view/Engineering/members`);
     const card = page.locator('.member-card').filter({ hasText: 'Amsterdam gateway' });
     await card.getByText('Locked', { exact: true }).waitFor();
+    await card.getByText('10.126.126.5/24', { exact: true }).waitFor();
+    assert.equal(await card.getByText(id(100).slice(0, 8)).count(), 0, 'instance ids are not shown');
     assert.ok(await card.getByRole('checkbox').isDisabled(), 'locked members are not part of a batch');
     await page.getByRole('button', { name: 'Add devices', exact: true }).first().click();
     const dialog = page.getByRole('dialog');
@@ -912,6 +923,13 @@ test('members default to cards, skip locked ones and open devices over the page'
     await card.getByRole('button', { name: 'Amsterdam gateway' }).click();
     await page.waitForURL(`**/networks/view/Engineering/members?device=${id(1)}&instance=${id(100)}`);
     await page.locator('.console-device-drawer h2').filter({ hasText: 'Amsterdam gateway' }).waitFor();
+    await page.locator('.console-device-drawer').getByText('Network Status', { exact: true }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.waitForURL('**/networks/view/Engineering/members');
+    // Device management opens the same network straight into its form.
+    await card.getByRole('button', { name: 'Device management', exact: true }).click();
+    await page.waitForURL(`**/networks/view/Engineering/members?device=${id(1)}&instance=${id(100)}&edit=1`);
+    await page.locator('.console-device-drawer').getByText('Edit Network', { exact: true }).waitFor();
     await page.keyboard.press('Escape');
     await page.waitForURL('**/networks/view/Engineering/members');
     await card.waitFor();
@@ -1042,6 +1060,31 @@ test('central member WireGuard clients stay editable through the member configur
     assert.deepEqual(state.memberConfig.vpn_portal_config.clients.map(client => client.name), [generatedName]);
     assert.equal(state.writes.filter(write => write.method === 'PUT' && write.path.endsWith('/config')).length, 2);
     assert.equal(state.writes.some(write => write.path.endsWith('/vpn-portal-clients') || write.payload?.method_name === 'patch_config'), false);
+});
+
+test('the first temporary devices create the central record only when confirmed', async t => {
+    const { page, state } = await open(t, '/h/networks', {}, state => {
+        state.meshRecords.push({ network_name: 'lab', core: { network_name: 'lab', network_secret: 's1', secure_mode: true, disable_encryption: false, encryption_algorithm: null, display_name: null },
+            preset: { peers: [], listeners: [], advanced: {} }, auto_join: false });
+    });
+    await page.goto(`${base}/#/h/networks/view/lab/temporary`);
+    const addButton = page.getByRole('button', { name: 'Add temporary devices', exact: true });
+    const dialog = page.getByRole('dialog');
+    await addButton.click();
+    await dialog.getByRole('row', { name: /Build server/ }).waitFor();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await dialog.waitFor({ state: 'detached' });
+    assert.equal(state.writes.some(write => write.path === '/networks'), false, 'cancelling creates nothing');
+
+    await addButton.click();
+    await dialog.getByRole('row', { name: /Build server/ }).getByRole('checkbox').click();
+    await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await dialog.waitFor({ state: 'detached' });
+    const created = state.writes.find(write => write.path === '/networks');
+    assert.equal(created.payload.settings.network_name, 'lab');
+    assert.equal(created.payload.network_secret, 's1');
+    const added = state.writes.find(write => /^\/networks\/created-\d+\/members$/.test(write.path));
+    assert.deepEqual(added.payload, { device_ids: [id(2)], temporary: true, ttl_seconds: 7 * 24 * 3600 });
 });
 
 test('credentials tab and temporary devices render', async t => {

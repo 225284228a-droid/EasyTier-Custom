@@ -24,8 +24,8 @@ const loadError = ref(false);
 const refreshing = ref(false);
 const deviceViewMode = ref<'list' | 'card'>(localStorage.getItem('dashboard.devices.viewMode') === 'list' ? 'list' : 'card');
 const deviceViewOptions = computed(() => [
-    { value: 'list', icon: 'pi pi-list', label: t('web.console.view_list') },
     { value: 'card', icon: 'pi pi-th-large', label: t('web.console.view_card') },
+    { value: 'list', icon: 'pi pi-list', label: t('web.console.view_list') },
 ]);
 watch(deviceViewMode, mode => localStorage.setItem('dashboard.devices.viewMode', mode));
 const deviceGrid = ref<HTMLElement>();
@@ -166,6 +166,7 @@ const stats = computed(() => [
             <div class="dashboard-body">
                 <div class="dashboard-summary">
                     <span>{{ t('web.dashboard.networks') }}: <strong>{{ topology.networkIdentities.length }}</strong></span>
+                    <span>{{ t('web.dashboard.nodes') }}: <strong>{{ topology.nodes.length }}</strong></span>
                     <span>{{ t('web.dashboard.connections') }}: <strong>{{ topology.links.length }}</strong></span>
                 </div>
                 <p v-if="topologyError" role="status" class="dashboard-error">{{ topologyError }}</p>

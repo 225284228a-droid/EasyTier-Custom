@@ -64,7 +64,35 @@ const setEnabled = async (enabled: boolean) => {
     }
 };
 
-const openDevice = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId);
+// The name opens the network's status; "device management" opens its form.
+const openStatus = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId);
+const openEditor = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId, true);
+
+// Virtual addresses come from the running networks, read in one request.
+const virtualIps = ref<Record<string, string>>({});
+const runningDevices = computed(() => [...new Set(members.value
+    .filter(member => member.online && member.running).map(member => member.device.machine_id))].sort().join(','));
+watch(runningDevices, async devices => {
+    if (!devices) {
+        virtualIps.value = {};
+        return;
+    }
+    try {
+        const machines = await api.collect_topology_network_info(devices.split(','));
+        if (devices !== runningDevices.value) return;
+        const next: Record<string, string> = {};
+        for (const [machineId, { info }] of Object.entries(machines)) {
+            for (const [instanceId, detail] of Object.entries(info?.info?.map ?? {})) {
+                const address = detail?.my_node_info?.virtual_ipv4;
+                if (address?.address) next[`${machineId}/${instanceId}`] = Utils.ipv4InetToString(address);
+            }
+        }
+        virtualIps.value = next;
+    } catch (error) {
+        console.debug('Failed to read virtual addresses', error);
+    }
+}, { immediate: true });
+const virtualIp = (member: NetworkMember) => member.running ? virtualIps.value[member.key] : undefined;
 
 // --- adding devices: they join with the core settings and the preset ---
 
@@ -148,7 +176,7 @@ const candidateName = (deviceId: string) => {
                 <div class="member-card-title">
                     <Checkbox v-model="selectedKeys" :value="member.key" :input-id="`member-${member.key}`" :disabled="!actionable(member)"
                         :aria-label="deviceName(member)" />
-                    <button class="entity-link min-w-0" @click="openDevice(member)">
+                    <button class="entity-link min-w-0" @click="openStatus(member)">
                         <span class="status-dot" :class="member.online ? 'online' : 'offline'"></span>
                         <span class="preview-name truncate">{{ deviceName(member) }}</span>
                     </button>
@@ -162,12 +190,12 @@ const candidateName = (deviceId: string) => {
                     <Tag v-if="!editable(member) && member.online" :value="t('web.mesh_network.readonly')" severity="warn" />
                 </div>
                 <div class="member-facts">
-                    <span class="mono-value" :title="member.instanceId">{{ member.instanceId.slice(0, 8) }}</span>
-                    <span v-if="member.device.public_ip" class="mono-value">{{ member.device.public_ip }}</span>
+                    <span v-if="virtualIp(member)" class="mono-value" v-tooltip.top="t('web.mesh_network.virtual_ip')">{{ virtualIp(member) }}</span>
+                    <span v-if="member.device.public_ip" class="mono-value" v-tooltip.top="t('web.mesh_network.public_ip')">{{ member.device.public_ip }}</span>
                     <span v-if="member.device.easytier_version">v{{ member.device.easytier_version.split('-')[0] }}</span>
                 </div>
                 <div class="member-card-actions">
-                    <Button icon="pi pi-arrow-up-right" :label="t('web.mesh_network.open_device')" text size="small" severity="secondary" @click="openDevice(member)" />
+                    <Button icon="pi pi-pencil" :label="t('web.mesh_network.open_device')" text size="small" severity="secondary" @click="openEditor(member)" />
                 </div>
             </article>
         </div>
@@ -176,12 +204,12 @@ const candidateName = (deviceId: string) => {
             <Column selection-mode="multiple" header-style="width: 3rem" />
             <Column :header="t('web.mesh_network.devices')">
                 <template #body="{ data }">
-                    <button class="entity-link" @click="openDevice(data)"><span class="status-dot" :class="data.online ? 'online' : 'offline'"></span>
-                        <span class="min-w-0"><span class="preview-name">{{ deviceName(data) }}</span>
-                            <span class="preview-secondary mono-value block">{{ data.device.public_ip || '—' }}</span></span></button>
+                    <button class="entity-link" @click="openStatus(data)"><span class="status-dot" :class="data.online ? 'online' : 'offline'"></span>
+                        <span class="preview-name">{{ deviceName(data) }}</span></button>
                 </template>
             </Column>
-            <Column :header="t('web.mesh_network.instance')"><template #body="{ data }"><span class="mono-value" :title="data.instanceId">{{ data.instanceId.slice(0, 8) }}</span></template></Column>
+            <Column :header="t('web.mesh_network.virtual_ip')"><template #body="{ data }"><span class="mono-value">{{ virtualIp(data) || '—' }}</span></template></Column>
+            <Column :header="t('web.mesh_network.public_ip')"><template #body="{ data }"><span class="mono-value">{{ data.device.public_ip || '—' }}</span></template></Column>
             <Column :header="t('web.mesh_network.status')">
                 <template #body="{ data }">
                     <div class="flex flex-wrap gap-1">
@@ -196,7 +224,7 @@ const candidateName = (deviceId: string) => {
             </Column>
             <Column field="device.easytier_version" :header="t('web.device.version')" />
             <Column :header="t('web.console.manage')">
-                <template #body="{ data }"><Button icon="pi pi-arrow-up-right" text severity="secondary" v-tooltip="t('web.mesh_network.open_device')" :aria-label="t('web.mesh_network.open_device')" @click="openDevice(data)" /></template>
+                <template #body="{ data }"><Button icon="pi pi-pencil" text severity="secondary" v-tooltip="t('web.mesh_network.open_device')" :aria-label="t('web.mesh_network.open_device')" @click="openEditor(data)" /></template>
             </Column>
         </DataTable>
     </section>

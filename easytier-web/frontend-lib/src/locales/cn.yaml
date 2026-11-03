@@ -331,6 +331,15 @@ mtu_help: |
   TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
 mtu_placeholder: 留空为默认值1380
 
+encryption_algorithm: 加密算法
+encryption_algorithm_help: 对等节点之间的加密算法，必须与网络中的其他节点一致，否则无法互通。关闭加密时不生效。
+encryption_algorithm_default: 默认
+data_compress_algo: 压缩算法
+data_compress_algo_help: 压缩发送的数据包。每个包都带压缩标记，各节点设置不同也能互通。
+data_compress_algo_default: 默认（不压缩）
+data_compress_algo_none: 不压缩
+data_compress_algo_zstd: Zstd
+
 instance_recv_bps_limit: 实例接收限速
 instance_recv_bps_limit_help: |
   限制当前实例整体入站流量的总接收速率，单位为字节每秒。
@@ -510,8 +519,7 @@ web:
     devices: 在线设备
     networks: 运行网络
     connections: 连接链路
-    node_count: '{count} 个节点'
-    link_count: '{count} 条链路'
+    nodes: 节点
     managed: 已管理节点
     external: 外部节点（公共服务器）
     unmanaged: 未接入控制台
@@ -735,8 +743,6 @@ web:
     section_preset: 预下发配置
     section_temporary: 临时设备
     needs_central: 控制台接入了外部 webhook（--webhook-url），设备和配置由外部系统管理，此页不可用
-    display_name: 网络显示名称
-    display_name_hint: 设备上显示的配置名称，留空则显示网络名称；不影响组网
     network_name: 网络名称
     network_name_hint: 组网身份，与网络密码一起决定节点能否互联；修改后所有成员一起改名
     network_secret: 网络密码
@@ -803,14 +809,16 @@ web:
     offline: 离线
     scan_partial: '{count} 台设备的配置暂时无法读取'
     no_members: 当前没有设备运行或保存了该网络
-    instance: 实例
+    display_name: 网络显示名称
+    display_name_hint: 设备上显示的配置名称，留空则显示网络名称；不影响组网
+    virtual_ip: 虚拟 IP
+    public_ip: 公网 IP
     status: 状态
     select_all: 全选
     selected: '已选 {count} 个'
     open_device: 设备管理
     topology: 网络拓扑
     nodes: 拓扑节点
-    topology_hint: 只显示网络 {name} 的节点与连接
     readonly: 只读
     create: 新建网络
     created: 已创建网络 {name}

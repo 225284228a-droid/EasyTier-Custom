@@ -10,6 +10,8 @@ const props = defineProps<{
     deviceList: Array<Utils.DeviceInfo> | undefined;
     /** Instances locked against this console's batch edits; unset offers no lock. */
     lockedInstances?: string[];
+    /** Open the network's form at once instead of its status. */
+    editOnOpen?: boolean;
 }>();
 
 const instanceId = defineModel<string | undefined>('instanceId');
@@ -31,7 +33,7 @@ const newConfigGenerator = () => {
 
 <template>
     <RemoteManagement :api="remoteClient" v-model:instance-id="instanceId"
-        :new-config-generator="newConfigGenerator" :locked-instances="lockedInstances"
+        :new-config-generator="newConfigGenerator" :locked-instances="lockedInstances" :edit-on-open="editOnOpen"
         @update="emits('update')" @toggle-lock="(id: string, locked: boolean) => emits('toggle-lock', id, locked)" />
 </template>
 

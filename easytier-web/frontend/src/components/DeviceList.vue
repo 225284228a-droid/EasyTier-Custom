@@ -32,8 +32,8 @@ const expandedRows = ref({});
 // 桌面端默认卡片视图，可切换到表格；选择持久化；移动端始终使用紧凑列表
 const viewMode = ref<'table' | 'card'>(localStorage.getItem('deviceList.viewMode') === 'table' ? 'table' : 'card');
 const viewModeOptions = [
-    { value: 'table', icon: 'pi pi-table' },
     { value: 'card', icon: 'pi pi-th-large' },
+    { value: 'table', icon: 'pi pi-table' },
 ];
 const viewModeLabel = (value: string) => t(value === 'card' ? 'web.console.view_card' : 'web.console.view_table');
 watch(viewMode, (mode) => localStorage.setItem('deviceList.viewMode', mode));

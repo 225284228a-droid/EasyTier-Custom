@@ -21,13 +21,15 @@ const deviceId = computed(() => typeof route.query.device === 'string' ? route.q
 const instanceId = computed({
     get: () => typeof route.query.instance === 'string' ? route.query.instance : undefined,
     set: (instance: string | undefined) => {
-        void router.replace({ query: { ...route.query, instance: instance || undefined } });
+        // Picking another network shows its status; only the first one opens for editing.
+        void router.replace({ query: { ...route.query, instance: instance || undefined, edit: undefined } });
     },
 });
+const editOnOpen = computed(() => route.query.edit === '1');
 const visible = computed({
     get: () => !!deviceId.value,
     set: (open: boolean) => {
-        if (!open) void router.push({ query: { ...route.query, device: undefined, instance: undefined } });
+        if (!open) void router.push({ query: { ...route.query, device: undefined, instance: undefined, edit: undefined } });
     },
 });
 
@@ -76,7 +78,7 @@ const toggleLock = async (instance: string, locked: boolean) => {
             </div>
         </template>
         <DeviceManagement v-if="deviceId" :key="`${deviceId}:${instanceId ?? ''}`" v-model:instance-id="instanceId"
-            :api="api" :device-id="deviceId" :device-list="devices" :locked-instances="lockedInstances"
+            :api="api" :device-id="deviceId" :device-list="devices" :locked-instances="lockedInstances" :edit-on-open="editOnOpen"
             @update="load" @toggle-lock="toggleLock" />
     </Drawer>
 </template>

@@ -861,12 +861,8 @@ onUnmounted(() => {
 
 <template>
   <section class="topology">
+    <!-- The page around the globe titles it and counts its nodes and links. -->
     <header class="topology-header">
-      <div>
-        <h2>{{ t('web.dashboard.topology') }}</h2>
-        <span class="topology-counts">{{ t('web.dashboard.node_count', { count: nodes.length }) }} ·
-          {{ t('web.dashboard.link_count', { count: links.length }) }}</span>
-      </div>
       <div class="topology-tools">
         <Button :icon="rotating ? 'pi pi-pause' : 'pi pi-play'" text severity="secondary"
           :aria-label="t(rotating ? 'web.dashboard.pause' : 'web.dashboard.rotate')"
@@ -956,9 +952,7 @@ onUnmounted(() => {
   --globe-leader: rgba(187, 215, 213, 0.4);
   --globe-traffic-leader: rgba(187, 215, 213, 0.82);
 }
-.topology-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-h2 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
-.topology-counts { font-size: 12px; color: var(--p-text-muted-color); }
+.topology-header { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-bottom: 12px; }
 .topology-tools { display: flex; flex-shrink: 0; }
 .topology-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; align-items: start; }
 .globe-stage { position: relative; width: 100%; aspect-ratio: 1.618 / 1; min-height: 360px; min-width: 0; background: var(--globe-surface); overflow: hidden; }

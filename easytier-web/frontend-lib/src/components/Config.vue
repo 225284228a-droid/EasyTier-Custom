@@ -130,6 +130,29 @@ const trafficDisguiseOptions = computed(() => [
   { label: t('traffic_disguise_video'), value: 'video' },
 ])
 
+// The selects show no option for an unset value, so the default has a name.
+const DEFAULT_CHOICE = 'default'
+const encryptionAlgorithm = computed({
+  get: () => curNetwork.value.encryption_algorithm || DEFAULT_CHOICE,
+  set: (value: string) => { curNetwork.value.encryption_algorithm = value === DEFAULT_CHOICE ? undefined : value },
+})
+const encryptionAlgorithmOptions = computed(() => [
+  { label: t('encryption_algorithm_default'), value: DEFAULT_CHOICE },
+  { label: 'AES-GCM', value: 'aes-gcm' },
+  { label: 'AES-256-GCM', value: 'aes-256-gcm' },
+  { label: 'ChaCha20', value: 'chacha20' },
+  { label: 'XOR', value: 'xor' },
+])
+const dataCompressAlgo = computed({
+  get: () => curNetwork.value.data_compress_algo || DEFAULT_CHOICE,
+  set: (value: number | string) => { curNetwork.value.data_compress_algo = value === DEFAULT_CHOICE ? undefined : value as number },
+})
+const dataCompressAlgoOptions = computed(() => [
+  { label: t('data_compress_algo_default'), value: DEFAULT_CHOICE },
+  { label: t('data_compress_algo_none'), value: 1 },
+  { label: t('data_compress_algo_zstd'), value: 2 },
+])
+
 const inetSuggestions = ref([''])
 
 function searchInetSuggestions(e: { query: string }) {
@@ -619,6 +642,25 @@ function removeVpnPortalClient(index: number) {
                   </div>
                   <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
                     :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center">
+                    <label for="encryption_algorithm">{{ t('encryption_algorithm') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('encryption_algorithm_help')"></span>
+                  </div>
+                  <Select input-id="encryption_algorithm" v-model="encryptionAlgorithm" :options="encryptionAlgorithmOptions"
+                    option-label="label" option-value="value" :disabled="flagChecked('disable_encryption')" fluid />
+                </div>
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center">
+                    <label for="data_compress_algo">{{ t('data_compress_algo') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('data_compress_algo_help')"></span>
+                  </div>
+                  <Select input-id="data_compress_algo" v-model="dataCompressAlgo" :options="dataCompressAlgoOptions"
+                    option-label="label" option-value="value" fluid />
                 </div>
               </div>
 

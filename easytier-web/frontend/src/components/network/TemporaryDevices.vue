@@ -18,8 +18,6 @@ const props = defineProps<{
     api: ApiClient;
     /** The central record that backs the temporary devices. */
     networkId: string;
-    /** Open the add dialog once loaded. */
-    autoAdd?: boolean;
     /** Devices that already run the network from their own configuration. */
     memberDevices?: string[];
 }>();
@@ -76,7 +74,6 @@ onMounted(async () => {
     // network before the gateway info is available.
     await Promise.all([loadAll(), loadGatewayInfo()]);
     periodFunc.start();
-    if (props.autoAdd) await openAddMember();
 });
 
 onUnmounted(() => {

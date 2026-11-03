@@ -42,7 +42,6 @@ const globeKey = computed(() => `${persistenceKey.value}:network:${networkName.v
     <section class="console-panel dashboard">
         <header class="section-heading"><h2>{{ t('web.mesh_network.topology') }}</h2></header>
         <div class="mesh-globe">
-            <p class="mesh-globe-hint">{{ t('web.mesh_network.topology_hint', { name: networkName }) }}</p>
             <p v-if="topologyError" role="status" class="dashboard-error">{{ topologyError }}</p>
             <NetworkTopologyGlobe :nodes="networkTopology.nodes" :links="networkTopology.links" :loading="manualRefreshing"
                 :persistence-key="globeKey" @refresh="loadTopology(true)" />
@@ -55,6 +54,5 @@ const globeKey = computed(() => `${persistenceKey.value}:network:${networkName.v
 .overview-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; padding: 14px 18px; }
 .overview-facts > div { display: flex; flex-direction: column; gap: 2px; font-size: 13px; min-width: 0; }
 .mesh-globe { min-width: 0; padding: 16px 20px 20px; }
-.mesh-globe-hint { margin: 0 0 12px; font-size: 13px; color: var(--p-text-muted-color); }
 .dashboard-error { margin: 0 0 16px; font-size: 13px; color: var(--p-orange-600); overflow-wrap: anywhere; }
 </style>

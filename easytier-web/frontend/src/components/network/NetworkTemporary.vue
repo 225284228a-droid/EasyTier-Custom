@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Button, Message, Skeleton, useToast } from 'primevue';
+import { Button, Column, DataTable, Dialog, Message, SelectButton, Skeleton, useToast } from 'primevue';
 import { useI18n } from 'vue-i18n';
+import { Utils } from 'easytier-frontend-lib';
 import { failureMessage } from '../../modules/networkDiscovery';
 import { useMeshNetwork } from '../../modules/meshNetworkContext';
 import TemporaryDevices from './TemporaryDevices.vue';
@@ -13,19 +14,45 @@ const { api, networkName, network, view, reload } = useMeshNetwork();
 const centralId = computed(() => network.value?.central?.network_id);
 const memberDevices = computed(() => (network.value?.members ?? [])
     .filter(member => !member.credential).map(member => member.device.machine_id));
-const autoAdd = ref(false);
-const creating = ref(false);
 
 // Temporary devices need a central record: the console publishes their
-// whole configuration and runs the gateway. It is created from the
-// network's core settings the first time a temporary device is added.
-const addFirst = async () => {
-    if (!view.value) return;
-    creating.value = true;
+// whole configuration and runs the gateway. The record is created only when
+// the first temporary devices are confirmed, so a cancelled dialog leaves
+// nothing behind.
+const addVisible = ref(false);
+const adding = ref(false);
+const candidates = ref<Utils.DeviceInfo[]>();
+const selected = ref<Utils.DeviceInfo[]>([]);
+const ttlHours = ref(7 * 24);
+const ttlOptions = [
+    { label: t('web.network_detail.ttl_24h'), value: 24 },
+    { label: t('web.network_detail.ttl_7d'), value: 7 * 24 },
+    { label: t('web.network_detail.ttl_30d'), value: 30 * 24 },
+];
+
+const openAdd = async () => {
+    selected.value = [];
+    ttlHours.value = 7 * 24;
+    candidates.value = undefined;
+    addVisible.value = true;
+    const members = new Set(memberDevices.value);
+    try {
+        candidates.value = (await api.list_machines()).map(Utils.buildDeviceInfo)
+            .filter(device => !!device.machine_id && !members.has(device.machine_id));
+    } catch (error) {
+        console.error(error);
+        candidates.value = [];
+    }
+};
+
+const add = async () => {
+    if (!view.value || !selected.value.length) return;
+    adding.value = true;
+    let created: string | undefined;
     try {
         const gateway = await api.get_gateway_info().catch(() => ({ enabled: false } as { enabled: boolean; peer_url?: string }));
         const peers = view.value.preset.peers.filter(peer => peer !== gateway.peer_url);
-        await api.create_network({
+        created = (await api.create_network({
             display_name: view.value.core.display_name ?? '',
             network_name: networkName.value,
             networking_method: gateway.enabled ? 'Gateway' : peers.length ? 'Manual' : 'Standalone',
@@ -33,20 +60,23 @@ const addFirst = async () => {
             peer_urls: gateway.enabled ? [] : peers,
             virtual_cidr: null,
             secure_mode: true,
-        }, view.value.core.network_secret ?? undefined);
-        autoAdd.value = true;
+        }, view.value.core.network_secret ?? undefined)).network_id;
+        await api.add_network_members(created, selected.value.map(device => device.machine_id), true, ttlHours.value * 3600);
+        created = undefined;
+        addVisible.value = false;
         await reload();
     } catch (error) {
+        // A record without its first devices is not kept.
+        if (created) await api.delete_network(created).catch(console.error);
         toast.add({ severity: 'error', summary: t('web.mesh_network.add_temporary'), detail: failureMessage(error), life: 5000 });
     } finally {
-        creating.value = false;
+        adding.value = false;
     }
 };
 </script>
 
 <template>
-    <TemporaryDevices v-if="centralId" :key="centralId" :api="api" :network-id="centralId" :auto-add="autoAdd"
-        :member-devices="memberDevices" />
+    <TemporaryDevices v-if="centralId" :key="centralId" :api="api" :network-id="centralId" :member-devices="memberDevices" />
     <section v-else class="console-panel">
         <header class="section-heading"><h2>{{ t('web.mesh_network.section_temporary') }}</h2></header>
         <div v-if="!view" class="loading-rows"><Skeleton v-for="i in 2" :key="i" height="2rem" /></div>
@@ -58,7 +88,31 @@ const addFirst = async () => {
                 {{ t('web.mesh_network.temporary_needs_secure') }}
                 <RouterLink :to="{ name: 'meshSettings', params: { networkName } }" class="entity-link">{{ t('web.mesh_network.section_settings') }}</RouterLink>
             </Message>
-            <Button v-else icon="pi pi-plus" :label="t('web.mesh_network.add_temporary')" :loading="creating" @click="addFirst" />
+            <Button v-else icon="pi pi-plus" :label="t('web.mesh_network.add_temporary')" @click="openAdd" />
         </div>
     </section>
+
+    <Dialog v-model:visible="addVisible" modal class="console-dialog" :header="t('web.network_detail.add_member')" :style="{ width: '32rem', maxWidth: 'calc(100vw - 32px)' }">
+        <div v-if="candidates === undefined" class="loading-rows"><Skeleton v-for="i in 3" :key="i" height="2rem" /></div>
+        <template v-else>
+            <div v-if="!candidates.length" class="text-sm muted">{{ t('web.network_detail.no_candidate_devices') }}</div>
+            <DataTable v-else v-model:selection="selected" :value="candidates" data-key="machine_id" size="small" scrollable
+                scroll-height="20rem" selection-mode="multiple">
+                <Column selection-mode="multiple" style="width: 3rem" />
+                <Column field="hostname" :header="t('web.device.hostname')" />
+                <Column field="easytier_version" :header="t('web.device.version')" />
+            </DataTable>
+        </template>
+        <div class="flex flex-col gap-2 mt-2">
+            <p class="text-sm muted m-0">{{ t('web.network_detail.add_temporary_hint') }}</p>
+            <div class="flex items-center gap-2">
+                <label class="text-sm">{{ t('web.network_detail.credential_ttl') }}</label>
+                <SelectButton v-model="ttlHours" :options="ttlOptions" option-label="label" option-value="value" size="small" />
+            </div>
+        </div>
+        <template #footer>
+            <Button :label="t('web.common.cancel')" icon="pi pi-times" text severity="secondary" @click="addVisible = false" />
+            <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="adding" :disabled="!selected.length" @click="add" />
+        </template>
+    </Dialog>
 </template>

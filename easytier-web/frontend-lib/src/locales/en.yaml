@@ -331,6 +331,15 @@ mtu_help: |
   MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
 mtu_placeholder: Leave blank as default value 1380
 
+encryption_algorithm: Encryption Algorithm
+encryption_algorithm_help: Encryption algorithm between peers. It must match the other nodes of the network, or they cannot reach each other. Ignored when encryption is disabled.
+encryption_algorithm_default: Default
+data_compress_algo: Compression Algorithm
+data_compress_algo_help: Compress outgoing packets. Every packet carries its compression mark, so nodes with different settings still interoperate.
+data_compress_algo_default: Default (no compression)
+data_compress_algo_none: No compression
+data_compress_algo_zstd: Zstd
+
 instance_recv_bps_limit: Instance Receive Limit
 instance_recv_bps_limit_help: |
   Limit the total receive bandwidth for the whole instance. Unit: bytes per second.
@@ -510,8 +519,7 @@ web:
     devices: Online Devices
     networks: Running Networks
     connections: Connections
-    node_count: '{count} nodes'
-    link_count: '{count} links'
+    nodes: Nodes
     managed: Managed
     external: External (public server)
     unmanaged: Not in this console
@@ -735,8 +743,6 @@ web:
     section_preset: Preset for new devices
     section_temporary: Temporary devices
     needs_central: The console uses an external webhook (--webhook-url), so an external system manages devices and configurations; this page is unavailable
-    display_name: Network display name
-    display_name_hint: The name devices show for this configuration; empty shows the network name. It does not affect joining
     network_name: Network name
     network_name_hint: The network's identity; with the secret it decides which nodes can connect. Renaming renames every member
     network_secret: Network secret
@@ -803,14 +809,16 @@ web:
     offline: Offline
     scan_partial: 'Configurations of {count} device(s) are temporarily unavailable'
     no_members: No device runs or saves this network
-    instance: Instance
+    display_name: Network display name
+    display_name_hint: The name devices show for this configuration; empty shows the network name. It does not affect joining
+    virtual_ip: Virtual IP
+    public_ip: Public IP
     status: Status
     select_all: Select all
     selected: '{count} selected'
     open_device: Device management
     topology: Network topology
     nodes: Topology nodes
-    topology_hint: Only the nodes and connections of network {name}
     readonly: Read-only
     create: New network
     created: Network {name} created

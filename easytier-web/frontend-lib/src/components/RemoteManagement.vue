@@ -18,6 +18,8 @@ const props = defineProps<{
     scopeKey?: string;
     /** Instances locked against a console's batch edits; unset offers no lock. */
     lockedInstances?: string[];
+    /** Open the selected network's form at once instead of its status. */
+    editOnOpen?: boolean;
 }>();
 
 const instanceId = defineModel('instanceId', {
@@ -348,6 +350,15 @@ const editNetwork = async () => {
     if (editor.base.value?.instanceId === selected) editing.value = true;
 }
 
+// Asked to edit on open: the form opens once the network and its permission are known.
+let editRequested = !!props.editOnOpen;
+watch([() => selectedInstanceId.value?.uuid, networkIsDisabled, currentNetworkMeta], ([selected, disabled, meta]) => {
+    if (!editRequested || !selected || !meta) return;
+    const editable = Api.ConfigFilePermission.isEditable(meta.config_permission ?? 0);
+    editRequested = false;
+    if (!disabled && editable) void editNetwork();
+}, { immediate: true });
+
 const loadNetworkInstanceIds = async () => {
     const context = requestContext();
     const request = ++instanceListRequest;
@@ -641,8 +652,6 @@ const editorMerged = editor.merged;
                                         <div class="mr-4 min-w-0 flex-1">
                                             <span class="truncate block">{{ slotProps.option.meta
                                                 ? Api.configDisplayName(slotProps.option.meta, slotProps.option.uuid) : slotProps.option.uuid }}</span>
-                                            <span v-if="slotProps.option.meta && Api.configDisplayName(slotProps.option.meta, slotProps.option.uuid) !== slotProps.option.meta.network_name"
-                                                class="truncate block text-xs opacity-70">{{ t('network_name') }}: {{ slotProps.option.meta.network_name }}</span>
                                         </div>
                                         <Tag class="my-auto leading-3 shrink-0"
                                             :severity="isRunning(slotProps.option.uuid) ? 'success' : 'info'"
