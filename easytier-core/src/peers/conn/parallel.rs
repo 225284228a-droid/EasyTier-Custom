@@ -577,6 +577,9 @@ pub(crate) struct ParallelReceiver {
     state: Mutex<ReorderState>,
     turns: Mutex<DeliveryTurns>,
     turn_changed: tokio::sync::Notify,
+    /// Signalled when a gap starts buffering packets; flushing has nothing to
+    /// do while the buffer is empty.
+    buffered: tokio::sync::Notify,
     sender: PacketRecvChan,
     gap_ms: AtomicUsize,
 }
@@ -586,6 +589,7 @@ impl ParallelReceiver {
             state: Mutex::new(ReorderState::default()),
             turns: Mutex::new(DeliveryTurns::default()),
             turn_changed: tokio::sync::Notify::new(),
+            buffered: tokio::sync::Notify::new(),
             sender,
             gap_ms: AtomicUsize::new(20),
         })
@@ -653,6 +657,16 @@ impl ParallelReceiver {
             }
         }
     }
+    /// Waits until packets are buffered behind a gap.
+    pub(crate) async fn wait_buffered(&self) {
+        loop {
+            let notified = self.buffered.notified();
+            if !self.state.lock().packets.is_empty() {
+                return;
+            }
+            notified.await;
+        }
+    }
     fn issue(state: &mut ReorderState, ready: Vec<Buffered>) -> Option<(u64, Vec<Buffered>)> {
         if ready.is_empty() {
             return None;
@@ -668,7 +682,7 @@ impl ParallelReceiver {
         packet: ZCPacket,
         ingress: PeerPacketIngress,
     ) {
-        let batch = {
+        let (batch, started_buffering) = {
             let mut s = self.state.lock();
             if s.epoch != Some(epoch) {
                 let Some(position) = s.authorized.iter().position(|allowed| *allowed == epoch)
@@ -683,6 +697,7 @@ impl ParallelReceiver {
             if seq == u64::MAX || seq.saturating_sub(s.next) > MAX_SEQUENCE_GAP {
                 return;
             }
+            let was_empty = s.packets.is_empty();
             let now = Instant::now();
             if let PeerPacketIngress::Peer { conn_id, .. } = ingress {
                 // An unregistered connection counts as unordered.
@@ -719,8 +734,14 @@ impl ParallelReceiver {
             }
             // A late or duplicate arrival still advances its lane's frontier.
             ready.extend(s.skip_lost(now));
-            Self::issue(&mut s, ready)
+            (
+                Self::issue(&mut s, ready),
+                was_empty && !s.packets.is_empty(),
+            )
         };
+        if started_buffering {
+            self.buffered.notify_waiters();
+        }
         if let Some((ticket, packets)) = batch {
             self.deliver(ticket, packets).await;
         }

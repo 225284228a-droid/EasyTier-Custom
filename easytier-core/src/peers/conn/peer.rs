@@ -671,6 +671,7 @@ impl Peer {
         let receive_conns = conns.clone();
         let parallel_receive_task = AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
+                receiver.wait_buffered().await;
                 crate::foundation::time::sleep(std::time::Duration::from_millis(10)).await;
                 receiver.set_max_rtt_us(
                     receive_conns
