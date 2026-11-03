@@ -124,32 +124,10 @@ pub struct VpnRuleConfig {
 /// Client rules only. Offering exit forwarding is the official
 /// `flags.enable_exit_node`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "VpnConfigFile")]
+#[serde(deny_unknown_fields)]
 pub struct VpnConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<VpnRuleConfig>,
-}
-
-/// Earlier releases stored `exit_enabled` in `[vpn]`. Reading it keeps those
-/// files loadable; it no longer enables anything.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VpnConfigFile {
-    #[serde(default)]
-    exit_enabled: Option<bool>,
-    #[serde(default)]
-    rules: Vec<VpnRuleConfig>,
-}
-
-impl From<VpnConfigFile> for VpnConfig {
-    fn from(file: VpnConfigFile) -> Self {
-        if file.exit_enabled.is_some() {
-            tracing::warn!(
-                "[vpn] exit_enabled is ignored; set flags.enable_exit_node to offer exit forwarding"
-            );
-        }
-        Self { rules: file.rules }
-    }
 }
 impl VpnConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -297,6 +275,8 @@ mod tests {
     fn removed_fields_are_rejected() {
         for field in [
             "enabled = true",
+            "exit_enabled = false",
+            "exit_forwarding = true",
             "fail_mode = 'direct'",
             "exits = []",
             "dns_protect = true",
@@ -314,15 +294,6 @@ mod tests {
             let text = format!("[[rules]]\ncidr = '0.0.0.0/0'\nexit = '10.0.0.2'\n{field}");
             assert!(toml::from_str::<VpnConfig>(&text).is_err(), "{field}");
         }
-    }
-    #[test]
-    fn legacy_exit_enabled_is_read_but_enables_nothing() {
-        for value in ["true", "false"] {
-            let c: VpnConfig = toml::from_str(&format!("exit_enabled = {value}")).unwrap();
-            assert_eq!(c, VpnConfig::default());
-            assert!(!toml::to_string(&c).unwrap().contains("exit_enabled"));
-        }
-        assert!(toml::from_str::<VpnConfig>("exit_forwarding = true").is_err());
     }
     #[test]
     fn config_loader_rejects_duplicate_rules_before_runtime_start() {

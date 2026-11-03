@@ -53,7 +53,7 @@ Android 使用组网和出口路由的完整 `capture_routes`，通过 `policy_g
 
 升级前正常停止旧实例，使其释放拒绝表、OUTPUT 防护规则与旧捕获资源，再替换程序。新版本仅回收自己的单表租约，不扫描或迁移旧防护残留。
 
-新配置仅允许 `[vpn]` 的 `rules`，以及每条规则的 `cidr`、`exit`。早期的 `exit_enabled` 仍可读取但不再生效，出口端改用 `[flags] enable_exit_node`。其他旧字段明确报错，不自动转换：
+新配置仅允许 `[vpn]` 的 `rules`，以及每条规则的 `cidr`、`exit`。出口端改用 `[flags] enable_exit_node`。早期的 `exit_enabled` 及其他旧字段明确报错，不自动转换：
 
 - 将确实需要的旧 `action = "exit"` 规则改写为单个 `exit` 地址，删除 `action`、`exits`、`priority`。
 - 删除备用出口、直连和阻断规则，以及 `dns_protect`、`ipv6_protect`、`ignore_private`。不要将它们继续保留在配置中。

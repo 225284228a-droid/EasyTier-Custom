@@ -65,7 +65,7 @@ fn check_config_rejects_invalid_documents_from_files_and_stdin() {
 
 #[test]
 fn check_config_accepts_valid_vpn_documents_from_files_and_stdin() {
-    let input = "listeners = []\n[flags]\nno_tun = true\n[vpn]\nexit_enabled = false\n[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.2'\n";
+    let input = "listeners = []\n[flags]\nno_tun = true\n[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.2'\n";
     let mut config = NamedTempFile::new().unwrap();
     write!(config, "{input}").unwrap();
     stderr_on_success(
