@@ -182,7 +182,7 @@ known remote proxy subnets, manual mesh routes and local proxy subnets retain
 their existing paths. Exit forwarding uses Linux forwarding/NAT management
 and the existing proxy engines on other platforms.
 
-The host-side route manager (`easytier/src/instance/vpn_route_manager.rs`)
+The host-side route manager (`easytier/src/instance/vpn_routes.rs`)
 captures only configured destinations. Linux uses an instance-specific policy
 table and socket bypass marks; Windows/macOS retain native interface bypass.
 Android projects positive `capture_routes` with `policy_generation`. DNS
