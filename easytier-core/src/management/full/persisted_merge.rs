@@ -757,7 +757,7 @@ mod tests {
     #[test]
     fn full_form_save_removes_explicit_defaults_and_keeps_unmanaged_values() {
         let original = format!(
-            "{ORIGINAL}private_mode = true\nlatency_first = false\nmulti_thread_count = 7\n[vpn]\nexit_enabled = true\nrules = []\n"
+            "{ORIGINAL}private_mode = true\nlatency_first = false\nmulti_thread_count = 7\n[vpn]\nrules = []\n"
         );
         let loaded = TomlConfig::new_from_str(&original).unwrap();
         let form = network_config_from_toml(&loaded);

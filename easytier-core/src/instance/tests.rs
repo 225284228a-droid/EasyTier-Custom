@@ -804,9 +804,6 @@ mod portable_runtime {
 instance_name = "managed-by-name"
 hostname = "core-owned-config"
 
-[vpn]
-exit_enabled = false
-
 [network_identity]
 network_name = "managed-network"
 network_secret = "network-secret"
