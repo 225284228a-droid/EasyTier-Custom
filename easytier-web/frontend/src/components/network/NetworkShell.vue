@@ -43,6 +43,7 @@ const sections = computed(() => [
     { name: 'meshMembers', label: t('web.mesh_network.section_members'), icon: 'pi pi-server' },
     { name: 'meshSettings', label: t('web.mesh_network.section_settings'), icon: 'pi pi-shield', central: true },
     { name: 'meshAdvanced', label: t('web.mesh_network.section_advanced'), icon: 'pi pi-sliders-h', central: true },
+    { name: 'meshAcl', label: t('web.mesh_network.section_acl'), icon: 'pi pi-lock', central: true },
     { name: 'meshPreset', label: t('web.mesh_network.section_preset'), icon: 'pi pi-box', central: true },
     { name: 'meshTemporary', label: t('web.mesh_network.section_temporary'), icon: 'pi pi-clock', central: true },
 ]);

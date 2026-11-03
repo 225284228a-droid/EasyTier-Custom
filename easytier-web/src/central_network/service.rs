@@ -20,13 +20,14 @@ use uuid::Uuid;
 
 pub use super::temporary_peers::TemporaryPeerInfo;
 use super::{
-    advanced::AdvancedChange,
+    advanced::{self, AdvancedChange},
     core_sync::{self, CoreChange, CoreSettings, Ipv4Inet, MemberSyncResult},
     mesh_network::{self, JoinResult, MeshNetworkView, Preset},
     model::{
         CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
         NetworkMode, member_group_name,
     },
+    network_acl::{self, MemberAcl, NetworkAcl},
 };
 use crate::{
     client_manager::ClientManager,
@@ -204,6 +205,36 @@ pub struct NetworkCredentialInfo {
     pub expiry_unix: i64,
     pub reusable: bool,
     pub online_peers: Vec<TemporaryPeerInfo>,
+}
+
+/// A network's access control as the console rebuilt it from its members.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NetworkAclView {
+    /// The policy without its secrets; none when the network has none.
+    /// Temporary devices appear in groups by their credential group.
+    pub acl: Option<NetworkAcl>,
+    pub members: Vec<MemberAclStatus>,
+    pub temporary: Vec<TemporaryAclMember>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemberAclStatus {
+    pub device_id: String,
+    pub instance_id: String,
+    /// Holds the network's rules as they are now.
+    pub in_sync: bool,
+    /// Its own inbound chain comes first, so its default action applies
+    /// instead of the network's.
+    pub own_default: bool,
+}
+
+/// A temporary device, named in rules by its credential group.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TemporaryAclMember {
+    pub member_id: Uuid,
+    pub device_id: String,
+    pub hostname: Option<String>,
+    pub group: String,
 }
 
 /// A network instance seen on a device, without its secret.
@@ -482,7 +513,6 @@ impl CentralNetworkService {
             encryption_algorithm: None,
             members: Vec::new(),
             credentials: Vec::new(),
-            acl_policy: None,
         };
         let network_id = intent.id;
         self.persist(intent).await?;
@@ -792,6 +822,139 @@ impl CentralNetworkService {
         change: AdvancedChange,
     ) -> Result<Vec<MemberSyncResult>, CentralNetworkServiceError> {
         let _mutation = self.lock_mutations(user_id).await;
+        mesh_network::apply_advanced(
+            &self.db,
+            &self.client_manager,
+            user_id,
+            network_name,
+            &change,
+        )
+        .await
+        .map_err(invalid)
+    }
+
+    /// The network's access control, rebuilt from what its members hold.
+    pub async fn get_mesh_network_acl(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+    ) -> Result<NetworkAclView, CentralNetworkServiceError> {
+        let members = self
+            .db
+            .list_mesh_observations(user_id, Some(network_name))
+            .await?;
+        let acl = mesh_network::acl_of(&members);
+        let expected = acl.as_ref().map(network_acl::rules_of);
+        let statuses = members
+            .iter()
+            .filter(|member| !member.credential)
+            .map(|member| {
+                let held: MemberAcl = serde_json::from_str(&member.acl).unwrap_or_default();
+                MemberAclStatus {
+                    device_id: member.device_id.clone(),
+                    instance_id: member.instance_id.clone(),
+                    in_sync: held.network == expected,
+                    own_default: held.own_default,
+                }
+            })
+            .collect();
+        let mut temporary = Vec::new();
+        let mut acl = acl.map(NetworkAcl::without_secrets);
+        if let Some(intent) = self.load_by_name(user_id, network_name).await? {
+            for member in &intent.members {
+                let Some(credential) = member.credential_id.as_deref().and_then(|id| {
+                    intent
+                        .credentials
+                        .iter()
+                        .find(|credential| credential.id == id)
+                }) else {
+                    continue;
+                };
+                let group = member_group_name(member.id);
+                if let Some(acl) = &mut acl {
+                    for acl_group in &mut acl.groups {
+                        if credential.grant.acl_groups.contains(&acl_group.name) {
+                            acl_group.members.insert(group.clone());
+                        }
+                    }
+                }
+                temporary.push(TemporaryAclMember {
+                    member_id: member.id,
+                    device_id: member.device_id.clone(),
+                    hostname: member.hostname.clone(),
+                    group,
+                });
+            }
+        }
+        Ok(NetworkAclView {
+            acl,
+            members: statuses,
+            temporary,
+        })
+    }
+
+    /// Write the network's access control, or remove it with `None`, to
+    /// every unlocked member as an advanced edit. Temporary devices join
+    /// groups through their credential grants.
+    pub async fn set_mesh_network_acl(
+        &self,
+        user_id: UserIdInDb,
+        network_name: &str,
+        acl: Option<NetworkAcl>,
+    ) -> Result<Vec<MemberSyncResult>, CentralNetworkServiceError> {
+        let _mutation = self.lock_mutations(user_id).await;
+        if let Some(acl) = &acl {
+            acl.validate()
+                .map_err(|error| CentralNetworkServiceError::Invalid(format!("{error:#}")))?;
+        }
+        core_sync::observe_user(&self.db, &self.client_manager, user_id).await;
+        let current = mesh_network::current_acl(&self.db, user_id, network_name)
+            .await
+            .map_err(invalid)?;
+        let acl = acl.map(|acl| {
+            acl.normalized()
+                .with_secrets(current.as_ref(), random_secret)
+        });
+        if let Some(mut intent) = self.load_by_name(user_id, network_name).await? {
+            let mut changed = false;
+            let members: Vec<_> = intent
+                .members
+                .iter()
+                .filter_map(|member| Some((member.id, member.credential_id.clone()?)))
+                .collect();
+            for (member_id, credential_id) in members {
+                let group = member_group_name(member_id);
+                let mut groups: Vec<_> = acl
+                    .iter()
+                    .flat_map(|acl| &acl.groups)
+                    .filter(|acl_group| acl_group.members.contains(&group))
+                    .map(|acl_group| acl_group.name.clone())
+                    .chain([group.clone()])
+                    .collect();
+                groups.sort();
+                groups.dedup();
+                if let Some(credential) = intent
+                    .credentials
+                    .iter_mut()
+                    .find(|credential| credential.id == credential_id)
+                {
+                    let mut held = credential.grant.acl_groups.clone();
+                    held.sort();
+                    if held != groups {
+                        credential.grant.acl_groups = groups;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.persist(intent).await?;
+            }
+        }
+        let change = AdvancedChange::from([(
+            advanced::NETWORK_ACL.to_owned(),
+            serde_json::to_value(&acl)
+                .map_err(|error| CentralNetworkServiceError::Invalid(error.to_string()))?,
+        )]);
         mesh_network::apply_advanced(
             &self.db,
             &self.client_manager,
@@ -1123,7 +1286,6 @@ impl CentralNetworkService {
                 allocated_ipv4: None,
                 config_override: None,
                 credential_id,
-                acl_group_secret: None,
             });
         }
         self.persist(intent).await?;
@@ -1558,7 +1720,12 @@ impl CentralNetworkService {
             let network_id = Uuid::parse_str(&network.id)
                 .map_err(|error| CentralNetworkServiceError::Database(error.to_string()))?;
             let intent = self.load(user_id, network_id).await?;
-            let compiled = super::compiler::compile(&intent)
+            // Temporary members follow the access control the permanent
+            // members hold, whichever console wrote it.
+            let network_acl = mesh_network::current_acl(&self.db, user_id, &intent.network_name)
+                .await
+                .map_err(invalid)?;
+            let compiled = super::compiler::compile_with_acl(&intent, network_acl.as_ref())
                 .map_err(|error| CentralNetworkServiceError::Invalid(error.to_string()))?;
             for member in compiled.members {
                 let device_id = Uuid::parse_str(&member.device_id)
@@ -3298,7 +3465,6 @@ mod tests {
             .unwrap();
         assert_eq!(intent.members.len(), 1);
         let temporary = &intent.members[0];
-        assert!(temporary.acl_group_secret.is_none());
         let credential = intent
             .credentials
             .iter()
@@ -4132,6 +4298,7 @@ mod tests {
                     advanced_sync_at: None,
                     advanced: serde_json::to_string(&super::super::advanced::values_of(&config))
                         .unwrap(),
+                    acl: "{}".to_owned(),
                 }],
             )
             .await
@@ -4182,6 +4349,7 @@ mod tests {
             credential: false,
             advanced: "{}".to_owned(),
             advanced_sync_at: None,
+            acl: "{}".to_owned(),
         };
         let core = |name: &str, address: Option<&str>, range: Option<&str>| CoreSettings {
             network_name: name.into(),
@@ -4374,6 +4542,87 @@ mod tests {
         };
         assert!(member(offline_instance).pending);
         assert!(member(locked_instance).locked);
+    }
+
+    #[tokio::test]
+    async fn network_acl_is_written_to_members_and_rebuilt_from_them() {
+        use super::super::{
+            model::{AclAction, AclProtocol, AclProtocolTarget},
+            network_acl::{AclPeer, AclTarget, NetworkAclGroup, NetworkAclRule},
+        };
+
+        let (service, user_id, _) = service().await;
+        let (admin, admin_instance) = official_member(&service, user_id, "office").await;
+        let (server, _) = official_member(&service, user_id, "office").await;
+        let acl = NetworkAcl {
+            default_action: AclAction::Deny,
+            groups: vec![NetworkAclGroup {
+                name: "admins".to_owned(),
+                secret: String::new(),
+                members: [admin_instance.to_string()].into(),
+            }],
+            rules: vec![NetworkAclRule {
+                id: "ssh".to_owned(),
+                name: "Admins use SSH".to_owned(),
+                enabled: true,
+                action: AclAction::Allow,
+                sources: vec![AclPeer::Group {
+                    name: "admins".to_owned(),
+                }],
+                destinations: vec![AclTarget::All],
+                protocols: vec![AclProtocolTarget {
+                    protocol: AclProtocol::Tcp,
+                    ports: vec!["22".to_owned()],
+                    stateful: true,
+                }],
+            }],
+            device_secrets: Default::default(),
+        };
+        service
+            .set_mesh_network_acl(user_id, "office", Some(acl.clone()))
+            .await
+            .unwrap();
+
+        let group_of = |config: &easytier::proto::api::manage::NetworkConfig| {
+            config.acl.clone().unwrap().acl_v1.unwrap().group.unwrap()
+        };
+        let (admin_config, _) = stored_config(&service, user_id, admin).await;
+        let (server_config, _) = stored_config(&service, user_id, server).await;
+        assert_eq!(group_of(&admin_config).members, ["admins"]);
+        assert!(group_of(&server_config).members.is_empty());
+        let secret = &group_of(&server_config).declares[0].group_secret;
+        assert!(!secret.is_empty());
+        assert_eq!(&group_of(&admin_config).declares[0].group_secret, secret);
+
+        let view = service
+            .get_mesh_network_acl(user_id, "office")
+            .await
+            .unwrap();
+        assert_eq!(view.acl, Some(acl.clone().normalized()));
+        assert!(view.members.iter().all(|member| member.in_sync));
+
+        // Saving the rebuilt policy keeps the generated secret.
+        service
+            .set_mesh_network_acl(user_id, "office", view.acl)
+            .await
+            .unwrap();
+        let (server_config, _) = stored_config(&service, user_id, server).await;
+        assert_eq!(&group_of(&server_config).declares[0].group_secret, secret);
+
+        service
+            .set_mesh_network_acl(user_id, "office", None)
+            .await
+            .unwrap();
+        let (admin_config, _) = stored_config(&service, user_id, admin).await;
+        assert_eq!(admin_config.acl, None);
+        assert_eq!(
+            service
+                .get_mesh_network_acl(user_id, "office")
+                .await
+                .unwrap()
+                .acl,
+            None
+        );
     }
 
     #[tokio::test]

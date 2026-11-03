@@ -389,6 +389,7 @@ fn observation(
         credential: is_credential_member(config),
         advanced: serde_json::to_string(&super::advanced::values_of(config))?,
         advanced_sync_at: config.advanced_sync_at.map(|stamp| stamp as i64),
+        acl: serde_json::to_string(&super::network_acl::read(config.acl.as_ref()))?,
     })
 }
 

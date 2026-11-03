@@ -9,5 +9,6 @@ pub mod gateway;
 pub(crate) mod local_delivery;
 pub(crate) mod mesh_network;
 pub mod model;
+pub(crate) mod network_acl;
 pub mod service;
 mod temporary_peers;

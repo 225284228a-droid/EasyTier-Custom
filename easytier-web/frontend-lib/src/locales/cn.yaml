@@ -742,6 +742,36 @@ web:
     section_advanced: 高级设置
     section_preset: 预下发配置
     section_temporary: 临时设备
+    section_acl: 访问控制
+    acl_hint: 每个成员保存同一份网络规则，像高级设置一样写入所有未锁定的成员，离线成员上线时补发一次。规则只认组或单个成员，加减成员不影响其他成员。设备自己的 ACL 先匹配，网络规则排在后面；在设备上改过网络规则的成员会标为不一致，下次保存时被覆盖。
+    acl_off: 这个网络还没有访问控制，成员之间互通不受限制。
+    acl_enable: 启用访问控制
+    acl_disable: 关闭访问控制
+    acl_default_action: 未匹配时
+    acl_allow: 允许
+    acl_deny: 拒绝
+    acl_groups: 组
+    acl_groups_hint: 永久成员的组归属保存在各自设备上；临时设备通过它的凭证加入组。
+    acl_group: 组
+    acl_group_name: 组名（字母、数字、_ - .）
+    acl_group_members: 选择成员
+    acl_add_group: 添加组
+    acl_rules: 规则
+    acl_rules_hint: 从上到下匹配，第一条命中的规则生效。目标里的子网用于子网代理转发。
+    acl_new_rule: 新规则
+    acl_add_rule: 添加规则
+    acl_sources: 来源
+    acl_destinations: 目标
+    acl_subnets: 子网
+    acl_protocols: 协议与端口
+    acl_add_protocol: 添加协议
+    acl_stateful: 有状态
+    acl_everyone: 所有人
+    acl_move_up: 上移
+    acl_move_down: 下移
+    acl_remove: 删除
+    acl_out_of_sync: '这些成员持有的规则和当前不一致（离线未补发、被锁定或在设备上改过）：{members}'
+    acl_own_default: '这些成员有自己的入站规则链，未匹配时按设备自己的默认动作处理，网络的“拒绝”对它们不生效：{members}'
     needs_central: 控制台接入了外部 webhook（--webhook-url），设备和配置由外部系统管理，此页不可用
     network_name: 网络名称
     network_name_hint: 组网身份，与网络密码一起决定节点能否互联；修改后所有成员一起改名

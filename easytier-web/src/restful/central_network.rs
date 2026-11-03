@@ -13,10 +13,12 @@ use crate::central_network::{
     advanced::AdvancedChange,
     core_sync::{CoreChange, MemberSyncResult},
     mesh_network::{JoinResult, MeshNetworkView, Preset},
+    network_acl::NetworkAcl,
     service::{
         AddMembersReq, CentralNetworkService, CentralNetworkServiceError, CreateMeshNetworkReq,
-        GenerateCredentialReq, MemberInfo, MembersView, MeshMemberInfo, NetworkCredentialInfo,
-        NetworkDetail, NetworkSettings, NetworkSummary, UpdateMemberReq, UpdateNetworkReq,
+        GenerateCredentialReq, MemberInfo, MembersView, MeshMemberInfo, NetworkAclView,
+        NetworkCredentialInfo, NetworkDetail, NetworkSettings, NetworkSummary, UpdateMemberReq,
+        UpdateNetworkReq,
     },
 };
 
@@ -104,6 +106,12 @@ struct AutoJoinJsonReq {
 struct ApplyAdvancedJsonReq {
     network_name: String,
     change: AdvancedChange,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct NetworkAclJsonReq {
+    /// None removes the network's access control.
+    acl: Option<NetworkAcl>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -427,6 +435,31 @@ impl CentralNetworkApi {
         Ok(Json(ApplyCoreJsonResp { results }))
     }
 
+    async fn get_mesh_network_acl(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path(network_name): Path<String>,
+    ) -> Result<Json<NetworkAclView>, HttpHandleError> {
+        service
+            .get_mesh_network_acl(user_id(&auth)?, &network_name)
+            .await
+            .map(Json)
+            .map_err(convert_error)
+    }
+
+    async fn set_mesh_network_acl(
+        auth: AuthSession,
+        Extension(service): Service,
+        Path(network_name): Path<String>,
+        Json(request): Json<NetworkAclJsonReq>,
+    ) -> Result<Json<ApplyCoreJsonResp>, HttpHandleError> {
+        let results = service
+            .set_mesh_network_acl(user_id(&auth)?, &network_name, request.acl)
+            .await
+            .map_err(convert_error)?;
+        Ok(Json(ApplyCoreJsonResp { results }))
+    }
+
     async fn set_mesh_lock(
         auth: AuthSession,
         Extension(service): Service,
@@ -478,6 +511,10 @@ impl CentralNetworkApi {
             .route(
                 "/api/v1/mesh/networks/{network-name}/join",
                 post(Self::join_mesh_devices),
+            )
+            .route(
+                "/api/v1/mesh/networks/{network-name}/acl",
+                get(Self::get_mesh_network_acl).put(Self::set_mesh_network_acl),
             )
             .route(
                 "/api/v1/mesh/locks/{device-id}/{instance-id}",

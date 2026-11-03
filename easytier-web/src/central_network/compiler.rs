@@ -5,11 +5,7 @@ use std::{
 
 use easytier::{
     common::config::{NetworkConfig, NetworkConfigExt, NetworkingMethod},
-    proto::{
-        acl::{Acl, AclV1, Action, Chain, ChainType, GroupInfo, Protocol, Rule},
-        api::manage::ManagedCredentialConfig,
-        common::SecureModeConfig,
-    },
+    proto::{api::manage::ManagedCredentialConfig, common::SecureModeConfig},
 };
 use easytier_core::{
     config::runtime::CoreInstanceRuntimeConfig, connectivity::manual::validate_manual_url,
@@ -18,10 +14,12 @@ use easytier_core::{
 };
 use uuid::Uuid;
 
-use super::model::{
-    AclAction, AclDestination, AclPolicy, AclProtocol, AclProtocolTarget, AclSource,
-    CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
-    NetworkMode, member_group_name,
+use super::{
+    model::{
+        CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
+        NetworkMode, member_group_name,
+    },
+    network_acl::{self, NetworkAcl},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,14 +60,6 @@ pub enum CompileError {
     InvalidMemberCredential { member_id: Uuid, reason: String },
     #[error("invalid configuration for member {member_id}: {reason}")]
     InvalidMemberConfig { member_id: Uuid, reason: String },
-    #[error("duplicate ACL rule id: {0}")]
-    DuplicateAclRule(String),
-    #[error("invalid ACL rule {rule_id}: {reason}")]
-    InvalidAclRule { rule_id: String, reason: String },
-    #[error("ACL references unknown member: {0}")]
-    UnknownAclMember(Uuid),
-    #[error("ACL references an ACL group not present in any credential grant: {0}")]
-    UnknownAclGroup(String),
 }
 
 /// Compile a complete network intent without consulting external state.
@@ -77,6 +67,15 @@ pub enum CompileError {
 /// Input order is deliberately normalized. Callers can therefore compare the
 /// result directly when deciding whether materialized desired state changed.
 pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, CompileError> {
+    compile_with_acl(intent, None)
+}
+
+/// Compile with the network's access control, which temporary members run
+/// after their own ACL.
+pub fn compile_with_acl(
+    intent: &CentralNetworkIntent,
+    network_acl: Option<&NetworkAcl>,
+) -> Result<CompiledNetwork, CompileError> {
     validate_network(intent)?;
 
     let mut members: Vec<&NetworkMemberIntent> = intent.members.iter().collect();
@@ -87,10 +86,8 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
     });
     let credentials = normalized_credentials(&intent.credentials)?;
     validate_members(intent, &members, &credentials)?;
-    validate_acl(intent.acl_policy.as_ref(), &members, &credentials)?;
 
     let addresses = assign_addresses(intent.virtual_cidr.as_deref(), &members)?;
-    let acl = compile_acl(intent.acl_policy.as_ref(), &members);
     let (networking_method, public_server_url, peer_urls) = compile_mode(&intent.mode)?;
     let managed_credentials: Vec<ManagedCredentialConfig> = credentials
         .iter()
@@ -142,15 +139,21 @@ pub fn compile(intent: &CentralNetworkIntent) -> Result<CompiledNetwork, Compile
                 } else {
                     Vec::new()
                 },
-                acl: acl.get(&member.id).cloned().flatten(),
                 disable_encryption: intent.disable_encryption.then_some(true),
                 encryption_algorithm: intent.encryption_algorithm.clone(),
                 instance_name: Some(intent.display_name.clone())
                     .filter(|name| !name.trim().is_empty()),
                 ..Default::default()
             };
-            let network_config =
+            let mut network_config =
                 apply_member_override(base_config, member.config_override.as_ref());
+            if let (Some(credential), Some(acl)) = (credential, network_acl) {
+                let groups = credential.grant.acl_groups.iter().cloned().collect();
+                network_acl::apply(
+                    &mut network_config,
+                    Some(&acl.for_credential_member(&groups)),
+                );
+            }
             validate_member_config(&network_config).map_err(|error| {
                 CompileError::InvalidMemberConfig {
                     member_id: member.id,
@@ -209,7 +212,6 @@ fn apply_member_override(
     merged.peers = base.peers;
     merged.secure_mode = base.secure_mode;
     merged.managed_credentials = base.managed_credentials;
-    merged.acl = base.acl;
     merged.credential_file = None;
     merged
 }
@@ -338,22 +340,8 @@ fn validate_members(
             return Err(CompileError::DuplicateDevice(member.device_id.clone()));
         }
         let Some(credential_id) = member.credential_id.as_deref() else {
-            if intent.acl_policy.is_some()
-                && member.acl_group_secret.as_deref().is_none_or(str::is_empty)
-            {
-                return Err(CompileError::InvalidMemberCredential {
-                    member_id: member.id,
-                    reason: "a permanent ACL member requires an ACL group secret".to_owned(),
-                });
-            }
             continue;
         };
-        if member.acl_group_secret.is_some() {
-            return Err(CompileError::InvalidMemberCredential {
-                member_id: member.id,
-                reason: "a temporary member must not receive an ACL group secret".to_owned(),
-            });
-        }
         if !intent.secure_mode {
             return Err(CompileError::InvalidMemberCredential {
                 member_id: member.id,
@@ -516,294 +504,19 @@ pub(crate) fn compile_managed_credential(
     }
 }
 
-fn validate_acl(
-    policy: Option<&AclPolicy>,
-    members: &[&NetworkMemberIntent],
-    credentials: &[&NetworkCredentialIntent],
-) -> Result<(), CompileError> {
-    let Some(policy) = policy else {
-        return Ok(());
-    };
-    let member_ids: HashSet<_> = members.iter().map(|member| member.id).collect();
-    let granted_groups: HashSet<&str> = credentials
-        .iter()
-        .flat_map(|credential| credential.grant.acl_groups.iter().map(String::as_str))
-        .collect();
-    let mut rule_ids = HashSet::new();
-
-    for rule in &policy.rules {
-        if rule.id.trim().is_empty() || !rule_ids.insert(rule.id.as_str()) {
-            return Err(CompileError::DuplicateAclRule(rule.id.clone()));
-        }
-        if rule.name.trim().is_empty()
-            || rule.sources.is_empty()
-            || rule.destinations.is_empty()
-            || rule.protocols.is_empty()
-        {
-            return Err(CompileError::InvalidAclRule {
-                rule_id: rule.id.clone(),
-                reason: "name, sources, destinations and protocols must not be empty".to_owned(),
-            });
-        }
-        for source in &rule.sources {
-            match source {
-                AclSource::All => {}
-                AclSource::Member { member_id } if member_ids.contains(member_id) => {}
-                AclSource::Member { member_id } => {
-                    return Err(CompileError::UnknownAclMember(*member_id));
-                }
-                AclSource::Group { name } if granted_groups.contains(name.as_str()) => {}
-                AclSource::Group { name } => {
-                    return Err(CompileError::UnknownAclGroup(name.clone()));
-                }
-            }
-        }
-        for destination in &rule.destinations {
-            let member_id = match destination {
-                AclDestination::All => continue,
-                AclDestination::Member { member_id } | AclDestination::Subnet { member_id, .. } => {
-                    member_id
-                }
-            };
-            if !member_ids.contains(member_id) {
-                return Err(CompileError::UnknownAclMember(*member_id));
-            }
-            if let AclDestination::Subnet { cidrs, .. } = destination {
-                if cidrs.is_empty() {
-                    return Err(CompileError::InvalidAclRule {
-                        rule_id: rule.id.clone(),
-                        reason: "subnet destination must contain at least one CIDR".to_owned(),
-                    });
-                }
-                for cidr in cidrs {
-                    validate_cidr(cidr)?;
-                }
-            }
-        }
-        for target in &rule.protocols {
-            validate_protocol_target(&rule.id, target)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_protocol_target(rule_id: &str, target: &AclProtocolTarget) -> Result<(), CompileError> {
-    if target.stateful && target.protocol != AclProtocol::Tcp {
-        return Err(CompileError::InvalidAclRule {
-            rule_id: rule_id.to_owned(),
-            reason: "stateful is only supported for TCP".to_owned(),
-        });
-    }
-    if matches!(target.protocol, AclProtocol::Icmp | AclProtocol::Icmpv6)
-        && !target.ports.is_empty()
-    {
-        return Err(CompileError::InvalidAclRule {
-            rule_id: rule_id.to_owned(),
-            reason: "ICMP protocols do not accept ports".to_owned(),
-        });
-    }
-    for port in &target.ports {
-        let valid = match port.split_once('-') {
-            Some((start, end)) => matches!(
-                (start.parse::<u16>(), end.parse::<u16>()),
-                (Ok(start), Ok(end)) if start > 0 && start <= end
-            ),
-            None => port.parse::<u16>().is_ok_and(|port| port > 0),
-        };
-        if !valid {
-            return Err(CompileError::InvalidAclRule {
-                rule_id: rule_id.to_owned(),
-                reason: format!("invalid port {port}"),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn compile_acl(
-    policy: Option<&AclPolicy>,
-    members: &[&NetworkMemberIntent],
-) -> HashMap<Uuid, Option<Acl>> {
-    let Some(policy) = policy else {
-        return members.iter().map(|member| (member.id, None)).collect();
-    };
-    // Permanent members already hold the network admin secret and trust one
-    // another. Shared group proofs express policy, not isolation from admins.
-    // Untrusted devices must use credential identities instead.
-    let permanent_groups: Vec<_> = members
-        .iter()
-        .filter(|member| member.credential_id.is_none())
-        .map(|member| easytier::proto::acl::GroupIdentity {
-            group_name: member_group_name(member.id),
-            group_secret: member
-                .acl_group_secret
-                .clone()
-                .expect("validated permanent ACL group secret"),
-        })
-        .collect();
-    let mut inbound: HashMap<Uuid, Vec<Rule>> = members
-        .iter()
-        .map(|member| (member.id, Vec::new()))
-        .collect();
-    let mut forward: HashMap<Uuid, Vec<Rule>> = members
-        .iter()
-        .map(|member| (member.id, Vec::new()))
-        .collect();
-
-    let enabled: Vec<_> = policy.rules.iter().filter(|rule| rule.enabled).collect();
-    for (position, policy_rule) in enabled.iter().enumerate() {
-        let mut source_groups = if policy_rule
-            .sources
-            .iter()
-            .any(|source| matches!(source, AclSource::All))
-        {
-            Vec::new()
-        } else {
-            let mut groups = Vec::new();
-            for source in &policy_rule.sources {
-                match source {
-                    AclSource::All => unreachable!("handled above"),
-                    AclSource::Member { member_id } => {
-                        groups.push(member_group_name(*member_id));
-                    }
-                    AclSource::Group { name } => groups.push(name.clone()),
-                }
-            }
-            groups
-        };
-        source_groups.sort();
-        source_groups.dedup();
-        let priority = ((enabled.len() - position) * 100) as u32;
-
-        for destination in &policy_rule.destinations {
-            let targets: Vec<(Uuid, bool, Vec<String>)> = match destination {
-                AclDestination::All => members
-                    .iter()
-                    .map(|member| (member.id, false, Vec::new()))
-                    .collect(),
-                AclDestination::Member { member_id } => {
-                    vec![(*member_id, false, Vec::new())]
-                }
-                AclDestination::Subnet { member_id, cidrs } => {
-                    let mut cidrs = cidrs.clone();
-                    cidrs.sort();
-                    cidrs.dedup();
-                    vec![(*member_id, true, cidrs)]
-                }
-            };
-            for (member_id, is_forward, destination_ips) in targets {
-                let accumulator = if is_forward {
-                    forward.get_mut(&member_id).expect("validated ACL member")
-                } else {
-                    inbound.get_mut(&member_id).expect("validated ACL member")
-                };
-                for protocol in &policy_rule.protocols {
-                    accumulator.push(Rule {
-                        name: format!("{}:{}", policy_rule.id, protocol_name(protocol.protocol)),
-                        description: policy_rule.name.clone(),
-                        priority,
-                        enabled: true,
-                        protocol: core_protocol(protocol.protocol) as i32,
-                        ports: protocol.ports.clone(),
-                        source_ips: Vec::new(),
-                        destination_ips: destination_ips.clone(),
-                        source_ports: Vec::new(),
-                        action: core_action(policy_rule.action) as i32,
-                        rate_limit: 0,
-                        burst_limit: 0,
-                        stateful: protocol.stateful,
-                        source_groups: source_groups.clone(),
-                        destination_groups: Vec::new(),
-                    });
-                }
-            }
-        }
-    }
-
-    members
-        .iter()
-        .map(|member| {
-            let chains = vec![
-                Chain {
-                    name: "inbound".to_owned(),
-                    chain_type: ChainType::Inbound as i32,
-                    description: "compiled from central network intent".to_owned(),
-                    enabled: true,
-                    rules: inbound.remove(&member.id).unwrap_or_default(),
-                    default_action: core_action(policy.default_action) as i32,
-                },
-                Chain {
-                    name: "forward".to_owned(),
-                    chain_type: ChainType::Forward as i32,
-                    description: "compiled from central network intent".to_owned(),
-                    enabled: true,
-                    rules: forward.remove(&member.id).unwrap_or_default(),
-                    default_action: core_action(policy.default_action) as i32,
-                },
-            ];
-            let own_groups = if member.credential_id.is_none() {
-                vec![member_group_name(member.id)]
-            } else {
-                Vec::new()
-            };
-            (
-                member.id,
-                Some(Acl {
-                    acl_v1: Some(AclV1 {
-                        chains,
-                        group: Some(GroupInfo {
-                            declares: if member.credential_id.is_none() {
-                                permanent_groups.clone()
-                            } else {
-                                Vec::new()
-                            },
-                            members: own_groups,
-                        }),
-                    }),
-                }),
-            )
-        })
-        .collect()
-}
-
-fn core_action(action: AclAction) -> Action {
-    match action {
-        AclAction::Allow => Action::Allow,
-        AclAction::Deny => Action::Drop,
-    }
-}
-
-fn core_protocol(protocol: AclProtocol) -> Protocol {
-    match protocol {
-        AclProtocol::Tcp => Protocol::Tcp,
-        AclProtocol::Udp => Protocol::Udp,
-        AclProtocol::Icmp => Protocol::Icmp,
-        AclProtocol::Icmpv6 => Protocol::IcmPv6,
-        AclProtocol::Any => Protocol::Any,
-    }
-}
-
-fn protocol_name(protocol: AclProtocol) -> &'static str {
-    match protocol {
-        AclProtocol::Tcp => "tcp",
-        AclProtocol::Udp => "udp",
-        AclProtocol::Icmp => "icmp",
-        AclProtocol::Icmpv6 => "icmpv6",
-        AclProtocol::Any => "any",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-    use easytier::proto::{acl::ChainType, api::manage::NetworkingMethod};
+    use easytier::proto::acl::{Acl, AclV1, Chain, ChainType};
     use uuid::Uuid;
 
     use super::*;
-    use crate::central_network::model::{
-        AclAction, AclDestination, AclPolicy, AclProtocol, AclProtocolTarget, AclRule, AclSource,
-        CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
-        NetworkMode, member_group_name,
+    use crate::central_network::{
+        model::{
+            AclAction, AclProtocol, AclProtocolTarget, CentralNetworkIntent, CredentialGrant,
+            NetworkCredentialIntent, NetworkMemberIntent, NetworkMode, member_group_name,
+        },
+        network_acl::{AclPeer, AclTarget, NetworkAclGroup, NetworkAclRule},
     };
 
     fn member(id: u128, device_id: &str, credential_id: Option<&str>) -> NetworkMemberIntent {
@@ -815,9 +528,6 @@ mod tests {
             allocated_ipv4: None,
             config_override: None,
             credential_id: credential_id.map(str::to_owned),
-            acl_group_secret: credential_id
-                .is_none()
-                .then(|| format!("group-secret-{device_id}")),
         }
     }
 
@@ -863,26 +573,6 @@ mod tests {
                 credential("temporary", Some(temporary.id)),
                 credential("invite", None),
             ],
-            acl_policy: Some(AclPolicy {
-                default_action: AclAction::Deny,
-                rules: vec![AclRule {
-                    id: "allow-temporary".to_owned(),
-                    name: "allow temporary member".to_owned(),
-                    enabled: true,
-                    action: AclAction::Allow,
-                    sources: vec![AclSource::Member {
-                        member_id: temporary.id,
-                    }],
-                    destinations: vec![AclDestination::Member {
-                        member_id: Uuid::from_u128(1),
-                    }],
-                    protocols: vec![AclProtocolTarget {
-                        protocol: AclProtocol::Tcp,
-                        ports: vec!["443".to_owned()],
-                        stateful: true,
-                    }],
-                }],
-            }),
         }
     }
 
@@ -930,7 +620,6 @@ mod tests {
             ] {
                 let mut candidate = intent();
                 candidate.members = members.clone();
-                candidate.acl_policy = None;
                 for mode in [
                     NetworkMode::Manual {
                         peer_urls: vec![url.to_owned()],
@@ -988,8 +677,21 @@ mod tests {
             wireguard_private_key: Some(credential_secret("portal")),
             clients: vec![client.clone()],
         };
+        // Portal clients may only use groups the member's ACL declares.
         let mut overrides = NetworkConfig {
             vpn_portal_config: Some(portal.clone()),
+            acl: Some(Acl {
+                acl_v1: Some(AclV1 {
+                    chains: Vec::new(),
+                    group: Some(easytier::proto::acl::GroupInfo {
+                        declares: vec![easytier::proto::acl::GroupIdentity {
+                            group_name: member_group_name(Uuid::from_u128(1)),
+                            group_secret: "group-secret".to_owned(),
+                        }],
+                        members: Vec::new(),
+                    }),
+                }),
+            }),
             ..Default::default()
         };
         candidate.members[1].config_override = Some(overrides.clone());
@@ -1067,19 +769,104 @@ mod tests {
             Some(credential_secret("temporary").as_str())
         );
 
-        let group = temporary
+        assert_eq!(temporary.network_config.acl, None);
+    }
+
+    fn network_policy() -> NetworkAcl {
+        let tcp = AclProtocolTarget {
+            protocol: AclProtocol::Tcp,
+            ports: vec!["443".to_owned()],
+            stateful: true,
+        };
+        let rule = |id: &str, destination: AclTarget| NetworkAclRule {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            enabled: true,
+            action: AclAction::Allow,
+            sources: vec![AclPeer::Group {
+                name: "admins".to_owned(),
+            }],
+            destinations: vec![destination],
+            protocols: vec![tcp.clone()],
+        };
+        NetworkAcl {
+            default_action: AclAction::Deny,
+            groups: vec![NetworkAclGroup {
+                name: "admins".to_owned(),
+                secret: "admins-secret".to_owned(),
+                members: Default::default(),
+            }],
+            rules: vec![
+                rule(
+                    "to-temporary",
+                    AclTarget::Group {
+                        name: member_group_name(Uuid::from_u128(2)),
+                    },
+                ),
+                rule(
+                    "to-a-device",
+                    AclTarget::Device {
+                        instance_id: "other".to_owned(),
+                    },
+                ),
+            ],
+            device_secrets: [("other".to_owned(), "device-secret".to_owned())].into(),
+        }
+    }
+
+    #[test]
+    fn temporary_members_run_their_own_acl_then_the_rules_that_reach_them() {
+        let mut candidate = intent();
+        let own = Acl {
+            acl_v1: Some(AclV1 {
+                chains: vec![Chain {
+                    name: "own".to_owned(),
+                    chain_type: ChainType::Inbound as i32,
+                    enabled: true,
+                    ..Default::default()
+                }],
+                group: None,
+            }),
+        };
+        candidate.members[0].config_override = Some(NetworkConfig {
+            acl: Some(own),
+            ..Default::default()
+        });
+        let compiled = compile_with_acl(&candidate, Some(&network_policy())).unwrap();
+        let temporary = compiled
+            .members
+            .iter()
+            .find(|member| member.device_id == "device-b")
+            .unwrap();
+        let acl = temporary
             .network_config
             .acl
             .as_ref()
             .unwrap()
             .acl_v1
             .as_ref()
-            .unwrap()
-            .group
-            .as_ref()
             .unwrap();
-        assert!(group.members.is_empty());
-        assert!(group.declares.is_empty());
+        let names: Vec<_> = acl.chains.iter().map(|chain| chain.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "own",
+                network_acl::INBOUND_CHAIN,
+                network_acl::FORWARD_CHAIN
+            ]
+        );
+        assert_eq!(acl.chains[1].rules.len(), 1);
+        assert!(acl.chains[1].rules[0].destination_groups.is_empty());
+        assert!(
+            acl.group.is_none(),
+            "credential nodes hold no group secrets"
+        );
+        let permanent = compiled
+            .members
+            .iter()
+            .find(|member| member.device_id == "device-a")
+            .unwrap();
+        assert_eq!(permanent.network_config.acl, None);
     }
 
     #[test]
@@ -1127,63 +914,6 @@ mod tests {
     }
 
     #[test]
-    fn acl_member_references_compile_to_authenticated_groups() {
-        let compiled = compile(&intent()).unwrap();
-        let destination = &compiled.members[0].network_config;
-        assert_eq!(
-            destination.networking_method,
-            Some(NetworkingMethod::Manual as i32)
-        );
-        let acl = destination.acl.as_ref().unwrap().acl_v1.as_ref().unwrap();
-        let inbound = acl
-            .chains
-            .iter()
-            .find(|chain| chain.chain_type == ChainType::Inbound as i32)
-            .unwrap();
-        assert_eq!(
-            inbound.rules[0].source_groups,
-            vec![member_group_name(Uuid::from_u128(2))]
-        );
-        assert!(
-            acl.group
-                .as_ref()
-                .unwrap()
-                .declares
-                .iter()
-                .all(|identity| identity.group_name != member_group_name(Uuid::from_u128(2)))
-        );
-    }
-
-    #[test]
-    fn acl_all_source_and_default_action_cover_unlisted_peers_and_forwarding() {
-        let mut intent = intent();
-        intent.acl_policy.as_mut().unwrap().rules[0].sources = vec![AclSource::All];
-
-        let compiled = compile(&intent).unwrap();
-        let acl = compiled.members[0]
-            .network_config
-            .acl
-            .as_ref()
-            .unwrap()
-            .acl_v1
-            .as_ref()
-            .unwrap();
-        let inbound = acl
-            .chains
-            .iter()
-            .find(|chain| chain.chain_type == ChainType::Inbound as i32)
-            .unwrap();
-        assert!(inbound.rules[0].source_groups.is_empty());
-        let forward = acl
-            .chains
-            .iter()
-            .find(|chain| chain.chain_type == ChainType::Forward as i32)
-            .unwrap();
-        assert!(forward.rules.is_empty());
-        assert_eq!(forward.default_action, Action::Drop as i32);
-    }
-
-    #[test]
     fn validation_rejects_duplicate_devices_and_inconsistent_credentials() {
         let mut duplicate_device = intent();
         duplicate_device.members[1].device_id = duplicate_device.members[0].device_id.clone();
@@ -1215,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_bad_network_data_and_acl_references() {
+    fn validation_rejects_bad_network_data() {
         let mut bad_cidr = intent();
         bad_cidr.credentials[0].grant.allowed_proxy_cidrs = vec!["not-a-cidr".to_owned()];
         assert!(matches!(
@@ -1236,24 +966,6 @@ mod tests {
         assert!(matches!(
             compile(&bad_ip),
             Err(CompileError::InvalidMemberIp { .. })
-        ));
-
-        let mut bad_acl = intent();
-        bad_acl.acl_policy.as_mut().unwrap().rules[0].destinations = vec![AclDestination::Member {
-            member_id: Uuid::from_u128(999),
-        }];
-        assert!(matches!(
-            compile(&bad_acl),
-            Err(CompileError::UnknownAclMember(_))
-        ));
-
-        let mut bad_group = intent();
-        bad_group.acl_policy.as_mut().unwrap().rules[0].sources = vec![AclSource::Group {
-            name: "ungranted".to_owned(),
-        }];
-        assert!(matches!(
-            compile(&bad_group),
-            Err(CompileError::UnknownAclGroup(_))
         ));
     }
 
@@ -1340,6 +1052,5 @@ mod tests {
         assert_eq!(permanent.network_config.dhcp_ipv4_cidr, None);
         assert_eq!(permanent.network_config.dhcpv6, None);
         assert_eq!(permanent.network_config.dhcp_ipv6_cidr, None);
-        assert!(permanent.network_config.acl.is_some());
     }
 }

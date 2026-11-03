@@ -742,6 +742,36 @@ web:
     section_advanced: Advanced settings
     section_preset: Preset for new devices
     section_temporary: Temporary devices
+    section_acl: Access control
+    acl_hint: Every permanent member holds the same network rules. They are written like advanced settings to every unlocked member, and an offline member receives them once when it reconnects. Rules name groups or single members, so adding or removing a member changes no one else. A device's own ACL is matched first and the network's rules follow; a member whose network rules were changed on the device shows as out of sync and is overwritten on the next save.
+    acl_off: This network has no access control; its members reach each other freely.
+    acl_enable: Enable access control
+    acl_disable: Turn off access control
+    acl_default_action: When nothing matches
+    acl_allow: Allow
+    acl_deny: Deny
+    acl_groups: Groups
+    acl_groups_hint: Each permanent member keeps the groups it belongs to on its own device; temporary devices join groups through their credential.
+    acl_group: Group
+    acl_group_name: Group name (letters, digits, _ - .)
+    acl_group_members: Choose members
+    acl_add_group: Add group
+    acl_rules: Rules
+    acl_rules_hint: Rules match from top to bottom; the first match decides. Subnets among the destinations apply to subnet proxy forwarding.
+    acl_new_rule: New rule
+    acl_add_rule: Add rule
+    acl_sources: Sources
+    acl_destinations: Destinations
+    acl_subnets: Subnets
+    acl_protocols: Protocols and ports
+    acl_add_protocol: Add protocol
+    acl_stateful: Stateful
+    acl_everyone: Everyone
+    acl_move_up: Move up
+    acl_move_down: Move down
+    acl_remove: Remove
+    acl_out_of_sync: 'These members hold different rules (offline and not yet updated, locked, or changed on the device): {members}'
+    acl_own_default: 'These members have their own inbound chain, so unmatched traffic follows the device''s own default and the network''s "deny" does not apply to them: {members}'
     needs_central: The console uses an external webhook (--webhook-url), so an external system manages devices and configurations; this page is unavailable
     network_name: Network name
     network_name_hint: The network's identity; with the secret it decides which nodes can connect. Renaming renames every member

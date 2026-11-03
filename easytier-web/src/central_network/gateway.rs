@@ -557,7 +557,6 @@ mod tests {
             encryption_algorithm: None,
             members: Vec::new(),
             credentials: Vec::new(),
-            acl_policy: None,
         }
     }
 

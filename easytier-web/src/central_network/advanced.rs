@@ -9,11 +9,29 @@
 //! member that missed an edit receives it once when it reconnects unless
 //! another console edited later; edits made on the node carry no stamp and
 //! are overwritten.
+//!
+//! The network's access control travels the same way as `network_acl`: its
+//! value is the whole policy, or null to remove it, and it only replaces the
+//! network's part of each member's `acl`.
 
 use std::collections::BTreeMap;
 
 use easytier::proto::api::manage::NetworkConfig;
 use serde_json::Value;
+
+use super::network_acl::{self, NetworkAcl};
+
+/// The change that carries the network's access control.
+pub const NETWORK_ACL: &str = "network_acl";
+
+fn network_acl_of(value: &Value) -> anyhow::Result<Option<NetworkAcl>> {
+    let acl: Option<NetworkAcl> = serde_json::from_value(value.clone())
+        .map_err(|error| anyhow::anyhow!("invalid {NETWORK_ACL}: {error}"))?;
+    if let Some(acl) = &acl {
+        acl.validate()?;
+    }
+    Ok(acl.map(NetworkAcl::normalized))
+}
 
 /// A setting's value by field name; `null` is the setting left unset, which
 /// runs with the core's default.
@@ -123,6 +141,10 @@ pub fn values_of(config: &NetworkConfig) -> AdvancedValues {
 pub fn validate(change: &AdvancedChange) -> anyhow::Result<()> {
     let mut probe = NetworkConfig::default();
     for (field, value) in change {
+        if field == NETWORK_ACL {
+            network_acl_of(value)?;
+            continue;
+        }
         set(&mut probe, field, value)?;
     }
     Ok(())
@@ -143,6 +165,13 @@ pub fn patch(
     let mut desired = config.clone();
     let mut mask = Vec::new();
     for (field, value) in change {
+        if field == NETWORK_ACL {
+            network_acl::apply(&mut desired, network_acl_of(value)?.as_ref());
+            if desired.acl != config.acl {
+                mask.push("acl".to_owned());
+            }
+            continue;
+        }
         if NetworkConfig::required_capability(field).is_some_and(|capability| !supports(capability))
         {
             continue;
@@ -260,6 +289,37 @@ mod tests {
         assert!(validate(&change(&[("latency_first", json!(1))])).is_err());
         assert!(validate(&change(&[("mtu", json!("1300"))])).is_err());
         assert!(validate(&change(&[("mtu", json!(1300)), ("lazy_p2p", Value::Null)])).is_ok());
+    }
+
+    #[test]
+    fn network_acl_writes_only_the_acl_and_only_when_it_differs() {
+        let config = NetworkConfig {
+            instance_id: Some("member".into()),
+            mtu: Some(1300),
+            ..Default::default()
+        };
+        let acl = NetworkAcl {
+            default_action: crate::central_network::model::AclAction::Deny,
+            ..Default::default()
+        };
+        let edit = change(&[(NETWORK_ACL, serde_json::to_value(Some(&acl)).unwrap())]);
+        validate(&edit).unwrap();
+        let (desired, mask) = patch(&config, &edit, |_| true, Some(9)).unwrap().unwrap();
+        assert_eq!(mask, ["acl", "advanced_sync_at"]);
+        assert_eq!(desired.mtu, Some(1300));
+        assert!(network_acl::read(desired.acl.as_ref()).network.is_some());
+        assert!(
+            patch(&desired, &edit, |_| true, Some(10))
+                .unwrap()
+                .is_none()
+        );
+
+        let removal = change(&[(NETWORK_ACL, Value::Null)]);
+        let (removed, _) = patch(&desired, &removal, |_| true, Some(11))
+            .unwrap()
+            .unwrap();
+        assert_eq!(removed.acl, None);
+        assert!(validate(&change(&[(NETWORK_ACL, json!({"rules": [{"id": "x"}]}))])).is_err());
     }
 
     #[test]

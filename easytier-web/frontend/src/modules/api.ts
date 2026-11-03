@@ -242,6 +242,69 @@ export interface MeshCoreSettings {
 /** Advanced settings by field; null leaves a setting at the core's default. */
 export type MeshAdvancedValues = Record<string, boolean | number | string | null>;
 
+export type MeshAclAction = 'allow' | 'deny';
+export type MeshAclProtocol = 'tcp' | 'udp' | 'icmp' | 'icmpv6' | 'any';
+
+export interface MeshAclProtocolTarget {
+    protocol: MeshAclProtocol;
+    ports: string[];
+    stateful: boolean;
+}
+
+/** Who a rule matches: everyone, a group, or one permanent member by instance. */
+export type MeshAclPeer =
+    | { type: 'all' }
+    | { type: 'group'; name: string }
+    | { type: 'device'; instance_id: string };
+
+export type MeshAclTarget = MeshAclPeer | { type: 'subnet'; cidrs: string[] };
+
+export interface MeshAclRule {
+    id: string;
+    name: string;
+    enabled: boolean;
+    action: MeshAclAction;
+    sources: MeshAclPeer[];
+    destinations: MeshAclTarget[];
+    protocols: MeshAclProtocolTarget[];
+}
+
+export interface MeshAclGroup {
+    name: string;
+    /** Permanent members by instance id, temporary devices by credential group. */
+    members: string[];
+}
+
+/** A network's access control, held identically by every permanent member. */
+export interface MeshNetworkAcl {
+    default_action: MeshAclAction;
+    groups: MeshAclGroup[];
+    rules: MeshAclRule[];
+}
+
+export interface MeshAclMemberStatus {
+    device_id: string;
+    instance_id: string;
+    /** Holds the network's rules as they are now. */
+    in_sync: boolean;
+    /** Its own inbound chain comes first, so its default action applies instead. */
+    own_default: boolean;
+}
+
+export interface MeshAclTemporaryMember {
+    member_id: string;
+    device_id: string;
+    hostname?: string | null;
+    /** The credential group rules name it by. */
+    group: string;
+}
+
+export interface MeshNetworkAclView {
+    acl: MeshNetworkAcl | null;
+    members: MeshAclMemberStatus[];
+    temporary: MeshAclTemporaryMember[];
+}
+
 /** What a device receives when it joins, besides the core settings. */
 export interface MeshPreset {
     peers: string[];
@@ -543,6 +606,17 @@ export class ApiClient {
     /** Write the touched advanced settings to every unlocked member. */
     public async apply_mesh_advanced(network_name: string, change: MeshAdvancedValues): Promise<MeshSyncResult[]> {
         const response = await this.client.post<any, { results: MeshSyncResult[] }>('/mesh/advanced', { network_name, change });
+        return response.results;
+    }
+
+    /** The network's access control, rebuilt from what its members hold. */
+    public async get_mesh_network_acl(network_name: string): Promise<MeshNetworkAclView> {
+        return await this.client.get<any, MeshNetworkAclView>(`/mesh/networks/${encodeURIComponent(network_name)}/acl`);
+    }
+
+    /** Write the network's access control to every unlocked member; null removes it. */
+    public async set_mesh_network_acl(network_name: string, acl: MeshNetworkAcl | null): Promise<MeshSyncResult[]> {
+        const response = await this.client.put<any, { results: MeshSyncResult[] }>(`/mesh/networks/${encodeURIComponent(network_name)}/acl`, { acl });
         return response.results;
     }
 

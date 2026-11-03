@@ -21,6 +21,7 @@ import NetworkOverview from './components/network/NetworkOverview.vue'
 import NetworkMembers from './components/network/NetworkMembers.vue'
 import NetworkSettings from './components/network/NetworkSettings.vue'
 import NetworkAdvanced from './components/network/NetworkAdvanced.vue'
+import NetworkAcl from './components/network/NetworkAcl.vue'
 import NetworkPreset from './components/network/NetworkPreset.vue'
 import NetworkTemporary from './components/network/NetworkTemporary.vue'
 import DialogService from 'primevue/dialogservice';
@@ -79,6 +80,7 @@ const routes = [
                     { path: 'members', name: 'meshMembers', component: NetworkMembers },
                     { path: 'settings', name: 'meshSettings', component: NetworkSettings },
                     { path: 'advanced', name: 'meshAdvanced', component: NetworkAdvanced },
+                    { path: 'acl', name: 'meshAcl', component: NetworkAcl },
                     { path: 'preset', name: 'meshPreset', component: NetworkPreset },
                     { path: 'temporary', name: 'meshTemporary', component: NetworkTemporary },
                 ],

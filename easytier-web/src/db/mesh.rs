@@ -14,6 +14,8 @@ pub(crate) struct MeshObservation {
     /// The advanced settings it held, as `AdvancedValues` JSON.
     pub advanced: String,
     pub advanced_sync_at: Option<i64>,
+    /// The network part of its ACL, as `MemberAcl` JSON.
+    pub acl: String,
 }
 
 /// A core change an offline member missed.
@@ -96,7 +98,7 @@ impl Db {
             sqlx::query(
                 "INSERT INTO mesh_observations \
                  (user_id, device_id, instance_id, network_name, core, sync_at, credential, advanced, \
-                 advanced_sync_at, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 advanced_sync_at, acl, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(user_id)
             .bind(device_id.to_string())
@@ -107,6 +109,7 @@ impl Db {
             .bind(observation.credential)
             .bind(&observation.advanced)
             .bind(observation.advanced_sync_at)
+            .bind(&observation.acl)
             .bind(&seen_at)
             .execute(&mut *transaction)
             .await
@@ -122,7 +125,7 @@ impl Db {
         network_name: Option<&str>,
     ) -> Result<Vec<MeshObservation>, sea_orm::DbErr> {
         sqlx::query_as(
-            "SELECT device_id, instance_id, network_name, core, sync_at, credential, advanced, advanced_sync_at \
+            "SELECT device_id, instance_id, network_name, core, sync_at, credential, advanced, advanced_sync_at, acl \
              FROM mesh_observations WHERE user_id = ? AND (? IS NULL OR network_name = ?) \
              ORDER BY device_id, instance_id",
         )

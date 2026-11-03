@@ -41,7 +41,6 @@ struct PreparedMember {
     allocated_ipv4: Option<String>,
     override_config: Option<String>,
     credential_id: Option<String>,
-    acl_group_secret: Option<String>,
 }
 
 struct PreparedCredential {
@@ -59,7 +58,6 @@ struct PreparedIntent {
     networking_method: &'static str,
     public_server_url: Option<String>,
     peer_urls: String,
-    acl_policy: Option<String>,
     members: Vec<PreparedMember>,
     credentials: Vec<PreparedCredential>,
 }
@@ -105,7 +103,6 @@ fn prepare_intent(intent: CentralNetworkIntent) -> Result<PreparedIntent, Centra
                 .flatten(),
             override_config: member.config_override.as_ref().map(json).transpose()?,
             credential_id: member.credential_id.clone(),
-            acl_group_secret: member.acl_group_secret.clone(),
         });
     }
     members.sort_by_key(|member| member.device_id);
@@ -126,7 +123,6 @@ fn prepare_intent(intent: CentralNetworkIntent) -> Result<PreparedIntent, Centra
 
     Ok(PreparedIntent {
         peer_urls: json(&raw_peer_urls)?,
-        acl_policy: intent.acl_policy.as_ref().map(json).transpose()?,
         intent,
         networking_method,
         public_server_url,
@@ -416,9 +412,9 @@ async fn persist_intent(
         INSERT INTO networks (
             user_id, id, display_name, network_name, network_secret,
             networking_method, public_server_url, peer_urls, virtual_cidr,
-            secure_mode, acl_policy, disable_encryption, encryption_algorithm,
+            secure_mode, disable_encryption, encryption_algorithm,
             create_time, update_time
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, id) DO UPDATE SET
             display_name = excluded.display_name,
             network_name = excluded.network_name,
@@ -428,7 +424,6 @@ async fn persist_intent(
             peer_urls = excluded.peer_urls,
             virtual_cidr = excluded.virtual_cidr,
             secure_mode = excluded.secure_mode,
-            acl_policy = excluded.acl_policy,
             disable_encryption = excluded.disable_encryption,
             encryption_algorithm = excluded.encryption_algorithm,
             update_time = excluded.update_time
@@ -444,7 +439,6 @@ async fn persist_intent(
     .bind(&prepared.peer_urls)
     .bind(&prepared.intent.virtual_cidr)
     .bind(prepared.intent.secure_mode)
-    .bind(&prepared.acl_policy)
     .bind(prepared.intent.disable_encryption)
     .bind(&prepared.intent.encryption_algorithm)
     .bind(now)
@@ -504,8 +498,8 @@ async fn persist_intent(
             INSERT INTO network_members (
                 user_id, network_id, id, device_id, hostname_override,
                 virtual_ipv4, allocated_ipv4, override_config, credential_id,
-                acl_group_secret, create_time, update_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                create_time, update_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(prepared.intent.user_id)
@@ -517,7 +511,6 @@ async fn persist_intent(
         .bind(&member.allocated_ipv4)
         .bind(&member.override_config)
         .bind(&member.credential_id)
-        .bind(&member.acl_group_secret)
         .bind(now)
         .bind(now)
         .execute(&mut **transaction)
@@ -549,14 +542,13 @@ async fn load_intent(
         String,
         Option<String>,
         bool,
-        Option<String>,
         bool,
         Option<String>,
     );
     let row: Option<NetworkRow> = sqlx::query_as(
         r#"
         SELECT display_name, network_name, network_secret, networking_method,
-            public_server_url, peer_urls, virtual_cidr, secure_mode, acl_policy,
+            public_server_url, peer_urls, virtual_cidr, secure_mode,
             disable_encryption, encryption_algorithm
         FROM networks WHERE user_id = ? AND id = ?
         "#,
@@ -575,7 +567,6 @@ async fn load_intent(
         peer_urls,
         virtual_cidr,
         secure_mode,
-        acl_policy,
         disable_encryption,
         encryption_algorithm,
     )) = row
@@ -604,14 +595,6 @@ async fn load_intent(
             )));
         }
     };
-    let acl_policy = acl_policy
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|error| {
-            CentralIntentError::InvalidStoredData(format!("invalid ACL policy: {error}"))
-        })?;
-
     type CredentialRow = (String, String, i64, String, bool, String, bool);
     let credential_rows: Vec<CredentialRow> = sqlx::query_as(
         r#"
@@ -664,12 +647,11 @@ async fn load_intent(
         Option<String>,
         Option<String>,
         Option<String>,
-        Option<String>,
     );
     let member_rows: Vec<MemberRow> = sqlx::query_as(
         r#"
         SELECT allocated_ipv4, id, device_id, hostname_override, virtual_ipv4,
-            override_config, credential_id, acl_group_secret
+            override_config, credential_id
         FROM network_members
         WHERE user_id = ? AND network_id = ?
         ORDER BY id
@@ -691,7 +673,6 @@ async fn load_intent(
                 virtual_ipv4,
                 override_config,
                 credential_id,
-                acl_group_secret,
             )| {
                 Ok(NetworkMemberIntent {
                     id: Uuid::parse_str(&id).map_err(|_| {
@@ -711,7 +692,6 @@ async fn load_intent(
                             ))
                         })?,
                     credential_id,
-                    acl_group_secret,
                 })
             },
         )
@@ -730,7 +710,6 @@ async fn load_intent(
         encryption_algorithm,
         members,
         credentials,
-        acl_policy,
     }))
 }
 
@@ -743,9 +722,8 @@ mod tests {
     use super::*;
     use crate::{
         central_network::model::{
-            AclAction, AclDestination, AclPolicy, AclProtocol, AclProtocolTarget, AclRule,
-            AclSource, CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent,
-            NetworkMemberIntent, NetworkMode,
+            CentralNetworkIntent, CredentialGrant, NetworkCredentialIntent, NetworkMemberIntent,
+            NetworkMode,
         },
         db::{DeviceHeartbeatRecord, UserIdInDb},
     };
@@ -759,14 +737,12 @@ mod tests {
             allocated_ipv4: None,
             config_override: None,
             credential_id: credential_id.map(str::to_owned),
-            acl_group_secret: None,
         }
     }
 
     fn intent(user_id: UserIdInDb, network_id: Uuid, devices: [Uuid; 2]) -> CentralNetworkIntent {
         let temporary = member(2, devices[1], Some("temporary"));
-        let mut permanent = member(1, devices[0], None);
-        permanent.acl_group_secret = Some("permanent-group-secret".to_owned());
+        let permanent = member(1, devices[0], None);
         CentralNetworkIntent {
             id: network_id,
             user_id,
@@ -792,7 +768,6 @@ mod tests {
                     reusable: false,
                 },
             }],
-            acl_policy: None,
         }
     }
 
@@ -973,105 +948,6 @@ mod tests {
                 .allocated_ipv4
                 .as_deref(),
             Some("10.42.0.3")
-        );
-    }
-
-    #[tokio::test]
-    async fn deleting_registered_member_safely_shrinks_acl_selectors() {
-        let db = Db::memory_db().await;
-        let user_id = db
-            .auto_create_user("central-device-delete-acl")
-            .await
-            .unwrap()
-            .id;
-        let network_id = Uuid::new_v4();
-        let devices = [Uuid::new_v4(), Uuid::new_v4()];
-        register_devices(&db, user_id, &devices).await;
-        let mut candidate = intent(user_id, network_id, devices);
-        let retained_member_id = candidate
-            .members
-            .iter()
-            .find(|member| member.device_id == devices[0].to_string())
-            .unwrap()
-            .id;
-        let deleted_member_id = candidate
-            .members
-            .iter()
-            .find(|member| member.device_id == devices[1].to_string())
-            .unwrap()
-            .id;
-        let protocols = vec![AclProtocolTarget {
-            protocol: AclProtocol::Any,
-            ports: Vec::new(),
-            stateful: false,
-        }];
-        candidate.acl_policy = Some(AclPolicy {
-            default_action: AclAction::Deny,
-            rules: vec![
-                AclRule {
-                    id: "deleted-only".to_owned(),
-                    name: "deleted only".to_owned(),
-                    enabled: true,
-                    action: AclAction::Allow,
-                    sources: vec![AclSource::Member {
-                        member_id: deleted_member_id,
-                    }],
-                    destinations: vec![AclDestination::Member {
-                        member_id: retained_member_id,
-                    }],
-                    protocols: protocols.clone(),
-                },
-                AclRule {
-                    id: "mixed".to_owned(),
-                    name: "mixed selectors".to_owned(),
-                    enabled: true,
-                    action: AclAction::Deny,
-                    sources: vec![
-                        AclSource::Member {
-                            member_id: retained_member_id,
-                        },
-                        AclSource::Member {
-                            member_id: deleted_member_id,
-                        },
-                    ],
-                    destinations: vec![
-                        AclDestination::Member {
-                            member_id: retained_member_id,
-                        },
-                        AclDestination::Subnet {
-                            member_id: deleted_member_id,
-                            cidrs: vec!["10.42.0.0/29".to_owned()],
-                        },
-                    ],
-                    protocols,
-                },
-            ],
-        });
-        db.save_central_network_intent(candidate).await.unwrap();
-
-        db.delete_device_with_optional_block((user_id, devices[1]), false)
-            .await
-            .unwrap();
-
-        let loaded = db
-            .load_central_network_intent(user_id, network_id)
-            .await
-            .unwrap()
-            .unwrap();
-        let rules = &loaded.acl_policy.unwrap().rules;
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].id, "mixed");
-        assert_eq!(
-            rules[0].sources,
-            vec![AclSource::Member {
-                member_id: retained_member_id,
-            }]
-        );
-        assert_eq!(
-            rules[0].destinations,
-            vec![AclDestination::Member {
-                member_id: retained_member_id,
-            }]
         );
     }
 

@@ -154,7 +154,11 @@ in this console are skipped.
 Per-device settings (addresses, routes, exits, proxies) are never
 batch-edited. Deleting a network forgets the console's data and pauses the
 members. Temporary devices are backed by a central record created from the
-network's core settings; ACL policies are not managed. See
+network's core settings. The network's access control is held identically
+by every permanent member (rules name groups, secrets live in the members'
+group declarations, each member keeps its own memberships), written with the
+advanced settings' stamp after each device's own chains, and rebuilt from the
+members by any console; temporary devices receive a cut-down copy. See
 `docs/decentralized-networks.md`.
 
 Device deletion uses the upstream disconnect semantics: an already in-flight

@@ -10,6 +10,9 @@
 //! settings the user touched are written, locked members are skipped, and a
 //! member that was offline receives the edit once when it next connects,
 //! unless it changed those settings itself in the meantime.
+//!
+//! The network's access control is rebuilt from its members in the same way
+//! and written with the advanced settings' stamp; joining devices receive it.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -33,6 +36,7 @@ use super::{
         SYNC_CAPABILITY,
     },
     delivery,
+    network_acl::{self, MemberAcl, NetworkAcl},
 };
 use crate::{
     client_manager::{
@@ -135,6 +139,36 @@ pub(crate) async fn current_core(
         .or_else(|| core.subnet());
     core.virtual_ipv4 = subnet.map(|subnet| subnet.to_string());
     Ok(Some((core, sync_at)))
+}
+
+/// The network's access control as its permanent members hold it.
+pub(crate) fn acl_of(members: &[MeshObservation]) -> Option<NetworkAcl> {
+    let parsed: Vec<_> = members
+        .iter()
+        .filter(|member| !member.credential)
+        .map(|member| {
+            (
+                member,
+                serde_json::from_str::<MemberAcl>(&member.acl).unwrap_or_default(),
+            )
+        })
+        .collect();
+    network_acl::current(
+        parsed
+            .iter()
+            .map(|(member, acl)| (member.instance_id.as_str(), member.advanced_sync_at, acl)),
+    )
+}
+
+pub(crate) async fn current_acl(
+    db: &Db,
+    user_id: UserIdInDb,
+    network_name: &str,
+) -> anyhow::Result<Option<NetworkAcl>> {
+    Ok(acl_of(
+        &db.list_mesh_observations(user_id, Some(network_name))
+            .await?,
+    ))
 }
 
 fn most_common(subnets: impl Iterator<Item = Ipv4Inet>) -> Option<Ipv4Inet> {
@@ -317,6 +351,7 @@ fn joined_config(
     instance_id: Uuid,
     core: &CoreSettings,
     preset: &Preset,
+    acl: Option<&NetworkAcl>,
     stamp: Option<u64>,
     supports: impl Fn(&str) -> bool,
 ) -> anyhow::Result<(NetworkConfig, Vec<String>)> {
@@ -372,6 +407,10 @@ fn joined_config(
         &preset.advanced,
         &supports,
     )?);
+    if acl.is_some() {
+        network_acl::apply(&mut config, acl);
+        mask.push("acl".to_owned());
+    }
     Ok((config, mask))
 }
 
@@ -402,6 +441,7 @@ pub(crate) async fn join(
         let members = db
             .list_mesh_observations(user_id, Some(network_name))
             .await?;
+        let acl = acl_of(&members);
         if let Some(existing) = members
             .iter()
             .find(|member| member.device_id == device_id.to_string())
@@ -424,7 +464,8 @@ pub(crate) async fn join(
             .is_some();
         if !manager.supports_local_configs(&(user_id, device_id)).await {
             // Official nodes keep no capability-gated fields.
-            let (config, _) = joined_config(instance_id, &core, &preset, None, |_| false)?;
+            let (config, _) =
+                joined_config(instance_id, &core, &preset, acl.as_ref(), None, |_| false)?;
             db.insert_or_update_user_network_config(
                 (user_id, device_id),
                 instance_id,
@@ -454,8 +495,14 @@ pub(crate) async fn join(
                 .iter()
                 .any(|capability| capability == name)
         };
-        let (config, field_mask) =
-            joined_config(instance_id, &core, &preset, Some(stamp), supports)?;
+        let (config, field_mask) = joined_config(
+            instance_id,
+            &core,
+            &preset,
+            acl.as_ref(),
+            Some(stamp),
+            supports,
+        )?;
         let instance = instance_id.to_string();
         // A creation whose outcome was lost shows up in the next read.
         delivery::patch(manager, user_id, device_id, Some(view), |view| {
@@ -928,7 +975,7 @@ mod tests {
             advanced: [("latency_first".to_owned(), json!(true))].into(),
         };
         let id = Uuid::new_v4();
-        let (config, mask) = joined_config(id, &core, &preset, Some(7), |_| true).unwrap();
+        let (config, mask) = joined_config(id, &core, &preset, None, Some(7), |_| true).unwrap();
         assert_eq!(config.network_name.as_deref(), Some("office"));
         assert_eq!(config.instance_name.as_deref(), Some("Head office"));
         assert!(config.secure_mode.unwrap().enabled);
@@ -939,7 +986,7 @@ mod tests {
         assert!(mask.contains(&"latency_first".to_owned()));
         assert!(config.virtual_ipv4.is_none() && config.hostname.is_none());
 
-        let (official, mask) = joined_config(id, &core, &preset, Some(7), |_| false).unwrap();
+        let (official, mask) = joined_config(id, &core, &preset, None, Some(7), |_| false).unwrap();
         assert!(official.instance_name.is_none() && official.network_sync_at.is_none());
         assert!(!mask.contains(&"instance_name".to_owned()));
         assert!(
@@ -952,7 +999,7 @@ mod tests {
             virtual_ipv4: Some("10.20.30.0/24".into()),
             ..core
         };
-        let (config, mask) = joined_config(id, &core, &preset, Some(7), |_| true).unwrap();
+        let (config, mask) = joined_config(id, &core, &preset, None, Some(7), |_| true).unwrap();
         assert_eq!(config.dhcp, Some(true));
         assert_eq!(config.dhcp_ipv4_cidr.as_deref(), Some("10.20.30.0/24"));
         assert!(mask.contains(&"dhcp_ipv4_cidr".to_owned()));
