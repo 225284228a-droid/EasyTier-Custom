@@ -22,7 +22,8 @@
 - 批次 4c（旧伪装迁移外移）已完成，提交 `68019e4b`：`toml.rs` 中 54 行的三布尔→`p2p_disguise_mode` 加载迁移移到 `toml/legacy.rs`，`toml.rs` 只留 re-export 与一个调用点；`config::` 129 项测试通过。
 - 批次 3d（GUI 服务生命周期外移）已完成，提交 `c67f0382`：`set_service_status`/`retire_conflicting_services`/`stop_local_backend`/`get_service_status` 与内嵌 Core 停止逻辑移入 `local_backend.rs`，`lib.rs` 只保留 `mod`/`use` 与命令注册；GUI 4 项测试通过。
 - 批次 4c 补充（`519d1d7b`）：清理 `LEGACY_P2P_DISGUISE_FLAGS` 在 default/browser-config 两种构建下的 unused-import 警告，`config::` 129 项仍通过。
-- 累计：上游文件新增行 39,242→31,056（约 −20.9%），hunk 3,830→3,743，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、hole punch、virtual_nic 和前端测试。
+- 批次 2b（peer 并行发送方法外移）已完成，提交 `5ec32983`：`send_plan`、`send_striped`、`parallel_connection_status`、`reserve_parallel_slot*`、`parallel_manual_url`、`note_negotiated_disguise`、`has_connection_at_least_as_preferred` 约 303 行移入 `peer/scheduling.rs` 的 `impl Peer`；peer.rs 只保留连接生命周期与公开 API。peer 64 项测试通过。
+- 累计：上游文件新增行 39,242→30,755（约 −21.6%），hunk 3,830→3,740，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、hole punch、virtual_nic 和前端测试。
 - 批次 4b（能力声明去重）已完成：删除 `ListNetworkInstanceResponse.supports_persisted_config_management`（保留 `reserved 50003`），web/OHOS 统一检查 `runtime_capabilities` 的 `management:persisted-config-revision-v2`；自定义字段清单 117→116（90 迁移 + 26 原生高位），Go 绑定与 schema provenance 同步。字段清单 4/4、core 编译、web client 18 项、Go build/test 通过；OHOS crate 在 Windows 上因既有 Unix-only import 无法编译，未验证。
 - 批次 5a（文档/CI 遗留）部分完成，提交 `c3a0e7f6`：9 份带日期的过程/验证文档归档到 `docs/archive/`（只互相引用，相对链接保持有效）；CI 旧工作流 artifact 迁移 shim 加了 2027-01-31 的到期删除说明。
 - 批次 4（其余重复表达）与批次 5（`TemporaryDevices.vue` 瘦身、`dashboard.test.mjs` 外移、剩余 CI 清理）待做。
