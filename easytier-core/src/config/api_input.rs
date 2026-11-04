@@ -15,8 +15,8 @@ use optionize::{Optionizable, Optionized};
 use crate::config::{
     MappedListenerPolicy, normalize_secure_mode_config,
     toml::{
-        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
-        VpnPortalClientConfig, VpnPortalConfig,
+        ConfigLoader, LEGACY_P2P_DISGUISE_FLAGS, NetworkIdentity, PeerConfig, PortForwardConfig,
+        TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig,
     },
 };
 
@@ -211,10 +211,26 @@ pub(crate) fn merge_network_config_toml(
     // The keys a config form owns are the flags it offers a control for, which
     // the schema declares with `(easytier.flag)`.
     for key in Flags::form() {
+        // `accept_dns` defaults to false, so an explicit API false is absent
+        // from the generated form snapshot. Preserve it instead of deleting
+        // the original key as "not produced by the form".
+        if *key == "accept_dns"
+            && let Some(value) = config.enable_magic_dns
+        {
+            merged_flags.insert((*key).to_owned(), toml::Value::Boolean(value));
+            continue;
+        }
         if let Some(value) = generated_flags.get(*key) {
             merged_flags.insert((*key).to_owned(), value.clone());
         } else {
             merged_flags.remove(*key);
+        }
+    }
+    // A saved mode supersedes the three legacy booleans; keep them out of the
+    // merged file so the next load does not see two policies at once.
+    if merged_flags.contains_key("p2p_disguise_mode") {
+        for key in LEGACY_P2P_DISGUISE_FLAGS {
+            merged_flags.remove(key);
         }
     }
     if !merged_flags.is_empty() {

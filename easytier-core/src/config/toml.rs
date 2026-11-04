@@ -532,7 +532,7 @@ fn flags_patch_is_empty(flags: &FlagsPatch) -> bool {
     prost::Message::encoded_len(flags) == 0
 }
 
-const LEGACY_P2P_DISGUISE_FLAGS: [&str; 3] = [
+pub(crate) const LEGACY_P2P_DISGUISE_FLAGS: [&str; 3] = [
     "prefer_wss_http3_for_p2p",
     "disable_wss_http3_for_p2p",
     "only_use_wss_http3_for_hole_punching",
