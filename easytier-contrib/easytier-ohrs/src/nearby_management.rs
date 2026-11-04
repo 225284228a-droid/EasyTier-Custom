@@ -451,7 +451,9 @@ impl WebClientService for NearbyWebClientService {
             .inner
             .list_network_instance(controller, request)
             .await?;
-        response.supports_persisted_config_management = Some(false);
+        response
+            .runtime_capabilities
+            .retain(|cap| cap != "management:persisted-config-revision-v2");
         Ok(response)
     }
 
@@ -1202,7 +1204,12 @@ mod tests {
             .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
             .await
             .unwrap();
-        assert_eq!(response.supports_persisted_config_management, Some(false));
+        assert!(
+            !response
+                .runtime_capabilities
+                .iter()
+                .any(|cap| cap == "management:persisted-config-revision-v2")
+        );
     }
 
     #[tokio::test]

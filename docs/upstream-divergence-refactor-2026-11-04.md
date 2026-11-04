@@ -20,6 +20,7 @@
 - 配置遗留修复（提交 `94a5a1b2`）：`browser-config` 下两个既有失败已修——显式 `accept_dns=false` 不再被表单合并删除；存在 `p2p_disguise_mode` 时，合并后的 TOML 会清掉三个旧 `wss_http3` 布尔。`browser-config` 配置测试 135/135、默认 129/129。
 - 批次 4a（protobuf 定制块拆分）已完成，提交 `bd987b27`：只把持久化配置块（`ObserveConfigs*`、`PersistedConfigEntry`、`PatchPersistedConfig*`、`PersistedConfigService`）拆到单向依赖的 `custom_manage.proto`；官方 `api_manage.proto` −66 行，官方 `api_manage.pb.go` 净 −526 行，package/wire 编号/Rust/Go API 不变。全量拆 `VpnConfig`/`NodeLocation` 会形成循环 import，已实测不可行。字段清单 4 项、core 编译、`go build ./...`、`go test ./proto/...` 通过；schema provenance 已按相同算法刷新（`059bb4ff`）。
 - 累计：上游文件新增行 39,242→31,191（约 −20.5%），hunk 3,830→3,748，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、GUI 生命周期、hole punch、virtual_nic 和前端测试。
+- 批次 4b（能力声明去重）已完成：删除 `ListNetworkInstanceResponse.supports_persisted_config_management`（保留 `reserved 50003`），web/OHOS 统一检查 `runtime_capabilities` 的 `management:persisted-config-revision-v2`；自定义字段清单 117→116（90 迁移 + 26 原生高位），Go 绑定与 schema provenance 同步。字段清单 4/4、core 编译、web client 18 项、Go build/test 通过；OHOS crate 在 Windows 上因既有 Unix-only import 无法编译，未验证。
 - 批次 5a（文档/CI 遗留）部分完成，提交 `c3a0e7f6`：9 份带日期的过程/验证文档归档到 `docs/archive/`（只互相引用，相对链接保持有效）；CI 旧工作流 artifact 迁移 shim 加了 2027-01-31 的到期删除说明。
 - 批次 4（其余重复表达）与批次 5（`TemporaryDevices.vue` 瘦身、`dashboard.test.mjs` 外移、剩余 CI 清理）待做。
 
@@ -138,9 +139,9 @@
 ### 5.5 能力声明的双表达
 
 - `web.proto:28-32` 的 `support_local_configs` / `support_local_config_revision` 布尔，与 `runtime_capabilities` 字符串并存；前端在 `configStore.ts:62`、`localConfigPatch.ts:67` 用 OR 兜底。
-- `api_manage.proto:304-307` 的 `supports_persisted_config_management` 是 `management:persisted-config-revision-v2` 的布尔翻版。
+- `api_manage.proto` 的 `supports_persisted_config_management` 已删除（批次 4），`runtime_capabilities` 成为唯一表达。
 
-保留 `runtime_capabilities` 作为单一真源（直连 list 响应和人机心跳各传一次），删布尔字段和前端 OR。跨 Rust/前端/Go 改动，放在这批最后做，先定协议再改。
+`runtime_capabilities` 作为单一真源：`supports_persisted_config_management` 已删除，直连 list 响应与心跳共用能力字符串。`web.proto` 的 `support_local_configs` / `support_local_config_revision` 仍与能力字符串并存，前端 OR 兜底保留，作为后续项。
 
 ### 5.6 三份目录扫描器
 
@@ -176,7 +177,7 @@
 
 - `api_manage.proto:53` 的 `tld_dns_zone = 73` 现在**确实是官方字段**：`upstream/main` 的 `4bdba58c` 也加了同一字段同一编号，合并时不会冲突，不要改成 50,173。
 - 但 `easytier-proto/tests/upstream-fields.json` 头部仍写来源 `99db92a`，而该提交没有这个字段；清单不可复现。用当前 `upstream/main` 重新生成上游清单，并把 `field_numbers.rs` 的“custom ≥ 50000”断言保持为硬规则即可。
-- `docs/CUSTOM_CHANGES.md:42` 写“迁移 100 个、保留 9 个”，实际清单 117 条（91 条低→高 + 26 条原生高位）。改由脚本生成计数，别再手写。
+- `docs/CUSTOM_CHANGES.md:42` 写“迁移 100 个、保留 9 个”，实际清单 116 条（90 条低→高 + 26 条原生高位）。改由脚本生成计数，别再手写。
 - 已删功能的 reserved（`api_manage.proto:371-372` 的 `50011 pending_apply`、`api_instance.proto:435-452` 的旧 VPN 字段）**要保留**：它们防止编号复用，属于正确的线协议卫生，不是包袱。
 
 ### 6.4 文档

@@ -298,7 +298,8 @@ message ListNetworkInstanceRequest {}
 message ListNetworkInstanceResponse {
   repeated common.UUID inst_ids = 1;
   repeated common.UUID disabled_inst_ids = 50002;
-  optional bool supports_persisted_config_management = 50003;
+  reserved 50003;
+  reserved "supports_persisted_config_management";
   repeated string runtime_capabilities = 50005;
 }
 

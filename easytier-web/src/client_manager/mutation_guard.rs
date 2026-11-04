@@ -27,6 +27,7 @@ use easytier_core::management::remote_client::{
 use uuid::Uuid;
 
 use super::ClientManager;
+use crate::client_manager::session::local_configs::REVISION_CAPABILITY;
 use crate::db::{UserIdInDb, entity::user_running_network_configs};
 
 #[async_trait]
@@ -174,8 +175,9 @@ impl
             && client
                 .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
                 .await?
-                .supports_persisted_config_management
-                == Some(true);
+                .runtime_capabilities
+                .iter()
+                .any(|cap| cap == REVISION_CAPABILITY);
         let response = client
             .delete_network_instance(
                 BaseController::default(),

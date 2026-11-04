@@ -2275,13 +2275,12 @@ func (*ListNetworkInstanceRequest) Descriptor() ([]byte, []int) {
 }
 
 type ListNetworkInstanceResponse struct {
-	state                             protoimpl.MessageState `protogen:"open.v1"`
-	InstIds                           []*common.UUID         `protobuf:"bytes,1,rep,name=inst_ids,json=instIds,proto3" json:"inst_ids,omitempty"`
-	DisabledInstIds                   []*common.UUID         `protobuf:"bytes,50002,rep,name=disabled_inst_ids,json=disabledInstIds,proto3" json:"disabled_inst_ids,omitempty"`
-	SupportsPersistedConfigManagement *bool                  `protobuf:"varint,50003,opt,name=supports_persisted_config_management,json=supportsPersistedConfigManagement,proto3,oneof" json:"supports_persisted_config_management,omitempty"`
-	RuntimeCapabilities               []string               `protobuf:"bytes,50005,rep,name=runtime_capabilities,json=runtimeCapabilities,proto3" json:"runtime_capabilities,omitempty"`
-	unknownFields                     protoimpl.UnknownFields
-	sizeCache                         protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	InstIds             []*common.UUID         `protobuf:"bytes,1,rep,name=inst_ids,json=instIds,proto3" json:"inst_ids,omitempty"`
+	DisabledInstIds     []*common.UUID         `protobuf:"bytes,50002,rep,name=disabled_inst_ids,json=disabledInstIds,proto3" json:"disabled_inst_ids,omitempty"`
+	RuntimeCapabilities []string               `protobuf:"bytes,50005,rep,name=runtime_capabilities,json=runtimeCapabilities,proto3" json:"runtime_capabilities,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ListNetworkInstanceResponse) Reset() {
@@ -2326,13 +2325,6 @@ func (x *ListNetworkInstanceResponse) GetDisabledInstIds() []*common.UUID {
 		return x.DisabledInstIds
 	}
 	return nil
-}
-
-func (x *ListNetworkInstanceResponse) GetSupportsPersistedConfigManagement() bool {
-	if x != nil && x.SupportsPersistedConfigManagement != nil {
-		return *x.SupportsPersistedConfigManagement
-	}
-	return false
 }
 
 func (x *ListNetworkInstanceResponse) GetRuntimeCapabilities() []string {
@@ -3199,13 +3191,11 @@ const file_api_manage_proto_rawDesc = "" +
 	"\binst_ids\x18\x01 \x03(\v2\f.common.UUIDR\ainstIds\"[\n" +
 	"\x1aCollectNetworkInfoResponse\x12=\n" +
 	"\x04info\x18\x01 \x01(\v2).api.manage.NetworkInstanceRunningInfoMapR\x04info\"\x1c\n" +
-	"\x1aListNetworkInstanceRequest\"\xb8\x02\n" +
+	"\x1aListNetworkInstanceRequest\"\xe7\x01\n" +
 	"\x1bListNetworkInstanceResponse\x12'\n" +
 	"\binst_ids\x18\x01 \x03(\v2\f.common.UUIDR\ainstIds\x12:\n" +
-	"\x11disabled_inst_ids\x18҆\x03 \x03(\v2\f.common.UUIDR\x0fdisabledInstIds\x12V\n" +
-	"$supports_persisted_config_management\x18ӆ\x03 \x01(\bH\x00R!supportsPersistedConfigManagement\x88\x01\x01\x123\n" +
-	"\x14runtime_capabilities\x18Ն\x03 \x03(\tR\x13runtimeCapabilitiesB'\n" +
-	"%_supports_persisted_config_management\"\x91\x01\n" +
+	"\x11disabled_inst_ids\x18҆\x03 \x03(\v2\f.common.UUIDR\x0fdisabledInstIds\x123\n" +
+	"\x14runtime_capabilities\x18Ն\x03 \x03(\tR\x13runtimeCapabilitiesJ\b\bӆ\x03\x10Ԇ\x03R$supports_persisted_config_management\"\x91\x01\n" +
 	"\x1cDeleteNetworkInstanceRequest\x12'\n" +
 	"\binst_ids\x18\x01 \x03(\v2\f.common.UUIDR\ainstIds\x122\n" +
 	"\x11expected_revision\x18ц\x03 \x01(\tH\x00R\x10expectedRevision\x88\x01\x01B\x14\n" +
@@ -3425,7 +3415,6 @@ func file_api_manage_proto_init() {
 	file_api_manage_proto_msgTypes[9].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[10].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[12].OneofWrappers = []any{}
-	file_api_manage_proto_msgTypes[24].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[25].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[33].OneofWrappers = []any{}
 	file_api_manage_proto_msgTypes[35].OneofWrappers = []any{}
