@@ -173,6 +173,9 @@ pub(crate) fn merge_network_config_toml(
     config: &NetworkConfig,
 ) -> Result<String, anyhow::Error> {
     let generated_toml = config.gen_config()?.dump();
+    // Fold legacy disguise booleans into `p2p_disguise_mode`, which the form owns.
+    let migrated = crate::config::toml::migrate_legacy_p2p_disguise_flags(original_toml)?;
+    let original_toml = migrated.as_deref().unwrap_or(original_toml);
     let mut original = toml::from_str::<toml::Table>(original_toml)
         .context("failed to parse the original TOML document")?;
     let mut generated = toml::from_str::<toml::Table>(&generated_toml)
@@ -211,26 +214,10 @@ pub(crate) fn merge_network_config_toml(
     // The keys a config form owns are the flags it offers a control for, which
     // the schema declares with `(easytier.flag)`.
     for key in Flags::form() {
-        // `accept_dns` defaults to false, so an explicit API false is absent
-        // from the generated form snapshot. Preserve it instead of deleting
-        // the original key as "not produced by the form".
-        if *key == "accept_dns"
-            && let Some(value) = config.enable_magic_dns
-        {
-            merged_flags.insert((*key).to_owned(), toml::Value::Boolean(value));
-            continue;
-        }
         if let Some(value) = generated_flags.get(*key) {
             merged_flags.insert((*key).to_owned(), value.clone());
         } else {
             merged_flags.remove(*key);
-        }
-    }
-    // A saved mode supersedes the three legacy booleans; keep them out of the
-    // merged file so the next load does not see two policies at once.
-    if merged_flags.contains_key("p2p_disguise_mode") {
-        for key in crate::config::toml::LEGACY_P2P_DISGUISE_FLAGS {
-            merged_flags.remove(key);
         }
     }
     if !merged_flags.is_empty() {
@@ -1104,7 +1091,8 @@ private_mode = false
                     "enable_ipv6",
                     value.filter(|disabled| *disabled).map(|disabled| !disabled),
                 ),
-                ("accept_dns", value),
+                // Form defaults are compacted, so an explicit false is omitted.
+                ("accept_dns", value.filter(|enabled| *enabled)),
                 ("private_mode", value.filter(|enabled| !enabled)),
             ] {
                 assert_eq!(

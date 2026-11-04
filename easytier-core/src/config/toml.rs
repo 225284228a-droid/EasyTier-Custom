@@ -21,13 +21,7 @@ pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 pub use crate::proto::common::{Flags, FlagsPatch};
 
 mod legacy;
-use legacy::migrate_legacy_p2p_disguise_flags;
-
-pub(crate) const LEGACY_P2P_DISGUISE_FLAGS: [&str; 3] = [
-    "prefer_wss_http3_for_p2p",
-    "disable_wss_http3_for_p2p",
-    "only_use_wss_http3_for_hole_punching",
-];
+pub(crate) use legacy::migrate_legacy_p2p_disguise_flags;
 
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
