@@ -1,6 +1,8 @@
 const BUILD_PATH = '.github/workflows/build.yml';
 const { expectedArtifacts, validDigest } = require('./validate-release-builds.js');
 // Bounded migration for artifacts left by the retired split build workflows.
+// Remove this set after 2027-01-31, when runs from those workflows can no
+// longer exist in the default artifact retention window.
 const LEGACY_BUILD_PATHS = new Set([
   '.github/workflows/core.yml',
   '.github/workflows/gui.yml',
