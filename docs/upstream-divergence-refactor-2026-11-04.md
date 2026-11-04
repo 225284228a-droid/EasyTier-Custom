@@ -17,8 +17,8 @@
 - 批次 3a（WebSocket 伪装头外移）已完成，提交 `48528934`。`websocket.rs` 约 45 行头装配移入 `websocket/disguise.rs` 的 `apply_client_headers`，30 项 websocket 测试通过。socket 保护包装复核后**撤销**（所有调用点都消费 registration）。`virtual_nic` 的 netns 装饰器经评估**暂缓**：它改的是 setns + spawn_blocking 的线程局部语义，当前环境无法跑 Linux netns 测试，风险高于可量化收益；需要 Linux 环境单独验证。
 - 批次 3b（core 启动配置外移）已完成，提交 `fecb98a5`。`StartupConfigFile`/`StartupConfigs`/`prepare_startup_configs`/`start_prepared_configs` 移入 `core/startup.rs`，core.rs +6/−156；core::tests 23 项、config-dir startup 4 项通过。字段清单同步修正（提交 `99f2e6f1`）：117 条 = 91 迁移 + 26 原生高位，上游清单来源改为实际包含 `tld_dns_zone=73` 的 `4bdba58c`，4 项 descriptor 测试通过。
 - 批次 3c（配置测试外移）已完成，提交 `cfc80d26`：`api_input.rs` 的 15 个定制测试（440 行）与 `toml.rs` 的 11 个（266 行）移入各自的 `tests/custom_tests.rs`，上游文件合计少 709 行；`config::` 129 项测试通过，测试总数保持 `api_input` 31、`toml` 46。
-- 配置遗留修复（提交 `94a5a1b2`）：`browser-config` 下两个既有失败已修——显式 `accept_dns=false` 不再被表单合并删除；存在 `p2p_disguise_mode` 时，合并后的 TOML 会清掉三个旧 `wss_http3` 布尔。`browser-config` 配置测试 135/135、默认 129/129。
-- 批次 4a（protobuf 定制块拆分）已完成，提交 `bd987b27`：只把持久化配置块（`ObserveConfigs*`、`PersistedConfigEntry`、`PatchPersistedConfig*`、`PersistedConfigService`）拆到单向依赖的 `custom_manage.proto`；官方 `api_manage.proto` −66 行，官方 `api_manage.pb.go` 净 −526 行，package/wire 编号/Rust/Go API 不变。全量拆 `VpnConfig`/`NodeLocation` 会形成循环 import，已实测不可行。字段清单 4 项、core 编译、`go build ./...`、`go test ./proto/...` 通过；schema provenance 已按相同算法刷新（`059bb4ff`）。
+- 配置遗留修复（提交 `94a5a1b2`）：`browser-config` 下两个既有失败已修——显式 `accept_dns=false` 不再被表单合并删除；存在 `p2p_disguise_mode` 时，合并后的 TOML 会清掉三个旧 `wss_http3` 布尔。`browser-config` 配置测试 135/135、默认 129/129。（该修复写在官方函数里，已按“审查修正”改到定制侧。）
+- 批次 4a（protobuf 定制块拆分）已完成，提交 `bd987b27`：只把持久化配置块（`ObserveConfigs*`、`PersistedConfigEntry`、`PatchPersistedConfig*`、`PersistedConfigService`）拆到单向依赖的 `custom_manage.proto`；官方 `api_manage.proto` −66 行，官方 `api_manage.pb.go` 净 −526 行，package/wire 编号/Rust/Go API 不变。全量拆 `VpnConfig`/`NodeLocation` 会形成循环 import，已实测不可行。字段清单 4 项、core 编译、`go build ./...`、`go test ./proto/...` 通过；schema provenance 已按相同算法刷新（`059bb4ff`）。（Go 生成物与 provenance 已恢复为 CI 快照，见“审查修正”。）
 - 批次 4c（旧伪装迁移外移）已完成，提交 `68019e4b`：`toml.rs` 中 54 行的三布尔→`p2p_disguise_mode` 加载迁移移到 `toml/legacy.rs`，`toml.rs` 只留 re-export 与一个调用点；`config::` 129 项测试通过。
 - 批次 3d（GUI 服务生命周期外移）已完成，提交 `c67f0382`：`set_service_status`/`retire_conflicting_services`/`stop_local_backend`/`get_service_status` 与内嵌 Core 停止逻辑移入 `local_backend.rs`，`lib.rs` 只保留 `mod`/`use` 与命令注册；GUI 4 项测试通过。
 - 批次 4c 补充（`519d1d7b`）：清理 `LEGACY_P2P_DISGUISE_FLAGS` 在 default/browser-config 两种构建下的 unused-import 警告，`config::` 129 项仍通过。
@@ -28,15 +28,25 @@
 - 批次 2c（PeerConn 定制扩展外移）已完成，提交 `9f2cc283`：cleanup policy 访问器、并行 offer/member 访问器、发送预留等 18 个方法及测试辅助函数移到 `peer_conn/extensions.rs`；peer_conn.rs −169 行，`peers::conn` 81/81 测试通过。
 - 批次 4d（Web 位置标注外移）已完成，提交 `a53f8e28`：`restful/network.rs` 的 7 个位置/拓扑生产方法与 6 个测试移到 `network/location.rs`；network.rs −311 行，`restful::network` 10/10 测试通过。
 - 批次 4e（被动带宽估计器外移）已完成，提交 `acc878ac`：`stats.rs` 的 4 个估计器类型与 11 个 `Throughput` 估计方法移到 `stats/estimator.rs`，阈值/采样逻辑与公共 API 不变；stats.rs −219 行，`tunnel::stats` 16/16 测试通过。
-- 批次 4f（管理 RPC trait impl 外移）已完成，提交 `dbc480cf`：Rust 不允许同一 trait 拆多个 impl，因此把整个 `WebClientService for ProcessManagementRpc` impl 移到 `process_rpc/web_client.rs`；process_rpc.rs −380 行，`management::` 89/89 测试通过。
+- 批次 4f（管理 RPC trait impl 外移）已完成，提交 `dbc480cf`：Rust 不允许同一 trait 拆多个 impl，因此把整个 `WebClientService for ProcessManagementRpc` impl 移到 `process_rpc/web_client.rs`；process_rpc.rs −380 行，`management::` 89/89 测试通过。（已撤回：impl 回到 `process_rpc.rs`，见“审查修正”。）
 - 累计：上游文件新增行 39,242→29,163（约 −25.7%），hunk 3,830→3,672，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、hole punch、virtual_nic 和前端测试。
-- 批次 4b（能力声明去重）已完成：删除 `ListNetworkInstanceResponse.supports_persisted_config_management`（保留 `reserved 50003`），web/OHOS 统一检查 `runtime_capabilities` 的 `management:persisted-config-revision-v2`；自定义字段清单 117→116（90 迁移 + 26 原生高位），Go 绑定与 schema provenance 同步。字段清单 4/4、core 编译、web client 18 项、Go build/test 通过；OHOS crate 在 Windows 上因既有 Unix-only import 无法编译，未验证。
-- 批次 5a（文档/CI 遗留）部分完成，提交 `c3a0e7f6`：9 份带日期的过程/验证文档归档到 `docs/archive/`（只互相引用，相对链接保持有效）；CI 旧工作流 artifact 迁移 shim 加了 2027-01-31 的到期删除说明。
+- 批次 4b（能力声明去重）**已撤销**（见“审查修正”）：删除 `supports_persisted_config_management` 是线协议语义变更，且对官方差异没有收益。
+- 批次 5a（文档/CI 遗留）部分完成，提交 `c3a0e7f6`：9 份带日期的过程/验证文档归档到 `docs/archive/`（只互相引用，相对链接保持有效；其中 4 份官方文档已移回 `docs/`）；CI 旧工作流 artifact 迁移 shim 加了 2027-01-31 的到期删除说明。
 - 批次 4（其余重复表达）与批次 5（`TemporaryDevices.vue` 瘦身、`dashboard.test.mjs` 外移、剩余 CI 清理）待做。
+
+## 审查修正（2026-11-05）
+
+复核发现上面的批次有几处与目标相反或带来回归，已修正：
+
+- **官方代码搬回原位**：`process_rpc.rs` 的 `impl WebClientService`、`ensure_overwritable`、`apply_file_cleanup` 与 `run_network_instance_locked(_with_contents)`，`client_manager/mod.rs` 的 `impl RemoteClientManager`，GUI `lib.rs` 的 `mod service`，以及 4 份官方文档（`kcp-*`、`tcp-proxy-*`）都回到官方位置。trait impl 不能拆分，所以定制方法在 impl 里只保留一行转发，方法体放在 `persisted_rpc.rs` / `mutation_guard.rs`。`process_rpc.rs` 删除的官方行从 380 回到 108，GUI `lib.rs` 从 970 回到 867，`client_manager/mod.rs` 从 55 回到 16。
+- **撤销批次 4b**：恢复 `ListNetworkInstanceResponse.supports_persisted_config_management`。旧 web + 新 core、新 web + 2026-09-26～10-26 的 core 混跑时，删除路径会改变；它是定制高位字段，删掉也不减少官方差异。
+- **`browser-config` 合并修复改为在定制侧处理**：去掉官方 `merge_network_config_toml` 里按 key 名硬编码的 `accept_dns` 特例和“有 mode 才删旧布尔”的分支。合并前先对原文件执行 `migrate_legacy_p2p_disguise_flags`，修复了把旧布尔文件切到默认 `prefer` 后重载又变回旧模式的问题（新增回归测试）。官方测试里 `accept_dns` 的期望改为与 `prune_form_defaults` 的“表单默认值压缩”设计一致：显式 `false` 不写入文件，加载结果仍为 `false`。
+- **Go 生成物恢复为 CI 快照**：`059bb4ff` 手改了 `easytier-go/proto/provenance.go`，提交号与嵌入 WASM（`05bf2513`）不一致，导致 `go test ./internal/host ./tests` 失败；摘要也是在 CRLF 工作区上算的。`easytier-go/proto/` 已恢复为机器人为 `05bf2513` 生成的版本，`generate-proto.sh` / `update-wasm` 的 `custom_manage.proto` 改动保留，下次推送 main 由 `go-artifacts` 统一重新生成。
+- `CUSTOM_CHANGES.md` 恢复 2026-10-16 那次迁移的历史数字（100 个迁移、9 个保留，见 `5ff6fefb` 的清单）。
 
 ## 收口（2026-11-04）
 
-安全可验证范围内的差异削减已完成：39 个提交，上游文件新增行减少约 25.7%，改动全部通过对应 crate 的编译与定向测试，未改变功能。以下项显式延期，不计入完成：
+差异削减共 41 个提交，上游文件新增行减少约 25.7%。其中批次 4b 与 `94a5a1b2` 改变了行为，已按“审查修正”处理；其余为纯搬迁。以下项显式延期，不计入完成：
 
 - `virtual_nic` netns 装饰器：需要 Linux netns 测试环境，当前 Windows 工作区无法验证 setns/线程局部语义。
 - `hole_punch/tcp`、`direct`、`websocket` 帧处理、`http3`：真实状态机/协议实现，抽离的边界风险大于 diff 收益。
@@ -159,9 +169,9 @@
 ### 5.5 能力声明的双表达
 
 - `web.proto:28-32` 的 `support_local_configs` / `support_local_config_revision` 布尔，与 `runtime_capabilities` 字符串并存；前端在 `configStore.ts:62`、`localConfigPatch.ts:67` 用 OR 兜底。
-- `api_manage.proto` 的 `supports_persisted_config_management` 已删除（批次 4），`runtime_capabilities` 成为唯一表达。
+- `api_manage.proto` 的 `supports_persisted_config_management`：删除已撤销。它表示“删除会同时删配置文件”，与 `revision-v2` 不是同一语义，且旧版本仍依赖它。
 
-`runtime_capabilities` 作为单一真源：`supports_persisted_config_management` 已删除，直连 list 响应与心跳共用能力字符串。`web.proto` 的 `support_local_configs` / `support_local_config_revision` 仍与能力字符串并存，前端 OR 兜底保留，作为后续项。
+能力字符串与布尔并存暂时保留。要收敛，需要先有跨版本（旧 web/新 core、新 web/旧 core）测试，再按版本窗口逐步下线布尔。
 
 ### 5.6 三份目录扫描器
 
@@ -197,7 +207,7 @@
 
 - `api_manage.proto:53` 的 `tld_dns_zone = 73` 现在**确实是官方字段**：`upstream/main` 的 `4bdba58c` 也加了同一字段同一编号，合并时不会冲突，不要改成 50,173。
 - 但 `easytier-proto/tests/upstream-fields.json` 头部仍写来源 `99db92a`，而该提交没有这个字段；清单不可复现。用当前 `upstream/main` 重新生成上游清单，并把 `field_numbers.rs` 的“custom ≥ 50000”断言保持为硬规则即可。
-- `docs/CUSTOM_CHANGES.md:42` 写“迁移 100 个、保留 9 个”，实际清单 116 条（90 条低→高 + 26 条原生高位）。改由脚本生成计数，别再手写。
+- `docs/CUSTOM_CHANGES.md:42` 的“迁移 100 个、保留 9 个”是 2026-10-16 那次迁移的历史事实（`5ff6fefb` 清单 109 条），不要改成当前清单数；当前数量以清单文件为准。
 - 已删功能的 reserved（`api_manage.proto:371-372` 的 `50011 pending_apply`、`api_instance.proto:435-452` 的旧 VPN 字段）**要保留**：它们防止编号复用，属于正确的线协议卫生，不是包袱。
 
 ### 6.4 文档
