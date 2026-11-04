@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+import "common.proto";
+import "api_manage.proto";
+
+package api.manage;
+
+message ObserveConfigsRequest {}
+
+message ObserveConfigsResponse {
+  string catalog_epoch = 50001;
+  uint64 catalog_generation = 50002;
+  repeated PersistedConfigEntry entries = 50003;
+}
+
+// One captured entry from the node-owned configuration directory. Protected
+// or invalid entries carry metadata only, with no config or original TOML.
+message PersistedConfigEntry {
+  string entry_key = 50001;
+  common.UUID inst_id = 50002;
+  string revision = 50003;
+  optional string persisted_toml = 50004;
+  NetworkConfig config = 50005;
+  uint32 config_permission = 50006;
+  bool enabled = 50007;
+  bool running = 50008;
+  string persisted_raw_hash = 50009;
+  optional string active_raw_hash = 50010;
+  reserved 50011;
+  reserved "pending_apply";
+  string status = 50012;
+  string network_name = 50013;
+  ConfigSource source = 50014;
+}
+
+enum PersistedConfigMutationStatus {
+  Success = 0;
+  Conflict = 1;
+  Protected = 2;
+  Invalid = 3;
+  NotFound = 4;
+  ApplyFailed = 5;
+  Unsupported = 6;
+}
+
+// Every successful write is the new file. An enabled network applies it
+// before the response; if it cannot start, the previous file is restored.
+message PatchPersistedConfigRequest {
+  common.UUID inst_id = 50001;
+  // Empty permits creation only when both identity and target file are absent.
+  string expected_revision = 50002;
+  NetworkConfig config = 50003;
+  // Snake-case typed paths. Repeated fields are replaced atomically.
+  repeated string field_mask = 50004;
+  reserved 50005;
+  reserved "apply_mode";
+  // Replaces the whole document instead of merging typed fields.
+  optional string toml = 50006;
+}
+
+message PatchPersistedConfigResponse {
+  PersistedConfigMutationStatus status = 50001;
+  optional string message = 50002;
+  PersistedConfigEntry entry = 50003;
+  string catalog_epoch = 50004;
+  uint64 catalog_generation = 50005;
+}
+
+service PersistedConfigService {
+  rpc ObserveConfigs(ObserveConfigsRequest) returns (ObserveConfigsResponse) {}
+  rpc PatchConfig(PatchPersistedConfigRequest) returns (PatchPersistedConfigResponse) {}
+}

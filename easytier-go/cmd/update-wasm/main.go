@@ -27,6 +27,7 @@ var managementProtoFiles = []string{
 	"api_instance.proto",
 	"api_config.proto",
 	"api_manage.proto",
+	"custom_manage.proto",
 	"web.proto",
 }
 
