@@ -3,7 +3,10 @@
 
 use std::{
     collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -17,9 +20,11 @@ use super::super::{
     parallel,
     peer_conn::{PeerConn, PeerConnId},
 };
-use super::{ArcPeerConn, ConnMap};
+use super::{ArcPeerConn, ConnMap, Peer};
 use crate::{
     config::{PeerId, p2p_protocol_rank},
+    packet::ZCPacket,
+    peers::error::Error,
     proto::common::Flags,
 };
 
@@ -589,5 +594,307 @@ pub(super) async fn reconcile_peer_connections(
         {
             tracing::warn!(?conn_id, %error, "failed to close redundant connection");
         }
+    }
+}
+
+impl Peer {
+    pub(super) fn send_plan(&self) -> Arc<SendPlan> {
+        let generation = self.send_plan.generation.load(Ordering::Acquire);
+        if let Some(plan) = self.send_plan.plan.load().as_ref()
+            && plan.generation == generation
+        {
+            return plan.clone();
+        }
+        let plan = Arc::new(compute_send_plan(
+            &self.conns,
+            &self.context.flags(),
+            generation,
+            &self.parallel_send,
+            &self.parallel_receiver,
+        ));
+        self.send_plan.plan.store(Some(plan.clone()));
+        // An invalidation raced with this computation: do not keep its
+        // members alive in the cache.
+        if self.send_plan.generation.load(Ordering::Acquire) != generation {
+            self.send_plan.plan.store(None);
+        }
+        plan
+    }
+
+    /// Sends on the member expected to deliver the packet first, from its
+    /// modelled queue, rate and one-way delay. Until every member's rate is
+    /// known, members take turns by bytes sent, which also gives each one the
+    /// traffic its rate is measured from. A member that cannot take the
+    /// packet now yields to the next.
+    pub(super) async fn send_striped(&self, msg: ZCPacket, plan: &SendPlan) -> Result<(), Error> {
+        let bytes = msg.buf_len() + crate::packet::PARALLEL_PACKET_OVERHEAD;
+        let now = Instant::now();
+        let record_sent = |state: &mut ParallelSendState, lane: &Lane| {
+            let id = lane.conn.get_conn_id();
+            *state.sent_bytes.entry(id).or_default() += bytes as u64;
+            if let Some(model) = lane.model {
+                let busy = state.busy_until.entry(id).or_insert(now);
+                *busy = (*busy).max(Instant::now()) + model.transmit_time(bytes);
+            }
+        };
+        // Assigning the sequence and queueing it under one lock keeps each
+        // member's queue in sequence order, which lets the receiver treat a
+        // gap behind an ordered member as loss.
+        let (order, packet) = {
+            let mut state = self.parallel_send.lock();
+            let mut order: Vec<_> = plan
+                .members
+                .iter()
+                .map(|lane| {
+                    let id = lane.conn.get_conn_id();
+                    let arrival = lane.model.map_or(now, |model| {
+                        model.arrival(state.busy_until.get(&id).copied(), now, bytes)
+                    });
+                    let sent = state.sent_bytes.get(&id).copied().unwrap_or(0);
+                    ((arrival, sent, lane.order_key), lane)
+                })
+                .collect();
+            order.sort_by_key(|(key, _)| *key);
+            let sequence = state.sequence;
+            state.sequence = state.sequence.wrapping_add(1);
+            let mut packet = parallel::wrap(
+                msg,
+                plan.my_peer_id,
+                self.peer_node_id,
+                state.epoch,
+                sequence,
+            );
+            for &(_, lane) in &order {
+                match lane.conn.try_send_owned(packet) {
+                    Ok(()) => {
+                        record_sent(&mut state, lane);
+                        return Ok(());
+                    }
+                    Err(
+                        tokio::sync::mpsc::error::TrySendError::Full(p)
+                        | tokio::sync::mpsc::error::TrySendError::Closed(p),
+                    ) => {
+                        packet = p;
+                    }
+                }
+            }
+            (order, packet)
+        };
+        // Backpressure waits for any member to become writable; a stalled
+        // first member cannot block the other paths.
+        use futures::StreamExt;
+        let mut ready = futures::stream::FuturesUnordered::new();
+        for (_, lane) in order {
+            ready.push(async move {
+                let permit = lane.conn.reserve_send().await;
+                (lane, permit)
+            });
+        }
+        while let Some((lane, permit)) = ready.next().await {
+            if let Ok(permit) = permit {
+                permit.send(packet);
+                record_sent(&mut self.parallel_send.lock(), lane);
+                return Ok(());
+            }
+        }
+        // Every member is closed: recompute for the next packet.
+        self.send_plan.invalidate();
+        Err(Error::PeerNoConnectionError(self.peer_node_id))
+    }
+
+    pub(crate) fn parallel_connection_status(
+        &self,
+    ) -> crate::proto::common::ParallelConnectionStatus {
+        let (target, members) = parallel_members(&self.conns, &self.context.flags());
+        let selected = select_preferred_conn(&self.conns, &self.context.flags());
+        crate::proto::common::ParallelConnectionStatus {
+            target,
+            active_conn_ids: members
+                .iter()
+                .map(|c| c.get_conn_id().to_string())
+                .collect(),
+            protocol: selected
+                .as_ref()
+                .and_then(|c| c.get_conn_info().tunnel)
+                .map(|t| t.tunnel_type)
+                .unwrap_or_default(),
+            fallback_reason: if selected
+                .as_ref()
+                .is_some_and(|c| parallel::remote_offer(&c.get_conn_info().features).is_none())
+            {
+                "peer does not support parallel connections".into()
+            } else if self.context.disable_parallel_connections() {
+                "parallel connections disabled".into()
+            } else if self
+                .parallel_policy
+                .remote()
+                .is_some_and(|remote| remote.disabled)
+            {
+                "parallel connections disabled by remote peer".into()
+            } else if selected
+                .as_ref()
+                .is_some_and(|conn| conn.parallel_connection_limit() == 1 && !conn.is_manual())
+            {
+                "connection quota retains the available path during protocol migration".into()
+            } else if members.len() < target as usize {
+                "waiting for healthy connections".into()
+            } else {
+                String::new()
+            },
+        }
+    }
+
+    pub(crate) fn reserve_parallel_slot(&self) -> Option<parallel::ParallelDialReservation> {
+        self.reserve_parallel_slot_for_protocol(None)
+    }
+
+    pub(crate) fn reserve_parallel_slot_for_protocol(
+        &self,
+        requested: Option<&str>,
+    ) -> Option<parallel::ParallelDialReservation> {
+        let (target, members) = parallel_members(&self.conns, &self.context.flags());
+        if target <= 1 {
+            return None;
+        }
+        let selected = select_preferred_conn(&self.conns, &self.context.flags())?;
+        let info = selected.get_conn_info();
+        let tunnel = info.tunnel.as_ref()?;
+        let current = tunnel.tunnel_type.rsplit('-').next()?;
+        let protocol = requested.unwrap_or(current);
+        let upgrading = protocol != current
+            && !selected.is_manual()
+            && selected.cleanup_policy().parallel_transport_rank(
+                protocol,
+                info.my_peer_id,
+                info.peer_id,
+            ) < selected.cleanup_policy().parallel_transport_rank(
+                current,
+                info.my_peer_id,
+                info.peer_id,
+            );
+        let cap = selected.parallel_connection_limit() as usize;
+        let live: Vec<_> = self
+            .conns
+            .iter()
+            .filter(|conn| !conn.value().is_closed())
+            .map(|conn| conn.value().clone())
+            .collect();
+        if live.len() >= cap && (upgrading || protocol == current) {
+            let healthy = live
+                .iter()
+                .filter(|conn| conn.get_stats().latency_us > 0)
+                .count();
+            let victim = live
+                .iter()
+                .filter(|conn| {
+                    conn.get_stats().latency_us > 0
+                        && conn
+                            .get_conn_info()
+                            .tunnel
+                            .is_some_and(|t| t.tunnel_type.rsplit('-').next() != Some(protocol))
+                })
+                .max_by_key(|conn| conn.parallel_member().map_or(0, |member| member.slot));
+            let pending = self.parallel_reservations.len();
+            if healthy > 1
+                && pending == 0
+                && let Some(victim) = victim
+            {
+                let _ = self
+                    .close_event_sender
+                    .try_send(PeerConnCloseEvent::Closed(victim.get_conn_id()));
+                return None;
+            }
+            if upgrading || victim.is_some() {
+                return None;
+            }
+        }
+        if (!upgrading && members.len() >= target as usize)
+            || (requested.is_some() && protocol != current && !upgrading)
+        {
+            return None;
+        }
+        let (pool_id, epoch) = self.parallel_send.lock().pool_anchor?;
+        let occupied = self
+            .conns
+            .iter()
+            .filter(|c| {
+                !c.value().is_closed()
+                    && c.value()
+                        .get_conn_info()
+                        .tunnel
+                        .is_some_and(|t| t.tunnel_type.rsplit('-').next() == Some(protocol))
+            })
+            .map(|c| c.value().parallel_member().map_or(0, |m| m.slot))
+            .collect();
+        self.parallel_reservations
+            .reserve(pool_id, epoch, target, &occupied)
+    }
+
+    pub(crate) fn parallel_manual_url(&self) -> Option<url::Url> {
+        let selected = select_preferred_conn(&self.conns, &self.context.flags())?;
+        let info = selected.get_conn_info();
+        if !selected.is_manual() || !info.is_client {
+            return None;
+        }
+        info.tunnel?.remote_addr.map(Into::into)
+    }
+
+    pub(crate) fn parallel_default_protocol(&self) -> Option<String> {
+        let selected = select_preferred_conn(&self.conns, &self.context.flags())?;
+        if selected.parallel_target() <= 1 || selected.is_manual() {
+            return None;
+        }
+        let info = selected.get_conn_info();
+        selected
+            .cleanup_policy()
+            .parallel_default_protocol(info.my_peer_id, info.peer_id)
+    }
+
+    /// Records route metadata for revalidating automatic cleanup against the
+    /// handshake policy. This does not change established transport rankings.
+    pub(crate) fn note_negotiated_disguise(&self, use_disguise: bool) {
+        let _update_guard = self.default_conn_update_lock.lock();
+        if self.negotiated_disguise.swap(Some(use_disguise)) != Some(use_disguise) {
+            self.default_conn.store(None);
+        }
+    }
+
+    pub(crate) fn has_connection_at_least_as_preferred(&self, target_scheme: &str) -> bool {
+        let flags = self.context.flags();
+        let (target, members) = parallel_members(&self.conns, &flags);
+        if target > 1 {
+            if let Some(selected) = select_preferred_conn(&self.conns, &flags) {
+                if selected.is_manual() {
+                    return selected.get_stats().latency_us > 0;
+                }
+                let info = selected.get_conn_info();
+                let rank = selected.cleanup_policy().parallel_transport_rank(
+                    target_scheme,
+                    info.my_peer_id,
+                    info.peer_id,
+                );
+                let current_rank = info.tunnel.as_ref().and_then(|t| {
+                    selected.cleanup_policy().parallel_transport_rank(
+                        &t.tunnel_type,
+                        info.my_peer_id,
+                        info.peer_id,
+                    )
+                });
+                return members.len() >= target as usize && current_rank <= rank;
+            }
+            return false;
+        }
+        let target_rank = 1 + p2p_protocol_rank(
+            &flags.default_protocol,
+            !flags.p2p_disguise().forbids(),
+            target_scheme,
+        );
+        self.conns.iter().any(|entry| {
+            let conn = entry.value();
+            !conn.is_closed()
+                && (conn.parallel_target() == 1 || conn.get_stats().latency_us > 0)
+                && (!conn.is_manual() || conn.get_stats().latency_us > 0)
+                && conn_protocol_rank(conn, &flags).is_some_and(|rank| rank <= target_rank)
+        })
     }
 }
