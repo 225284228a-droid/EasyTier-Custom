@@ -57,6 +57,7 @@
     {"message":"api.manage.NetworkInstanceRunningInfo","field":"peer_locations","number":50012,"type":11,"type_name":".api.manage.PeerNodeLocation","label":3,"proto3_optional":false,"previous_number":50012},
     {"message":"api.manage.NetworkInstanceRunningInfo","field":"network_name","number":50011,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":11},
     {"message":"api.manage.ListNetworkInstanceResponse","field":"disabled_inst_ids","number":50002,"type":11,"type_name":".common.UUID","label":3,"proto3_optional":false,"previous_number":2},
+    {"message":"api.manage.ListNetworkInstanceResponse","field":"supports_persisted_config_management","number":50003,"type":8,"type_name":"","label":1,"proto3_optional":true,"previous_number":3},
     {"message":"api.manage.ListNetworkInstanceResponse","field":"runtime_capabilities","number":50005,"type":9,"type_name":"","label":3,"proto3_optional":false,"previous_number":50005},
     {"message":"api.manage.DeleteNetworkInstanceRequest","field":"expected_revision","number":50001,"type":9,"type_name":"","label":1,"proto3_optional":true,"previous_number":50001},
     {"message":"api.manage.SaveNetworkInstanceConfigRequest","field":"inst_id","number":50001,"type":11,"type_name":".common.UUID","label":1,"proto3_optional":false,"previous_number":1},

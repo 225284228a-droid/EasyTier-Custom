@@ -147,6 +147,7 @@ where
                 .map(Into::into)
                 .collect(),
             disabled_inst_ids,
+            supports_persisted_config_management: Some(true),
             runtime_capabilities: self.management.instances.management_capabilities(),
         })
     }
