@@ -18,7 +18,7 @@
 - 批次 3b（core 启动配置外移）已完成，提交 `fecb98a5`。`StartupConfigFile`/`StartupConfigs`/`prepare_startup_configs`/`start_prepared_configs` 移入 `core/startup.rs`，core.rs +6/−156；core::tests 23 项、config-dir startup 4 项通过。字段清单同步修正（提交 `99f2e6f1`）：117 条 = 91 迁移 + 26 原生高位，上游清单来源改为实际包含 `tld_dns_zone=73` 的 `4bdba58c`，4 项 descriptor 测试通过。
 - 批次 3c（配置测试外移）已完成，提交 `cfc80d26`：`api_input.rs` 的 15 个定制测试（440 行）与 `toml.rs` 的 11 个（266 行）移入各自的 `tests/custom_tests.rs`，上游文件合计少 709 行；`config::` 129 项测试通过，测试总数保持 `api_input` 31、`toml` 46。
 - 配置遗留修复（提交 `94a5a1b2`）：`browser-config` 下两个既有失败已修——显式 `accept_dns=false` 不再被表单合并删除；存在 `p2p_disguise_mode` 时，合并后的 TOML 会清掉三个旧 `wss_http3` 布尔。`browser-config` 配置测试 135/135、默认 129/129。
-- 批次 4a（protobuf 定制块拆分）已完成，提交 `bd987b27`：只把持久化配置块（`ObserveConfigs*`、`PersistedConfigEntry`、`PatchPersistedConfig*`、`PersistedConfigService`）拆到单向依赖的 `custom_manage.proto`；官方 `api_manage.proto` −66 行，官方 `api_manage.pb.go` 净 −526 行，package/wire 编号/Rust/Go API 不变。全量拆 `VpnConfig`/`NodeLocation` 会形成循环 import，已实测不可行。字段清单 4 项、core 编译、`go build ./...`、`go test ./proto/...` 通过。
+- 批次 4a（protobuf 定制块拆分）已完成，提交 `bd987b27`：只把持久化配置块（`ObserveConfigs*`、`PersistedConfigEntry`、`PatchPersistedConfig*`、`PersistedConfigService`）拆到单向依赖的 `custom_manage.proto`；官方 `api_manage.proto` −66 行，官方 `api_manage.pb.go` 净 −526 行，package/wire 编号/Rust/Go API 不变。全量拆 `VpnConfig`/`NodeLocation` 会形成循环 import，已实测不可行。字段清单 4 项、core 编译、`go build ./...`、`go test ./proto/...` 通过；schema provenance 已按相同算法刷新（`059bb4ff`）。
 - 累计：上游文件新增行 39,242→31,191（约 −20.5%），hunk 3,830→3,748，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、GUI 生命周期、hole punch、virtual_nic 和前端测试。
 - 批次 4（其余重复表达）与批次 5（前端/CI/文档遗留）待做。
 
