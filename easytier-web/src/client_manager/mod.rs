@@ -20,9 +20,21 @@ use std::{
     },
 };
 
+use async_trait::async_trait;
 use dashmap::DashMap;
-use easytier::proto::web::{HeartbeatRequest, HeartbeatResponse};
+use easytier::common::config::ConfigSource;
+use easytier::proto::{
+    api::{
+        config::ConfigRpc,
+        manage::{CollectNetworkInfoResponse, DeleteNetworkInstanceResponse, WebClientService},
+    },
+    rpc_types::controller::BaseController,
+    web::{HeartbeatRequest, HeartbeatResponse},
+};
 use easytier_core::{
+    management::remote_client::{
+        self, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
+    },
     socket::SocketListener,
     tunnel::{Tunnel, web_security},
 };
@@ -35,7 +47,7 @@ use crate::geolocation::CityGeoCache;
 use crate::webhook::{ManagedNetworkConfig, SharedWebhookConfig};
 use tokio::task::JoinSet;
 
-use crate::db::{Db, UserIdInDb};
+use crate::db::{Db, UserIdInDb, entity::user_running_network_configs};
 
 pub(crate) use managed_config::ManagedConfigError;
 
@@ -602,6 +614,133 @@ impl ClientManager {
         };
 
         Some(location)
+    }
+}
+
+#[async_trait]
+impl
+    RemoteClientManager<
+        (UserIdInDb, uuid::Uuid),
+        user_running_network_configs::Model,
+        sea_orm::DbErr,
+    > for ClientManager
+{
+    fn get_rpc_client(
+        &self,
+        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+    ) -> Option<Box<dyn WebClientService<Controller = BaseController> + Send>> {
+        let s = self.get_session_by_machine_id(user_id, &machine_id)?;
+        Some(s.scoped_rpc_client())
+    }
+
+    fn get_config_rpc_client(
+        &self,
+        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+    ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
+        let session = self.get_session_by_machine_id(user_id, &machine_id)?;
+        Some(session.scoped_config_client())
+    }
+
+    fn get_storage(
+        &self,
+    ) -> &impl remote_client::Storage<
+        (UserIdInDb, uuid::Uuid),
+        user_running_network_configs::Model,
+        sea_orm::DbErr,
+    > {
+        self.storage.db()
+    }
+
+    async fn runtime_mutation_guard(
+        &self,
+        identify: &(UserIdInDb, uuid::Uuid),
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.runtime_mutation_guard_impl(identify).await
+    }
+
+    async fn manages_local_configs(&self, identify: &(UserIdInDb, uuid::Uuid)) -> bool {
+        self.manages_local_configs_impl(identify).await
+    }
+
+    async fn on_network_info_collected(
+        &self,
+        identify: &(UserIdInDb, uuid::Uuid),
+        full_snapshot: bool,
+        response: &mut CollectNetworkInfoResponse,
+    ) {
+        self.on_network_info_collected_impl(identify, full_snapshot, response)
+            .await
+    }
+
+    async fn verify_network_instance_stopped(
+        &self,
+        identify: &(UserIdInDb, uuid::Uuid),
+        inst_id: &uuid::Uuid,
+        response: &DeleteNetworkInstanceResponse,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        self.verify_network_instance_stopped_impl(identify, inst_id, response)
+            .await
+    }
+
+    async fn list_network_instance_ids_for_local_config(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+    ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<sea_orm::DbErr>> {
+        self.list_network_instance_ids_for_local_config_impl(identify)
+            .await
+    }
+
+    async fn run_network_instance_for_local_config(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        config: easytier::proto::api::manage::NetworkConfig,
+        save: bool,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        self.run_network_instance_for_local_config_impl(identify, config, save, source)
+            .await
+    }
+
+    async fn handle_remove_network_instances(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_ids: Vec<uuid::Uuid>,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        self.handle_remove_network_instances_impl(identify, inst_ids)
+            .await
+    }
+
+    async fn update_network_state_for_local_config(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+        disabled: bool,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        self.update_network_state_for_local_config_impl(identify, inst_id, disabled)
+            .await
+    }
+
+    async fn save_network_config_for_local_config(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+        config: easytier::proto::api::manage::NetworkConfig,
+        source: ConfigSource,
+    ) -> Result<(), RemoteClientError<sea_orm::DbErr>> {
+        self.save_network_config_for_local_config_impl(identify, inst_id, config, source)
+            .await
+    }
+
+    async fn get_network_config_for_local_config(
+        &self,
+        identify: (UserIdInDb, uuid::Uuid),
+        inst_id: uuid::Uuid,
+    ) -> Result<
+        (easytier::proto::api::manage::NetworkConfig, ConfigSource),
+        RemoteClientError<sea_orm::DbErr>,
+    > {
+        self.get_network_config_for_local_config_impl(identify, inst_id)
+            .await
     }
 }
 

@@ -1,69 +1,34 @@
 //! Web-side overrides of the remote-client runtime mutation flow.
 //!
-//! Split out of `mod.rs` so the upstream file stays close to its original
-//! shape; the logic itself is unchanged.
+//! The `RemoteClientManager` impl stays in `mod.rs` with the official methods;
+//! its custom overrides forward to the `*_impl` bodies here.
 
 use std::collections::HashSet;
 
-use async_trait::async_trait;
 use easytier::{
     common::config::{ConfigSource, config_source_from_rpc, config_source_to_rpc},
     proto::{
-        api::config::ConfigRpc,
         api::manage::{
             CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
             DeleteNetworkInstanceResponse, GetNetworkInstanceConfigRequest,
             ListNetworkInstanceRequest, RemoveNetworkInstanceConfigRequest,
             RunNetworkInstanceRequest, SaveNetworkInstanceConfigRequest,
-            SetNetworkInstanceEnabledRequest, WebClientService,
+            SetNetworkInstanceEnabledRequest,
         },
         rpc_types::controller::BaseController,
     },
 };
 use easytier_core::management::remote_client::{
-    self, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
+    ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
     Storage as RemoteStorage,
 };
 use uuid::Uuid;
 
 use super::ClientManager;
-use crate::db::{UserIdInDb, entity::user_running_network_configs};
+use crate::db::UserIdInDb;
 
-#[async_trait]
-impl
-    RemoteClientManager<
-        (UserIdInDb, uuid::Uuid),
-        user_running_network_configs::Model,
-        sea_orm::DbErr,
-    > for ClientManager
-{
-    fn get_rpc_client(
-        &self,
-        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
-    ) -> Option<Box<dyn WebClientService<Controller = BaseController> + Send>> {
-        let s = self.get_session_by_machine_id(user_id, &machine_id)?;
-        Some(s.scoped_rpc_client())
-    }
-
-    fn get_config_rpc_client(
-        &self,
-        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
-    ) -> Option<Box<dyn ConfigRpc<Controller = BaseController> + Send>> {
-        let session = self.get_session_by_machine_id(user_id, &machine_id)?;
-        Some(session.scoped_config_client())
-    }
-
-    fn get_storage(
-        &self,
-    ) -> &impl remote_client::Storage<
-        (UserIdInDb, uuid::Uuid),
-        user_running_network_configs::Model,
-        sea_orm::DbErr,
-    > {
-        self.storage.db()
-    }
-
-    async fn runtime_mutation_guard(
+impl ClientManager {
+    pub(super) async fn runtime_mutation_guard_impl(
         &self,
         identify: &(UserIdInDb, uuid::Uuid),
     ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
@@ -75,11 +40,14 @@ impl
         )
     }
 
-    async fn manages_local_configs(&self, identify: &(UserIdInDb, uuid::Uuid)) -> bool {
+    pub(super) async fn manages_local_configs_impl(
+        &self,
+        identify: &(UserIdInDb, uuid::Uuid),
+    ) -> bool {
         self.supports_local_configs(identify).await
     }
 
-    async fn on_network_info_collected(
+    pub(super) async fn on_network_info_collected_impl(
         &self,
         identify: &(UserIdInDb, uuid::Uuid),
         full_snapshot: bool,
@@ -94,7 +62,7 @@ impl
         }
     }
 
-    async fn verify_network_instance_stopped(
+    pub(super) async fn verify_network_instance_stopped_impl(
         &self,
         _identify: &(UserIdInDb, uuid::Uuid),
         inst_id: &uuid::Uuid,
@@ -108,7 +76,7 @@ impl
         Ok(())
     }
 
-    async fn list_network_instance_ids_for_local_config(
+    pub(super) async fn list_network_instance_ids_for_local_config_impl(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
     ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<sea_orm::DbErr>> {
@@ -127,7 +95,7 @@ impl
         })
     }
 
-    async fn run_network_instance_for_local_config(
+    pub(super) async fn run_network_instance_for_local_config_impl(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         config: easytier::proto::api::manage::NetworkConfig,
@@ -153,7 +121,7 @@ impl
         Ok(())
     }
 
-    async fn handle_remove_network_instances(
+    pub(super) async fn handle_remove_network_instances_impl(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         inst_ids: Vec<uuid::Uuid>,
@@ -239,7 +207,7 @@ impl
         Ok(())
     }
 
-    async fn update_network_state_for_local_config(
+    pub(super) async fn update_network_state_for_local_config_impl(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         inst_id: uuid::Uuid,
@@ -267,7 +235,7 @@ impl
         Ok(())
     }
 
-    async fn save_network_config_for_local_config(
+    pub(super) async fn save_network_config_for_local_config_impl(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         inst_id: uuid::Uuid,
@@ -290,7 +258,7 @@ impl
         Ok(())
     }
 
-    async fn get_network_config_for_local_config(
+    pub(super) async fn get_network_config_for_local_config_impl(
         &self,
         identify: (UserIdInDb, uuid::Uuid),
         inst_id: uuid::Uuid,
@@ -317,9 +285,7 @@ impl
             config_source_from_rpc(resp.source).unwrap_or(ConfigSource::User),
         ))
     }
-}
 
-impl ClientManager {
     pub(crate) async fn supports_local_configs(&self, identify: &(UserIdInDb, uuid::Uuid)) -> bool {
         let (user_id, machine_id) = *identify;
         let Some(session) = self.get_session_by_machine_id(user_id, &machine_id) else {
