@@ -59,6 +59,9 @@ easytier-gui/src-tauri/*.sys
 # Local planning and agent context
 /REFACTOR_PLAN.md
 /docs/*-plan.md
+# AI reports and dated process/validation records
+/docs/archive/
+/docs/reports/
 .zcode/
 .test-env/
 .pnpm-store/
