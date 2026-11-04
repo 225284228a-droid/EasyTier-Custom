@@ -4,13 +4,8 @@
 
 use anyhow::Context;
 
+use super::LEGACY_P2P_DISGUISE_FLAGS;
 use crate::config::P2pDisguiseMode;
-
-pub(crate) const LEGACY_P2P_DISGUISE_FLAGS: [&str; 3] = [
-    "prefer_wss_http3_for_p2p",
-    "disable_wss_http3_for_p2p",
-    "only_use_wss_http3_for_hole_punching",
-];
 
 /// Files written before `p2p_disguise_mode` existed state the policy with three
 /// booleans in `[flags]`. Rewrite them as the equivalent mode (a mode that is

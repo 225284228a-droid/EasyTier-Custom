@@ -15,8 +15,8 @@ use optionize::{Optionizable, Optionized};
 use crate::config::{
     MappedListenerPolicy, normalize_secure_mode_config,
     toml::{
-        ConfigLoader, LEGACY_P2P_DISGUISE_FLAGS, NetworkIdentity, PeerConfig, PortForwardConfig,
-        TomlConfigLoader, VpnPortalClientConfig, VpnPortalConfig,
+        ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+        VpnPortalClientConfig, VpnPortalConfig,
     },
 };
 
@@ -229,7 +229,7 @@ pub(crate) fn merge_network_config_toml(
     // A saved mode supersedes the three legacy booleans; keep them out of the
     // merged file so the next load does not see two policies at once.
     if merged_flags.contains_key("p2p_disguise_mode") {
-        for key in LEGACY_P2P_DISGUISE_FLAGS {
+        for key in crate::config::toml::LEGACY_P2P_DISGUISE_FLAGS {
             merged_flags.remove(key);
         }
     }
