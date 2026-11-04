@@ -34,6 +34,16 @@
 - 批次 5a（文档/CI 遗留）部分完成，提交 `c3a0e7f6`：9 份带日期的过程/验证文档归档到 `docs/archive/`（只互相引用，相对链接保持有效）；CI 旧工作流 artifact 迁移 shim 加了 2027-01-31 的到期删除说明。
 - 批次 4（其余重复表达）与批次 5（`TemporaryDevices.vue` 瘦身、`dashboard.test.mjs` 外移、剩余 CI 清理）待做。
 
+## 收口（2026-11-04）
+
+安全可验证范围内的差异削减已完成：39 个提交，上游文件新增行减少约 25.7%，改动全部通过对应 crate 的编译与定向测试，未改变功能。以下项显式延期，不计入完成：
+
+- `virtual_nic` netns 装饰器：需要 Linux netns 测试环境，当前 Windows 工作区无法验证 setns/线程局部语义。
+- `hole_punch/tcp`、`direct`、`websocket` 帧处理、`http3`：真实状态机/协议实现，抽离的边界风险大于 diff 收益。
+- `TemporaryDevices.vue` 瘦身：members/credentials/settings tab 被前端浏览器测试锁住，需要 UI 回归环境。
+- `dashboard.test.mjs`、`config-ui.spec.ts` 等前端测试外移：本机 Node 子进程被沙箱 `EPERM` 限制，无法运行 Playwright/Vitest 验证。
+- 三套目录扫描器、路由来源统一、能力布尔双写（`web.proto`）：跨 crate/协议改动，留给独立的、有 Linux/全功能测试环境的一轮。
+
 ## 一、比较口径
 
 - 本地评估起点：`bbef67a9`（2026-11-04）；批次完成后的 HEAD 见“进度”。
