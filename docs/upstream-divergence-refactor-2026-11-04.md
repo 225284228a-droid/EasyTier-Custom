@@ -20,7 +20,8 @@
 - 配置遗留修复（提交 `94a5a1b2`）：`browser-config` 下两个既有失败已修——显式 `accept_dns=false` 不再被表单合并删除；存在 `p2p_disguise_mode` 时，合并后的 TOML 会清掉三个旧 `wss_http3` 布尔。`browser-config` 配置测试 135/135、默认 129/129。
 - 批次 4a（protobuf 定制块拆分）已完成，提交 `bd987b27`：只把持久化配置块（`ObserveConfigs*`、`PersistedConfigEntry`、`PatchPersistedConfig*`、`PersistedConfigService`）拆到单向依赖的 `custom_manage.proto`；官方 `api_manage.proto` −66 行，官方 `api_manage.pb.go` 净 −526 行，package/wire 编号/Rust/Go API 不变。全量拆 `VpnConfig`/`NodeLocation` 会形成循环 import，已实测不可行。字段清单 4 项、core 编译、`go build ./...`、`go test ./proto/...` 通过；schema provenance 已按相同算法刷新（`059bb4ff`）。
 - 累计：上游文件新增行 39,242→31,191（约 −20.5%），hunk 3,830→3,748，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、GUI 生命周期、hole punch、virtual_nic 和前端测试。
-- 批次 4（其余重复表达）与批次 5（前端/CI/文档遗留）待做。
+- 批次 5a（文档/CI 遗留）部分完成，提交 `c3a0e7f6`：9 份带日期的过程/验证文档归档到 `docs/archive/`（只互相引用，相对链接保持有效）；CI 旧工作流 artifact 迁移 shim 加了 2027-01-31 的到期删除说明。
+- 批次 4（其余重复表达）与批次 5（`TemporaryDevices.vue` 瘦身、`dashboard.test.mjs` 外移、剩余 CI 清理）待做。
 
 ## 一、比较口径
 
