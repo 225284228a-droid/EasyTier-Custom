@@ -26,7 +26,8 @@
 - 批次 3e（GUI 内联模块外移）已完成，提交 `f517487a`：`lib.rs` 里的 `mod manager`（365 行）与 `mod service`（135 行）原样移到 `manager.rs` / `service.rs`，`lib.rs` 只留两条 `mod` 声明；GUI lib 12/12 测试通过，`lib.rs` −504 行。
 - 批次 1b（core.rs 定制测试外移）已完成，提交 `221d14d2`：9 个 CLI/config-dir 定制测试（约 395 行）移到 `core/tests/custom_tests.rs`，官方 14 项留在 core.rs；`core::tests` 23/23 通过，core.rs −398 行。
 - 批次 2c（PeerConn 定制扩展外移）已完成，提交 `9f2cc283`：cleanup policy 访问器、并行 offer/member 访问器、发送预留等 18 个方法及测试辅助函数移到 `peer_conn/extensions.rs`；peer_conn.rs −169 行，`peers::conn` 81/81 测试通过。
-- 累计：上游文件新增行 39,242→29,897（约 −23.8%），hunk 3,830→3,687，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、hole punch、virtual_nic 和前端测试。
+- 批次 4d（Web 位置标注外移）已完成，提交 `a53f8e28`：`restful/network.rs` 的 7 个位置/拓扑生产方法与 6 个测试移到 `network/location.rs`；network.rs −311 行，`restful::network` 10/10 测试通过。
+- 累计：上游文件新增行 39,242→29,586（约 −24.6%），hunk 3,830→3,686，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、hole punch、virtual_nic 和前端测试。
 - 批次 4b（能力声明去重）已完成：删除 `ListNetworkInstanceResponse.supports_persisted_config_management`（保留 `reserved 50003`），web/OHOS 统一检查 `runtime_capabilities` 的 `management:persisted-config-revision-v2`；自定义字段清单 117→116（90 迁移 + 26 原生高位），Go 绑定与 schema provenance 同步。字段清单 4/4、core 编译、web client 18 项、Go build/test 通过；OHOS crate 在 Windows 上因既有 Unix-only import 无法编译，未验证。
 - 批次 5a（文档/CI 遗留）部分完成，提交 `c3a0e7f6`：9 份带日期的过程/验证文档归档到 `docs/archive/`（只互相引用，相对链接保持有效）；CI 旧工作流 artifact 迁移 shim 加了 2027-01-31 的到期删除说明。
 - 批次 4（其余重复表达）与批次 5（`TemporaryDevices.vue` 瘦身、`dashboard.test.mjs` 外移、剩余 CI 清理）待做。
