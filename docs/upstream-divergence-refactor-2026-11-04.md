@@ -13,7 +13,9 @@
 ## 进度
 
 - 批次 1（内联测试外移 + 死代码）已完成，提交 `7ed8e217`。`cargo check --tests` 覆盖 easytier、easytier-core、easytier-web、easytier-gui；定向测试 service 38、client_manager 18、web 全量 407、GUI 4、composition 37、core 持久化管理 15 全部通过。`server_protocol_for_connected` 经复核**不能删**（两个 trait object 类型不同），评估文档已更正。
-- 批次 2–5 待做。
+- 批次 2（整块实现外移）已完成，提交 `5cf55117`。peer 调度器 570 行、process 生命周期约 1,100 行、service 控制台 API 565 行、client 地理位置/变更守卫 600 行、GUI 共享配置 90 行移入新文件；上游文件新增行 35,426→32,619，hunk 3,788→3,753。定向测试 core 管理 89、peer 64、service 38、client 18、GUI 4 全部通过，`easytier --tests` 编译通过。
+- 批次 3a（WebSocket 伪装头外移）已完成。`websocket.rs` 约 45 行头装配移入 `websocket/disguise.rs` 的 `apply_client_headers`，30 项 websocket 测试通过。socket 保护包装复核后**撤销**（所有调用点都消费 registration）。`virtual_nic` 的 netns 装饰器经评估**暂缓**：它改的是 setns + spawn_blocking 的线程局部语义，当前环境无法跑 Linux netns 测试，风险高于可量化收益；需要 Linux 环境单独验证。
+- 批次 4（重复表达收敛）与批次 5（前端/CI/文档遗留）待做。
 
 ## 一、比较口径
 
@@ -123,9 +125,9 @@
 
 建议：给 `VpnRoutePlan` 增加 `overlay_routes` 字段，桌面 updater 和 `mobile_tun_claims`（`virtual_nic.rs:1909`）都用同一份 plan；恢复 `CoreEvent::ProxyCidrsUpdated` 过滤和 `proxy_cidr_diff`（`packet_plane.rs:74` 仍在），去掉 5 秒轮询。这样既减少改写，也避免空转唤醒和“事件来了却不用”的怪逻辑。这是行为上的小优化，需 Linux netns 测试确认。
 
-### 5.4 `protect_native_socket` 的签名扩散
+### 5.4 `protect_native_socket` 的签名（复核后不改）
 
-`easytier/src/socket_protector.rs:331-352` 为了返回 `Option<Arc<SocketRegistration>>` 改了 7 个调用点（`socket/tcp.rs:262,344`、`socket/udp.rs:63`、`tunnel/common.rs:242`、`gateway/icmp_proxy.rs:45` 等）。保留原签名薄包装，新增 `protect_native_socket_registered` 给真正需要持有 registration 的 3 处，其余调用点不用跟着改。
+`easytier/src/socket_protector.rs:331-352` 返回 `Option<Arc<SocketRegistration>>`，看起来是“签名扩散”，但复核发现 **6 个调用点全部消费 registration**：`socket/tcp.rs:262,344` 把它交给 `ProtectedSocket::new`，`tunnel/common.rs:242` 同样保留保护生命周期，`gateway/icmp_proxy.rs:45` 与 `instance/vpn_routes.rs:1528,1557` 用它维持 socket 作用域。`socket/tcp.rs:480` 的测试还断言 `registration` 必须为 `Some`。因此原签名是正确的，不能改成丢弃返回值；本项从重构清单移除。
 
 ### 5.5 能力声明的双表达
 

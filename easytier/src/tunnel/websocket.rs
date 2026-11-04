@@ -285,7 +285,7 @@ where
 
     let disguise = WssDisguise::from_url(&remote_url);
     let traffic_style = TrafficStyle::from_url(&remote_url);
-    let mut client = if disguise.enabled() {
+    let base_client = if disguise.enabled() {
         let request_uri = disguise
             .request_uri(&remote_url)
             .map_err(|error| TunnelError::InvalidProtocol(error.to_string()))?;
@@ -298,51 +298,8 @@ where
         ClientBuilder::from_uri(http::Uri::try_from(remote_url.to_string()).unwrap())
     }
     .max_headers(128);
-    if disguise.enabled() {
-        client = client
-            .add_header(
-                http::header::USER_AGENT,
-                disguise.user_agent().parse().map_err(|_| {
-                    TunnelError::InvalidProtocol("invalid User-Agent header".to_owned())
-                })?,
-            )
-            .map_err(websocket_error)?;
-        client = client
-            .add_header(
-                http::header::ACCEPT_LANGUAGE,
-                disguise.accept_language().parse().map_err(|_| {
-                    TunnelError::InvalidProtocol("invalid Accept-Language header".to_owned())
-                })?,
-            )
-            .map_err(websocket_error)?;
-        client = client
-            .add_header(
-                http::header::ACCEPT,
-                disguise.accept().parse().map_err(|_| {
-                    TunnelError::InvalidProtocol("invalid Accept header".to_owned())
-                })?,
-            )
-            .map_err(websocket_error)?;
-        if let Some(cache_control) = disguise.cache_control() {
-            client = client
-                .add_header(
-                    http::header::CACHE_CONTROL,
-                    cache_control.parse().map_err(|_| {
-                        TunnelError::InvalidProtocol("invalid Cache-Control header".to_owned())
-                    })?,
-                )
-                .map_err(websocket_error)?;
-        }
-    }
+    let client = disguise::apply_client_headers(base_client, &disguise)?;
     let padding_offered = disguise.padding_enabled();
-    if padding_offered {
-        client = client
-            .add_header(
-                http::HeaderName::from_static(TRANSPORT_FEATURES_HEADER),
-                http::HeaderValue::from_static(WS_TEXT_PADDING_V1),
-            )
-            .map_err(websocket_error)?;
-    }
 
     let stream: MaybeTlsStream<S> = if is_wss {
         let tls = tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));

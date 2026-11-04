@@ -4,6 +4,10 @@ use std::{net::Ipv6Addr, time::Duration};
 
 use crate::tunnel::insecure_tls::sni_from_url;
 use crate::tunnel::traffic_disguise::TrafficStyle;
+use easytier_core::tunnel::TunnelError;
+use tokio_websockets::ClientBuilder;
+
+use super::codec::{TRANSPORT_FEATURES_HEADER, WS_TEXT_PADDING_V1};
 
 const DEFAULT_BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const DEFAULT_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
@@ -255,6 +259,62 @@ impl WssDisguise {
     pub fn enabled(&self) -> bool {
         self.enabled
     }
+}
+
+/// Applies the disguise headers to an already configured client builder.
+///
+/// The caller keeps ownership of the request target and `max_headers` setup so
+/// an undisguised URL stays on the official handshake path; this only adds the
+/// browser-like headers and then the padding capability offer.
+pub(super) fn apply_client_headers<'a>(
+    mut client: ClientBuilder<'a>,
+    disguise: &WssDisguise,
+) -> Result<ClientBuilder<'a>, TunnelError> {
+    if disguise.enabled() {
+        client = client
+            .add_header(
+                http::header::USER_AGENT,
+                disguise.user_agent().parse().map_err(|_| {
+                    TunnelError::InvalidProtocol("invalid User-Agent header".to_owned())
+                })?,
+            )
+            .map_err(super::websocket_error)?;
+        client = client
+            .add_header(
+                http::header::ACCEPT_LANGUAGE,
+                disguise.accept_language().parse().map_err(|_| {
+                    TunnelError::InvalidProtocol("invalid Accept-Language header".to_owned())
+                })?,
+            )
+            .map_err(super::websocket_error)?;
+        client = client
+            .add_header(
+                http::header::ACCEPT,
+                disguise.accept().parse().map_err(|_| {
+                    TunnelError::InvalidProtocol("invalid Accept header".to_owned())
+                })?,
+            )
+            .map_err(super::websocket_error)?;
+        if let Some(cache_control) = disguise.cache_control() {
+            client = client
+                .add_header(
+                    http::header::CACHE_CONTROL,
+                    cache_control.parse().map_err(|_| {
+                        TunnelError::InvalidProtocol("invalid Cache-Control header".to_owned())
+                    })?,
+                )
+                .map_err(super::websocket_error)?;
+        }
+    }
+    if disguise.padding_enabled() {
+        client = client
+            .add_header(
+                http::HeaderName::from_static(TRANSPORT_FEATURES_HEADER),
+                http::HeaderValue::from_static(WS_TEXT_PADDING_V1),
+            )
+            .map_err(super::websocket_error)?;
+    }
+    Ok(client)
 }
 
 #[cfg(test)]
