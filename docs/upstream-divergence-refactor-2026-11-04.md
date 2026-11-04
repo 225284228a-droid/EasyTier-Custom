@@ -4,11 +4,16 @@
 
 - 定制代码的约 56%（49,337 行）在新增文件里，这部分基本不产生上游合并冲突；真正要处理的是塞进 **311 个上游文件**的 39,242 行新增和 8,632 行删除。
 - 按 hunk 分散度看，**97 个上游文件有 10 个以上 hunk**，118 个只有 1–3 个。合并成本集中在最前面的 6 个文件（约 8,900 行 churn）。
-- 最便宜的一刀是**把内联测试搬出官方文件**：约 4,100 行、约 130 个 hunk，行为完全不变，涉及 `service.rs`、`client_manager/mod.rs`、GUI `lib.rs`、`composition.rs`、core `instance/tests.rs`、web `main.rs`。
+- 最便宜的一刀是**把内联测试搬出官方文件**：批次 1 已实测搬出 3,864 行、约 42 个 hunk，行为完全不变，涉及 `service.rs`、`client_manager/mod.rs`、GUI `lib.rs`、`composition.rs`、core `instance/tests.rs`、web `main.rs`。
 - 第二刀是**把整块自定义实现外移成子模块**：`peer.rs` 顶部 570 行调度器、`process_rpc.rs` 约 600 行配置目录生命周期、`service.rs` 491 行控制台 API、`client_manager` 约 600 行地理位置逻辑、`virtual_nic.rs` 的 netns 装饰器、GUI 共享配置目录等，合计约 3,000 行。
 - 第三刀是**去掉重复表达**：伪装策略有三份同义推导；两套 feature offer 编解码；路由有“事件 + 5 秒轮询”和 `VpnRoutePlan` 两套来源；能力有布尔和字符串两套声明；目录扫描有三份实现。
 - 遗留包袱主要在 Web 前端和 CI/文档：`TemporaryDevices.vue` 仍是一整页官方网络详情；CI fixture 仍引用已删工作流；`go-artifacts` 自动 push 生成物制造提交噪音；9 份带日期的过期文档没有归档。
 - **不建议**为了减少 diff 去动打洞状态机、HTTP3/WSS 帧处理、VPN 路由管理器本体、中央管理的 mesh 模块、proto 高位编号机制和已提交的 Go/WASM 生成物。这些是真实功能或协议兼容，抽离只会制造更差的边界。
+
+## 进度
+
+- 批次 1（内联测试外移 + 死代码）已完成，提交 `7ed8e217`。`cargo check --tests` 覆盖 easytier、easytier-core、easytier-web、easytier-gui；定向测试 service 38、client_manager 18、web 全量 407、GUI 4、composition 37、core 持久化管理 15 全部通过。`server_protocol_for_connected` 经复核**不能删**（两个 trait object 类型不同），评估文档已更正。
+- 批次 2–5 待做。
 
 ## 一、比较口径
 
@@ -47,23 +52,23 @@
 
 ### 3.1 内联测试搬出官方文件
 
-| 文件 | 测试区 | hunk | 行数 | 做法 |
-| --- | --- | ---: | ---: | --- |
-| `easytier-web/src/central_network/service.rs` | `service.rs:2017` 起 `mod tests` | 60/108 | +1,000/−136 | 改为 `#[cfg(test)] mod tests;`，新建 `central_network/service/tests.rs` |
-| `easytier-web/src/client_manager/mod.rs` | `mod.rs:1264` 起 | 21/52 | +606/−10 | 新建 `client_manager/tests.rs` |
-| `easytier-gui/src-tauri/src/lib.rs` | `mod managed_restore_tests`（559–1084） | 20/126 | +414/−74 | 新建 `src-tauri/src/managed_restore_tests.rs` |
-| `easytier/src/instance/composition.rs` | 文件末尾追加 | 1 | +1,306 | 新建 `instance/composition_tests.rs`；正式代码只剩 11 行 |
-| `easytier-core/src/instance/tests.rs` | 末尾追加 + 25 个 fixture 散点 | 26 | +674 | 追加块移入 `instance/tests/vpn_exit.rs`，fixture 散点保留 |
-| `easytier-web/src/main.rs` | 最后一个 hunk（702 起） | 1 | +127 | 新建 `tests/main.rs` |
+| 文件 | 测试区 | 实测搬出 | 做法 |
+| --- | --- | ---: | --- |
+| `easytier-web/src/central_network/service.rs` | `service.rs:2017` 起 `mod tests` | 16 个定制测试 + 3 个 helper，1,055 行；hunk 108→68 | 新建 `central_network/service/tests/custom_tests.rs`，官方测试留在原处 |
+| `easytier-web/src/client_manager/mod.rs` | `mod.rs:1264` 起 | 10 个定制测试 + 6 个 helper，602 行；hunk 52→50 | 新建 `client_manager/tests/custom_tests.rs` |
+| `easytier-gui/src-tauri/src/lib.rs` | `mod managed_restore_tests`（559–658） | 4 个测试，98 行 | 新建 `src-tauri/src/managed_restore_tests.rs` |
+| `easytier/src/instance/composition.rs` | 文件末尾追加 | 1 个参数化测试，1,305 行 | 新建 `instance/composition/tests/custom_tests.rs` |
+| `easytier-core/src/instance/tests.rs` | `portable_runtime` 内追加 | 15 个测试，666 行 | 新建 `instance/tests/portable_runtime/persisted_management.rs` |
+| `easytier-web/src/main.rs` | 文件末尾测试模块 | 8 个测试，136 行 | 新建 `src/tests/main.rs`，用 `#[path]` 挂载 |
 
-合计约 **4,100 行、约 130 个 hunk**。注意这不会减少仓库总 diff，但会让 6 个上游文件重新接近官方形状。仓库已有先例：`instance/mod.rs` 把 2,606 行测试放在 `persisted_config_tests.rs`。
+合计 **3,864 行、约 42 个 hunk**。这不会减少仓库总 diff，但把 6 个上游文件里的新增行从 39,242 降到 35,426，hunk 从 3,830 降到 3,788。仓库已有先例：`instance/mod.rs` 把 2,606 行测试放在 `persisted_config_tests.rs`。
 
-实现注意：测试里的 `super::*` 私有 helper（例如 `service.rs` 的 `generated_network_name`）需要 `pub(crate)`，或留在原文件由测试 `use super::...`。
+实现注意：测试里的 `super::*` 私有 helper（例如 `service.rs` 的 `generated_network_name`）需要 `pub(crate)`，或留在原文件由测试 `use super::...`。实际搬迁中 `service.rs` 的两个基线测试在 HEAD 里早已被定制版替换，替换版按定制测试移出，官方文件保留 22 个官方测试。
 
 ### 3.2 删除死代码和推测性抽象
 
-- `easytier/src/instance/composition.rs:247-254`：`server_protocol_for_connected` 与 `server_protocol` 由同一个 `runtime_server_protocol_upgrader` 构造，注释自承 “currently identical”；`easytier-core/src/instance/mod.rs:757` 已有 `None` 回退。删掉这个定制字段和两行赋值，`HostAdapters` 回到官方形状。
-- `easytier/src/tunnel/protocol/adapters/websocket.rs:76-80,105-109`：`unwrap_or_else(|| "speedtest")` 不可达，`WebSocketAdapter` 只在 `client_adapter`/`server_adapter` 构造，且都传 `Some(global_ctx)`。删约 10 行。
+- `easytier/src/instance/composition.rs:247-254`：`server_protocol_for_connected` 与 `server_protocol` 由同一个 `runtime_server_protocol_upgrader` 构造，注释称 “currently identical”。**复核后确认不能删**：两个字段的 trait object 类型分别是 `ServerProtocolUpgrader<HostAcceptedTcpSocket<H>>` 和 `ServerProtocolUpgrader<<H as VirtualTcpSocketFactory>::Socket>`，同一个 concrete upgrader 必须被调用两次并分别强转，不能共用一个 `Arc`。“identical” 指的是实现逻辑相同，不是同一个对象。保留现状，并在注释里说明类型原因。
+- `easytier/src/tunnel/protocol/adapters/websocket.rs:76-80,105-109`：`unwrap_or_else(|| "speedtest")` 不可达，`WebSocketAdapter` 只在 `client_adapter`/`server_adapter` 构造，且都传 `Some(global_ctx)`。已改为 `expect(...)`，减少两处兜底。
 - `easytier-core/src/peers/conn/peer.rs:403`：`disguised_tunnel_scheme` 带 `#[cfg(test)]` 且只被 `peer/tests.rs` 使用，移进测试文件。
 
 ### 3.3 需要产品确认的两处“兼容层”
@@ -185,28 +190,29 @@
 
 ## 八、收益估算
 
-| 指标 | 现在 | P0+P1 后（估） | P2/P3 后（估） |
+| 指标 | 原始 | 批次 1 后 | P1 后（估） |
 | --- | ---: | ---: | ---: |
-| 改写上游文件的新增行 | 39,242 | ~31,000 | ~29,000 |
-| 改写上游文件的总 churn | ~47,900 | ~39,500 | ~37,000 |
-| 前 6 大文件 churn | ~8,900 | ~4,400 | ~4,000 |
-| hunk 总数（改写文件） | 3,830 | ~3,650 | ~3,600 |
-| 仓库总新增行 | 88,745 | 88,700 | ~86,000–87,000 |
+| 改写上游文件的新增行 | 39,242 | 35,426 | ~30,000 |
+| 改写上游文件的总 churn | ~47,900 | ~44,100 | ~38,000 |
+| 前 6 大文件 churn | ~8,900 | ~7,400 | ~4,900 |
+| hunk 总数（改写文件） | 3,830 | 3,788 | ~3,700 |
+| 仓库总新增行 | 88,745 | 89,038 | 88,500–89,000 |
 
 说明：
 
-- P0/P1 主要是**搬家**，仓库总行数几乎不变，但官方文件里的散点会大幅减少，前 6 个文件的 churn 约减半。
+- 批次 1 是**搬家**：仓库总新增行略增（新文件多了模块声明和注释），但上游文件里的新增行少了 3,816 行，前 6 个文件的 churn 少了约 1,500。
+- P1 继续外移整块实现后，上游文件新增行预计再少约 5,000，前 6 大文件 churn 回到约 4,900。
 - P2/P3 才真正减少实现体量（重复逻辑、`TemporaryDevices.vue`、CI shim、过期文档），预计净少 2,000–3,000 行，且不删功能。
 - hunk 数的下降看起来不惊人，是因为 118 个文件只有 1–3 个 hunk；真正的收益在“高 churn 文件回到接近官方形状”。
 
 ## 九、建议批次与验证
 
-### 批次 1（零风险，先合）
+### 批次 1（已完成，`7ed8e217`）
 
 1. 搬 6 处内联测试（service、client_manager、GUI lib、composition、core instance tests、web main）。
-2. 删 `server_protocol_for_connected` 双 Arc、websocket adapter 不可达默认分支、`disguised_tunnel_scheme` 测试专用函数。
+2. 删 websocket adapter 的不可达默认分支、`disguised_tunnel_scheme` 测试专用函数（后续批次）；`server_protocol_for_connected` 复核后保留。
 
-验证：测试数量与现在一致；`cargo nextest`、web 后端、GUI 测试、前端测试各跑一遍；`git diff --stat` 确认官方文件缩减。
+验证：4 个 crate `--tests` 编译；service 38、client_manager 18、web 全量 407、GUI 4、composition 37、core 15 通过；`cargo fmt --check` 通过。
 
 ### 批次 2（数据面，最热路径）
 
