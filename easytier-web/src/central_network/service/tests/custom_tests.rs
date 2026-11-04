@@ -4,6 +4,10 @@
 //! part of the upstream file, so they live here to keep that file close to
 //! its upstream shape and reduce the merge surface.
 
+use crate::central_network::{
+    advanced::AdvancedChange, mesh_network::Preset, network_acl::NetworkAcl,
+};
+
 use super::*;
 
 #[tokio::test]

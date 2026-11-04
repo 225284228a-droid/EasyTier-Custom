@@ -13,9 +13,17 @@ use crate::{
     tunnel::ring::{RingTunnel, create_ring_socket_pair},
 };
 
-use super::{Peer, PeerConnCloseEvent, conn_latency_sort_key, disguised_tunnel_scheme};
+use super::{Peer, PeerConnCloseEvent, conn_latency_sort_key};
 
 use crate::peers::conn::peer_conn::PeerConnId;
+
+fn disguised_tunnel_scheme(tunnel_type: &str) -> Option<&'static str> {
+    match tunnel_type.rsplit('-').next() {
+        Some("wss") => Some("wss"),
+        Some("http3") => Some("http3"),
+        _ => None,
+    }
+}
 
 #[test]
 fn protocol_preference_wins_only_after_liveness_is_verified() {
