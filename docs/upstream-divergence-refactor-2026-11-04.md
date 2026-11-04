@@ -14,7 +14,8 @@
 
 - 批次 1（内联测试外移 + 死代码）已完成，提交 `7ed8e217`。`cargo check --tests` 覆盖 easytier、easytier-core、easytier-web、easytier-gui；定向测试 service 38、client_manager 18、web 全量 407、GUI 4、composition 37、core 持久化管理 15 全部通过。`server_protocol_for_connected` 经复核**不能删**（两个 trait object 类型不同），评估文档已更正。
 - 批次 2（整块实现外移）已完成，提交 `5cf55117`。peer 调度器 570 行、process 生命周期约 1,100 行、service 控制台 API 565 行、client 地理位置/变更守卫 600 行、GUI 共享配置 90 行移入新文件；上游文件新增行 35,426→32,619，hunk 3,788→3,753。定向测试 core 管理 89、peer 64、service 38、client 18、GUI 4 全部通过，`easytier --tests` 编译通过。
-- 批次 3a（WebSocket 伪装头外移）已完成。`websocket.rs` 约 45 行头装配移入 `websocket/disguise.rs` 的 `apply_client_headers`，30 项 websocket 测试通过。socket 保护包装复核后**撤销**（所有调用点都消费 registration）。`virtual_nic` 的 netns 装饰器经评估**暂缓**：它改的是 setns + spawn_blocking 的线程局部语义，当前环境无法跑 Linux netns 测试，风险高于可量化收益；需要 Linux 环境单独验证。
+- 批次 3a（WebSocket 伪装头外移）已完成，提交 `48528934`。`websocket.rs` 约 45 行头装配移入 `websocket/disguise.rs` 的 `apply_client_headers`，30 项 websocket 测试通过。socket 保护包装复核后**撤销**（所有调用点都消费 registration）。`virtual_nic` 的 netns 装饰器经评估**暂缓**：它改的是 setns + spawn_blocking 的线程局部语义，当前环境无法跑 Linux netns 测试，风险高于可量化收益；需要 Linux 环境单独验证。
+- 三批累计：上游文件新增行 39,242→32,576（约 −17%），hunk 3,830→3,753，最热的 peer/service/process/client 四个文件已从上千行 churn 降到数百行。剩余大头是生成物（Go/WASM）、GUI 生命周期、hole punch、virtual_nic、`api_input`/`toml` 配置字段和前端测试。
 - 批次 4（重复表达收敛）与批次 5（前端/CI/文档遗留）待做。
 
 ## 一、比较口径
