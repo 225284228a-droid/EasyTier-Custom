@@ -3,6 +3,6 @@
 package proto
 
 const (
-	EasyTierCommit = "05bf25133ab1f3abf911c03b7dcdc2ab3acbbf4c"
-	SchemaSHA256   = "600df7a6c3043094a92840a295ef8ebbe6e4c15c40663297a57596de40ab9c22"
+	EasyTierCommit = "bd987b270ed449179db5f295cc2e6eebaea49518"
+	SchemaSHA256   = "4e1bebe92811950031250d731571f0d74a86b92d8aeb88d0c50d5057253b6286"
 )
