@@ -77,7 +77,7 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for WebSocketAdapter {
             .global_ctx
             .as_ref()
             .map(|ctx| ctx.config.get_traffic_disguise())
-            .unwrap_or_else(|| "speedtest".to_owned());
+            .expect("WebSocketAdapter is always constructed with a global context");
         let requested_url = if requested_url.scheme() == "wss" {
             apply_default(requested_url, &style)
         } else {
@@ -106,7 +106,7 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for WebSocketAdapter {
             .global_ctx
             .as_ref()
             .map(|ctx| ctx.config.get_traffic_disguise())
-            .unwrap_or_else(|| "speedtest".to_owned());
+            .expect("WebSocketAdapter is always constructed with a global context");
         let local_url = if local_url.scheme() == "wss" {
             apply_default(local_url, &style)
         } else {
