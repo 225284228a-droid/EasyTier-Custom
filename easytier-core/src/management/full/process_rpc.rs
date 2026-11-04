@@ -36,6 +36,7 @@ use super::{
     config_source_to_rpc, network_instance_running_info,
 };
 
+mod config_rpc;
 mod lifecycle;
 
 #[async_trait::async_trait]
