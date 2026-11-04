@@ -39,7 +39,7 @@
 ### 定制 protobuf 字段编号与版本兼容
 
 - 2026-10-16 合并时，所有原先使用低位编号的 Custom protobuf 字段均迁移到高位：新编号为原 tag 加 `50000`；若该编号已被占用，则每次再加 `1000`，直到找到空闲编号。已有高位编号保持不变。
-- 该次共迁移 100 个低位字段，保留 9 个已有高位字段；完整旧/新编号见 [Custom 字段清单](../easytier-proto/tests/custom-fields.json)，官方字段编号、类型和保留状态见 [官方 schema 快照](../easytier-proto/tests/upstream-fields.json)。descriptor 测试与 CI 会检查清单完整性和编号分配。
+- 该次共迁移 91 个低位字段，保留 26 个已有高位字段，清单共 117 条；完整旧/新编号见 [Custom 字段清单](../easytier-proto/tests/custom-fields.json)，官方字段编号、类型和保留状态见 [官方 schema 快照](../easytier-proto/tests/upstream-fields.json)。descriptor 测试与 CI 会检查清单完整性和编号分配。
 - 不保留旧低位编号的双读写兼容路径。使用这些扩展字段通信的定制 Core、Web、GUI、Go 和 JS 组件必须同步升级到对应版本；新版本不再识别旧定制 tag，混用时定制字段无法正确传递。下文的能力降级与旧接口说明不包含迁移前的定制协议版本。
 - 此迁移只调整 protobuf 线上的字段编号；对应 TOML、CLI 和 JSON 字段名保持不变。
 
