@@ -1,3 +1,5 @@
+mod startup;
+
 use crate::{
     ShellType,
     common::{
@@ -5,13 +7,13 @@ use crate::{
             ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
             LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
             VpnPortalClientConfig, VpnPortalConfig, add_proxy_network_to_config,
-            load_config_from_file, load_toml_config_from_path,
-            load_toml_config_from_str_with_source, parse_mapped_listener_urls,
+            load_toml_config_from_path, load_toml_config_from_str_with_source,
+            parse_mapped_listener_urls,
         },
         constants::EASYTIER_VERSION,
         log,
     },
-    instance::factory::{NativeInstanceManager, native_cli_instance_manager},
+    instance::factory::native_cli_instance_manager,
     proto::common::{CompressionAlgoPb, Flags, FlagsPatch, SecureModeConfig},
     rpc_service::ApiRpcServer,
     utils::panic::setup_panic_handler,
@@ -43,6 +45,7 @@ use crate::tunnel::IpScheme;
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{Access as _, AsName as _, epoch, stats};
 use serde::Serialize;
+use startup::{prepare_startup_configs, start_prepared_configs};
 
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
@@ -1280,159 +1283,6 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
         .expect("set service status fail");
 
     win_service_event_loop(stop_notify_recv, cli, status_handle);
-}
-
-struct StartupConfigFile {
-    path: PathBuf,
-    source: ConfigFileSource,
-    config: TomlConfigLoader,
-    control: ConfigFileControl,
-    original_contents: Option<Vec<u8>>,
-}
-
-#[derive(Default)]
-struct StartupConfigs {
-    files: Vec<StartupConfigFile>,
-    explicit_file_count: usize,
-    directory: crate::instance::config_dir_startup::StartupConfigs,
-}
-
-impl StartupConfigs {
-    fn reconcile_state(&self, state: &InstanceStateStore) {
-        self.directory.reconcile_state(state)
-    }
-}
-
-async fn prepare_startup_configs(
-    explicit_files: &[PathBuf],
-    config_dir: Option<&PathBuf>,
-    disable_env_parsing: bool,
-) -> anyhow::Result<StartupConfigs> {
-    let mut startup = StartupConfigs {
-        explicit_file_count: explicit_files.len(),
-        ..Default::default()
-    };
-    // Explicit --config-file errors retain their fatal startup behavior.
-    for path in explicit_files {
-        let original_contents = if path.as_os_str() == "-" {
-            None
-        } else {
-            Some(
-                tokio::fs::read(path)
-                    .await
-                    .with_context(|| format!("failed to read config file {}", path.display()))?,
-            )
-        };
-        let (config, control) = match original_contents.as_ref() {
-            Some(raw) => {
-                crate::common::config::load_config_from_contents(
-                    path,
-                    String::from_utf8(raw.clone())?,
-                    config_dir,
-                    disable_env_parsing,
-                )
-                .await?
-            }
-            None => load_config_from_file(path, config_dir, disable_env_parsing).await?,
-        };
-        startup.files.push(StartupConfigFile {
-            path: path.clone(),
-            source: ConfigFileSource::CliConfigFile,
-            config,
-            control,
-            original_contents,
-        });
-    }
-    let Some(directory) = config_dir else {
-        return Ok(startup);
-    };
-    // The config directory is scanned with the shared isolation policy
-    // (also used by the GUI local backend): invalid entries and duplicate
-    // instance UUIDs are skipped instead of failing the startup.
-    let mut entries = crate::instance::config_dir_startup::load_config_dir_entries(
-        directory,
-        disable_env_parsing,
-    )
-    .await?;
-    startup
-        .files
-        .extend(entries.files.drain(..).map(|file| StartupConfigFile {
-            path: file.path,
-            source: ConfigFileSource::ConfigDir,
-            config: file.config,
-            control: file.control,
-            original_contents: file.original_contents,
-        }));
-    startup.directory = entries;
-    Ok(startup)
-}
-
-fn start_prepared_configs(
-    startup: &mut StartupConfigs,
-    manager: &NativeInstanceManager,
-    state: &InstanceStateStore,
-    options: &NetworkOptions,
-    mut create_cli_network: bool,
-) -> anyhow::Result<bool> {
-    for StartupConfigFile {
-        path,
-        source,
-        config,
-        mut control,
-        original_contents,
-    } in startup.files.drain(..)
-    {
-        let result = (|| -> anyhow::Result<()> {
-            if source == ConfigFileSource::ConfigDir {
-                manager.register_managed_config(config.get_id(), control.clone())?;
-                if !state.is_enabled(&config.get_id()) {
-                    if let Some(contents) = original_contents.as_deref() {
-                        manager
-                            .local_config_catalog()
-                            .acknowledge_file(&path, contents);
-                    }
-                    log::info!(config_file = ?path, id = %config.get_id(), "Skipping config stopped before shutdown; enable it from the web console to run again");
-                    return Ok(());
-                }
-            }
-            if options.can_merge(
-                &config,
-                source,
-                startup.explicit_file_count,
-                startup.directory.config_dir_file_count,
-            ) {
-                options
-                    .merge_into(&config)
-                    .with_context(|| format!("failed to merge config from cli: {path:?}"))?;
-                create_cli_network = false;
-                control.set_read_only(true);
-                control.set_no_delete(true);
-            }
-            log::info!(
-                "Starting easytier from config file {:?}({:?}) with config:\n############### TOML ###############\n{}\n-----------------------------------\n",
-                path,
-                control.permission,
-                config.dump_redacted()
-            );
-            if source == ConfigFileSource::ConfigDir {
-                manager.register_managed_config(config.get_id(), control.clone())?;
-            }
-            manager.run_network_instance(config, control)?;
-            if let Some(contents) = original_contents.as_deref() {
-                manager
-                    .local_config_catalog()
-                    .acknowledge_file(&path, contents);
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            if source == ConfigFileSource::CliConfigFile {
-                return Err(error);
-            }
-            log::warn!(%error, config_file = ?path, "Skipping config directory entry that could not be started");
-        }
-    }
-    Ok(create_cli_network)
 }
 
 async fn run_main(mut cli: Cli) -> anyhow::Result<()> {
