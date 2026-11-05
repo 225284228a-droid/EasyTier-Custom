@@ -94,6 +94,8 @@ watch(runningDevices, async devices => {
     }
 }, { immediate: true });
 const virtualIp = (member: NetworkMember) => member.running ? virtualIps.value[member.key] : undefined;
+const stateOf = (member: NetworkMember) => !member.online ? 'offline' : member.running ? 'running' : 'stopped';
+const stateLabel = (member: NetworkMember) => t(`web.mesh_network.${stateOf(member)}`);
 
 // --- adding devices: they join with the core settings and the preset ---
 
@@ -174,29 +176,32 @@ const candidateName = (deviceId: string) => {
         </div>
         <div v-else-if="viewMode === 'card'" class="member-cards">
             <article v-for="member in members" :key="member.key" class="member-card" :class="{ offline: !member.online, selected: selectedKeys.includes(member.key) }">
-                <div class="member-card-title">
+                <header class="member-card-head">
                     <Checkbox v-model="selectedKeys" :value="member.key" :input-id="`member-${member.key}`" :disabled="!actionable(member)"
                         :aria-label="deviceName(member)" />
-                    <button class="entity-link min-w-0" @click="openStatus(member)">
-                        <span class="status-dot" :class="member.online ? 'online' : 'offline'"></span>
-                        <span class="preview-name truncate">{{ deviceName(member) }}</span>
-                    </button>
-                </div>
-                <div class="member-tags">
-                    <Tag v-if="!member.online" :value="t('web.mesh_network.offline')" severity="secondary" />
-                    <Tag v-else :value="member.running ? t('web.mesh_network.running') : t('web.mesh_network.stopped')" :severity="member.running ? 'success' : 'secondary'" />
-                    <Tag v-if="member.pending" :value="t('web.mesh_network.pending')" severity="info" v-tooltip.top="t('web.mesh_network.pending_hint')" />
-                    <Tag v-if="member.credential" :value="t('web.mesh_network.temporary')" severity="contrast" />
+                    <span class="member-icon" aria-hidden="true"><i class="pi pi-server"></i></span>
+                    <div class="member-identity">
+                        <button class="member-name" :title="deviceName(member)" @click="openStatus(member)">{{ deviceName(member) }}</button>
+                        <span v-if="member.device.alias && member.device.hostname" class="member-host mono-value">{{ member.device.hostname }}</span>
+                    </div>
+                    <span class="member-state" :class="stateOf(member)">{{ stateLabel(member) }}</span>
+                </header>
+                <dl class="member-facts">
+                    <div><dt>{{ t('web.mesh_network.virtual_ip') }}</dt><dd class="mono-value">{{ virtualIp(member) || '—' }}</dd></div>
+                    <div><dt>{{ t('web.device.version') }}</dt><dd>{{ member.device.easytier_version ? `v${member.device.easytier_version.split('-')[0]}` : '—' }}</dd></div>
+                    <div v-if="!member.online && member.device.last_seen" class="member-fact-wide"><dt>{{ t('web.device.last_seen') }}</dt>
+                        <dd>{{ member.device.last_seen.replace('T', ' ').slice(0, 16) }}</dd></div>
+                </dl>
+                <div v-if="member.pending || member.credential || member.locked || (!editable(member) && member.online)" class="member-flags">
+                    <Tag v-if="member.pending" icon="pi pi-clock" :value="t('web.mesh_network.pending')" severity="info" v-tooltip.top="t('web.mesh_network.pending_hint')" />
+                    <Tag v-if="member.credential" icon="pi pi-id-card" :value="t('web.mesh_network.temporary')" severity="secondary" />
                     <Tag v-if="member.locked" icon="pi pi-lock" :value="t('web.mesh_network.locked')" severity="warn" v-tooltip.top="t('advanced_locked_hint')" />
-                    <Tag v-if="!editable(member) && member.online" :value="t('web.mesh_network.readonly')" severity="warn" />
+                    <Tag v-if="!editable(member) && member.online" icon="pi pi-eye" :value="t('web.mesh_network.readonly')" severity="warn" />
                 </div>
-                <div class="member-facts">
-                    <span v-if="virtualIp(member)" class="mono-value">{{ virtualIp(member) }}</span>
-                    <span v-if="member.device.easytier_version">v{{ member.device.easytier_version.split('-')[0] }}</span>
-                </div>
-                <div class="member-card-actions">
+                <footer class="member-card-actions">
+                    <Button icon="pi pi-chart-line" :label="t('web.mesh_network.status')" text size="small" severity="secondary" @click="openStatus(member)" />
                     <Button icon="pi pi-pencil" :label="t('web.mesh_network.edit_config')" text size="small" severity="secondary" @click="openEditor(member)" />
-                </div>
+                </footer>
             </article>
         </div>
         <DataTable v-else v-model:selection="tableSelection" :value="members" data-key="key" class="console-table" size="small" scrollable
@@ -258,15 +263,41 @@ const candidateName = (deviceId: string) => {
 .members-hint { margin: 0; padding: 0 18px 12px; font-size: 13px; color: var(--p-text-muted-color); }
 .member-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; padding: 0 18px 18px; }
 .member-card {
-    display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 16px;
-    border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-panel);
+    display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+    border: 1px solid var(--console-border); border-radius: 10px; background: var(--console-panel);
+    transition: border-color .15s, box-shadow .15s;
 }
-.member-card.offline { opacity: .72; }
-.member-card.selected { border-color: var(--p-primary-color); }
-.member-card-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.member-tags { display: flex; flex-wrap: wrap; gap: 4px; }
-.member-facts { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--p-text-muted-color); }
-.member-card-actions { display: flex; justify-content: flex-end; padding-top: 8px; border-top: 1px solid var(--console-border); }
+.member-card:hover { border-color: color-mix(in srgb, var(--p-primary-color) 35%, var(--console-border)); }
+.member-card.selected { border-color: var(--p-primary-color); box-shadow: 0 0 0 1px var(--p-primary-color); }
+.member-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 14px 14px 12px; }
+.member-icon {
+    display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px;
+    border: 1px solid var(--console-border); border-radius: 8px; color: var(--p-primary-color);
+    background: color-mix(in srgb, var(--p-primary-color) 7%, transparent); font-size: 14px;
+}
+.member-card.offline .member-icon { color: var(--console-muted); background: color-mix(in srgb, var(--p-text-color) 5%, transparent); }
+.member-identity { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.member-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 14px; font-weight: 600; }
+.member-name:hover { color: var(--p-primary-color); }
+.member-name:focus-visible { outline: 2px solid var(--p-primary-color); outline-offset: 2px; border-radius: 4px; }
+.member-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--console-muted); font-size: 11px; }
+.member-state {
+    display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 0 9px; border-radius: 999px; line-height: 22px;
+    font-size: 12px; font-weight: 500; color: var(--console-muted); background: color-mix(in srgb, var(--p-text-color) 6%, transparent);
+}
+.member-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.member-state.running { color: var(--p-green-600); background: color-mix(in srgb, var(--p-green-500) 13%, transparent); }
+.member-state.stopped { color: var(--p-orange-600); background: color-mix(in srgb, var(--p-orange-500) 13%, transparent); }
+.member-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 0; padding: 12px 14px; border-top: 1px solid var(--console-border); }
+.member-facts > div { min-width: 0; }
+.member-facts dt { font-size: 11px; color: var(--console-muted); }
+.member-facts dd { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.member-facts .member-fact-wide { grid-column: 1 / -1; }
+.member-flags { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 14px 12px; }
+.member-card-actions {
+    display: flex; justify-content: flex-end; gap: 2px; margin-top: auto; padding: 6px 8px;
+    border-top: 1px solid var(--console-border); background: color-mix(in srgb, var(--p-text-color) 2%, transparent);
+}
 .device-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); gap: 8px; max-height: 18rem; overflow: auto; }
 .device-pick { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 10px; border: 1px solid var(--console-border); border-radius: 6px; }
 .device-pick label { cursor: pointer; }

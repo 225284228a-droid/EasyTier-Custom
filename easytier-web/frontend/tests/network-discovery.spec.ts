@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { groupNetworks, retryDeviceWrite, type DeviceNetworkScan } from '../src/modules/networkDiscovery'
-import { ADVANCED_SWITCHES, advancedDistribution, touchedSettings } from '../src/modules/meshAdvanced'
+import { ADVANCED_DEFAULTS, ADVANCED_SWITCHES, UNSUPPORTED, advancedDistribution, sharedKey, touchedSettings } from '../src/modules/meshAdvanced'
 import { buildTopology, networkNameIdentity } from '../src/modules/networkTopology'
 
 const device = (id: string) => ({ machine_id: id, hostname: id, running_network_count: 0 }) as any
@@ -82,17 +82,51 @@ describe('network discovery', () => {
 describe('advanced settings', () => {
   it('counts how members hold each setting', () => {
     const distribution = advancedDistribution([
-      { latency_first: true, mtu: 1300 },
-      { latency_first: null, mtu: 1300 },
-      {},
+      { values: { latency_first: true, mtu: 1300 } },
+      { values: { latency_first: null, mtu: 1300 } },
+      { values: {} },
     ])
     expect(Object.fromEntries(distribution.latency_first)).toEqual({ true: 1, default: 2 })
     expect(Object.fromEntries(distribution.mtu)).toEqual({ 1300: 2, default: 1 })
   })
 
+  it('counts a value equal to the core default as the default', () => {
+    const distribution = advancedDistribution([
+      { values: { latency_first: false, multi_thread: true, mtu: 1380, data_compress_algo: 1, traffic_disguise: 'speedtest', parallel_connections: 1 } },
+      { values: { multi_thread: false, data_compress_algo: 2 } },
+    ])
+    expect(Object.fromEntries(distribution.latency_first)).toEqual({ default: 2 })
+    expect(Object.fromEntries(distribution.multi_thread)).toEqual({ default: 1, false: 1 })
+    expect(Object.fromEntries(distribution.mtu)).toEqual({ default: 2 })
+    expect(Object.fromEntries(distribution.data_compress_algo)).toEqual({ default: 1, 2: 1 })
+    expect(Object.fromEntries(distribution.traffic_disguise)).toEqual({ default: 2 })
+    expect(Object.fromEntries(distribution.parallel_connections)).toEqual({ default: 2 })
+  })
+
+  it('counts online devices that cannot store a setting apart from the default', () => {
+    const distribution = advancedDistribution([
+      { values: {}, capabilities: [] },
+      { values: { parallel_connections: 4 }, capabilities: ['config:parallel-connections-v1'] },
+      // Offline: judged by what it held when last seen.
+      { values: { parallel_connections: 4 } },
+    ])
+    expect(Object.fromEntries(distribution.parallel_connections)).toEqual({ [UNSUPPORTED]: 1, 4: 2 })
+    expect(Object.fromEntries(distribution.latency_first)).toEqual({ default: 3 })
+    expect(sharedKey(distribution.parallel_connections)).toBe('4')
+    expect(sharedKey(distribution.latency_first)).toBe('default')
+    expect(sharedKey(new Map([['default', 1], ['true', 1]]))).toBeUndefined()
+    expect(sharedKey(new Map([[UNSUPPORTED, 2]]))).toBeUndefined()
+  })
+
   it('sends only touched settings, a reset included', () => {
     expect(touchedSettings({ latency_first: true, mtu: undefined, lazy_p2p: null }))
       .toEqual({ latency_first: true, lazy_p2p: null })
+  })
+
+  it('knows the default of every setting it offers', () => {
+    for (const field of ADVANCED_SWITCHES) expect(typeof ADVANCED_DEFAULTS[field]).toBe('boolean')
+    expect(ADVANCED_DEFAULTS.multi_thread).toBe(true)
+    expect(ADVANCED_DEFAULTS.disable_ipv6).toBe(false)
   })
 
   it('never offers device settings, private mode or encryption', () => {

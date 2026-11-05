@@ -423,6 +423,9 @@ web:
     location: "位置"
     console: "管理控制台"
     workspace: "工作空间"
+    nav_networks: "网络"
+    all_networks: "全部网络"
+    breadcrumb: "当前位置"
     navigation: "导航"
     documentation: "使用文档"
     language: "切换语言"
@@ -804,10 +807,14 @@ web:
     compression: 压缩算法
     compress_none: 不压缩
     compress_zstd: Zstd
-    value_keep: 不改
     value_default: 默认
     value_on: 开
     value_off: 关
+    value_default_is: 默认（{value}）
+    value_mixed: 各不相同
+    value_unsupported: 不支持
+    unsupported_hint: 这些设备的 EasyTier 版本不能保存这项设置，批量修改会跳过它们
+    revert_edit: 撤销修改
     preset_hint: 新设备加入网络时使用的初始配置，只对新加入的设备生效，不会修改或覆盖已有成员。
     preset_core_hint: 网络名称、密码、安全模式、加密和显示名称取网络当前的核心设置；虚拟 IP 使用 DHCP 自动分配，网络有网段时在网段内分配。
     listeners: 监听地址

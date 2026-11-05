@@ -17,15 +17,17 @@ const cycleThemeMode = () => {
 
 import { I18nUtils } from 'easytier-frontend-lib'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Button, Dialog, Drawer, Menu, OverlayBadge, Popover, TieredMenu, useToast } from 'primevue';
+import { Button, Dialog, Drawer, OverlayBadge, Popover, TieredMenu, useToast } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
 import DevicePopup from './DevicePopup.vue';
+import ConsoleNav from './ConsoleNav.vue';
 import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
 import ApiClient, { type BlockedDevice } from '../modules/api';
 import { createNetworkDiscovery, provideNetworkDiscovery } from '../modules/networkDiscovery';
+import { NETWORK_SECTIONS } from '../modules/meshNetworkContext';
 import { getApiBase } from '../modules/api-host';
 
 const { t } = useI18n()
@@ -154,43 +156,19 @@ const unblockDevice = async (device: BlockedDevice) => {
     }
 };
 
-type NavItem = {
-    key: string;
-    label: string;
-    icon: string;
-    to: { name: string; params?: Record<string, string> };
-    badge?: string;
-    child?: boolean;
-};
-
-const workspaceNavigation = computed<NavItem[]>(() => [
-    { key: 'dashboard', label: t('web.main.dashboard'), icon: 'pi pi-chart-pie', to: { name: 'dashboard' } },
-    { key: 'deviceList', label: t('web.main.device_list'), icon: 'pi pi-server', to: { name: 'deviceList' } },
-]);
-const networkNavigation = computed<NavItem[]>(() => [
-    { key: 'networkList', label: t('web.main.network_list'), icon: 'pi pi-globe', to: { name: 'networkList' } },
-    ...networks.value.map(network => ({
-        key: `mesh:${network.name}`,
-        label: network.label,
-        icon: network.central ? 'pi pi-sitemap' : 'pi pi-share-alt',
-        to: { name: 'meshNetwork', params: { networkName: network.name } },
-        badge: `${network.runningCount}/${network.members.length}`,
-        child: true,
-    })),
-]);
-
-const activeKey = computed(() => {
-    if (route.params.networkName) return `mesh:${route.params.networkName}`;
-    if (typeof route.name === 'string') return route.name;
-    return '';
-});
-const pageTitle = computed(() => {
+// The trail names where a page sits: its area, then the network and its page.
+const breadcrumb = computed<string[]>(() => {
     if (route.params.networkName) {
         const name = String(route.params.networkName);
-        return networks.value.find(item => item.name === name)?.label ?? name;
+        const section = NETWORK_SECTIONS.find(entry => entry.name === route.name);
+        return [
+            t('web.console.nav_networks'),
+            networks.value.find(item => item.name === name)?.label ?? name,
+            ...(section ? [t(section.label)] : []),
+        ];
     }
-    return [...workspaceNavigation.value, ...networkNavigation.value]
-        .find(item => item.key === activeKey.value)?.label;
+    if (route.name === 'networkList') return [t('web.console.nav_networks'), t('web.console.all_networks')];
+    return [t('web.console.workspace'), route.name === 'deviceList' ? t('web.main.device_list') : t('web.main.dashboard')];
 });
 const forceShowSideBar = ref(false);
 const mainContent = ref<HTMLElement>();
@@ -204,71 +182,33 @@ watch(() => route.fullPath, () => { forceShowSideBar.value = false; });
         <a class="skip-link" href="#main-content" @click.prevent="mainContent?.focus()">{{ t('web.console.skip_content') }}</a>
         <aside class="console-sidebar">
             <RouterLink :to="{ name: 'dashboard' }" class="console-brand">
-                <img :src="Icon" alt="" /><span>EasyTier<span class="brand-caption">{{ t('web.console.console') }}</span></span>
+                <img :src="Icon" alt="" /><span class="console-brand-name">EasyTier<span class="brand-caption">{{ t('web.console.console') }}</span></span>
             </RouterLink>
-            <div class="nav-caption">{{ t('web.console.workspace') }}</div>
-            <nav :aria-label="t('web.console.navigation')">
-                <Menu :model="workspaceNavigation" :aria-label="t('web.console.navigation')" class="console-navigation">
-                    <template #item="{ item, props }">
-                        <RouterLink :to="item.to" custom v-slot="{ href, navigate }">
-                            <a v-bind="props.action" :href="href" @click="navigate"
-                                :class="{ 'is-active': activeKey === item.key }" :aria-current="activeKey === item.key ? 'page' : undefined">
-                                <span v-bind="props.icon" aria-hidden="true"></span><span v-bind="props.label">{{ item.label }}</span>
-                            </a>
-                        </RouterLink>
-                    </template>
-                </Menu>
-                <div class="nav-caption">{{ t('web.main.network_list') }}</div>
-                    <Menu :model="networkNavigation" :aria-label="t('web.main.network_list')" class="console-navigation">
-                        <template #item="{ item, props }">
-                            <RouterLink :to="item.to" custom v-slot="{ href, navigate }">
-                                <a v-bind="props.action" :href="href" @click="navigate"
-                                    :class="{ 'is-active': activeKey === item.key, 'nav-child': item.child }" :aria-current="activeKey === item.key ? 'page' : undefined">
-                                    <span v-bind="props.icon" aria-hidden="true"></span><span v-bind="props.label">{{ item.label }}</span>
-                                    <span v-if="item.badge" class="nav-badge">{{ item.badge }}</span>
-                                </a>
-                            </RouterLink>
-                        </template>
-                </Menu>
-            </nav>
+            <div class="console-sidebar-scroll">
+                <ConsoleNav :networks="networks" :central-enabled="centralEnabled" />
+            </div>
             <a href="https://github.com/225284228a-droid/EasyTier-Custom" target="_blank" rel="noopener noreferrer" class="console-docs">
                 <i class="pi pi-book" aria-hidden="true"></i>{{ t('web.console.documentation') }}<i class="pi pi-arrow-up-right" aria-hidden="true"></i>
             </a>
         </aside>
-        <Drawer v-model:visible="forceShowSideBar" :header="t('web.console.navigation')" class="console-mobile-nav">
-            <nav :aria-label="t('web.console.navigation')">
-                <div class="nav-caption">{{ t('web.console.workspace') }}</div>
-                <Menu :model="workspaceNavigation" :aria-label="t('web.console.navigation')" class="console-navigation">
-                    <template #item="{ item, props }">
-                        <RouterLink :to="item.to" custom v-slot="{ href, navigate }">
-                            <a v-bind="props.action" :href="href" @click="navigate($event); forceShowSideBar = false"
-                                :class="{ 'is-active': activeKey === item.key }" :aria-current="activeKey === item.key ? 'page' : undefined">
-                                <span v-bind="props.icon" aria-hidden="true"></span><span v-bind="props.label">{{ item.label }}</span>
-                            </a>
-                        </RouterLink>
-                    </template>
-                </Menu>
-                <div class="nav-caption">{{ t('web.main.network_list') }}</div>
-                    <Menu :model="networkNavigation" :aria-label="t('web.main.network_list')" class="console-navigation">
-                        <template #item="{ item, props }">
-                            <RouterLink :to="item.to" custom v-slot="{ href, navigate }">
-                                <a v-bind="props.action" :href="href" @click="navigate($event); forceShowSideBar = false"
-                                    :class="{ 'is-active': activeKey === item.key, 'nav-child': item.child }" :aria-current="activeKey === item.key ? 'page' : undefined">
-                                    <span v-bind="props.icon" aria-hidden="true"></span><span v-bind="props.label">{{ item.label }}</span>
-                                    <span v-if="item.badge" class="nav-badge">{{ item.badge }}</span>
-                                </a>
-                            </RouterLink>
-                        </template>
-                </Menu>
-            </nav>
+        <Drawer v-model:visible="forceShowSideBar" class="console-mobile-nav">
+            <template #header>
+                <span class="console-brand console-brand-drawer"><img :src="Icon" alt="" /><span class="console-brand-name">EasyTier<span class="brand-caption">{{ t('web.console.console') }}</span></span></span>
+            </template>
+            <ConsoleNav :networks="networks" :central-enabled="centralEnabled" @navigate="forceShowSideBar = false" />
         </Drawer>
         <div class="console-workspace">
             <header class="console-topbar">
                 <div class="flex items-center gap-3 min-w-0">
                     <Button icon="pi pi-bars" text severity="secondary" class="mobile-nav-toggle"
                         :aria-label="t('web.console.navigation')" @click="forceShowSideBar = true" />
-                    <span class="topbar-brand">{{ t('web.console.workspace') }}</span>
-                    <i class="pi pi-angle-right topbar-brand" aria-hidden="true"></i><span>{{ pageTitle }}</span>
+                    <nav class="console-breadcrumb" :aria-label="t('web.console.breadcrumb')">
+                        <template v-for="(crumb, index) in breadcrumb" :key="index">
+                            <i v-if="index" class="pi pi-angle-right" aria-hidden="true"></i>
+                            <span :class="{ 'is-current': index === breadcrumb.length - 1 }"
+                                :aria-current="index === breadcrumb.length - 1 ? 'page' : undefined">{{ crumb }}</span>
+                        </template>
+                    </nav>
                 </div>
                 <div class="flex items-center gap-2">
                     <Button icon="pi pi-objects-column" :label="t('web.console.enroll_title')"

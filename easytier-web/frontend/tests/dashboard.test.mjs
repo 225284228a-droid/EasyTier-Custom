@@ -868,10 +868,13 @@ test('the virtual subnet moves static members and keeps their host parts', async
 test('network pages share one shell and the settings apply only changed core fields', async t => {
     const { page, state } = await open(t, '/h/networks/view/team-0');
     await page.getByRole('heading', { name: /Engineering/ }).waitFor();
+    // The open network lists its pages in the sidebar; the page has no menu of its own.
+    const sections = page.locator('.console-sidebar .nav-network.open .nav-sections');
     for (const section of ['Overview', 'Members', 'Network settings', 'Advanced settings', 'Preset for new devices', 'Temporary devices']) {
-        assert.equal(await page.locator('.network-sections').getByRole('link', { name: section }).count(), 1, `${section} is a sub-page`);
+        assert.equal(await sections.getByRole('link', { name: section }).count(), 1, `${section} is a sub-page`);
     }
-    await page.locator('.network-sections').getByRole('link', { name: 'Network settings' }).click();
+    assert.equal(await page.locator('.console-sidebar .nav-sections').count(), 1, 'only the open network lists its pages');
+    await sections.getByRole('link', { name: 'Network settings' }).click();
     await page.waitForURL('**/networks/view/team-0/settings');
     const apply = page.getByRole('button', { name: 'Save and apply', exact: true });
     await page.locator('#settings-network-secret').waitFor();
@@ -911,15 +914,20 @@ test('advanced settings send only touched settings and report locked members', a
     const row = field => page.locator('.advanced-row').filter({ hasText: field });
     await row('Latency-First').getByText('On 1', { exact: true }).waitFor();
     await page.getByText('1 locked, skipped', { exact: true }).waitFor();
+    // An untouched row shows what the members share; the default is offered as "Default".
+    assert.equal(await row('Latency-First').getByRole('button', { name: 'On', exact: true }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await row('Magic DNS').getByRole('button', { name: 'Default (Off)', exact: true }).getAttribute('aria-pressed'), 'true');
     const apply = page.getByRole('button', { name: /^Apply \d+ setting/ });
     assert.ok(await apply.isDisabled());
-    await row('Latency-First').getByText('Off', { exact: true }).click();
-    await page.locator('#advanced-touch-mtu').check();
+    await row('Latency-First').getByRole('button', { name: 'Default (Off)', exact: true }).click();
     await page.locator('#advanced-mtu').fill('1300');
     await page.locator('#advanced-mtu').press('Tab');
+    const parallel = page.locator('.advanced-row').filter({ has: page.getByText('Parallel connections', { exact: true }) });
+    await parallel.getByRole('button', { name: 'Default', exact: true }).click();
+    await parallel.getByRole('button', { name: 'Undo change', exact: true }).click();
     await page.getByRole('button', { name: 'Apply 2 setting(s) to 1 member(s)', exact: true }).click();
     await page.getByText('Locked; skipped', { exact: true }).waitFor();
-    assert.deepEqual(state.writes.find(write => write.path === '/mesh/advanced').payload, { network_name: 'team-0', change: { latency_first: false, mtu: 1300 } });
+    assert.deepEqual(state.writes.find(write => write.path === '/mesh/advanced').payload, { network_name: 'team-0', change: { latency_first: null, mtu: 1300 } });
 });
 
 test('presets reach only joining devices and new devices may join on their own', async t => {
@@ -1297,19 +1305,15 @@ test('empty and failed lists recover without presenting an empty result as succe
 
 test('responsive layouts, localization, dark mode and mobile drawer', async t => {
     const { page, state } = await open(t);
-    const workspaceMenu = page.locator('.console-sidebar').getByRole('menu', { name: 'Navigation' });
-    await workspaceMenu.focus();
-    await page.keyboard.press('ArrowDown'); // Dashboard -> Device List
+    const sidebar = page.locator('.console-sidebar').getByRole('navigation', { name: 'Navigation' });
+    await sidebar.getByRole('link', { name: 'Device List', exact: true }).focus();
     await page.keyboard.press('Enter');
     await page.waitForURL('**/#/h/deviceList');
-    await workspaceMenu.locator('[aria-current="page"]', { hasText: 'Device List' }).waitFor();
-    assert.equal(await workspaceMenu.locator('[aria-current="page"]').textContent(), 'Device List');
-    const networkMenu = page.locator('.console-sidebar').getByRole('menu', { name: 'Networks' });
-    await networkMenu.focus();
-    await page.keyboard.press('ArrowDown'); // Networks overview -> Engineering (first nav-child)
-    await page.keyboard.press('Enter');
+    assert.equal(await sidebar.locator('[aria-current="page"]').textContent(), 'Device List');
+    await sidebar.getByRole('link', { name: /^Engineering/ }).click();
     await page.waitForURL('**/networks/view/team-0');
-    await networkMenu.locator('[aria-current="page"]', { hasText: 'Engineering' }).waitFor();
+    await sidebar.locator('.nav-network.open .nav-sections [aria-current="page"]', { hasText: 'Overview' }).waitFor();
+    assert.deepEqual(await page.locator('.console-breadcrumb > span').allTextContents(), ['Networks', 'Engineering', 'Overview']);
     for (const colorScheme of ['light', 'dark']) {
         await page.emulateMedia({ colorScheme });
         for (const width of [1440, 1024, 390]) {
@@ -1345,7 +1349,7 @@ test('responsive layouts, localization, dark mode and mobile drawer', async t =>
     if (screenshotDir) await page.screenshot({ path: `${screenshotDir}/device-drawer-mobile.png`, animations: 'disabled' });
     await page.keyboard.press('Escape');
     await page.locator('.mobile-nav-toggle').click();
-    await page.locator('.console-mobile-nav').getByRole('menu', { name: '导航' }).waitFor();
+    await page.locator('.console-mobile-nav').getByRole('navigation', { name: '导航' }).waitFor();
     await page.locator('.console-mobile-nav').getByRole('link', { name: '设备列表', exact: true }).click();
     await page.locator('.console-mobile-nav').waitFor({ state: 'detached' });
     await page.locator('.mobile-nav-toggle').click();

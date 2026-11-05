@@ -24,8 +24,13 @@ const load = async () => {
     }
 };
 onMounted(load);
+// An online device says which settings it can store; batch edits skip the rest.
+const capabilitiesOf = (deviceId: string) => {
+    const device = network.value?.members.find(member => member.device.machine_id === deviceId)?.device;
+    return device?.online ? device.runtime_capabilities ?? [] : undefined;
+};
 const distribution = computed(() => advancedDistribution((members.value ?? []).filter(member => !member.locked)
-    .map(member => member.advanced ?? {})));
+    .map(member => ({ values: member.advanced ?? {}, capabilities: capabilitiesOf(member.device_id) }))));
 const lockedCount = computed(() => members.value?.filter(member => member.locked).length ?? 0);
 const targetCount = computed(() => (members.value?.length ?? 0) - lockedCount.value);
 

@@ -14,6 +14,17 @@ export interface MeshNetworkContext {
   reload(): Promise<void>
 }
 
+/** A network's pages; the central ones need the console to manage devices itself. */
+export const NETWORK_SECTIONS = [
+  { name: 'meshNetwork', label: 'web.mesh_network.section_overview', icon: 'pi pi-chart-bar', central: false },
+  { name: 'meshMembers', label: 'web.mesh_network.section_members', icon: 'pi pi-server', central: false },
+  { name: 'meshSettings', label: 'web.mesh_network.section_settings', icon: 'pi pi-shield', central: true },
+  { name: 'meshAdvanced', label: 'web.mesh_network.section_advanced', icon: 'pi pi-sliders-h', central: true },
+  { name: 'meshAcl', label: 'web.mesh_network.section_acl', icon: 'pi pi-lock', central: true },
+  { name: 'meshPreset', label: 'web.mesh_network.section_preset', icon: 'pi pi-box', central: true },
+  { name: 'meshTemporary', label: 'web.mesh_network.section_temporary', icon: 'pi pi-clock', central: true },
+] as const
+
 const KEY: InjectionKey<MeshNetworkContext> = Symbol('meshNetwork')
 
 export function provideMeshNetwork(context: MeshNetworkContext) {

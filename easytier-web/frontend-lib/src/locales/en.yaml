@@ -423,6 +423,9 @@ web:
     location: "Location"
     console: "Management console"
     workspace: "Workspace"
+    nav_networks: "Networks"
+    all_networks: "All networks"
+    breadcrumb: "Breadcrumb"
     navigation: "Navigation"
     documentation: "Documentation"
     language: "Switch language"
@@ -804,10 +807,14 @@ web:
     compression: Compression
     compress_none: None
     compress_zstd: Zstd
-    value_keep: Keep
     value_default: Default
     value_on: 'On'
     value_off: 'Off'
+    value_default_is: Default ({value})
+    value_mixed: Mixed
+    value_unsupported: Unsupported
+    unsupported_hint: The EasyTier version on these devices cannot store this setting; batch edits skip them
+    revert_edit: Undo change
     preset_hint: The configuration a device starts with when it joins. It only reaches devices that join; existing members are never changed.
     preset_core_hint: Network name, secret, secure mode, encryption and display name come from the network's current core settings; the virtual IP is assigned by DHCP, within the network's subnet when it has one.
     listeners: Listeners
