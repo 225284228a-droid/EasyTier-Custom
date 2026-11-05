@@ -444,10 +444,14 @@ test('dashboard globe cards zoom without scrolling and load only complete rows',
     assert.equal((await nodeKind.innerText()).trim(), 'Managed', 'selected node detail shows its kind');
     assert.ok(await nodeKind.locator('i').evaluate(element => getComputedStyle(element).backgroundColor !== 'rgba(0, 0, 0, 0)'),
         'selected node kind keeps its colored marker');
-    await page.evaluate(() => {
+    // Put the globe in view with room to scroll both ways, whatever the
+    // exact height of the page.
+    const scrollToGlobe = () => page.evaluate(() => {
         const stage = document.querySelector('.globe-stage').getBoundingClientRect();
-        window.scrollTo(0, stage.top + window.scrollY - 400);
+        const lowest = document.documentElement.scrollHeight - innerHeight;
+        window.scrollTo(0, Math.min(stage.top + window.scrollY - 400, lowest - 100));
     });
+    await scrollToGlobe();
     const settleWheel = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const distance = () => canvas.evaluate(element => Number(element.dataset.globeDistance));
     const scrollY = () => page.evaluate(() => window.scrollY);
@@ -537,10 +541,7 @@ test('dashboard globe cards zoom without scrolling and load only complete rows',
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.waitForFunction(previous => document.querySelectorAll('.globe-node-label').length > previous, mobileCount);
     await assertCompleteCards();
-    await page.evaluate(() => {
-        const stage = document.querySelector('.globe-stage').getBoundingClientRect();
-        window.scrollTo(0, stage.top + window.scrollY - 400);
-    });
+    await scrollToGlobe();
 
     state.machines[0].info.running_network_instances = [uuid(100)];
     state.machineNetworkInfo = { [id(100)]: state.machineNetworkInfo[id(100)] };
