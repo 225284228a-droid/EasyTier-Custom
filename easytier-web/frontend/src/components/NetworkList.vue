@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { v4 as uuidv4 } from 'uuid';
-import { Button, Checkbox, Column, DataTable, Dialog, InputSwitch, InputText, Message, Password, SelectButton, Skeleton, Tag, useToast } from 'primevue';
+import { Button, Checkbox, Column, DataTable, Dialog, InputSwitch, InputText, Message, Password, SelectButton, Skeleton, useToast } from 'primevue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { NetworkTypes, UrlListInput, Utils } from 'easytier-frontend-lib';
@@ -167,24 +167,25 @@ const create = async () => {
             <div v-if="networks === undefined" class="loading-rows"><Skeleton v-for="i in 4" :key="i" height="2rem" /></div>
             <div v-else-if="networks.length === 0" class="console-empty-state"><i class="pi pi-globe" aria-hidden="true"></i><h2>{{ t('web.console.networks_empty') }}</h2><p>{{ t('web.console.networks_empty_hint') }}</p><Button :label="t('web.mesh_network.create')" icon="pi pi-plus" @click="openCreate" /></div>
             <div v-else-if="filteredNetworks.length === 0" class="console-empty-state"><h2>{{ t('web.console.no_results') }}</h2><Button :label="t('web.console.clear_search')" text @click="search = ''" /></div>
-            <div v-else-if="viewMode === 'card'" class="network-cards">
-                <article v-for="network in filteredNetworks" :key="network.identity" class="network-card">
-                    <button class="network-card-title entity-link" @click="openNetwork(network)">
-                        <i class="pi pi-globe entity-icon" aria-hidden="true"></i>
-                        <span class="min-w-0"><span class="preview-name block truncate">{{ network.label }}</span>
-                            <span v-if="network.label !== network.name" class="preview-secondary mono-value block truncate">{{ network.name }}</span></span>
-                    </button>
-                    <div class="network-card-stats">
-                        <div><span class="muted">{{ t('web.mesh_network.devices') }}</span><strong>{{ deviceCount(network) }}</strong></div>
-                        <div><span class="muted">{{ t('web.mesh_network.running') }}</span><strong>{{ network.runningCount }}<span class="muted"> / {{ network.members.length }}</span></strong></div>
-                        <div><span class="muted">{{ t('web.mesh_network.temporary') }}</span><strong>{{ temporaryCount(network) }}</strong></div>
-                    </div>
-                    <div class="network-card-footer">
-                        <div class="flex flex-wrap gap-1">
-                            <Tag v-if="network.record?.auto_join" :value="t('web.mesh_network.auto_join_on')" severity="info" />
+            <div v-else-if="viewMode === 'card'" class="entity-cards network-cards">
+                <article v-for="network in filteredNetworks" :key="network.identity" class="entity-card network-card">
+                    <header class="entity-card-head">
+                        <span class="status-dot" :class="network.runningCount ? 'online' : 'offline'" aria-hidden="true"></span>
+                        <div class="entity-names">
+                            <button type="button" class="entity-name network-open" @click="openNetwork(network)"><span>{{ network.label }}</span></button>
+                            <span v-if="network.label !== network.name" class="entity-sub mono-value">{{ network.name }}</span>
                         </div>
-                        <Button icon="pi pi-arrow-right" :label="t('web.console.manage')" text size="small" severity="secondary" @click="openNetwork(network)" />
-                    </div>
+                    </header>
+                    <dl class="entity-facts network-facts">
+                        <div><dt>{{ t('web.mesh_network.devices') }}</dt><dd>{{ deviceCount(network) }}</dd></div>
+                        <div><dt>{{ t('web.mesh_network.running') }}</dt><dd>{{ network.runningCount }}<span class="muted"> / {{ network.members.length }}</span></dd></div>
+                        <div><dt>{{ t('web.mesh_network.temporary') }}</dt><dd>{{ temporaryCount(network) }}</dd></div>
+                    </dl>
+                    <footer class="entity-card-foot">
+                        <div class="entity-actions">
+                            <Button icon="pi pi-arrow-right" :label="t('web.console.manage')" text size="small" severity="secondary" @click="openNetwork(network)" />
+                        </div>
+                    </footer>
                 </article>
             </div>
             <DataTable v-else :value="filteredNetworks" data-key="identity" class="console-table" size="small" scrollable :paginator="filteredNetworks.length > 20" :rows="20">
@@ -271,16 +272,9 @@ const create = async () => {
 
 <style scoped>
 .page-hint { margin: -8px 0 0; font-size: 13px; color: var(--p-text-muted-color); }
-.network-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 14px; padding: 16px 18px 18px; }
-.network-card {
-    display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px 18px;
-    border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-panel);
-}
-.network-card-title { display: flex; align-items: center; gap: 10px; min-width: 0; text-align: left; }
-.network-card-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.network-card-stats > div { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
-.network-card-stats strong { font-size: 18px; }
-.network-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--console-border); }
+.network-open:hover, .network-open:focus-visible { color: var(--p-primary-color); }
+.network-open:focus-visible { outline: 2px solid var(--p-primary-color); outline-offset: 2px; border-radius: 4px; }
+.network-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .create-group { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 10px 12px 12px; border: 1px solid var(--console-border); border-radius: 6px; }
 .create-group legend { padding: 0 4px; font-size: 13px; font-weight: 600; }
 .required { color: var(--p-red-500); }

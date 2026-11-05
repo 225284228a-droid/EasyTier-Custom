@@ -103,8 +103,8 @@ const setAutoJoin = async (enabled: boolean) => {
 
 <style scoped>
 .preset-heading { flex-wrap: wrap; }
-.section-hint { margin: 0; padding: 0 18px 4px; font-size: 13px; color: var(--p-text-muted-color); }
-.preset-body { display: flex; flex-direction: column; gap: 16px; padding: 12px 18px 20px; }
+.section-hint { margin: 0; padding: 0 20px 4px; font-size: 13px; color: var(--p-text-muted-color); }
+.preset-body { display: flex; flex-direction: column; gap: 16px; padding: 12px 20px 20px; }
 .field { display: flex; flex-direction: column; gap: 6px; max-width: 44rem; }
 .field-row { display: flex; align-items: center; gap: 10px; }
 </style>

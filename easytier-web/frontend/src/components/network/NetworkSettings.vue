@@ -246,8 +246,8 @@ const deleteNetwork = () => confirm.require({
 </template>
 
 <style scoped>
-.section-hint { margin: 0; padding: 0 18px 4px; font-size: 13px; color: var(--p-text-muted-color); }
-.settings-form { display: flex; flex-direction: column; gap: 16px; padding: 16px 18px 20px; max-width: 40rem; }
+.section-hint { margin: 0; padding: 0 20px 4px; font-size: 13px; color: var(--p-text-muted-color); }
+.settings-form { display: flex; flex-direction: column; gap: 16px; padding: 16px 20px 20px; max-width: 40rem; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-row { display: flex; align-items: center; gap: 10px; }
 .danger-panel { border-color: var(--p-red-200); }

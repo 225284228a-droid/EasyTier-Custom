@@ -103,6 +103,16 @@ describe('advanced settings', () => {
     expect(Object.fromEntries(distribution.parallel_connections)).toEqual({ default: 2 })
   })
 
+  it('offers the P2P protocol and disguise policy, gated by the device', () => {
+    const distribution = advancedDistribution([
+      { values: { p2p_prefer_protocol: 'udp', p2p_disguise_mode: 'only' }, capabilities: ['config:p2p_prefer_protocol', 'config:p2p_disguise_mode'] },
+      { values: { p2p_prefer_protocol: 'tcp' } },
+      { values: {}, capabilities: [] },
+    ])
+    expect(Object.fromEntries(distribution.p2p_prefer_protocol)).toEqual({ default: 1, tcp: 1, [UNSUPPORTED]: 1 })
+    expect(Object.fromEntries(distribution.p2p_disguise_mode)).toEqual({ only: 1, default: 1, [UNSUPPORTED]: 1 })
+  })
+
   it('counts online devices that cannot store a setting apart from the default', () => {
     const distribution = advancedDistribution([
       { values: {}, capabilities: [] },

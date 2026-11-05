@@ -48,6 +48,8 @@ export const ADVANCED_DEFAULTS: Readonly<Record<string, AdvancedValue>> = {
   mtu: 1380,
   traffic_disguise: 'speedtest',
   parallel_connections: 1,
+  p2p_prefer_protocol: 'udp',
+  p2p_disguise_mode: 'prefer',
 }
 
 export type AdvancedParameterKind = 'select' | 'number'
@@ -69,6 +71,24 @@ export const ADVANCED_PARAMETERS: readonly AdvancedParameter[] = [
     options: [
       { label: 'web.mesh_network.compress_none', value: 1 },
       { label: 'web.mesh_network.compress_zstd', value: 2 },
+    ],
+  },
+  {
+    field: 'p2p_prefer_protocol',
+    kind: 'select',
+    options: [
+      { label: 'web.mesh_network.prefer_udp', value: 'udp' },
+      { label: 'web.mesh_network.prefer_tcp', value: 'tcp' },
+    ],
+  },
+  {
+    field: 'p2p_disguise_mode',
+    kind: 'select',
+    options: [
+      { label: 'web.mesh_network.disguise_prefer', value: 'prefer' },
+      { label: 'web.mesh_network.disguise_off', value: 'off' },
+      { label: 'web.mesh_network.disguise_disabled', value: 'disabled' },
+      { label: 'web.mesh_network.disguise_only', value: 'only' },
     ],
   },
   {

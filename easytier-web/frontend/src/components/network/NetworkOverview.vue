@@ -23,21 +23,30 @@ const globeKey = computed(() => `${persistenceKey.value}:network:${networkName.v
 </script>
 
 <template>
-    <section class="console-panel summary-strip">
-        <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.devices') }}</span><i class="pi pi-server" aria-hidden="true"></i></div>
-            <div class="summary-value">{{ new Set(members.map(member => member.device.machine_id)).size }}</div></div>
-        <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.running') }}</span><i class="pi pi-play" aria-hidden="true"></i></div>
-            <div class="summary-value">{{ network?.runningCount ?? 0 }}<span class="summary-total"> / {{ members.length }}</span></div></div>
-        <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.nodes') }}</span><i class="pi pi-share-alt" aria-hidden="true"></i></div>
-            <div class="summary-value">{{ networkTopology.nodes.length }}</div></div>
-        <div class="summary-stat"><div class="summary-label"><span>{{ t('web.dashboard.connections') }}</span><i class="pi pi-arrows-h" aria-hidden="true"></i></div>
-            <div class="summary-value">{{ networkTopology.links.length }}</div></div>
+    <section class="console-panel">
+        <div class="summary-strip">
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.devices') }}</span><i class="pi pi-server" aria-hidden="true"></i></div>
+                <div class="summary-value">{{ new Set(members.map(member => member.device.machine_id)).size }}</div></div>
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.running') }}</span><i class="pi pi-play" aria-hidden="true"></i></div>
+                <div class="summary-value">{{ network?.runningCount ?? 0 }}<span class="summary-total"> / {{ members.length }}</span></div></div>
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.nodes') }}</span><i class="pi pi-share-alt" aria-hidden="true"></i></div>
+                <div class="summary-value">{{ networkTopology.nodes.length }}</div></div>
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('web.dashboard.connections') }}</span><i class="pi pi-arrows-h" aria-hidden="true"></i></div>
+                <div class="summary-value">{{ networkTopology.links.length }}</div></div>
+        </div>
     </section>
-    <section v-if="view" class="console-panel overview-facts">
-        <div><span class="muted">{{ t('web.mesh_network.secure_mode') }}</span><strong>{{ view.core.secure_mode ? t('web.mesh_network.value_on') : t('web.mesh_network.value_off') }}</strong></div>
-        <div><span class="muted">{{ t('web.mesh_network.encryption') }}</span><strong>{{ view.core.disable_encryption ? t('web.mesh_network.value_off') : (view.core.encryption_algorithm || t('web.mesh_network.value_default')) }}</strong></div>
-        <div><span class="muted">{{ t('web.mesh_network.auto_join') }}</span><strong>{{ view.auto_join ? t('web.mesh_network.value_on') : t('web.mesh_network.value_off') }}</strong></div>
-        <div class="min-w-0"><span class="muted">{{ t('initial_nodes') }}</span><strong class="mono-value truncate">{{ view.preset.peers.join(', ') || '—' }}</strong></div>
+    <!-- The network's settings: a card of their own on the counters' columns. -->
+    <section v-if="view" class="console-panel">
+        <div class="summary-strip overview-facts">
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.secure_mode') }}</span><i class="pi pi-shield" aria-hidden="true"></i></div>
+                <div class="fact-value">{{ view.core.secure_mode ? t('web.mesh_network.value_on') : t('web.mesh_network.value_off') }}</div></div>
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.encryption') }}</span><i class="pi pi-lock" aria-hidden="true"></i></div>
+                <div class="fact-value">{{ view.core.disable_encryption ? t('web.mesh_network.value_off') : (view.core.encryption_algorithm || t('web.mesh_network.value_default')) }}</div></div>
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('web.mesh_network.auto_join') }}</span><i class="pi pi-sign-in" aria-hidden="true"></i></div>
+                <div class="fact-value">{{ view.auto_join ? t('web.mesh_network.value_on') : t('web.mesh_network.value_off') }}</div></div>
+            <div class="summary-stat"><div class="summary-label"><span>{{ t('initial_nodes') }}</span><i class="pi pi-sitemap" aria-hidden="true"></i></div>
+                <div class="fact-value mono-value" :title="view.preset.peers.join(', ')">{{ view.preset.peers.join(', ') || '—' }}</div></div>
+        </div>
     </section>
     <section class="console-panel dashboard">
         <header class="section-heading"><h2>{{ t('web.mesh_network.topology') }}</h2></header>
@@ -51,8 +60,9 @@ const globeKey = computed(() => `${persistenceKey.value}:network:${networkName.v
 
 <style scoped>
 .summary-total { font-size: 0.5em; color: var(--p-text-muted-color); }
-.overview-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; padding: 14px 18px; }
-.overview-facts > div { display: flex; flex-direction: column; gap: 2px; font-size: 13px; min-width: 0; }
+.overview-facts .summary-stat { min-width: 0; padding-top: 14px; padding-bottom: 14px; }
+.fact-value { margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 550; line-height: 20px; }
+.fact-value.mono-value { font-size: 13px; }
 .mesh-globe { min-width: 0; padding: 16px 20px 20px; }
 .dashboard-error { margin: 0 0 16px; font-size: 13px; color: var(--p-orange-600); overflow-wrap: anywhere; }
 </style>

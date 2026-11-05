@@ -4,6 +4,7 @@ import { Button, Checkbox, Column, DataTable, Dialog, InputText, SelectButton, S
 import Tooltip from 'primevue/tooltip';
 import { Utils } from 'easytier-frontend-lib';
 import DeviceDetails from './DeviceDetails.vue';
+import EntityName from './EntityName.vue';
 import { useI18n } from 'vue-i18n'
 import ApiClient from '../modules/api';
 import { useDevicePopup } from '../modules/devicePopup';
@@ -92,9 +93,12 @@ onUnmounted(() => {
     periodFunc.stop();
 });
 
-// 设备管理在当前页面上方打开，关闭后停留在原位置
-const handleDeviceManagement = (device: Utils.DeviceInfo) => {
+// 设备管理在当前页面上方打开，关闭后停留在原位置；“编辑”直接打开配置表单
+const openStatus = (device: Utils.DeviceInfo) => {
     devicePopup.open(device.machine_id, device.running_network_instances?.[0]);
+};
+const openEditor = (device: Utils.DeviceInfo) => {
+    devicePopup.open(device.machine_id, device.running_network_instances?.[0], true);
 };
 
 // 删除设备：若还是网络成员会连带移出并回收托管配置；可选同时拉黑
@@ -109,34 +113,19 @@ const handleDeleteDevice = (device: Utils.DeviceInfo) => {
     deleteVisible.value = true;
 };
 
-// 别名仅改变控制台内的显示名，不影响设备上报的主机名
+// 别名替代主机名显示，并作为设备在网络内的名称（手动改过的除外）
 const deviceName = (device: Utils.DeviceInfo) => device.alias || device.hostname || device.machine_id;
+const lastSeen = (device: Utils.DeviceInfo) => device.last_seen?.replace('T', ' ').slice(0, 16) || '—';
+const version = (device: Utils.DeviceInfo) => device.easytier_version ? `v${device.easytier_version.split('-')[0]}` : '—';
 
-const aliasVisible = ref(false);
-const aliasTarget = ref<Utils.DeviceInfo | null>(null);
-const aliasInput = ref('');
-const aliasSaving = ref(false);
-
-const handleSetAlias = (device: Utils.DeviceInfo) => {
-    aliasTarget.value = device;
-    aliasInput.value = device.alias ?? '';
-    aliasVisible.value = true;
-};
-
-const saveAlias = async () => {
-    if (!aliasTarget.value || !api) return;
-    const alias = aliasInput.value.trim();
-    if (alias.length > 64) return;
-    aliasSaving.value = true;
+const renameDevice = (device: Utils.DeviceInfo) => async (value: string) => {
+    if (!api || value === (device.alias ?? '')) return;
     try {
-        await api.update_machine_alias(aliasTarget.value.machine_id, alias);
-        aliasVisible.value = false;
+        await api.update_machine_alias(device.machine_id, value);
         await loadDevices();
-    } catch (e) {
-        console.error(e);
-        toast.add({ severity: 'error', summary: t('web.console.load_failed'), life: 3000 });
-    } finally {
-        aliasSaving.value = false;
+    } catch (e: any) {
+        toast.add({ severity: 'error', summary: t('web.console.rename'), detail: e?.response?.data?.message ?? String(e), life: 5000 });
+        throw e;
     }
 };
 
@@ -222,13 +211,11 @@ const locationText = (device: Utils.DeviceInfo) => {
                     <Column expander style="width: 2.5rem" />
                     <Column field="hostname" :header="t('web.device.hostname')" sortable>
                         <template #body="{ data }">
-                            <button class="entity-link" @click="handleDeviceManagement(data)">
+                            <div class="device-name-cell">
                                 <span class="status-dot" :class="data.online ? 'online' : 'offline'"></span>
-                                <span class="min-w-0">
-                                    <span class="preview-name">{{ deviceName(data) }}</span>
-                                    <span v-if="data.alias && data.hostname" class="preview-secondary mono-value">{{ data.hostname }}</span>
-                                </span>
-                            </button>
+                                <EntityName :name="deviceName(data)" :secondary="data.alias ? data.hostname : undefined" :value="data.alias ?? ''"
+                                    :placeholder="data.hostname" :maxlength="64" :rename="centralEnabled ? renameDevice(data) : undefined" />
+                            </div>
                         </template>
                     </Column>
                     <Column :header="t('web.console.location')">
@@ -239,18 +226,17 @@ const locationText = (device: Utils.DeviceInfo) => {
                         <template #body="{ data }"><span class="mono-value muted">v{{ (data.easytier_version || '?').split('-')[0] }}</span></template>
                     </Column>
                     <Column :header="t('web.device.last_seen')" style="width: 10rem">
-                        <template #body="{ data }"><span v-if="!data.online && data.last_seen" class="muted">{{ data.last_seen.replace('T', ' ').slice(5, 16) }}</span><span v-else class="muted">—</span></template>
+                        <template #body="{ data }"><span class="muted">{{ lastSeen(data) }}</span></template>
                     </Column>
-                    <Column :header="t('web.console.manage')" style="width: 7rem">
+                    <Column :header="t('web.console.manage')" style="width: 8rem">
                         <template #body="{ data }">
                             <div class="flex items-center gap-1">
-                                <Button v-if="centralEnabled" v-tooltip.top="t('web.console.set_alias')" icon="pi pi-pencil" severity="secondary"
-                                    text rounded :aria-label="t('web.console.set_alias')" @click="handleSetAlias(data)" />
+                                <Button v-tooltip.top="t('web.mesh_network.status')" icon="pi pi-chart-line" severity="secondary" text rounded
+                                    :aria-label="t('web.mesh_network.status')" @click="openStatus(data)" />
+                                <Button v-tooltip.top="t('web.console.edit')" icon="pi pi-pencil" severity="secondary" text rounded
+                                    :aria-label="t('web.console.edit')" @click="openEditor(data)" />
                                 <Button v-if="centralEnabled" v-tooltip.top="t('web.console.delete_device')" icon="pi pi-trash" severity="danger"
                                     text rounded :aria-label="t('web.console.delete_device')" @click="handleDeleteDevice(data)" />
-                                <Button icon="pi pi-cog" severity="secondary" text rounded
-                                    :aria-label="`${t('web.console.manage')} ${data.hostname}`"
-                                    @click="handleDeviceManagement(data)" />
                             </div>
                         </template>
                     </Column>
@@ -258,44 +244,46 @@ const locationText = (device: Utils.DeviceInfo) => {
                         <DeviceDetails :device="data" containerClass="row-details-content" :compact="true" />
                     </template>
                 </DataTable>
-                <div v-if="viewMode === 'card'" class="device-card-grid">
-                    <article v-for="device in sortedDeviceList" :key="device.machine_id" class="device-card"
-                        :class="{ offline: !device.online }">
-                        <div class="device-card-title">
-                            <button class="entity-link" @click="handleDeviceManagement(device)">
-                                <span class="status-dot" :class="device.online ? 'online' : 'offline'"></span>
-                                <span class="min-w-0">
-                                    <span class="preview-name">{{ deviceName(device) }}</span>
-                                    <span v-if="device.alias && device.hostname" class="preview-secondary mono-value">{{ device.hostname }}</span>
-                                </span>
-                            </button>
-                            <span class="mono-value muted shrink-0">v{{ (device.easytier_version || '?').split('-')[0] }}</span>
-                        </div>
-                        <p class="preview-secondary">{{ locationText(device) }}</p>
-                        <div class="device-card-actions">
-                            <span class="muted"><i class="pi pi-sitemap" aria-hidden="true"></i> {{ device.running_network_count }} {{ t('web.console.instances') }}</span>
-                            <div class="flex items-center gap-1">
-                                <Button v-if="centralEnabled" v-tooltip.top="t('web.console.set_alias')" icon="pi pi-pencil" severity="secondary"
-                                    text rounded class="w-8 h-8" :aria-label="t('web.console.set_alias')" @click="handleSetAlias(device)" />
-                                <Button v-if="centralEnabled" v-tooltip.top="t('web.console.delete_device')" icon="pi pi-trash" severity="danger"
-                                    text rounded class="w-8 h-8" :aria-label="t('web.console.delete_device')" @click="handleDeleteDevice(device)" />
-                                <Button icon="pi pi-cog" severity="secondary" text rounded class="w-8 h-8"
-                                    :aria-label="`${t('web.console.manage')} ${device.hostname}`"
-                                    @click="handleDeviceManagement(device)" />
+                <div v-if="viewMode === 'card'" class="entity-cards device-cards">
+                    <article v-for="device in sortedDeviceList" :key="device.machine_id" class="entity-card">
+                        <header class="entity-card-head">
+                            <span class="status-dot" :class="device.online ? 'online' : 'offline'" role="img"
+                                :aria-label="t(device.online ? 'web.mesh_network.running' : 'web.mesh_network.offline')"></span>
+                            <EntityName :name="deviceName(device)" :secondary="device.alias ? device.hostname : undefined"
+                                :value="device.alias ?? ''" :placeholder="device.hostname" :maxlength="64"
+                                :rename="centralEnabled ? renameDevice(device) : undefined" />
+                        </header>
+                        <dl class="entity-facts">
+                            <div><dt>{{ t('web.console.location') }}</dt><dd :title="locationText(device)">{{ locationText(device) }}</dd></div>
+                            <div><dt>{{ t('web.device.version') }}</dt><dd class="mono-value">{{ version(device) }}</dd></div>
+                            <div><dt>{{ t('web.device.networks') }}</dt><dd>{{ device.running_network_count }}</dd></div>
+                            <div><dt>{{ t('web.device.last_seen') }}</dt><dd>{{ lastSeen(device) }}</dd></div>
+                        </dl>
+                        <footer class="entity-card-foot">
+                            <div class="entity-actions">
+                                <Button icon="pi pi-chart-line" :label="t('web.mesh_network.status')" text size="small" severity="secondary" @click="openStatus(device)" />
+                                <Button icon="pi pi-pencil" :label="t('web.console.edit')" text size="small" severity="secondary" @click="openEditor(device)" />
+                                <Button v-if="centralEnabled" icon="pi pi-trash" :label="t('web.console.delete')" text size="small" severity="danger"
+                                    :aria-label="t('web.console.delete_device')" @click="handleDeleteDevice(device)" />
                             </div>
-                        </div>
+                        </footer>
                     </article>
                 </div>
                 <div class="mobile-list">
                     <article v-for="device in sortedDeviceList" :key="device.machine_id" class="mobile-list-item">
-                        <div class="flex items-center justify-between gap-3">
-                            <button class="entity-link" @click="handleDeviceManagement(device)">
-                                <span class="status-dot" :class="device.online ? 'online' : 'offline'"></span>
-                                <span class="preview-name">{{ deviceName(device) }}</span>
-                            </button>
-                            <span class="mono-value muted">v{{ (device.easytier_version || '?').split('-')[0] }}</span>
+                        <div class="device-name-cell">
+                            <span class="status-dot" :class="device.online ? 'online' : 'offline'"></span>
+                            <EntityName :name="deviceName(device)" :secondary="device.alias ? device.hostname : undefined" :value="device.alias ?? ''"
+                                :placeholder="device.hostname" :maxlength="64" :rename="centralEnabled ? renameDevice(device) : undefined" />
+                            <span class="mono-value muted shrink-0">{{ version(device) }}</span>
                         </div>
                         <p class="preview-secondary">{{ locationText(device) }} · {{ device.running_network_count }} {{ t('web.console.instances') }}</p>
+                        <div class="mobile-actions">
+                            <Button icon="pi pi-chart-line" :label="t('web.mesh_network.status')" text size="small" severity="secondary" @click="openStatus(device)" />
+                            <Button icon="pi pi-pencil" :label="t('web.console.edit')" text size="small" severity="secondary" @click="openEditor(device)" />
+                            <Button v-if="centralEnabled" icon="pi pi-trash" :label="t('web.console.delete')" text size="small" severity="danger"
+                                :aria-label="t('web.console.delete_device')" @click="handleDeleteDevice(device)" />
+                        </div>
                         <details>
                             <summary>{{ t('web.console.details') }}</summary>
                             <DeviceDetails :device="device" :compact="true" />
@@ -304,20 +292,6 @@ const locationText = (device: Utils.DeviceInfo) => {
                 </div>
             </template>
         </section>
-
-        <!-- 设置别名对话框 -->
-        <Dialog v-model:visible="aliasVisible" modal :header="t('web.console.alias_dialog_title')" :style="{ width: '26rem' }">
-            <div class="flex flex-col gap-3">
-                <div class="text-sm muted">{{ t('web.console.alias_hint') }}</div>
-                <InputText v-model="aliasInput" id="device-alias-input" :maxlength="64" autocomplete="off"
-                    :placeholder="aliasTarget?.hostname" @keydown.enter="saveAlias" />
-                <div class="text-xs muted text-right">{{ aliasInput.trim().length }}/64</div>
-            </div>
-            <template #footer>
-                <Button :label="t('web.common.cancel')" severity="secondary" @click="aliasVisible = false" />
-                <Button :label="t('web.common.confirm')" icon="pi pi-check" :loading="aliasSaving" @click="saveAlias" />
-            </template>
-        </Dialog>
 
         <!-- 删除确认对话框 -->
         <Dialog v-model:visible="deleteVisible" modal :header="t('web.console.delete_device')" :style="{ width: '26rem' }">
@@ -339,42 +313,10 @@ const locationText = (device: Utils.DeviceInfo) => {
 </template>
 
 <style scoped>
-.device-card-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 16px;
-    padding: 18px;
-}
-
-.device-card {
-    background: var(--console-panel);
-    border: 1px solid var(--console-border);
-    border-radius: 8px;
-    padding: 16px 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.device-card.offline {
-    opacity: .72;
-}
-
-.device-card-title {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    min-width: 0;
-}
-
-.device-card-actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-top: 4px;
-    padding-top: 10px;
-    border-top: 1px solid var(--console-border);
+.device-name-cell { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.device-name-cell > .status-dot { margin-top: 6px; }
+.mobile-actions { display: flex; flex-wrap: wrap; gap: 2px; margin: 6px -8px 0; }
+@media (max-width: 767px) {
+    .device-cards { display: none; }
 }
 </style>

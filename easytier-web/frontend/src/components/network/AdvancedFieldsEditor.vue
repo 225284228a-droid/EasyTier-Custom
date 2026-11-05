@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, InputNumber, SelectButton } from 'primevue';
+import { Button, InputNumber, Select, SelectButton } from 'primevue';
 import { useI18n } from 'vue-i18n';
 import {
     ADVANCED_DEFAULTS, ADVANCED_PARAMETERS, ADVANCED_SWITCHES, UNSUPPORTED, advancedLabel, isDefaultValue, sharedKey, valueKey,
@@ -16,7 +16,7 @@ const props = defineProps<{
     disabled?: boolean;
 }>();
 const values = defineModel<Record<string, any>>({ required: true });
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const parameterOf = (field: string) => ADVANCED_PARAMETERS.find(parameter => parameter.field === field);
 const groups = [
@@ -94,7 +94,7 @@ const unavailable = (field: string) => {
                     <div class="advanced-info">
                         <div class="advanced-name">
                             <label :for="`advanced-${field}`">{{ t(advancedLabel(field)) }}</label>
-                            <span v-if="!parameterOf(field)" class="pi pi-question-circle advanced-help" v-tooltip.top="t(`${field}_help`)"></span>
+                            <span v-if="te(`${field}_help`)" class="pi pi-question-circle advanced-help" v-tooltip.top="t(`${field}_help`)"></span>
                         </div>
                         <div v-if="distribution && counts(field).length" class="advanced-counts">
                             <span v-for="[key, count] in counts(field)" :key="key" class="advanced-count"
@@ -113,6 +113,11 @@ const unavailable = (field: string) => {
                                 :severity="shownKey(field) === 'default' ? undefined : 'secondary'" :outlined="shownKey(field) !== 'default'"
                                 :disabled="disabled || unavailable(field)" @click="set(field, null)" />
                         </template>
+                        <!-- Many choices would run off a narrow screen as buttons. -->
+                        <Select v-else-if="choicesOf(field).length > 3" :input-id="`advanced-${field}`" :model-value="shownKey(field)"
+                            :options="choicesOf(field)" option-label="label" option-value="key" size="small" class="advanced-select"
+                            :placeholder="t('web.mesh_network.value_mixed')" :disabled="disabled || unavailable(field)"
+                            :aria-label="t(advancedLabel(field))" @update:model-value="choose(field, $event)" />
                         <SelectButton v-else :id="`advanced-${field}`" :model-value="shownKey(field)" :options="choicesOf(field)"
                             option-label="label" option-value="key" :allow-empty="false" size="small"
                             :disabled="disabled || unavailable(field)" :aria-label="t(advancedLabel(field))"
@@ -155,10 +160,11 @@ const unavailable = (field: string) => {
 .advanced-control :deep(.p-selectbutton) { flex-wrap: nowrap; }
 .advanced-control :deep(.p-togglebutton) { white-space: nowrap; }
 .advanced-number { width: 9rem; flex-shrink: 1; min-width: 6rem; }
+.advanced-select { width: 15rem; min-width: 0; }
 .advanced-revert.idle { visibility: hidden; }
 @media (max-width: 560px) {
     .advanced-row { grid-template-columns: minmax(0, 1fr); padding-right: 12px; }
     .advanced-control { justify-content: flex-start; }
-    .advanced-number { flex: 1; width: auto; }
+    .advanced-number, .advanced-select { flex: 1; width: auto; }
 }
 </style>

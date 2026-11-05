@@ -263,8 +263,8 @@ const save = async () => {
 
 <style scoped>
 .acl-heading { flex-wrap: wrap; }
-.section-hint { margin: 0; padding: 0 18px 4px; font-size: 13px; color: var(--p-text-muted-color); }
-.acl-body { padding: 12px 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+.section-hint { margin: 0; padding: 0 20px 4px; font-size: 13px; color: var(--p-text-muted-color); }
+.acl-body { padding: 12px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
 .acl-body h3 { margin: 10px 0 0; font-size: 14px; }
 .acl-note { margin: 0; font-size: 12px; color: var(--p-text-muted-color); }
 .acl-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 13px; }
@@ -275,7 +275,7 @@ const save = async () => {
 .acl-check { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .acl-rule { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--console-border); border-radius: 6px; }
 .acl-rule.disabled { opacity: .6; }
-.sync-results { display: flex; flex-direction: column; gap: 6px; margin: 8px 18px 0; padding: 12px; border: 1px solid var(--console-border); border-radius: 6px; }
+.sync-results { display: flex; flex-direction: column; gap: 6px; margin: 8px 20px 0; padding: 12px; border: 1px solid var(--console-border); border-radius: 6px; }
 .sync-results h3 { margin: 0 0 4px; font-size: 14px; }
 .sync-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
 @media (max-width: 640px) {

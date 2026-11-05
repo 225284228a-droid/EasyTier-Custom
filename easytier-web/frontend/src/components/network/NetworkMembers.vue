@@ -7,6 +7,7 @@ import type { MeshJoinResult } from '../../modules/api';
 import { deviceConfigStore, failureMessage, retryDeviceWrite, type NetworkMember } from '../../modules/networkDiscovery';
 import { deviceName, failedResults, resultSeverity, useMeshNetwork } from '../../modules/meshNetworkContext';
 import { useDevicePopup } from '../../modules/devicePopup';
+import EntityName from '../EntityName.vue';
 
 const { t } = useI18n();
 const toast = useToast();
@@ -51,7 +52,7 @@ const setEnabled = async (enabled: boolean) => {
         const results = await Promise.allSettled(targets.map(member => retryDeviceWrite(() =>
             deviceConfigStore(api, member.device).then(({ store }) => store.setEnabled(member.instanceId, enabled)))));
         const failed = results.flatMap((result, index) => result.status === 'rejected'
-            ? [`${deviceName(targets[index])}: ${failureMessage(result.reason)}`] : []);
+            ? [`${memberName(targets[index])}: ${failureMessage(result.reason)}`] : []);
         toast.add({
             severity: failed.length ? 'warn' : 'success',
             summary: t(enabled ? 'web.mesh_network.batch_start' : 'web.mesh_network.batch_stop'),
@@ -65,37 +66,49 @@ const setEnabled = async (enabled: boolean) => {
     }
 };
 
-// The name opens the network's status; "edit configuration" opens its form.
 const openStatus = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId);
 const openEditor = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId, true);
 
-// Virtual addresses come from the running networks, read in one request.
-const virtualIps = ref<Record<string, string>>({});
+// Running networks report their address and why they failed, read in one request.
+interface Runtime { address?: string; error?: string }
+const runtimes = ref<Record<string, Runtime>>({});
 const runningDevices = computed(() => [...new Set(members.value
     .filter(member => member.online && member.running).map(member => member.device.machine_id))].sort().join(','));
 watch(runningDevices, async devices => {
     if (!devices) {
-        virtualIps.value = {};
+        runtimes.value = {};
         return;
     }
     try {
         const machines = await api.collect_topology_network_info(devices.split(','));
         if (devices !== runningDevices.value) return;
-        const next: Record<string, string> = {};
+        const next: Record<string, Runtime> = {};
         for (const [machineId, { info }] of Object.entries(machines)) {
             for (const [instanceId, detail] of Object.entries(info?.info?.map ?? {})) {
                 const address = detail?.my_node_info?.virtual_ipv4;
-                if (address?.address) next[`${machineId}/${instanceId}`] = Utils.ipv4InetToString(address);
+                next[`${machineId}/${instanceId}`] = {
+                    address: address?.address ? Utils.ipv4InetToString(address) : undefined,
+                    error: detail?.error_msg || undefined,
+                };
             }
         }
-        virtualIps.value = next;
+        runtimes.value = next;
     } catch (error) {
-        console.debug('Failed to read virtual addresses', error);
+        console.debug('Failed to read running networks', error);
     }
 }, { immediate: true });
-const virtualIp = (member: NetworkMember) => member.running ? virtualIps.value[member.key] : undefined;
-const stateOf = (member: NetworkMember) => !member.online ? 'offline' : member.running ? 'running' : 'stopped';
-const stateLabel = (member: NetworkMember) => t(`web.mesh_network.${stateOf(member)}`);
+const runtime = (member: NetworkMember): Runtime => member.running ? runtimes.value[member.key] ?? {} : {};
+const virtualIp = (member: NetworkMember) => runtime(member).address;
+// A member goes by the device's name in the device list.
+const memberName = deviceName;
+const stateOf = (member: NetworkMember) => !member.online ? 'offline'
+    : !member.running ? 'stopped' : runtime(member).error ? 'failed' : 'running';
+const stateLabel = (member: NetworkMember) => {
+    const label = t(`web.mesh_network.${stateOf(member)}`);
+    const error = runtime(member).error;
+    return error ? `${label}: ${error}` : label;
+};
+const lastSeen = (member: NetworkMember) => member.device.last_seen?.replace('T', ' ').slice(0, 16) || '—';
 
 // --- adding devices: they join with the core settings and the preset ---
 
@@ -174,33 +187,27 @@ const candidateName = (deviceId: string) => {
             <h2>{{ t('web.mesh_network.no_members') }}</h2>
             <Button v-if="centralEnabled" icon="pi pi-plus" :label="t('web.mesh_network.add_device')" @click="openJoin" />
         </div>
-        <div v-else-if="viewMode === 'card'" class="member-cards">
-            <article v-for="member in members" :key="member.key" class="member-card" :class="{ offline: !member.online, selected: selectedKeys.includes(member.key) }">
-                <header class="member-card-head">
+        <div v-else-if="viewMode === 'card'" class="entity-cards member-cards">
+            <article v-for="member in members" :key="member.key" class="entity-card" :class="{ selected: selectedKeys.includes(member.key) }">
+                <header class="entity-card-head">
                     <Checkbox v-model="selectedKeys" :value="member.key" :input-id="`member-${member.key}`" :disabled="!actionable(member)"
-                        :aria-label="deviceName(member)" />
-                    <span class="member-icon" aria-hidden="true"><i class="pi pi-server"></i></span>
-                    <div class="member-identity">
-                        <button class="member-name" :title="deviceName(member)" @click="openStatus(member)">{{ deviceName(member) }}</button>
-                        <span v-if="member.device.alias && member.device.hostname" class="member-host mono-value">{{ member.device.hostname }}</span>
-                    </div>
-                    <span class="member-state" :class="stateOf(member)">{{ stateLabel(member) }}</span>
+                        :aria-label="memberName(member)" />
+                    <span class="status-dot" :class="stateOf(member)" role="img" :aria-label="stateLabel(member)" v-tooltip.top="stateLabel(member)"></span>
+                    <EntityName :name="memberName(member)" />
                 </header>
-                <dl class="member-facts">
+                <dl class="entity-facts">
                     <div><dt>{{ t('web.mesh_network.virtual_ip') }}</dt><dd class="mono-value">{{ virtualIp(member) || '—' }}</dd></div>
-                    <div><dt>{{ t('web.device.version') }}</dt><dd>{{ member.device.easytier_version ? `v${member.device.easytier_version.split('-')[0]}` : '—' }}</dd></div>
-                    <div v-if="!member.online && member.device.last_seen" class="member-fact-wide"><dt>{{ t('web.device.last_seen') }}</dt>
-                        <dd>{{ member.device.last_seen.replace('T', ' ').slice(0, 16) }}</dd></div>
+                    <div><dt>{{ t('web.device.last_seen') }}</dt><dd>{{ lastSeen(member) }}</dd></div>
                 </dl>
-                <div v-if="member.pending || member.credential || member.locked || (!editable(member) && member.online)" class="member-flags">
-                    <Tag v-if="member.pending" icon="pi pi-clock" :value="t('web.mesh_network.pending')" severity="info" v-tooltip.top="t('web.mesh_network.pending_hint')" />
-                    <Tag v-if="member.credential" icon="pi pi-id-card" :value="t('web.mesh_network.temporary')" severity="secondary" />
-                    <Tag v-if="member.locked" icon="pi pi-lock" :value="t('web.mesh_network.locked')" severity="warn" v-tooltip.top="t('advanced_locked_hint')" />
-                    <Tag v-if="!editable(member) && member.online" icon="pi pi-eye" :value="t('web.mesh_network.readonly')" severity="warn" />
-                </div>
-                <footer class="member-card-actions">
-                    <Button icon="pi pi-chart-line" :label="t('web.mesh_network.status')" text size="small" severity="secondary" @click="openStatus(member)" />
-                    <Button icon="pi pi-pencil" :label="t('web.mesh_network.edit_config')" text size="small" severity="secondary" @click="openEditor(member)" />
+                <footer class="entity-card-foot">
+                    <div class="entity-flags">
+                        <span v-if="runtime(member).error" class="entity-error" :title="runtime(member).error"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ runtime(member).error }}</span>
+                        <span v-if="member.pending" class="entity-flag info" v-tooltip.top="t('web.mesh_network.pending_hint')"><i class="pi pi-clock" aria-hidden="true"></i>{{ t('web.mesh_network.pending') }}</span>
+                    </div>
+                    <div class="entity-actions">
+                        <Button icon="pi pi-chart-line" :label="t('web.mesh_network.status')" text size="small" severity="secondary" @click="openStatus(member)" />
+                        <Button icon="pi pi-pencil" :label="t('web.console.edit')" :aria-label="t('web.mesh_network.edit_config')" text size="small" severity="secondary" @click="openEditor(member)" />
+                    </div>
                 </footer>
             </article>
         </div>
@@ -209,26 +216,27 @@ const candidateName = (deviceId: string) => {
             <Column selection-mode="multiple" header-style="width: 3rem" />
             <Column :header="t('web.mesh_network.devices')">
                 <template #body="{ data }">
-                    <button class="entity-link" @click="openStatus(data)"><span class="status-dot" :class="data.online ? 'online' : 'offline'"></span>
-                        <span class="preview-name">{{ deviceName(data) }}</span></button>
+                    <span class="member-cell"><span class="status-dot" :class="stateOf(data)" role="img" :aria-label="stateLabel(data)" v-tooltip.top="stateLabel(data)"></span>
+                        <span class="preview-name">{{ memberName(data) }}</span></span>
                 </template>
             </Column>
             <Column :header="t('web.mesh_network.virtual_ip')"><template #body="{ data }"><span class="mono-value">{{ virtualIp(data) || '—' }}</span></template></Column>
             <Column :header="t('web.mesh_network.status')">
                 <template #body="{ data }">
                     <div class="flex flex-wrap gap-1">
-                        <Tag v-if="!data.online" :value="t('web.mesh_network.offline')" severity="secondary" />
-                        <Tag v-else :value="data.running ? t('web.mesh_network.running') : t('web.mesh_network.stopped')" :severity="data.running ? 'success' : 'secondary'" />
+                        <span v-if="runtime(data).error" class="entity-error" :title="runtime(data).error"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ runtime(data).error }}</span>
                         <Tag v-if="data.pending" :value="t('web.mesh_network.pending')" severity="info" v-tooltip.top="t('web.mesh_network.pending_hint')" />
-                        <Tag v-if="data.credential" :value="t('web.mesh_network.temporary')" severity="contrast" />
-                        <Tag v-if="data.locked" icon="pi pi-lock" :value="t('web.mesh_network.locked')" severity="warn" />
-                        <Tag v-if="!editable(data) && data.online" :value="t('web.mesh_network.readonly')" severity="warn" />
                     </div>
                 </template>
             </Column>
-            <Column field="device.easytier_version" :header="t('web.device.version')" />
+            <Column :header="t('web.device.last_seen')"><template #body="{ data }"><span class="muted">{{ lastSeen(data) }}</span></template></Column>
             <Column :header="t('web.console.manage')">
-                <template #body="{ data }"><Button icon="pi pi-pencil" :label="t('web.mesh_network.edit_config')" text size="small" severity="secondary" @click="openEditor(data)" /></template>
+                <template #body="{ data }">
+                    <div class="flex items-center gap-1">
+                        <Button icon="pi pi-chart-line" :label="t('web.mesh_network.status')" text size="small" severity="secondary" @click="openStatus(data)" />
+                        <Button icon="pi pi-pencil" :label="t('web.mesh_network.edit_config')" text size="small" severity="secondary" @click="openEditor(data)" />
+                    </div>
+                </template>
             </Column>
         </DataTable>
     </section>
@@ -260,44 +268,9 @@ const candidateName = (deviceId: string) => {
 <style scoped>
 .members-heading { flex-wrap: wrap; }
 .members-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-left: auto; }
-.members-hint { margin: 0; padding: 0 18px 12px; font-size: 13px; color: var(--p-text-muted-color); }
-.member-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; padding: 0 18px 18px; }
-.member-card {
-    display: flex; flex-direction: column; min-width: 0; overflow: hidden;
-    border: 1px solid var(--console-border); border-radius: 10px; background: var(--console-panel);
-    transition: border-color .15s, box-shadow .15s;
-}
-.member-card:hover { border-color: color-mix(in srgb, var(--p-primary-color) 35%, var(--console-border)); }
-.member-card.selected { border-color: var(--p-primary-color); box-shadow: 0 0 0 1px var(--p-primary-color); }
-.member-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 14px 14px 12px; }
-.member-icon {
-    display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px;
-    border: 1px solid var(--console-border); border-radius: 8px; color: var(--p-primary-color);
-    background: color-mix(in srgb, var(--p-primary-color) 7%, transparent); font-size: 14px;
-}
-.member-card.offline .member-icon { color: var(--console-muted); background: color-mix(in srgb, var(--p-text-color) 5%, transparent); }
-.member-identity { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.member-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: 14px; font-weight: 600; }
-.member-name:hover { color: var(--p-primary-color); }
-.member-name:focus-visible { outline: 2px solid var(--p-primary-color); outline-offset: 2px; border-radius: 4px; }
-.member-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--console-muted); font-size: 11px; }
-.member-state {
-    display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 0 9px; border-radius: 999px; line-height: 22px;
-    font-size: 12px; font-weight: 500; color: var(--console-muted); background: color-mix(in srgb, var(--p-text-color) 6%, transparent);
-}
-.member-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.member-state.running { color: var(--p-green-600); background: color-mix(in srgb, var(--p-green-500) 13%, transparent); }
-.member-state.stopped { color: var(--p-orange-600); background: color-mix(in srgb, var(--p-orange-500) 13%, transparent); }
-.member-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 0; padding: 12px 14px; border-top: 1px solid var(--console-border); }
-.member-facts > div { min-width: 0; }
-.member-facts dt { font-size: 11px; color: var(--console-muted); }
-.member-facts dd { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.member-facts .member-fact-wide { grid-column: 1 / -1; }
-.member-flags { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 14px 12px; }
-.member-card-actions {
-    display: flex; justify-content: flex-end; gap: 2px; margin-top: auto; padding: 6px 8px;
-    border-top: 1px solid var(--console-border); background: color-mix(in srgb, var(--p-text-color) 2%, transparent);
-}
+.members-hint { margin: 0; padding: 0 20px 12px; font-size: 13px; color: var(--p-text-muted-color); }
+.member-cards { padding-top: 0; }
+.member-cell { display: inline-flex; align-items: center; gap: 10px; min-width: 0; font-weight: 550; }
 .device-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); gap: 8px; max-height: 18rem; overflow: auto; }
 .device-pick { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 10px; border: 1px solid var(--console-border); border-radius: 6px; }
 .device-pick label { cursor: pointer; }

@@ -615,10 +615,10 @@ for (const [apiHost, hostname] of [
 
 test('device search, sort, expansion and routed drawer survive reload and history', async t => {
     const { page } = await open(t, '/h/deviceList');
-    await page.locator('.device-card').first().waitFor();
+    await page.locator('.device-cards .entity-card').first().waitFor();
     await page.locator('.view-toggle .pi-table').click();
     const table = page.locator('.desktop-list');
-    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).waitFor();
+    await table.getByText('Amsterdam gateway', { exact: true }).waitFor();
     await page.getByRole('textbox', { name: 'Search name or address' }).fill('192.0.2.10');
     assert.equal(await table.locator('tbody > tr').count(), 1);
     await page.getByRole('textbox', { name: 'Search name or address' }).fill('');
@@ -630,7 +630,7 @@ test('device search, sort, expansion and routed drawer survive reload and histor
     await table.locator('.device-details').waitFor();
     await page.getByRole('textbox', { name: 'Search name or address' }).fill('192.0.2.');
     const tableElement = await table.elementHandle();
-    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).click();
+    await table.locator('tbody > tr').filter({ hasText: 'Amsterdam gateway' }).getByRole('button', { name: 'Status', exact: true }).click();
     await page.locator('.console-device-drawer').waitFor();
     assert.ok(page.url().endsWith(`/deviceList?device=${id(1)}&instance=${id(100)}`));
     assert.ok(await tableElement.evaluate(element => element === document.querySelector('.desktop-list')), 'opening a device preserves the list');
@@ -655,9 +655,9 @@ test('switching the viewed network and device preserves the list and open drawer
         [id(101)]: { network_name: 'Home lab', config_permission: 7 },
     } } }));
     const table = page.locator('.desktop-list');
-    await page.locator('.device-card').first().waitFor();
+    await page.locator('.device-cards .entity-card').first().waitFor();
     await page.locator('.view-toggle .pi-table').click();
-    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).click();
+    await table.locator('tbody > tr').filter({ hasText: 'Amsterdam gateway' }).getByRole('button', { name: 'Status', exact: true }).click();
     const drawer = page.locator('.console-device-drawer');
     await drawer.waitFor();
     const tableElement = await table.elementHandle();
@@ -679,17 +679,17 @@ test('switching the viewed network and device preserves the list and open drawer
 });
 
 test('device list defaults to cards and persists both view modes across reload', async t => {
-    const { page } = await open(t, '/h/deviceList');
-    const cards = page.locator('.device-card');
+    const { page, state } = await open(t, '/h/deviceList');
+    const cards = page.locator('.device-cards .entity-card');
     await cards.first().waitFor();
     assert.equal(await cards.count(), 6);
     assert.equal(await page.locator('.desktop-list').count(), 0, 'device list defaults to cards');
     await page.locator('.view-toggle .pi-table').click();
     const table = page.locator('.desktop-list');
-    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).waitFor();
+    await table.getByText('Amsterdam gateway', { exact: true }).waitFor();
     assert.equal(await table.locator('tbody > tr').count(), 6);
     await page.reload();
-    await table.getByRole('button', { name: 'Amsterdam gateway', exact: true }).waitFor();
+    await table.getByText('Amsterdam gateway', { exact: true }).waitFor();
     assert.equal(await cards.count(), 0, 'table selection survives a reload');
     await page.locator('.view-toggle .pi-th-large').click();
     await cards.first().waitFor();
@@ -698,6 +698,22 @@ test('device list defaults to cards and persists both view modes across reload',
     await cards.first().waitFor();
     assert.equal(await cards.count(), 6);
     assert.equal(await table.count(), 0, 'card selection survives a reload');
+
+    // Clicking a name renames the device; Escape leaves it alone.
+    // Cards keep their order while one is edited, so find it by position.
+    const card = cards.nth(1);
+    await card.getByText('Build server', { exact: true }).waitFor();
+    await card.getByRole('button', { name: 'Build server', exact: true }).click();
+    const input = card.getByRole('textbox', { name: 'Rename', exact: true });
+    await input.fill('Ignored');
+    await input.press('Escape');
+    await card.getByRole('button', { name: 'Build server', exact: true }).click();
+    await input.fill('  Build box  ');
+    await input.press('Enter');
+    await input.waitFor({ state: 'detached' });
+    assert.deepEqual(state.writes.filter(write => write.path.endsWith('/alias')),
+        [{ path: `/machines/${id(2)}/alias`, method: 'PUT', payload: { alias: 'Build box' } }]);
+    assert.deepEqual(await card.locator('.entity-card-foot button').allTextContents(), ['Status', 'Edit', 'Delete']);
 });
 
 test('network list defaults to cards and a new network needs only its name', async t => {
@@ -960,8 +976,7 @@ test('members default to cards, skip locked ones and open devices over the page'
         [id(100)]: { network_name: 'Engineering', config_permission: 0 },
     } } }));
     await page.goto(`${base}/#/h/networks/view/Engineering/members`);
-    const card = page.locator('.member-card').filter({ hasText: 'Amsterdam gateway' });
-    await card.getByText('Locked', { exact: true }).waitFor();
+    const card = page.locator('.member-cards .entity-card').filter({ hasText: 'Amsterdam gateway' });
     await card.getByText('10.126.126.5/24', { exact: true }).waitFor();
     assert.equal(await card.getByText(id(100).slice(0, 8)).count(), 0, 'instance ids are not shown');
     assert.equal(await card.getByText('192.0.2.', { exact: false }).count(), 0, 'public addresses are not shown');
@@ -970,7 +985,8 @@ test('members default to cards, skip locked ones and open devices over the page'
     const dialog = page.getByRole('dialog');
     await dialog.getByText('No online device can be added', { exact: true }).waitFor();
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await card.getByRole('button', { name: 'Amsterdam gateway' }).click();
+    assert.equal(await card.getByRole('button', { name: 'Amsterdam gateway' }).count(), 0, 'the name only names the member');
+    await card.getByRole('button', { name: 'Status', exact: true }).click();
     await page.waitForURL(`**/networks/view/Engineering/members?device=${id(1)}&instance=${id(100)}`);
     await page.locator('.console-device-drawer h2').filter({ hasText: 'Amsterdam gateway' }).waitFor();
     await page.locator('.console-device-drawer').getByText('Network Status', { exact: true }).waitFor();
@@ -1343,7 +1359,7 @@ test('responsive layouts, localization, dark mode and mobile drawer', async t =>
     state.machines[0].info.hostname = 'A-very-long-device-hostname-that-must-wrap-without-breaking-the-layout.example.internal';
     await page.setViewportSize({ width: 390, height: 960 });
     await page.goto(`${base}/#/h/deviceList`);
-    await page.locator('.mobile-list .entity-link').first().click();
+    await page.locator('.mobile-list .mobile-actions button').first().click();
     await page.locator('.console-device-drawer').waitFor();
     await page.waitForFunction(() => Math.abs(document.querySelector('.console-device-drawer').getBoundingClientRect().left) < 1);
     assert.ok(await page.locator('.console-device-drawer').evaluate(el => el.getBoundingClientRect().width <= innerWidth));

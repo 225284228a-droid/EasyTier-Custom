@@ -122,7 +122,18 @@ advanced_fields! {
         mtu: int,
         traffic_disguise: text,
         parallel_connections: int,
+        p2p_prefer_protocol: text,
+        p2p_disguise_mode: text,
     ]
+}
+
+/// The values a text setting may take; the core rejects anything else.
+fn choices(field: &str) -> Option<&'static [&'static str]> {
+    match field {
+        "p2p_prefer_protocol" => Some(&["tcp", "udp"]),
+        "p2p_disguise_mode" => Some(&["prefer", "off", "disabled", "only"]),
+        _ => None,
+    }
 }
 
 /// Every advanced setting `config` holds.
@@ -146,6 +157,13 @@ pub fn validate(change: &AdvancedChange) -> anyhow::Result<()> {
             continue;
         }
         set(&mut probe, field, value)?;
+        if let (Some(choices), Some(text)) = (choices(field), value.as_str()) {
+            anyhow::ensure!(
+                choices.contains(&text),
+                "{field} must be one of {}",
+                choices.join(", ")
+            );
+        }
     }
     Ok(())
 }
@@ -289,6 +307,31 @@ mod tests {
         assert!(validate(&change(&[("latency_first", json!(1))])).is_err());
         assert!(validate(&change(&[("mtu", json!("1300"))])).is_err());
         assert!(validate(&change(&[("mtu", json!(1300)), ("lazy_p2p", Value::Null)])).is_ok());
+    }
+
+    #[test]
+    fn p2p_protocol_and_disguise_take_only_what_the_core_knows() {
+        assert!(validate(&change(&[("p2p_prefer_protocol", json!("tcp"))])).is_ok());
+        assert!(validate(&change(&[("p2p_prefer_protocol", json!("http3"))])).is_err());
+        assert!(validate(&change(&[("p2p_disguise_mode", json!("only"))])).is_ok());
+        assert!(validate(&change(&[("p2p_disguise_mode", json!("always"))])).is_err());
+        assert!(validate(&change(&[("p2p_disguise_mode", Value::Null)])).is_ok());
+
+        // A node without the capability keeps its own value.
+        let edit = change(&[
+            ("p2p_disguise_mode", json!("off")),
+            ("p2p_prefer_protocol", json!("tcp")),
+        ]);
+        assert!(
+            patch(&NetworkConfig::default(), &edit, |_| false, None)
+                .unwrap()
+                .is_none()
+        );
+        let (desired, mask) = patch(&NetworkConfig::default(), &edit, |_| true, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mask, ["p2p_disguise_mode", "p2p_prefer_protocol"]);
+        assert_eq!(desired.p2p_disguise_mode.as_deref(), Some("off"));
     }
 
     #[test]

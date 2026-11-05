@@ -439,9 +439,10 @@ web:
     device_note: "Total registered devices"
     online_device_note: "Devices currently online"
     delete_device: "Delete Device"
-    set_alias: "Set Alias"
-    alias_dialog_title: "Set Device Alias"
-    alias_hint: "The alias is shown in place of the hostname across the console. Leave empty to clear."
+    rename: "Rename"
+    rename_hint: "Click to rename (the alias). Leave empty to show the hostname."
+    edit: "Edit"
+    delete: "Delete"
     delete_device_confirm: "Delete device {device}? It will be removed from its networks and its managed configs withdrawn."
     block_device: "Also block this device"
     block_device_hint: "A blocked device cannot re-register; unblock it from the bell menu."
@@ -807,6 +808,12 @@ web:
     compression: Compression
     compress_none: None
     compress_zstd: Zstd
+    prefer_tcp: Prefer TCP
+    prefer_udp: Prefer UDP
+    disguise_prefer: Prefer disguise
+    disguise_off: Do not initiate
+    disguise_disabled: Disabled
+    disguise_only: Require disguise
     value_default: Default
     value_on: 'On'
     value_off: 'Off'
@@ -823,7 +830,7 @@ web:
     auto_join_hint: When on, a device connecting to this console for the first time joins with the preset and starts, once. Devices that connected before it was switched on never join on their own.
     auto_join_on: Auto join
     members: Members
-    members_hint: Start and stop apply to the selected online members; locked members are never part of a batch. Click a device to manage it over this page.
+    members_hint: Start and stop apply to the selected online members; locked members are never part of a batch. Members show the name they have in the device list.
     locked: Locked
     pending: Pending
     pending_hint: This member was offline during a change; it receives the change once when it next connects, overwriting edits made meanwhile unless another console changed it later. Edits after that are kept
@@ -853,6 +860,7 @@ web:
     running: Running
     stopped: Stopped
     offline: Offline
+    failed: Failed
     scan_partial: 'Configurations of {count} device(s) are temporarily unavailable'
     no_members: No device runs or saves this network
     display_name: Network display name
