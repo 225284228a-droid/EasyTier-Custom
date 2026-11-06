@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Button, Column, DataTable, Dialog, Message, SelectButton, Skeleton, useToast } from 'primevue';
+import { Button, Column, DataTable, Dialog, Message, Skeleton, useToast } from 'primevue';
 import { useI18n } from 'vue-i18n';
 import { Utils } from 'easytier-frontend-lib';
 import { failureMessage } from '../../modules/networkDiscovery';
 import { useMeshNetwork } from '../../modules/meshNetworkContext';
 import TemporaryDevices from './TemporaryDevices.vue';
+import CredentialTtlPicker from './CredentialTtlPicker.vue';
+import { DAY } from '../../modules/credentialTtl';
 
 const { t } = useI18n();
 const toast = useToast();
@@ -23,16 +25,11 @@ const addVisible = ref(false);
 const adding = ref(false);
 const candidates = ref<Utils.DeviceInfo[]>();
 const selected = ref<Utils.DeviceInfo[]>([]);
-const ttlHours = ref(7 * 24);
-const ttlOptions = [
-    { label: t('web.network_detail.ttl_24h'), value: 24 },
-    { label: t('web.network_detail.ttl_7d'), value: 7 * 24 },
-    { label: t('web.network_detail.ttl_30d'), value: 30 * 24 },
-];
+const ttl = ref(7 * DAY);
 
 const openAdd = async () => {
     selected.value = [];
-    ttlHours.value = 7 * 24;
+    ttl.value = 7 * DAY;
     candidates.value = undefined;
     addVisible.value = true;
     const members = new Set(memberDevices.value);
@@ -61,7 +58,7 @@ const add = async () => {
             virtual_cidr: null,
             secure_mode: true,
         }, view.value.core.network_secret ?? undefined)).network_id;
-        await api.add_network_members(created, selected.value.map(device => device.machine_id), true, ttlHours.value * 3600);
+        await api.add_network_members(created, selected.value.map(device => device.machine_id), true, ttl.value);
         created = undefined;
         addVisible.value = false;
         await reload();
@@ -105,9 +102,9 @@ const add = async () => {
         </template>
         <div class="flex flex-col gap-2 mt-2">
             <p class="text-sm muted m-0">{{ t('web.network_detail.add_temporary_hint') }}</p>
-            <div class="flex items-center gap-2">
-                <label class="text-sm">{{ t('web.network_detail.credential_ttl') }}</label>
-                <SelectButton v-model="ttlHours" :options="ttlOptions" option-label="label" option-value="value" size="small" />
+            <div class="flex items-start gap-2">
+                <label class="text-sm shrink-0 pt-1.5">{{ t('web.network_detail.credential_ttl') }}</label>
+                <CredentialTtlPicker v-model="ttl" />
             </div>
         </div>
         <template #footer>

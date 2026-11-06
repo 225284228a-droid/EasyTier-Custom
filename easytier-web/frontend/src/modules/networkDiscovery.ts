@@ -77,7 +77,8 @@ export async function memberDetails(api: ApiClient, members: NetworkMember[]): P
   const machines = await api.collect_topology_network_info(devices)
   for (const [machineId, { info }] of Object.entries(machines)) {
     for (const [instanceId, detail] of Object.entries(info?.info?.map ?? {}))
-      details.set(`${machineId}/${instanceId}`, detail)
+      if (detail)
+        details.set(`${machineId}/${instanceId}`, detail)
   }
   return details
 }
@@ -111,7 +112,9 @@ export function networkClients(details: Map<string, NetworkTypes.NetworkInstance
       key,
       peerId: route.peer_id,
       hostname: route.hostname?.trim() || `Peer ${route.peer_id}`,
-      address: route.ipv4_addr?.address ? Utils.ipv4InetToString(route.ipv4_addr) : undefined,
+      address: typeof route.ipv4_addr === 'string'
+        ? route.ipv4_addr || undefined
+        : route.ipv4_addr?.address ? Utils.ipv4InetToString(route.ipv4_addr) : undefined,
     })
   }
   return [...clients.values()].sort((left, right) => left.hostname.localeCompare(right.hostname))

@@ -98,7 +98,7 @@ const peerPicks = (peers: (MeshAclPeer | MeshAclTarget)[]) => peers.filter((peer
 const setSources = (rule: MeshAclRule, values: string[]) => { rule.sources = values.map(peerOf); touch(); };
 const setDestinations = (rule: MeshAclRule, values: string[]) => {
     rule.destinations = [
-        ...values.map(peerOf).filter((peer): peer is MeshAclTarget => peer.type !== 'address'),
+        ...values.map(peerOf).filter((peer): peer is Exclude<MeshAclPeer, { type: 'address' }> => peer.type !== 'address'),
         ...rule.destinations.filter(target => target.type === 'subnet'),
     ];
     touch();

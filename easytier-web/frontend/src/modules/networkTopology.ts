@@ -172,7 +172,9 @@ function ipv4(value: unknown): string | undefined {
   return Utils.ipv4ToString(value as { addr: number })
 }
 
-function virtualIp(inet: { address?: unknown, network_length?: number } | undefined): string | undefined {
+function virtualIp(inet: { address?: unknown, network_length?: number } | string | null | undefined): string | undefined {
+  if (typeof inet === 'string')
+    return cleanText(inet)
   const address = ipv4(inet?.address)
   return address && inet?.network_length ? `${address}/${inet.network_length}` : address
 }

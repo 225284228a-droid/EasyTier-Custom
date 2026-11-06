@@ -6,6 +6,8 @@ import { Config, NetworkTypes, UrlListInput, Utils, StatusDisplay } from 'easyti
 import ApiClient, { type CentralNetworkDetail, type CentralNetworkMember, type NetworkCredential, type NodeAclRuleStat, type NodePeerInfo, type NodeRouteInfo, type TemporaryPeer } from '../../modules/api';
 import { normalizeVirtualSubnet } from '../../modules/virtual-subnet';
 import { toNetworkCidr } from '../../modules/cidr';
+import { DAY, isPermanentExpiry } from '../../modules/credentialTtl';
+import CredentialTtlPicker from './CredentialTtlPicker.vue';
 
 // Temporary devices of one network: devices whose whole configuration the
 // console publishes, authenticated by credentials instead of the secret.
@@ -119,18 +121,18 @@ const openAddMember = async () => {
     }
     selectedDevices.value = [];
     addTemporary.value = true;
-    addTtlHours.value = 7 * 24;
+    addTtl.value = 7 * DAY;
     addMemberVisible.value = true;
 };
 
 // Permanent members run the network from their own configuration.
 const addTemporary = ref(true);
-const addTtlHours = ref(7 * 24);
-const addTtlOptions = [
-    { label: t('web.network_detail.ttl_24h'), value: 24 },
-    { label: t('web.network_detail.ttl_7d'), value: 7 * 24 },
-    { label: t('web.network_detail.ttl_30d'), value: 30 * 24 },
-];
+const addTtl = ref(7 * DAY);
+// Credential expiries as a date, or permanent.
+const expiryDate = (expiryUnix: number) => isPermanentExpiry(expiryUnix)
+    ? t('web.network_detail.ttl_permanent') : new Date(expiryUnix * 1000).toLocaleDateString();
+const expiryTime = (expiryUnix: number) => isPermanentExpiry(expiryUnix)
+    ? t('web.network_detail.ttl_permanent') : new Date(expiryUnix * 1000).toLocaleString();
 
 const addMembers = async () => {
     const deviceIds = selectedDevices.value.map((device) => device.machine_id);
@@ -143,7 +145,7 @@ const addMembers = async () => {
             networkId.value,
             deviceIds,
             addTemporary.value,
-            addTemporary.value ? addTtlHours.value * 3600 : undefined,
+            addTemporary.value ? addTtl.value : undefined,
         );
         addMemberVisible.value = false;
         await loadAll();
@@ -732,20 +734,13 @@ const switchTabWithCredentials = async (tab: string) => {
     }
 };
 
-const ttlOptions = [
-    { label: t('web.network_detail.ttl_1h'), value: 1 },
-    { label: t('web.network_detail.ttl_24h'), value: 24 },
-    { label: t('web.network_detail.ttl_7d'), value: 168 },
-    { label: t('web.network_detail.ttl_30d'), value: 720 },
-];
-
 const generateVisible = ref(false);
 const generating = ref(false);
-const generateForm = ref({ ttl_hours: 24, reusable: true });
+const generateForm = ref({ ttl: DAY, reusable: true });
 const generatedCredential = ref<NetworkCredential | null>(null);
 
 const openGenerateCredential = () => {
-    generateForm.value = { ttl_hours: 24, reusable: true };
+    generateForm.value = { ttl: DAY, reusable: true };
     generatedCredential.value = null;
     generateVisible.value = true;
 };
@@ -755,7 +750,7 @@ const generateCredential = async () => {
     try {
         const created = await api?.generate_credential(
             networkId.value,
-            generateForm.value.ttl_hours * 3600,
+            generateForm.value.ttl,
             generateForm.value.reusable,
         );
         if (created) {
@@ -1007,7 +1002,7 @@ const switchTab = async (tab: string) => {
                                     <Tag v-if="member.temporary" :value="t('web.network_detail.temporary_tag')" severity="secondary" />
                                     <span v-if="member.temporary && member.credential_expiry_unix"
                                         class="text-xs muted">{{ t('web.network_detail.expires_at') }}
-                                        {{ new Date(member.credential_expiry_unix * 1000).toLocaleDateString() }}</span>
+                                        {{ expiryDate(member.credential_expiry_unix) }}</span>
                                     <Tag v-if="member.running === true" :value="t('web.network_detail.running')" severity="success" />
                                     <Tag v-else-if="member.running === false" :value="t('web.network_detail.stopped')" severity="warn" />
                                     <span v-if="member.runtime_virtual_ipv4" class="font-mono">{{ member.runtime_virtual_ipv4 }}</span>
@@ -1065,7 +1060,7 @@ const switchTab = async (tab: string) => {
                         </Column>
                         <Column :header="t('web.network_detail.credential_expiry')" style="width: 8rem">
                             <template #body="{ data }">
-                                <span v-if="data.credential_expiry_unix" class="muted">{{ new Date(data.credential_expiry_unix * 1000).toLocaleDateString() }}</span>
+                                <span v-if="data.credential_expiry_unix" class="muted">{{ expiryDate(data.credential_expiry_unix) }}</span>
                                 <span v-else class="muted">—</span>
                             </template>
                         </Column>
@@ -1095,7 +1090,7 @@ const switchTab = async (tab: string) => {
                                     </span>
                                     <span v-if="peer.credential_expiry_unix" class="text-xs muted">
                                         · {{ t('web.network_detail.expires_at') }}
-                                        {{ new Date(peer.credential_expiry_unix * 1000).toLocaleDateString() }}
+                                        {{ expiryDate(peer.credential_expiry_unix) }}
                                     </span>
                                     <Button :label="t('web.network_detail.locate_credential')" text size="small" severity="secondary"
                                         @click="locateCredential(peer.credential_id!)" />
@@ -1134,7 +1129,7 @@ const switchTab = async (tab: string) => {
                         </div>
                     </template></Column>
                     <Column :header="t('web.network_detail.credential_expiry')"><template #body="{ data }">
-                        {{ new Date(data.expiry_unix * 1000).toLocaleString() }}
+                        {{ expiryTime(data.expiry_unix) }}
                     </template></Column>
                     <Column :header="t('web.network_detail.credential_online_devices')"><template #body="{ data }">
                         <span v-if="!data.online_peers?.length" class="text-500">—</span>
@@ -1216,10 +1211,9 @@ const switchTab = async (tab: string) => {
             <div class="flex flex-col gap-2 mt-2">
                 <Message v-if="!network?.secure_mode" severity="warn" size="small" :closable="false">{{ t('web.network_detail.add_temporary_needs_secure') }}</Message>
                 <p v-else class="text-sm muted m-0">{{ t('web.network_detail.add_temporary_hint') }}</p>
-                <div class="flex items-center gap-2">
-                    <label for="add-ttl" class="text-sm">{{ t('web.network_detail.credential_ttl') }}</label>
-                    <SelectButton v-model="addTtlHours" :options="addTtlOptions"
-                        optionLabel="label" optionValue="value" size="small" />
+                <div class="flex items-start gap-2">
+                    <label class="text-sm shrink-0 pt-1.5">{{ t('web.network_detail.credential_ttl') }}</label>
+                    <CredentialTtlPicker v-model="addTtl" />
                 </div>
             </div>
             <template #footer>
@@ -1318,9 +1312,8 @@ const switchTab = async (tab: string) => {
             :header="t('web.network_detail.generate_credential')" :style="{ width: '34rem' }">
             <div v-if="!generatedCredential" class="flex flex-col gap-3">
                 <div class="flex flex-col gap-1">
-                    <label for="cred-ttl">{{ t('web.network_detail.credential_ttl') }}</label>
-                    <Select id="cred-ttl" v-model="generateForm.ttl_hours" :options="ttlOptions"
-                        optionLabel="label" optionValue="value" />
+                    <label>{{ t('web.network_detail.credential_ttl') }}</label>
+                    <CredentialTtlPicker v-model="generateForm.ttl" />
                 </div>
                 <div class="flex items-center gap-2">
                     <InputSwitch inputId="cred-reusable" v-model="generateForm.reusable" />

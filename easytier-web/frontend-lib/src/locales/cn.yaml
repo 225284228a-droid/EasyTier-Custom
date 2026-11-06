@@ -692,6 +692,12 @@ web:
     ttl_24h: 1 天
     ttl_7d: 7 天
     ttl_30d: 30 天
+    ttl_permanent: 永久
+    ttl_custom: 自定义
+    ttl_hours: 小时
+    ttl_days: 天
+    ttl_unit: 单位
+    ttl_custom_hint: 最长 365 天
     credential_reusable_hint: 取消勾选则同一凭证同时只允许一台设备在线
     credential_secret_hint: "凭证密钥（已保存，可随时在凭证列表中查看）："
     join_command: 临时设备加入命令

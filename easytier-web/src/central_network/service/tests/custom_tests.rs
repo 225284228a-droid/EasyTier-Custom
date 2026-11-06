@@ -1093,3 +1093,62 @@ async fn a_device_joins_a_network_once_as_member_or_temporary_device() {
         1
     );
 }
+
+#[tokio::test]
+async fn a_zero_ttl_issues_credentials_that_never_expire() {
+    let (service, user_id, _) = service().await;
+    let temporary = Uuid::new_v4();
+    register_device(&service, user_id, temporary).await;
+    let network = service
+        .create_network(user_id, standalone_settings(), None)
+        .await
+        .unwrap();
+    let network_id = Uuid::parse_str(&network.network_id).unwrap();
+    service
+        .add_members(
+            user_id,
+            network_id,
+            AddMembersReq {
+                device_ids: vec![temporary.to_string()],
+                temporary: true,
+                ttl_seconds: Some(0),
+            },
+        )
+        .await
+        .unwrap();
+    let shared = service
+        .generate_credential(
+            user_id,
+            network_id,
+            GenerateCredentialReq {
+                ttl_seconds: 0,
+                credential_id: None,
+                reusable: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(shared.expiry_unix, PERMANENT_CREDENTIAL_EXPIRY_UNIX);
+    let intent = service.load(user_id, network_id).await.unwrap();
+    assert_eq!(intent.credentials.len(), 2);
+    assert!(
+        intent
+            .credentials
+            .iter()
+            .all(|credential| credential.expiry_unix == PERMANENT_CREDENTIAL_EXPIRY_UNIX)
+    );
+    assert!(matches!(
+        service
+            .generate_credential(
+                user_id,
+                network_id,
+                GenerateCredentialReq {
+                    ttl_seconds: MAX_CREDENTIAL_TTL_SECONDS + 1,
+                    credential_id: None,
+                    reusable: true,
+                },
+            )
+            .await,
+        Err(CentralNetworkServiceError::Invalid(_))
+    ));
+}

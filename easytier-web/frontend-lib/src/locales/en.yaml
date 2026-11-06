@@ -692,6 +692,12 @@ web:
     ttl_24h: 1 day
     ttl_7d: 7 days
     ttl_30d: 30 days
+    ttl_permanent: Permanent
+    ttl_custom: Custom
+    ttl_hours: hours
+    ttl_days: days
+    ttl_unit: Unit
+    ttl_custom_hint: Up to 365 days
     credential_reusable_hint: "Unchecked means only one device may use the credential at a time"
     credential_secret_hint: "Credential secret (saved and always visible in the credential list):"
     join_command: Temporary device join command

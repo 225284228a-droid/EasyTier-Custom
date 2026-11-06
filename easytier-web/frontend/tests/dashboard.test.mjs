@@ -1208,6 +1208,44 @@ test('credentials tab and temporary devices render', async t => {
     await page.getByRole('cell', { name: /Visitor phone/ }).waitFor();
 });
 
+test('temporary devices can be added for good or for a custom time', async t => {
+    const { page, state } = await open(t, '/h/networks/view/team-0/temporary', {}, state => {
+        state.storage['networkMembers.viewMode'] = 'table';
+        state.networks[0].secure_mode = true;
+        state.credentials = [{
+            credential_id: 'cred-forever', credential_secret: 'test-credential-secret',
+            expiry_unix: 253402300799, reusable: true, online_peers: [],
+        }];
+    });
+    const dialog = page.getByRole('dialog');
+    // Each round adds another device, since added ones are no longer offered.
+    const devices = ['Build server', 'Office workstation', 'Storage node'];
+    const addWith = async choose => {
+        await page.getByRole('button', { name: 'Add Devices' }).click();
+        await dialog.getByRole('row').filter({ hasText: devices.shift() }).getByRole('checkbox').check();
+        await choose();
+        await dialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+        await dialog.waitFor({ state: 'detached' });
+        return state.writes.filter(w => w.method === 'POST' && w.path.endsWith('/members')).at(-1).payload.ttl_seconds;
+    };
+    assert.equal(await addWith(() => dialog.getByRole('button', { name: 'Permanent', exact: true }).click()), 0);
+    assert.equal(await addWith(async () => {
+        await dialog.getByRole('button', { name: 'Custom', exact: true }).click();
+        await dialog.getByRole('spinbutton', { name: 'Custom' }).fill('12');
+        await dialog.getByRole('spinbutton', { name: 'Custom' }).blur();
+    }), 12 * 24 * 3600, 'custom amounts start in days');
+    assert.equal(await addWith(async () => {
+        await dialog.getByRole('button', { name: 'Custom', exact: true }).click();
+        await dialog.getByRole('combobox', { name: 'Unit' }).click();
+        await page.getByRole('option', { name: 'hours' }).click();
+        await dialog.getByRole('spinbutton', { name: 'Custom' }).fill('5');
+        await dialog.getByRole('spinbutton', { name: 'Custom' }).blur();
+    }), 5 * 3600);
+
+    await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
+    await page.getByRole('row').filter({ hasText: 'cred-forever' }).getByText('Permanent').waitFor();
+});
+
 test('PublicServer credential exports use the configured public server', async t => {
     const peer = 'tcp://public.example.test:11010';
     const { page } = await open(t, '/h/networks/view/team-0/temporary', {}, state => {

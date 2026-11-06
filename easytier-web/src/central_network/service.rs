@@ -38,6 +38,20 @@ pub use console_api::*;
 
 const TEMPORARY_MEMBER_DEFAULT_TTL_SECONDS: u32 = 7 * 24 * 3600;
 const MAX_CREDENTIAL_TTL_SECONDS: u32 = 365 * 24 * 3600;
+/// A TTL of zero asks for a credential that does not expire.
+const PERMANENT_CREDENTIAL_TTL: u32 = 0;
+/// The expiry of a permanent credential, 9999-12-31T23:59:59Z: cores only
+/// compare it with the time, and browsers can still show it as a date.
+pub const PERMANENT_CREDENTIAL_EXPIRY_UNIX: i64 = 253_402_300_799;
+
+/// When a credential issued now with `ttl` seconds expires.
+fn credential_expiry(ttl: u32) -> Option<i64> {
+    match ttl {
+        PERMANENT_CREDENTIAL_TTL => Some(PERMANENT_CREDENTIAL_EXPIRY_UNIX),
+        1..=MAX_CREDENTIAL_TTL_SECONDS => Some(chrono::Utc::now().timestamp() + i64::from(ttl)),
+        _ => None,
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CentralNetworkServiceError {
@@ -678,9 +692,11 @@ impl CentralNetworkService {
         let ttl = request
             .ttl_seconds
             .unwrap_or(TEMPORARY_MEMBER_DEFAULT_TTL_SECONDS);
-        if request.temporary && !(1..=MAX_CREDENTIAL_TTL_SECONDS).contains(&ttl) {
+        let expiry_unix = credential_expiry(ttl);
+        if request.temporary && expiry_unix.is_none() {
             return Err(CentralNetworkServiceError::Invalid(
-                "temporary member TTL must be between 1 second and 365 days".into(),
+                "temporary member TTL must be between 1 second and 365 days, or 0 for permanent"
+                    .into(),
             ));
         }
         for raw_device_id in request.device_ids {
@@ -706,7 +722,7 @@ impl CentralNetworkService {
                 intent.credentials.push(NetworkCredentialIntent {
                     id: credential_id.clone(),
                     secret: random_secret(),
-                    expiry_unix: chrono::Utc::now().timestamp() + i64::from(ttl),
+                    expiry_unix: expiry_unix.expect("validated temporary member TTL"),
                     grant: CredentialGrant {
                         acl_groups: vec![member_group_name(member_id)],
                         allow_relay: false,
@@ -829,11 +845,11 @@ impl CentralNetworkService {
                 "credentials require secure mode".into(),
             ));
         }
-        if !(1..=MAX_CREDENTIAL_TTL_SECONDS).contains(&request.ttl_seconds) {
+        let Some(expiry_unix) = credential_expiry(request.ttl_seconds) else {
             return Err(CentralNetworkServiceError::Invalid(
-                "credential TTL must be between 1 second and 365 days".into(),
+                "credential TTL must be between 1 second and 365 days, or 0 for permanent".into(),
             ));
-        }
+        };
         let credential_id = request
             .credential_id
             .filter(|id| !id.trim().is_empty())
@@ -850,7 +866,7 @@ impl CentralNetworkService {
         intent.credentials.push(NetworkCredentialIntent {
             id: credential_id.clone(),
             secret: random_secret(),
-            expiry_unix: chrono::Utc::now().timestamp() + i64::from(request.ttl_seconds),
+            expiry_unix,
             grant: CredentialGrant {
                 acl_groups: Vec::new(),
                 allow_relay: false,
