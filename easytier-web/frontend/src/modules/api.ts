@@ -219,7 +219,7 @@ export interface MeshMember {
     pending: boolean;
     sync_at?: number | null;
     credential: boolean;
-    /** Batch edits from this console leave its advanced settings and running state alone. */
+    /** Batch edits from this console leave its advanced settings and access control alone. */
     locked?: boolean;
     /** The advanced settings it held when last seen. */
     advanced?: MeshAdvancedValues;

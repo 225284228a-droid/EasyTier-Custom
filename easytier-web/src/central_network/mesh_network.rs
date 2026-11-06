@@ -866,8 +866,8 @@ pub(crate) async fn auto_join_user(
 }
 
 /// Forget the network and pause its members: online ones now, offline ones
-/// once when they next connect. Locked members keep running. Their
-/// configurations stay on the devices.
+/// once when they next connect. A lock only guards settings, so locked
+/// members are paused too. Their configurations stay on the devices.
 pub(crate) async fn pause_members(
     db: &Db,
     manager: &ClientManager,
@@ -875,7 +875,6 @@ pub(crate) async fn pause_members(
     network_name: &str,
 ) -> anyhow::Result<Vec<MemberSyncResult>> {
     core_sync::observe_user(db, manager, user_id).await;
-    let locked = locks(db, user_id).await?;
     let mut results = Vec::new();
     let mut online = Vec::new();
     for member in permanent(
@@ -886,10 +885,6 @@ pub(crate) async fn pause_members(
             .await?;
         db.delete_mesh_advanced_replay(user_id, &member.device_id, &member.instance_id)
             .await?;
-        if locked.contains(&(member.device_id.clone(), member.instance_id.clone())) {
-            results.push(sync_result(&member, MemberSyncStatus::Locked, None));
-            continue;
-        }
         let device_id = Uuid::parse_str(&member.device_id)?;
         if !manager.supports_local_configs(&(user_id, device_id)).await {
             let paused = core_sync::rewrite_stored(

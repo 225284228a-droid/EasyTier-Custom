@@ -192,8 +192,8 @@ nat_type: NAT Type
 flags_switch: Feature Switch
 advanced_lock: Lock advanced settings
 advanced_unlock: Unlock advanced settings
-advanced_locked_hint: "Locked: the console's batch edits leave this configuration's advanced settings, switches and running state alone"
-advanced_unlocked_hint: Lock to keep the console's batch edits away from this configuration's advanced settings, switches and running state
+advanced_locked_hint: "Locked: the console's batch edits leave this configuration's advanced settings, switches and access control alone"
+advanced_unlocked_hint: Lock to keep the console's batch edits away from this configuration's advanced settings, switches and access control
 
 latency_first: Enable Latency-First Mode
 latency_first_help: Ignore hop count and select the path with the lowest total latency
@@ -798,7 +798,7 @@ web:
     apply_settings: Save and apply
     discard: Discard changes
     delete: Delete network
-    delete_hint: Deletes the preset, temporary devices and credentials the console keeps. Members keep their configurations but are paused; offline members are paused when they next connect, and locked members are left alone.
+    delete_hint: Deletes the preset, temporary devices and credentials the console keeps. Members keep their configurations but are paused; offline members are paused when they next connect.
     delete_confirm: Delete network {name}? Members keep their configurations and are paused; temporary devices are removed.
     delete_done: '{count} member(s) paused or paused when they connect, {failed} failed'
     advanced_hint: Only the settings you change are written; every other setting keeps each member's own value. Locked members are skipped; offline members receive the change once when they next connect, overwriting edits made on the device meanwhile unless another console changed them later. Below each setting is how current members hold it.
@@ -831,7 +831,7 @@ web:
     auto_join_hint: When on, a device connecting to this console for the first time joins with the preset and starts, once. Devices that connected before it was switched on never join on their own.
     auto_join_on: Auto join
     members: Members
-    members_hint: Start and stop apply to the selected online members; locked members can be selected, but start and stop skip them. Members show the name they have in the device list.
+    members_hint: Start and stop apply to the selected online members; a lock only guards advanced settings and access control, not start and stop. Members show the name they have in the device list.
     locked: Locked
     pending: Pending
     pending_hint: This member was offline during a change; it receives the change once when it next connects, overwriting edits made meanwhile unless another console changed it later. Edits after that are kept

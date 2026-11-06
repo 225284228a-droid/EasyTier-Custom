@@ -16,8 +16,9 @@ const devicePopup = useDevicePopup();
 
 const members = computed(() => network.value?.members ?? []);
 const editable = (member: NetworkMember) => LibApi.ConfigFilePermission.isEditable(member.permission);
-// Members whose configuration was read now can be picked; temporary members
-// follow their central record. Batch start and stop leave locked ones alone.
+// Batch start and stop reach members whose configuration was read now;
+// temporary members follow their central record. A lock only keeps batch
+// edits off the settings, so locked members start and stop like the rest.
 const actionable = (member: NetworkMember) => member.online && !member.credential && editable(member);
 const selectable = ({ data }: { data: NetworkMember }) => actionable(data);
 
@@ -44,10 +45,8 @@ const tableSelection = computed({
 
 const busy = ref(false);
 const setEnabled = async (enabled: boolean) => {
-    const changing = selectedMembers.value.filter(member => actionable(member) && member.running !== enabled);
-    const targets = changing.filter(member => !member.locked);
-    const skipped = changing.length - targets.length;
-    if (!changing.length) return;
+    const targets = selectedMembers.value.filter(member => actionable(member) && member.running !== enabled);
+    if (!targets.length) return;
     busy.value = true;
     try {
         // Devices are reached at once; each retries over an unsteady link.
@@ -59,7 +58,6 @@ const setEnabled = async (enabled: boolean) => {
             severity: failed.length ? 'warn' : 'success',
             summary: t(enabled ? 'web.mesh_network.batch_start' : 'web.mesh_network.batch_stop'),
             detail: t('web.mesh_network.batch_done', { ok: targets.length - failed.length, failed: failed.length })
-                + (skipped ? `, ${t('web.mesh_network.locked_skipped', { count: skipped })}` : '')
                 + (failed.length ? `: ${failed.join('; ')}` : ''),
             life: failed.length ? 8000 : 2500,
         });

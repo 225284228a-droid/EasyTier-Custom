@@ -908,8 +908,13 @@ async fn network_acl_is_written_to_members_and_rebuilt_from_them() {
 #[tokio::test]
 async fn deleting_a_network_pauses_members_and_keeps_their_configs() {
     let (service, user_id, _) = service().await;
-    let (official, _) = official_member(&service, user_id, "office").await;
+    let (official, official_instance) = official_member(&service, user_id, "office").await;
     let (offline, offline_instance) = offline_revision_member(&service, user_id, "office").await;
+    // A lock guards settings only, so it does not keep a member running.
+    service
+        .set_mesh_lock(user_id, official, official_instance, true)
+        .await
+        .unwrap();
     service
         .save_mesh_preset(user_id, "office", Preset::new(None))
         .await
