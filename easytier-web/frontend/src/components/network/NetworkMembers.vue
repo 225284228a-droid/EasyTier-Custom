@@ -16,9 +16,9 @@ const devicePopup = useDevicePopup();
 
 const members = computed(() => network.value?.members ?? []);
 const editable = (member: NetworkMember) => LibApi.ConfigFilePermission.isEditable(member.permission);
-// Batch start and stop reach members whose configuration was read now;
-// temporary members follow their central record and locked ones are left alone.
-const actionable = (member: NetworkMember) => member.online && !member.credential && editable(member) && !member.locked;
+// Members whose configuration was read now can be picked; temporary members
+// follow their central record. Batch start and stop leave locked ones alone.
+const actionable = (member: NetworkMember) => member.online && !member.credential && editable(member);
 const selectable = ({ data }: { data: NetworkMember }) => actionable(data);
 
 const viewMode = ref<'table' | 'card'>(localStorage.getItem('meshMembers.viewMode') === 'table' ? 'table' : 'card');
@@ -44,8 +44,10 @@ const tableSelection = computed({
 
 const busy = ref(false);
 const setEnabled = async (enabled: boolean) => {
-    const targets = selectedMembers.value.filter(member => actionable(member) && member.running !== enabled);
-    if (!targets.length) return;
+    const changing = selectedMembers.value.filter(member => actionable(member) && member.running !== enabled);
+    const targets = changing.filter(member => !member.locked);
+    const skipped = changing.length - targets.length;
+    if (!changing.length) return;
     busy.value = true;
     try {
         // Devices are reached at once; each retries over an unsteady link.
@@ -57,6 +59,7 @@ const setEnabled = async (enabled: boolean) => {
             severity: failed.length ? 'warn' : 'success',
             summary: t(enabled ? 'web.mesh_network.batch_start' : 'web.mesh_network.batch_stop'),
             detail: t('web.mesh_network.batch_done', { ok: targets.length - failed.length, failed: failed.length })
+                + (skipped ? `, ${t('web.mesh_network.locked_skipped', { count: skipped })}` : '')
                 + (failed.length ? `: ${failed.join('; ')}` : ''),
             life: failed.length ? 8000 : 2500,
         });
@@ -201,6 +204,8 @@ const candidateName = (deviceId: string) => {
                 </dl>
                 <footer class="entity-card-foot">
                     <div class="entity-flags">
+                        <i v-if="member.locked" class="pi pi-lock entity-lock" role="img" :aria-label="t('web.mesh_network.locked')"
+                            v-tooltip.top="t('advanced_locked_hint')"></i>
                         <span v-if="runtime(member).error" class="entity-error" :title="runtime(member).error"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ runtime(member).error }}</span>
                         <span v-if="member.pending" class="entity-flag info" v-tooltip.top="t('web.mesh_network.pending_hint')"><i class="pi pi-clock" aria-hidden="true"></i>{{ t('web.mesh_network.pending') }}</span>
                     </div>
@@ -223,7 +228,9 @@ const candidateName = (deviceId: string) => {
             <Column :header="t('web.mesh_network.virtual_ip')"><template #body="{ data }"><span class="mono-value">{{ virtualIp(data) || '—' }}</span></template></Column>
             <Column :header="t('web.mesh_network.status')">
                 <template #body="{ data }">
-                    <div class="flex flex-wrap gap-1">
+                    <div class="flex flex-wrap items-center gap-1">
+                        <i v-if="data.locked" class="pi pi-lock entity-lock" role="img" :aria-label="t('web.mesh_network.locked')"
+                            v-tooltip.top="t('advanced_locked_hint')"></i>
                         <span v-if="runtime(data).error" class="entity-error" :title="runtime(data).error"><i class="pi pi-exclamation-circle" aria-hidden="true"></i>{{ runtime(data).error }}</span>
                         <Tag v-if="data.pending" :value="t('web.mesh_network.pending')" severity="info" v-tooltip.top="t('web.mesh_network.pending_hint')" />
                     </div>

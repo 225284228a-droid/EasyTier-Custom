@@ -818,6 +818,7 @@ web:
     value_on: 开
     value_off: 关
     value_default_is: 默认（{value}）
+    value_device_default: 默认（随设备）
     value_mixed: 各不相同
     value_unsupported: 不支持
     unsupported_hint: 这些设备的 EasyTier 版本不能保存这项设置，批量修改会跳过它们
@@ -830,7 +831,7 @@ web:
     auto_join_hint: 开启后，第一次连上本控制台的设备会按预下发配置自动加入并启动，每台设备只加入一次；开启前已经连接过的设备不会自动加入。
     auto_join_on: 自动加入
     members: 成员
-    members_hint: 启动/停止只作用于选中的在线成员，已锁定的成员不会被批量操作。成员名称与设备列表中的名称一致。
+    members_hint: 启动/停止只作用于选中的在线成员，已锁定的成员可以选中，但启停会跳过它们。成员名称与设备列表中的名称一致。
     locked: 已锁定
     pending: 待补发
     pending_hint: 修改时该成员离线，下次上线时补发一次（覆盖期间的手动修改，其他控制台更晚的修改除外）；补发之后在设备上的修改不会被改回

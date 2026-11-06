@@ -962,7 +962,7 @@ test('presets reach only joining devices and new devices may join on their own',
     assert.deepEqual(state.writes.find(write => write.path === '/mesh/networks/team-0/auto-join').payload, { enabled: true });
 });
 
-test('members default to cards, skip locked ones and open devices over the page', async t => {
+test('members default to cards, mark locked ones and open devices over the page', async t => {
     const { page, state } = await open(t, '/h/networks/view/team-0/members', {}, state => {
         state.machines[0].online = true;
         state.meshMembers = [{ device_id: id(1), instance_id: id(100), network_name: 'Engineering', online: true, pending: false, credential: false, locked: true }];
@@ -980,7 +980,8 @@ test('members default to cards, skip locked ones and open devices over the page'
     await card.getByText('10.126.126.5/24', { exact: true }).waitFor();
     assert.equal(await card.getByText(id(100).slice(0, 8)).count(), 0, 'instance ids are not shown');
     assert.equal(await card.getByText('192.0.2.', { exact: false }).count(), 0, 'public addresses are not shown');
-    assert.ok(await card.getByRole('checkbox').isDisabled(), 'locked members are not part of a batch');
+    assert.ok(await card.getByRole('checkbox').isEnabled(), 'a locked member can still be picked');
+    await card.locator('.entity-card-foot').getByRole('img', { name: 'Locked', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Add devices', exact: true }).first().click();
     const dialog = page.getByRole('dialog');
     await dialog.getByText('No online device can be added', { exact: true }).waitFor();

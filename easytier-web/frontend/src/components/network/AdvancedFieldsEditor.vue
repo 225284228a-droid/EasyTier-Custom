@@ -29,7 +29,10 @@ const valueName = (field: string, value: AdvancedValue) => {
     const option = parameterOf(field)?.options?.find(option => option.value === value);
     return option ? t(option.label) : String(value);
 };
-const defaultName = (field: string) => t('web.mesh_network.value_default_is', { value: valueName(field, ADVANCED_DEFAULTS[field]) });
+// Without a fixed default the device's own one applies.
+const defaultName = (field: string) => field in ADVANCED_DEFAULTS
+    ? t('web.mesh_network.value_default_is', { value: valueName(field, ADVANCED_DEFAULTS[field]) })
+    : t('web.mesh_network.value_device_default');
 
 // A choice equal to the default is the default, so it is offered once.
 const choicesOf = (field: string) => {

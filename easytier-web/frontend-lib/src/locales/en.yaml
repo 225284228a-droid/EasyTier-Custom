@@ -818,6 +818,7 @@ web:
     value_on: 'On'
     value_off: 'Off'
     value_default_is: Default ({value})
+    value_device_default: Default (per device)
     value_mixed: Mixed
     value_unsupported: Unsupported
     unsupported_hint: The EasyTier version on these devices cannot store this setting; batch edits skip them
@@ -830,7 +831,7 @@ web:
     auto_join_hint: When on, a device connecting to this console for the first time joins with the preset and starts, once. Devices that connected before it was switched on never join on their own.
     auto_join_on: Auto join
     members: Members
-    members_hint: Start and stop apply to the selected online members; locked members are never part of a batch. Members show the name they have in the device list.
+    members_hint: Start and stop apply to the selected online members; locked members can be selected, but start and stop skip them. Members show the name they have in the device list.
     locked: Locked
     pending: Pending
     pending_hint: This member was offline during a change; it receives the change once when it next connects, overwriting edits made meanwhile unless another console changed it later. Edits after that are kept

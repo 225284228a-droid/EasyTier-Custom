@@ -125,6 +125,7 @@
 .entity-sub:empty { display: none; }
 .entity-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 0; padding: 12px 16px; border-top: 1px solid var(--console-border); }
 .entity-facts > div { min-width: 0; }
+.entity-facts > .wide { grid-column: 1 / -1; }
 .entity-facts dt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 16px; color: var(--console-muted); }
 .entity-facts dd { margin: 2px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 18px; }
 .entity-card-foot { display: flex; align-items: center; gap: 8px; min-width: 0; height: 44px; margin-top: auto; padding: 0 8px 0 16px; border-top: 1px solid var(--console-border); }
@@ -135,6 +136,8 @@
 .entity-flag.warn { color: var(--p-orange-600); background: color-mix(in srgb, var(--p-orange-500) 13%, transparent); }
 .entity-error { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--p-red-500); font-size: 12px; }
 .entity-error > .pi { margin-right: 4px; font-size: 11px; }
+.entity-tag { flex: none; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 20px; color: var(--console-muted); background: color-mix(in srgb, var(--p-text-color) 6%, transparent); }
+.entity-lock { flex: none; font-size: 12px; color: var(--console-muted); cursor: help; }
 .entity-actions { display: flex; align-items: center; gap: 2px; flex: none; margin-left: auto; }
 .mono-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
 .muted { color: var(--console-muted); }

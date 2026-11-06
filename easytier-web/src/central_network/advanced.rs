@@ -90,8 +90,7 @@ macro_rules! advanced_fields {
 }
 
 // Left out on purpose: exit forwarding, TUN, smoltcp, device binding and
-// system forwarding describe one device; private mode keeps its default;
-// encryption is a core setting.
+// system forwarding describe one device; encryption is a core setting.
 advanced_fields! {
     bool: [
         latency_first,
@@ -103,6 +102,7 @@ advanced_fields! {
         multi_thread,
         disable_udp_hole_punching,
         enable_magic_dns,
+        enable_private_mode,
         enable_quic_proxy,
         disable_quic_input,
         disable_sym_hole_punching,
@@ -303,7 +303,8 @@ mod tests {
     #[test]
     fn rejects_device_settings_and_wrong_types() {
         assert!(validate(&change(&[("enable_exit_node", json!(true))])).is_err());
-        assert!(validate(&change(&[("enable_private_mode", json!(true))])).is_err());
+        assert!(validate(&change(&[("use_smoltcp", json!(true))])).is_err());
+        assert!(validate(&change(&[("enable_private_mode", json!(true))])).is_ok());
         assert!(validate(&change(&[("latency_first", json!(1))])).is_err());
         assert!(validate(&change(&[("mtu", json!("1300"))])).is_err());
         assert!(validate(&change(&[("mtu", json!(1300)), ("lazy_p2p", Value::Null)])).is_ok());

@@ -5,8 +5,8 @@ import type { MeshAdvancedValues } from './api'
  * Advanced settings a network's members may share without depending on them
  * to connect. The console mirrors this list (`central_network/advanced.rs`);
  * settings that describe one device (addresses, routes, exits, proxies,
- * TUN, device binding) are never batch-edited, private mode keeps its
- * default and encryption is a core setting.
+ * TUN, device binding) are never batch-edited and encryption is a core
+ * setting.
  */
 export const ADVANCED_SWITCHES: readonly string[] = [
   'latency_first',
@@ -27,6 +27,7 @@ export const ADVANCED_SWITCHES: readonly string[] = [
   'disable_relay_data',
   'prefer_peer_relay',
   'enable_magic_dns',
+  'enable_private_mode',
   'multi_thread',
   'enable_udp_broadcast_relay',
   'close_redundant_conns_when_disguised',
@@ -38,10 +39,12 @@ export type AdvancedValue = boolean | number | string
 /**
  * What the core runs with when a setting is unset (`common.proto` flag
  * defaults, negated where the API negates them). A member holding this value
- * explicitly behaves exactly like one holding nothing.
+ * explicitly behaves exactly like one holding nothing. Private mode has no
+ * entry: custom and official kernels default it differently, so only unset
+ * is its default.
  */
 export const ADVANCED_DEFAULTS: Readonly<Record<string, AdvancedValue>> = {
-  ...Object.fromEntries(ADVANCED_SWITCHES.map(field => [field, false])),
+  ...Object.fromEntries(ADVANCED_SWITCHES.filter(field => field !== 'enable_private_mode').map(field => [field, false])),
   multi_thread: true,
   close_redundant_conns_when_disguised: true,
   data_compress_algo: 1,

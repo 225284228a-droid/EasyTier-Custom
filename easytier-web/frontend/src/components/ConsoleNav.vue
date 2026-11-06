@@ -51,7 +51,6 @@ const current = (name: string) => route.name === name ? 'page' : undefined;
             <RouterLink :to="{ name: 'networkList' }" class="nav-item" :class="{ active: route.name === 'networkList' }"
                 :aria-current="current('networkList')">
                 <i class="pi pi-th-large" aria-hidden="true"></i><span class="nav-label">{{ t('web.console.all_networks') }}</span>
-                <span class="nav-count">{{ networks.length }}</span>
             </RouterLink>
             <div v-for="network in entries" :key="network.identity" class="nav-network" :class="{ open: network.name === openName }">
                 <RouterLink :to="{ name: 'meshNetwork', params: { networkName: network.name } }" class="nav-item"

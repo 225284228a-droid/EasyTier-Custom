@@ -252,10 +252,10 @@ const locationText = (device: Utils.DeviceInfo) => {
                             <EntityName :name="deviceName(device)" :secondary="device.alias ? device.hostname : undefined"
                                 :value="device.alias ?? ''" :placeholder="device.hostname" :maxlength="64"
                                 :rename="centralEnabled ? renameDevice(device) : undefined" />
+                            <span class="entity-tag mono-value" :aria-label="`${t('web.device.version')} ${version(device)}`">{{ version(device) }}</span>
                         </header>
                         <dl class="entity-facts">
-                            <div><dt>{{ t('web.console.location') }}</dt><dd :title="locationText(device)">{{ locationText(device) }}</dd></div>
-                            <div><dt>{{ t('web.device.version') }}</dt><dd class="mono-value">{{ version(device) }}</dd></div>
+                            <div class="wide"><dt>{{ t('web.console.location') }}</dt><dd :title="locationText(device)">{{ locationText(device) }}</dd></div>
                             <div><dt>{{ t('web.device.networks') }}</dt><dd>{{ device.running_network_count }}</dd></div>
                             <div><dt>{{ t('web.device.last_seen') }}</dt><dd>{{ lastSeen(device) }}</dd></div>
                         </dl>

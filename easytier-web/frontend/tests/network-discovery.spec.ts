@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { groupNetworks, retryDeviceWrite, type DeviceNetworkScan } from '../src/modules/networkDiscovery'
-import { ADVANCED_DEFAULTS, ADVANCED_SWITCHES, UNSUPPORTED, advancedDistribution, sharedKey, touchedSettings } from '../src/modules/meshAdvanced'
+import { ADVANCED_DEFAULTS, ADVANCED_SWITCHES, UNSUPPORTED, advancedDistribution, isDefaultValue, sharedKey, touchedSettings } from '../src/modules/meshAdvanced'
 import { buildTopology, networkNameIdentity } from '../src/modules/networkTopology'
 
 const device = (id: string) => ({ machine_id: id, hostname: id, running_network_count: 0 }) as any
@@ -134,13 +134,19 @@ describe('advanced settings', () => {
   })
 
   it('knows the default of every setting it offers', () => {
-    for (const field of ADVANCED_SWITCHES) expect(typeof ADVANCED_DEFAULTS[field]).toBe('boolean')
+    // Kernels default private mode differently, so only unset is its default.
+    for (const field of ADVANCED_SWITCHES.filter(field => field !== 'enable_private_mode')) {
+      expect(typeof ADVANCED_DEFAULTS[field]).toBe('boolean')
+    }
+    expect(ADVANCED_DEFAULTS).not.toHaveProperty('enable_private_mode')
+    expect(isDefaultValue('enable_private_mode', null)).toBe(true)
+    expect(isDefaultValue('enable_private_mode', false)).toBe(false)
     expect(ADVANCED_DEFAULTS.multi_thread).toBe(true)
     expect(ADVANCED_DEFAULTS.disable_ipv6).toBe(false)
   })
 
-  it('never offers device settings, private mode or encryption', () => {
-    for (const field of ['enable_exit_node', 'no_tun', 'use_smoltcp', 'bind_device', 'proxy_forward_by_system', 'enable_private_mode', 'disable_encryption']) {
+  it('never offers device settings or encryption', () => {
+    for (const field of ['enable_exit_node', 'no_tun', 'use_smoltcp', 'bind_device', 'proxy_forward_by_system', 'disable_encryption']) {
       expect(ADVANCED_SWITCHES).not.toContain(field)
     }
   })
