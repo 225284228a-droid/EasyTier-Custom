@@ -255,9 +255,11 @@ export interface MeshAclProtocolTarget {
 export type MeshAclPeer =
     | { type: 'all' }
     | { type: 'group'; name: string }
-    | { type: 'device'; instance_id: string };
+    | { type: 'device'; instance_id: string }
+    /** A source address, for clients this console does not manage. */
+    | { type: 'address'; cidr: string };
 
-export type MeshAclTarget = MeshAclPeer | { type: 'subnet'; cidrs: string[] };
+export type MeshAclTarget = Exclude<MeshAclPeer, { type: 'address' }> | { type: 'subnet'; cidrs: string[] };
 
 export interface MeshAclRule {
     id: string;

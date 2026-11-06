@@ -496,6 +496,34 @@ async fn removing_member_revokes_its_credential_and_clears_its_configs() {
     );
 }
 
+#[tokio::test]
+async fn official_nodes_get_private_mode_on_unless_they_chose() {
+    let (service, user_id, _) = service().await;
+    let (unset, _) = official_member(&service, user_id, "office").await;
+    let (chosen, chosen_instance) = official_member(&service, user_id, "office").await;
+    let (mut config, _) = stored_config(&service, user_id, chosen).await;
+    config.enable_private_mode = Some(false);
+    {
+        use easytier_core::management::remote_client::Storage as _;
+        service
+            .db
+            .insert_or_update_user_network_config(
+                (user_id, chosen),
+                chosen_instance,
+                config,
+                easytier::common::config::ConfigSource::Web,
+            )
+            .await
+            .unwrap();
+    }
+
+    core_sync::observe_user(&service.db, &service.client_manager, user_id).await;
+    let (config, _) = stored_config(&service, user_id, unset).await;
+    assert_eq!(config.enable_private_mode, Some(true));
+    let (config, _) = stored_config(&service, user_id, chosen).await;
+    assert_eq!(config.enable_private_mode, Some(false), "an explicit choice stays");
+}
+
 async fn official_member(
     service: &CentralNetworkService,
     user_id: i32,

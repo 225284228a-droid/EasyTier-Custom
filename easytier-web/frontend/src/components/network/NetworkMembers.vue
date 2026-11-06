@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Button, Checkbox, Column, DataTable, Dialog, Message, SelectButton, Skeleton, Tag, useToast } from 'primevue';
 import { useI18n } from 'vue-i18n';
 import { Api as LibApi, Utils } from 'easytier-frontend-lib';
 import type { MeshJoinResult } from '../../modules/api';
-import { deviceConfigStore, failureMessage, retryDeviceWrite, type NetworkMember } from '../../modules/networkDiscovery';
+import {
+    deviceConfigStore, failureMessage, memberDetails, networkClients, retryDeviceWrite, type NetworkClient, type NetworkMember,
+} from '../../modules/networkDiscovery';
 import { deviceName, failedResults, resultSeverity, useMeshNetwork } from '../../modules/meshNetworkContext';
 import { useDevicePopup } from '../../modules/devicePopup';
 import EntityName from '../EntityName.vue';
@@ -70,34 +72,42 @@ const setEnabled = async (enabled: boolean) => {
 const openStatus = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId);
 const openEditor = (member: NetworkMember) => devicePopup.open(member.device.machine_id, member.instanceId, true);
 
-// Running networks report their address and why they failed, read in one request.
+// Running networks report their address and why they failed, read in one
+// request; their route tables also show the clients that joined without
+// this console.
 interface Runtime { address?: string; error?: string }
 const runtimes = ref<Record<string, Runtime>>({});
+const clients = ref<NetworkClient[]>([]);
 const runningDevices = computed(() => [...new Set(members.value
     .filter(member => member.online && member.running).map(member => member.device.machine_id))].sort().join(','));
-watch(runningDevices, async devices => {
+const readRuntimes = async () => {
+    const devices = runningDevices.value;
     if (!devices) {
         runtimes.value = {};
+        clients.value = [];
         return;
     }
     try {
-        const machines = await api.collect_topology_network_info(devices.split(','));
+        const details = await memberDetails(api, members.value);
         if (devices !== runningDevices.value) return;
         const next: Record<string, Runtime> = {};
-        for (const [machineId, { info }] of Object.entries(machines)) {
-            for (const [instanceId, detail] of Object.entries(info?.info?.map ?? {})) {
-                const address = detail?.my_node_info?.virtual_ipv4;
-                next[`${machineId}/${instanceId}`] = {
-                    address: address?.address ? Utils.ipv4InetToString(address) : undefined,
-                    error: detail?.error_msg || undefined,
-                };
-            }
+        for (const [key, detail] of details) {
+            const address = detail?.my_node_info?.virtual_ipv4;
+            next[key] = {
+                address: address?.address ? Utils.ipv4InetToString(address) : undefined,
+                error: detail?.error_msg || undefined,
+            };
         }
         runtimes.value = next;
+        clients.value = networkClients(details, members.value);
     } catch (error) {
         console.debug('Failed to read running networks', error);
     }
-}, { immediate: true });
+};
+watch(runningDevices, readRuntimes, { immediate: true });
+let runtimeTimer: number | undefined;
+onMounted(() => { runtimeTimer = window.setInterval(readRuntimes, 15_000); });
+onUnmounted(() => window.clearInterval(runtimeTimer));
 const runtime = (member: NetworkMember): Runtime => member.running ? runtimes.value[member.key] ?? {} : {};
 const virtualIp = (member: NetworkMember) => runtime(member).address;
 // A member goes by the device's name in the device list.
@@ -244,6 +254,37 @@ const candidateName = (deviceId: string) => {
                 </template>
             </Column>
         </DataTable>
+        <template v-if="clients.length">
+            <header class="section-heading clients-heading">
+                <h2>{{ t('web.mesh_network.clients') }}<span class="table-count">{{ clients.length }}</span></h2>
+            </header>
+            <p class="members-hint">{{ t('web.mesh_network.clients_hint') }}</p>
+            <div v-if="viewMode === 'card'" class="entity-cards member-cards client-cards">
+                <article v-for="client in clients" :key="client.key" class="entity-card">
+                    <header class="entity-card-head">
+                        <span class="status-dot running" role="img" :aria-label="t('web.mesh_network.running')"></span>
+                        <EntityName :name="client.hostname" />
+                    </header>
+                    <dl class="entity-facts">
+                        <div><dt>{{ t('web.mesh_network.virtual_ip') }}</dt><dd class="mono-value">{{ client.address || '—' }}</dd></div>
+                        <div><dt>Peer ID</dt><dd class="mono-value">{{ client.peerId }}</dd></div>
+                    </dl>
+                    <footer class="entity-card-foot">
+                        <div class="entity-flags"><span class="entity-flag">{{ t('web.dashboard.unmanaged') }}</span></div>
+                    </footer>
+                </article>
+            </div>
+            <DataTable v-else :value="clients" data-key="key" class="console-table client-table" size="small" scrollable>
+                <Column :header="t('web.mesh_network.devices')">
+                    <template #body="{ data }">
+                        <span class="member-cell"><span class="status-dot running" aria-hidden="true"></span>
+                            <span class="preview-name">{{ data.hostname }}</span></span>
+                    </template>
+                </Column>
+                <Column :header="t('web.mesh_network.virtual_ip')"><template #body="{ data }"><span class="mono-value">{{ data.address || '—' }}</span></template></Column>
+                <Column header="Peer ID"><template #body="{ data }"><span class="mono-value muted">{{ data.peerId }}</span></template></Column>
+            </DataTable>
+        </template>
     </section>
 
     <Dialog v-model:visible="joinVisible" modal class="console-dialog" :header="t('web.mesh_network.add_device')" :style="{ width: '36rem', maxWidth: 'calc(100vw - 32px)' }">
@@ -274,6 +315,8 @@ const candidateName = (deviceId: string) => {
 .members-heading { flex-wrap: wrap; }
 .members-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .members-hint { margin: 0; padding: 0 20px 12px; font-size: 13px; color: var(--p-text-muted-color); }
+.clients-heading { border-top: 1px solid var(--console-border); }
+.clients-heading h2 { display: flex; align-items: center; gap: 8px; }
 .member-cards { padding-top: 0; }
 .member-cell { display: inline-flex; align-items: center; gap: 10px; min-width: 0; font-weight: 550; }
 .device-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); gap: 8px; max-height: 18rem; overflow: auto; }

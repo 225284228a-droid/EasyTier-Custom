@@ -438,6 +438,19 @@ pub(super) async fn stored_configs(
         .collect()
 }
 
+/// What the console's copy of an official node's configuration must add so
+/// the node runs like this fork's cores: official cores start with private
+/// mode off when the configuration leaves it unset, this fork's with it on.
+fn official_defaults(config: &NetworkConfig) -> Option<NetworkConfig> {
+    if config.enable_private_mode.is_some() {
+        return None;
+    }
+    Some(NetworkConfig {
+        enable_private_mode: Some(true),
+        ..config.clone()
+    })
+}
+
 /// Write the core settings over the console's copy of an official node's
 /// configuration. The console applies its copy whenever the node is online,
 /// so an offline node receives it on connection; nothing competes with it
@@ -520,6 +533,14 @@ pub(crate) async fn observe_user(db: &Db, manager: &ClientManager, user_id: User
     for device_id in devices {
         if !manager.supports_local_configs(&(user_id, device_id)).await {
             let result = async {
+                for stored in stored_configs(db, user_id, device_id).await? {
+                    if official_defaults(&stored.config).is_some() {
+                        rewrite_stored(db, manager, user_id, device_id, &stored.instance_id, None, |config| {
+                            Ok(official_defaults(config))
+                        })
+                        .await?;
+                    }
+                }
                 let observations = stored_configs(db, user_id, device_id)
                     .await?
                     .iter()

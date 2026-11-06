@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildTopology, collectTopologySnapshotsWithRetry, TopologySnapshotCache, topologyNodeKind } from '../src/modules/networkTopology'
+import { buildTopology, collectTopologySnapshotsWithRetry, NodeLocationMemory, TopologySnapshotCache, topologyNodeKind } from '../src/modules/networkTopology'
 import { TrafficTracker } from '../src/modules/topologyTraffic'
 import { locateNode } from '../src/modules/globeGeography'
 
@@ -224,8 +224,53 @@ describe('dashboard topology', () => {
     const topology = buildTopology([a], [
       snapshot(a, 'instance-a', 1, [route(7, 'instance-b', 3)], [peer(7, true)]),
     ])
-    expect(topology.nodes).toHaveLength(1)
+    // The relayed peer is a node of the network, without a link to this one.
+    expect(topology.nodes.map(node => node.peerId).sort()).toEqual([1, 7])
     expect(topology.links).toHaveLength(0)
+  })
+
+  it('finds peers several hops away and links them where the route leaves one way', () => {
+    const a = device('a', ['mesh'])
+    const hop = (peerId: number, cost: number, nextHop: number) => ({
+      ...route(peerId, `instance-${peerId}`, cost), next_hop_peer_id: nextHop,
+      ipv4_addr: { address: { addr: 0x0a7e7e00 + peerId }, network_length: 24 },
+    })
+    const topology = buildTopology([a], [
+      snapshot(a, 'mesh', 1, [hop(2, 1, 2), hop(3, 2, 2), hop(4, 3, 2), hop(5, 2, 6), hop(6, 1, 6), hop(7, 3, 6)], [peer(2), peer(6)]),
+    ])
+    expect(topology.nodes.map(node => node.peerId).sort()).toEqual([1, 2, 3, 4, 5, 6, 7])
+    const pairs = topology.links.map(link => [link.source, link.target].map(id => Number(id.split(':peer:')[1])).sort().join('-')).sort()
+    // 7 is three hops away through 6, which leads to it only through 5.
+    expect(pairs).toEqual(['1-2', '1-6', '2-3', '3-4', '5-6', '5-7'])
+    expect(topology.links.filter(link => link.inferred)).toHaveLength(4)
+    expect(topology.nodes.find(node => node.peerId === 4)?.virtualIp).toBe('10.126.126.4/24')
+    expect(topology.nodes.find(node => node.peerId === 4)?.instanceId).toBe('instance-4')
+  })
+
+  it('keeps a node where it was when one refresh cannot locate it', () => {
+    const memory = new NodeLocationMemory()
+    const node = (located: boolean) => ({
+      nodes: [{ id: 'n', label: 'n', networkIdentity: 'mesh', peerId: 2, managed: false,
+        ...(located ? { country: 'NL', latitude: 52.4, longitude: 4.9, nodeLocation: { country: 'NL', city: 'Amsterdam' } } : {}) }],
+      links: [], networkIdentities: [],
+    })
+    memory.apply(node(true))
+    const missed = memory.apply(node(false)).nodes[0]
+    expect([missed.country, missed.latitude, missed.nodeLocation?.city]).toEqual(['NL', 52.4, 'Amsterdam'])
+    memory.clear()
+    expect(memory.apply(node(false)).nodes[0].latitude).toBeUndefined()
+  })
+
+  it('counts parallel connections to one peer as one link', () => {
+    const a = device('a', ['mesh'])
+    const parallel = peer(2)
+    parallel.conns.push({ ...parallel.conns[0], conn_id: 'conn-2b' }, { ...parallel.conns[0], conn_id: 'conn-2c', tunnel: { tunnel_type: 'tcp' } })
+    // The same peer listed twice, one connection repeated.
+    const repeated = { ...peer(2), conns: [parallel.conns[0]] }
+    const topology = buildTopology([a], [snapshot(a, 'mesh', 1, [route(2, 'instance-2')], [parallel, repeated])])
+    expect(topology.nodes).toHaveLength(2)
+    expect(topology.links).toHaveLength(1)
+    expect(topology.links[0].protocols).toEqual(['tcp', 'udp'])
   })
 
   it('keeps unknown peer IDs scoped to separate runtime networks', () => {

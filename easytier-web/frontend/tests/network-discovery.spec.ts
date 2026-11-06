@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { groupNetworks, retryDeviceWrite, type DeviceNetworkScan } from '../src/modules/networkDiscovery'
-import { ADVANCED_DEFAULTS, ADVANCED_SWITCHES, UNSUPPORTED, advancedDistribution, isDefaultValue, sharedKey, touchedSettings } from '../src/modules/meshAdvanced'
+import { groupNetworks, networkClients, retryDeviceWrite, type DeviceNetworkScan, type NetworkMember } from '../src/modules/networkDiscovery'
+import { ADVANCED_CATEGORIES, ADVANCED_DEFAULTS, ADVANCED_PARAMETERS, ADVANCED_SWITCHES, UNSUPPORTED, advancedDistribution, isDefaultValue, sharedKey, touchedSettings } from '../src/modules/meshAdvanced'
 import { buildTopology, networkNameIdentity } from '../src/modules/networkTopology'
 
 const device = (id: string) => ({ machine_id: id, hostname: id, running_network_count: 0 }) as any
@@ -134,15 +134,17 @@ describe('advanced settings', () => {
   })
 
   it('knows the default of every setting it offers', () => {
-    // Kernels default private mode differently, so only unset is its default.
-    for (const field of ADVANCED_SWITCHES.filter(field => field !== 'enable_private_mode')) {
-      expect(typeof ADVANCED_DEFAULTS[field]).toBe('boolean')
-    }
-    expect(ADVANCED_DEFAULTS).not.toHaveProperty('enable_private_mode')
-    expect(isDefaultValue('enable_private_mode', null)).toBe(true)
+    for (const field of ADVANCED_SWITCHES) expect(typeof ADVANCED_DEFAULTS[field]).toBe('boolean')
+    // Official cores get private mode from the console, so on is everyone's default.
+    expect(isDefaultValue('enable_private_mode', true)).toBe(true)
     expect(isDefaultValue('enable_private_mode', false)).toBe(false)
     expect(ADVANCED_DEFAULTS.multi_thread).toBe(true)
     expect(ADVANCED_DEFAULTS.disable_ipv6).toBe(false)
+  })
+
+  it('puts every setting in exactly one category', () => {
+    const categorized = ADVANCED_CATEGORIES.flatMap(category => category.fields)
+    expect([...categorized].sort()).toEqual([...ADVANCED_SWITCHES, ...ADVANCED_PARAMETERS.map(parameter => parameter.field)].sort())
   })
 
   it('never offers device settings or encryption', () => {
@@ -177,5 +179,24 @@ describe('device writes over an unsteady link', () => {
     const refused = failing([{ response: { status: 403 } }])
     await expect(retryDeviceWrite(refused.write, [0, 0])).rejects.toEqual({ response: { status: 403 } })
     expect(refused.calls()).toBe(1)
+  })
+})
+
+describe('network clients', () => {
+  const member = (machine: string, instance: string) =>
+    ({ key: `${machine}/${instance}`, instanceId: instance, device: { machine_id: machine }, online: true, running: true } as unknown as NetworkMember)
+  const route = (peer_id: number, inst_id: string, extra: object = {}) =>
+    ({ peer_id, inst_id, hostname: `host-${peer_id}`, ipv4_addr: { address: { addr: 0x0a7e7e00 + peer_id }, network_length: 24 }, ...extra })
+
+  it('lists route-table peers that are neither members nor public servers, once', () => {
+    const members = [member('m1', 'i1'), member('m2', 'i2')]
+    const details = new Map<string, any>([
+      ['m1/i1', { my_node_info: { peer_id: 1 }, routes: [route(2, 'i2'), route(5, 'c5', { cost: 3 }), route(9, 'server', { feature_flag: { is_public_server: true } })] }],
+      ['m2/i2', { my_node_info: { peer_id: 2 }, routes: [route(1, 'i1'), route(5, 'c5'), route(6, '')] }],
+    ])
+    expect(networkClients(details, members)).toEqual([
+      { key: 'c5', peerId: 5, hostname: 'host-5', address: '10.126.126.5/24' },
+      { key: 'peer:6', peerId: 6, hostname: 'host-6', address: '10.126.126.6/24' },
+    ])
   })
 })

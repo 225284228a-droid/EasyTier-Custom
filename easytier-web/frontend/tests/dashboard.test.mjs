@@ -962,6 +962,30 @@ test('presets reach only joining devices and new devices may join on their own',
     assert.deepEqual(state.writes.find(write => write.path === '/mesh/networks/team-0/auto-join').payload, { enabled: true });
 });
 
+test('access control loads the policy the members hold and offers clients as sources', async t => {
+    const { page } = await open(t, '/h', {}, state => {
+        state.machines[0].online = true;
+        state.networks[0].network_name = 'Engineering';
+        state.meshMembers = [{ device_id: id(1), instance_id: id(100), network_name: 'Engineering', online: true, pending: false, credential: false, locked: false }];
+    });
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.route('**/api/v1/topology/networks', route => route.fulfill({ json: { machines: { [id(1)]: { info: { info: { map: {
+        [id(100)]: { running: true, my_node_info: { peer_id: 1 }, routes: [
+            { peer_id: 32, inst_id: 'relayed', hostname: 'Relayed phone', ipv4_addr: { address: { addr: 0x0a7e7e33 }, network_length: 24 }, cost: 2, next_hop_peer_id: 31 },
+        ] },
+    } } } } } } }));
+    await page.route('**/mesh/networks/Engineering/acl', route => route.fulfill({ json: { members: [], temporary: [], acl: {
+        default_action: 'deny', groups: [{ name: 'admins', members: [id(100)] }],
+        rules: [{ id: 'r1', name: 'Admins reach all', enabled: true, action: 'allow', sources: [{ type: 'address', cidr: '10.126.126.51/32' }],
+            destinations: [{ type: 'all' }], protocols: [{ protocol: 'any', ports: [], stateful: false }] }],
+    } } }));
+    await page.goto(`${base}/#/h/networks/view/Engineering/acl`);
+    await page.locator('.acl-row').first().waitFor();
+    await page.getByText('Relayed phone · Client · 10.126.126.51', { exact: true }).waitFor();
+    assert.deepEqual(errors, [], 'the reactive policy is copied without errors');
+});
+
 test('members default to cards, mark locked ones and open devices over the page', async t => {
     const { page, state } = await open(t, '/h/networks/view/team-0/members', {}, state => {
         state.machines[0].online = true;

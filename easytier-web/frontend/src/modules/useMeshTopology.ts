@@ -2,7 +2,7 @@ import { computed, type Ref, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Utils } from 'easytier-frontend-lib'
 import ApiClient from './api'
-import { buildTopology, collectTopologySnapshotsWithRetry, isTopologyAuthError, TopologySnapshotCache, type NetworkSnapshot } from './networkTopology'
+import { buildTopology, collectTopologySnapshotsWithRetry, isTopologyAuthError, NodeLocationMemory, TopologySnapshotCache, type NetworkSnapshot } from './networkTopology'
 import { TrafficTracker } from './topologyTraffic'
 import { TopologyAvailability } from './topologyAvailability'
 import { PersistentTopologyArchive } from './dashboardPersistence'
@@ -16,6 +16,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
   const topology = ref(buildTopology([], []))
   const trafficTracker = new TrafficTracker()
   const snapshotCache = new TopologySnapshotCache()
+  const locations = new NodeLocationMemory()
   const onlineDeviceCount = computed(() => machines.value.length)
   const persistenceKey = computed(() => api.value?.persistenceScope ?? '')
   const availability = new TopologyAvailability(performance.now())
@@ -50,7 +51,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
     if (!sampleTraffic)
       trafficTracker.applyCachedRates(nextTopology.links, time)
     machines.value = cached.devices
-    topology.value = nextTopology
+    topology.value = locations.apply(nextTopology)
   }
 
   function clearPrivateData() {
@@ -58,6 +59,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
     authorizedDevices = []
     lastFreshMachines.clear()
     snapshotCache.clear()
+    locations.clear()
     trafficTracker.clear()
     machines.value = []
     topology.value = buildTopology([], [])
@@ -246,6 +248,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
     archive = persistenceKey.value ? new PersistentTopologyArchive(persistenceKey.value) : undefined
     lastFreshMachines.clear()
     snapshotCache.clear()
+    locations.clear()
     trafficTracker.clear()
     machines.value = []
     topology.value = buildTopology([], [])
@@ -268,6 +271,7 @@ export function useMeshTopology(api: Readonly<Ref<ApiClient | undefined>>) {
     clearExpiryTimer()
     lastFreshMachines.clear()
     snapshotCache.clear()
+    locations.clear()
     trafficTracker.clear()
     authorizedDevices = []
   })

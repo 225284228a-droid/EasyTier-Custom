@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, toRaw, watch } from 'vue';
 import { v4 as uuidv4 } from 'uuid';
 import { Button, Checkbox, InputText, Message, MultiSelect, Select, InputSwitch, SelectButton, Skeleton, Tag, useToast } from 'primevue';
 import { useI18n } from 'vue-i18n';
 import type {
     MeshAclGroup, MeshAclPeer, MeshAclProtocol, MeshAclRule, MeshAclTarget, MeshNetworkAcl, MeshNetworkAclView, MeshSyncResult,
 } from '../../modules/api';
-import { failureMessage } from '../../modules/networkDiscovery';
+import { failureMessage, memberDetails, networkClients, type NetworkClient } from '../../modules/networkDiscovery';
 import { deviceName, failedResults, resultSeverity, useMeshNetwork } from '../../modules/meshNetworkContext';
 
 // The network's access control: every permanent member holds the same rules,
@@ -22,7 +22,8 @@ const dirty = ref(false);
 const load = async () => {
     try {
         view.value = await api.get_mesh_network_acl(networkName.value);
-        draft.value = view.value.acl ? structuredClone(view.value.acl) : null;
+        // The view is reactive, and a proxy cannot be cloned.
+        draft.value = view.value.acl ? structuredClone(toRaw(view.value.acl)) : null;
         dirty.value = false;
     } catch (error) {
         view.value = { acl: null, members: [], temporary: [] };
@@ -30,6 +31,21 @@ const load = async () => {
     }
 };
 onMounted(load);
+
+// Clients that joined without this console hold no group secret: a rule can
+// only name one as a source, by its address.
+const clients = ref<NetworkClient[]>([]);
+const runningMembers = computed(() => (network.value?.members ?? [])
+    .filter(member => member.online && member.running).map(member => member.key).sort().join(','));
+watch(runningMembers, async () => {
+    try {
+        const members = network.value?.members ?? [];
+        clients.value = networkClients(await memberDetails(api, members), members);
+    } catch (error) {
+        console.debug('Failed to read network clients', error);
+    }
+}, { immediate: true });
+const clientCidr = (client: NetworkClient) => `${client.address?.split('/')[0]}/32`;
 const touch = () => { dirty.value = true; };
 
 const permanentMembers = computed(() => network.value?.members.filter(member => !member.credential) ?? []);
@@ -49,17 +65,42 @@ const peerOptions = computed(() => [
     ...permanentMembers.value.map(member => ({ label: deviceName(member), value: `device:${member.instanceId}` })),
     ...(view.value?.temporary ?? []).map(member => ({ label: `${temporaryLabel(member.group)} · ${t('web.mesh_network.temporary')}`, value: `group:${member.group}` })),
 ]);
-const peerValue = (peer: MeshAclPeer) => peer.type === 'all' ? 'all' : peer.type === 'group' ? `group:${peer.name}` : `device:${peer.instance_id}`;
+// Sources may also be clients, including addresses no client holds now.
+const sourceOptions = computed(() => {
+    const options = [
+        ...peerOptions.value,
+        ...clients.value.filter(client => client.address).map(client => ({
+            label: `${client.hostname} · ${t('web.mesh_network.acl_client')} · ${client.address!.split('/')[0]}`,
+            value: `address:${clientCidr(client)}`,
+        })),
+    ];
+    const known = new Set(options.map(option => option.value));
+    for (const rule of draft.value?.rules ?? []) {
+        for (const source of rule.sources) {
+            if (source.type === 'address' && !known.has(`address:${source.cidr}`)) {
+                known.add(`address:${source.cidr}`);
+                options.push({ label: `${t('web.mesh_network.acl_client')} · ${source.cidr}`, value: `address:${source.cidr}` });
+            }
+        }
+    }
+    return options;
+});
+const peerValue = (peer: MeshAclPeer) => peer.type === 'all' ? 'all' : peer.type === 'group' ? `group:${peer.name}`
+    : peer.type === 'address' ? `address:${peer.cidr}` : `device:${peer.instance_id}`;
 const peerOf = (value: string): MeshAclPeer => {
     if (value === 'all') return { type: 'all' };
     const [kind, ...rest] = value.split(':');
     const name = rest.join(':');
-    return kind === 'device' ? { type: 'device', instance_id: name } : { type: 'group', name };
+    return kind === 'device' ? { type: 'device', instance_id: name }
+        : kind === 'address' ? { type: 'address', cidr: name } : { type: 'group', name };
 };
-const peerPicks = (peers: MeshAclTarget[]) => peers.filter((peer): peer is MeshAclPeer => peer.type !== 'subnet').map(peerValue);
+const peerPicks = (peers: (MeshAclPeer | MeshAclTarget)[]) => peers.filter((peer): peer is MeshAclPeer => peer.type !== 'subnet').map(peerValue);
 const setSources = (rule: MeshAclRule, values: string[]) => { rule.sources = values.map(peerOf); touch(); };
 const setDestinations = (rule: MeshAclRule, values: string[]) => {
-    rule.destinations = [...values.map(peerOf), ...rule.destinations.filter(target => target.type === 'subnet')];
+    rule.destinations = [
+        ...values.map(peerOf).filter((peer): peer is MeshAclTarget => peer.type !== 'address'),
+        ...rule.destinations.filter(target => target.type === 'subnet'),
+    ];
     touch();
 };
 const subnetText = (rule: MeshAclRule) => rule.destinations.flatMap(target => target.type === 'subnet' ? target.cidrs : []).join(', ');
@@ -226,7 +267,7 @@ const save = async () => {
                         </div>
                         <div class="acl-row">
                             <span class="acl-label">{{ t('web.mesh_network.acl_sources') }}</span>
-                            <MultiSelect :model-value="peerPicks(rule.sources)" :options="peerOptions" option-label="label" option-value="value"
+                            <MultiSelect :model-value="peerPicks(rule.sources)" :options="sourceOptions" option-label="label" option-value="value"
                                 display="chip" filter class="acl-grow" @update:model-value="setSources(rule, $event)" />
                         </div>
                         <div class="acl-row">

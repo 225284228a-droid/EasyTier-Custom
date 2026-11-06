@@ -39,12 +39,13 @@ export type AdvancedValue = boolean | number | string
 /**
  * What the core runs with when a setting is unset (`common.proto` flag
  * defaults, negated where the API negates them). A member holding this value
- * explicitly behaves exactly like one holding nothing. Private mode has no
- * entry: custom and official kernels default it differently, so only unset
- * is its default.
+ * explicitly behaves exactly like one holding nothing. Private mode is on:
+ * this fork's cores default to it, and the console turns it on for official
+ * cores, whose own default is off.
  */
 export const ADVANCED_DEFAULTS: Readonly<Record<string, AdvancedValue>> = {
-  ...Object.fromEntries(ADVANCED_SWITCHES.filter(field => field !== 'enable_private_mode').map(field => [field, false])),
+  ...Object.fromEntries(ADVANCED_SWITCHES.map(field => [field, false])),
+  enable_private_mode: true,
   multi_thread: true,
   close_redundant_conns_when_disguised: true,
   data_compress_algo: 1,
@@ -104,6 +105,28 @@ export const ADVANCED_PARAMETERS: readonly AdvancedParameter[] = [
   },
   { field: 'mtu', kind: 'number', min: 576, max: 9000 },
   { field: 'parallel_connections', kind: 'number', min: 1, max: 16 },
+]
+
+/**
+ * The settings as the editors group them; every switch and parameter is in
+ * exactly one category. Labels are `web.mesh_network.category_<key>`.
+ */
+export const ADVANCED_CATEGORIES: readonly { key: string; fields: readonly string[] }[] = [
+  { key: 'network', fields: ['enable_private_mode', 'enable_magic_dns', 'disable_ipv6', 'latency_first'] },
+  {
+    key: 'p2p',
+    fields: [
+      'disable_p2p', 'p2p_only', 'lazy_p2p', 'need_p2p', 'p2p_prefer_protocol',
+      'disable_udp_hole_punching', 'disable_tcp_hole_punching', 'disable_sym_hole_punching', 'disable_upnp',
+    ],
+  },
+  { key: 'relay', fields: ['relay_all_peer_rpc', 'disable_relay_data', 'prefer_peer_relay', 'enable_udp_broadcast_relay'] },
+  { key: 'proxy', fields: ['enable_kcp_proxy', 'disable_kcp_input', 'enable_quic_proxy', 'disable_quic_input'] },
+  {
+    key: 'transport',
+    fields: ['data_compress_algo', 'mtu', 'multi_thread', 'parallel_connections', 'disable_parallel_connections'],
+  },
+  { key: 'disguise', fields: ['traffic_disguise', 'p2p_disguise_mode', 'close_redundant_conns_when_disguised'] },
 ]
 
 /** A field's label key; the core's flags reuse the config form's labels. */

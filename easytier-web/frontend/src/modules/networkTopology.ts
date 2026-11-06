@@ -20,6 +20,10 @@ export interface TopologyNode {
   nodeLocation?: Utils.Location
   /** Public address reported by EasyTier's running node info. */
   publicIp?: string
+  /** Virtual IPv4 with its prefix, as the mesh routes it. */
+  virtualIp?: string
+  /** The network instance id the node reports in the route table. */
+  instanceId?: string
   managed: boolean
   /** The node is a public server hosting this network, not a member of it. */
   publicServer?: boolean
@@ -50,6 +54,8 @@ export interface TopologyLink {
   rxBps?: number
   /** Mean of valid fresh open-channel RTT measurements, in milliseconds. */
   latencyMs?: number
+  /** No managed endpoint saw this connection; the route table implies it. */
+  inferred?: boolean
 }
 
 export interface NetworkSnapshot {
@@ -166,6 +172,11 @@ function ipv4(value: unknown): string | undefined {
   return Utils.ipv4ToString(value as { addr: number })
 }
 
+function virtualIp(inet: { address?: unknown, network_length?: number } | undefined): string | undefined {
+  const address = ipv4(inet?.address)
+  return address && inet?.network_length ? `${address}/${inet.network_length}` : address
+}
+
 function toLocation(location: NetworkTypes.NodeLocation | undefined): Utils.Location | undefined {
   if (location) {
     return {
@@ -207,6 +218,8 @@ function snapshotNode(snapshot: NetworkSnapshot, network: string, peerId: number
     longitude: location?.longitude,
     nodeLocation: location,
     publicIp: snapshot.detail.node_location?.public_ip ?? ipv4(info?.ips?.public_ipv4),
+    virtualIp: virtualIp(info?.virtual_ipv4),
+    instanceId: cleanText(snapshot.instanceId),
     managed: true,
     machineId: snapshot.device.machine_id,
     stale: snapshot.stale || undefined,
@@ -240,10 +253,53 @@ function mergeNode(existing: TopologyNode | undefined, incoming: TopologyNode): 
     longitude: primary.longitude ?? secondary.longitude,
     nodeLocation: primary.nodeLocation ?? secondary.nodeLocation,
     publicIp: primary.publicIp ?? secondary.publicIp,
+    virtualIp: primary.virtualIp ?? secondary.virtualIp,
+    instanceId: primary.instanceId ?? secondary.instanceId,
     managed: existing.managed || incoming.managed,
     publicServer: existing.publicServer || incoming.publicServer || undefined,
     machineId: primary.machineId ?? secondary.machineId,
     stale: stale || undefined,
+  }
+}
+
+/** Open connections by remote peer, each connection once. */
+function openConnsByPeer(peers: NetworkTypes.PeerInfo[] | undefined): Map<number, NetworkTypes.PeerConnInfo[]> {
+  const byPeer = new Map<number, Map<string, NetworkTypes.PeerConnInfo>>()
+  for (const peer of peers ?? []) {
+    for (const [index, conn] of (peer.conns ?? []).entries()) {
+      if (conn.is_closed)
+        continue
+      const peerId = validPeerId(conn.peer_id) ? conn.peer_id : peer.peer_id
+      if (!validPeerId(peerId))
+        continue
+      const conns = byPeer.get(peerId) ?? new Map<string, NetworkTypes.PeerConnInfo>()
+      conns.set(cleanText(conn.conn_id) ?? `${peer.peer_id}:${index}`, conn)
+      byPeer.set(peerId, conns)
+    }
+  }
+  return new Map([...byPeer].map(([peerId, conns]) => [peerId, [...conns.values()]]))
+}
+
+/** A remote peer as this snapshot's route table describes it. */
+function routeNode(snapshot: NetworkSnapshot, network: string, peerId: number): TopologyNode {
+  const route = routeForPeer(snapshot, peerId)
+  const reported = peerLocation(snapshot, peerId)
+  const location = toLocation(reported)
+  return {
+    id: nodeId(network, peerId),
+    label: cleanText(route?.hostname) ?? `Peer ${peerId}`,
+    networkIdentity: network,
+    peerId,
+    country: location?.country,
+    latitude: location?.latitude,
+    longitude: location?.longitude,
+    nodeLocation: location,
+    publicIp: cleanText(reported?.public_ip),
+    virtualIp: virtualIp(route?.ipv4_addr),
+    instanceId: cleanText(route?.inst_id),
+    managed: false,
+    publicServer: route?.feature_flag?.is_public_server || undefined,
+    stale: snapshot.stale || undefined,
   }
 }
 
@@ -291,38 +347,15 @@ export function buildTopology(
     const source = nodeId(identity.network, identity.peerId)
 
     // A route describes reachability through the mesh. Only an open peer
-    // connection establishes a direct edge in this visualization.
-    for (const peer of snapshot.detail.peers ?? []) {
-      const openConns = (peer.conns ?? []).filter(conn => !conn.is_closed)
-      if (!openConns.length)
-        continue
-      const peerId = openConns.find(conn => validPeerId(conn.peer_id))?.peer_id
-        ?? (validPeerId(peer.peer_id) ? peer.peer_id : undefined)
-      if (!validPeerId(peerId))
-        continue
+    // connection establishes a direct edge in this visualization. Parallel
+    // connections are one edge, and a connection listed twice counts once.
+    for (const [peerId, openConns] of openConnsByPeer(snapshot.detail.peers)) {
 
       const target = nodeId(identity.network, peerId)
       if (target === source)
         continue
 
-      const route = routeForPeer(snapshot, peerId)
-      const reported = peerLocation(snapshot, peerId)
-      const location = toLocation(reported)
-      const placeholder: TopologyNode = {
-        id: target,
-        label: cleanText(route?.hostname) ?? `Peer ${peerId}`,
-        networkIdentity: identity.network,
-        peerId,
-        country: location?.country,
-        latitude: location?.latitude,
-        longitude: location?.longitude,
-        nodeLocation: location,
-        publicIp: cleanText(reported?.public_ip),
-        managed: false,
-        publicServer: route?.feature_flag?.is_public_server || undefined,
-        stale: snapshot.stale || undefined,
-      }
-      nodes.set(target, mergeNode(nodes.get(target), placeholder))
+      nodes.set(target, mergeNode(nodes.get(target), routeNode(snapshot, identity.network, peerId)))
 
       const [canonicalSource, canonicalTarget] = [source, target].sort()
       const key = JSON.stringify([canonicalSource, canonicalTarget])
@@ -360,6 +393,34 @@ export function buildTopology(
           })
         }
       }
+    }
+  }
+
+  // Every peer in a route table is a node, also when it is several hops
+  // away. A route only names its next hop, so a link is drawn only where the
+  // hops leave one candidate: a two-hop route runs through its next hop, a
+  // longer one through the single peer one hop nearer on the same next hop.
+  for (const snapshot of snapshots) {
+    const identity = snapshotIdentities.get(snapshot)
+    if (!identity)
+      continue
+    const routes = (snapshot.detail.routes ?? []).filter(route =>
+      validPeerId(route.peer_id) && route.peer_id !== identity.peerId)
+    for (const route of routes) {
+      const target = nodeId(identity.network, route.peer_id)
+      nodes.set(target, mergeNode(nodes.get(target), routeNode(snapshot, identity.network, route.peer_id)))
+      if (!(route.cost > 1) || !validPeerId(route.next_hop_peer_id))
+        continue
+      const parents = route.cost === 2
+        ? [route.next_hop_peer_id]
+        : routes.filter(other => other.cost === route.cost - 1 && other.next_hop_peer_id === route.next_hop_peer_id)
+          .map(other => other.peer_id)
+      if (parents.length !== 1 || parents[0] === route.peer_id || parents[0] === identity.peerId)
+        continue
+      const [canonicalSource, canonicalTarget] = [nodeId(identity.network, parents[0]), target].sort()
+      const key = JSON.stringify([canonicalSource, canonicalTarget])
+      if (!links.has(key))
+        links.set(key, { source: canonicalSource, target: canonicalTarget, protocols: [], inferred: true, stale: snapshot.stale || undefined })
     }
   }
 
@@ -499,5 +560,40 @@ export async function collectTopologySnapshotsWithRetry(
         throw error
       await wait(delays[attempt])
     }
+  }
+}
+
+type NodePlace = Pick<TopologyNode, 'country' | 'latitude' | 'longitude' | 'nodeLocation' | 'publicIp'>
+const REMEMBERED_PLACES = 2048
+
+/**
+ * The last place each node was located at. A peer's location is looked up
+ * from its public address on every refresh, and a lookup that misses once
+ * would otherwise move the node to "unknown location" until the next one.
+ */
+export class NodeLocationMemory {
+  private places = new Map<string, NodePlace>()
+
+  apply(topology: Topology): Topology {
+    for (const node of topology.nodes) {
+      if (node.nodeLocation || node.latitude !== undefined) {
+        this.places.delete(node.id)
+        this.places.set(node.id, {
+          country: node.country, latitude: node.latitude, longitude: node.longitude,
+          nodeLocation: node.nodeLocation, publicIp: node.publicIp,
+        })
+        if (this.places.size > REMEMBERED_PLACES)
+          this.places.delete(this.places.keys().next().value!)
+        continue
+      }
+      const place = this.places.get(node.id)
+      if (place)
+        Object.assign(node, { ...place, publicIp: node.publicIp ?? place.publicIp })
+    }
+    return topology
+  }
+
+  clear() {
+    this.places.clear()
   }
 }

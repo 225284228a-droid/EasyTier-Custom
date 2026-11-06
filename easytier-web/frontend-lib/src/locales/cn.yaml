@@ -805,6 +805,14 @@ web:
     apply_advanced: 应用 {count} 项到 {members} 个成员
     locked_skipped: '{count} 个已锁定，跳过'
     parameters: 传输参数
+    category: 设置分类
+    category_all: 全部
+    category_network: 网络
+    category_p2p: P2P 与打洞
+    category_relay: 中继
+    category_proxy: KCP / QUIC 代理
+    category_transport: 传输与连接
+    category_disguise: 流量伪装
     compression: 压缩算法
     compress_none: 不压缩
     compress_zstd: Zstd
@@ -818,7 +826,6 @@ web:
     value_on: 开
     value_off: 关
     value_default_is: 默认（{value}）
-    value_device_default: 默认（随设备）
     value_mixed: 各不相同
     value_unsupported: 不支持
     unsupported_hint: 这些设备的 EasyTier 版本不能保存这项设置，批量修改会跳过它们
@@ -832,6 +839,9 @@ web:
     auto_join_on: 自动加入
     members: 成员
     members_hint: 启动/停止只作用于选中的在线成员；锁定只保护高级设置和访问控制，不影响启停。成员名称与设备列表中的名称一致。
+    clients: 未接入控制台的客户端
+    clients_hint: 从成员的路由表中发现，包括经过中转的客户端。它们不受控制台管理，访问控制只能按虚拟 IP 限制它们的来源。
+    acl_client: 客户端
     locked: 已锁定
     pending: 待补发
     pending_hint: 修改时该成员离线，下次上线时补发一次（覆盖期间的手动修改，其他控制台更晚的修改除外）；补发之后在设备上的修改不会被改回

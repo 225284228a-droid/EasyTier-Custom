@@ -13,7 +13,9 @@
 //! network's when it has one.
 //!
 //! A single device is the implicit group `device:<instance id>`, declared
-//! only while a rule names it. A temporary device is the group of its
+//! only while a rule names it. A client the console does not manage holds no
+//! group secret, so a rule can only name it as a source by its address,
+//! which it chooses itself. A temporary device is the group of its
 //! credential, `member:<member id>`, and joins custom groups through its
 //! credential grant; credential nodes cannot verify group proofs, so their
 //! copy of the rules is cut down to the rules that reach them.
@@ -83,6 +85,8 @@ pub enum AclPeer {
     All,
     Group { name: String },
     Device { instance_id: String },
+    /// A source address or CIDR, for clients that hold no group secret.
+    Address { cidr: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -113,6 +117,14 @@ fn peer_group(peer: &AclPeer) -> Option<String> {
         AclPeer::All => None,
         AclPeer::Group { name } => Some(name.clone()),
         AclPeer::Device { instance_id } => Some(format!("{DEVICE_GROUP}{instance_id}")),
+        AclPeer::Address { .. } => None,
+    }
+}
+
+fn peer_address(peer: &AclPeer) -> Option<String> {
+    match peer {
+        AclPeer::Address { cidr } => Some(cidr.clone()),
+        _ => None,
     }
 }
 
@@ -132,6 +144,7 @@ fn target_of_peer(peer: AclPeer) -> AclTarget {
         AclPeer::All => AclTarget::All,
         AclPeer::Group { name } => AclTarget::Group { name },
         AclPeer::Device { instance_id } => AclTarget::Device { instance_id },
+        AclPeer::Address { cidr } => AclTarget::Subnet { cidrs: vec![cidr] },
     }
 }
 
@@ -222,6 +235,11 @@ impl NetworkAcl {
                         "rule {}: invalid device {instance_id:?}",
                         rule.id
                     ),
+                    AclPeer::Address { cidr } => {
+                        cidr.parse::<cidr::IpCidr>().map_err(|_| {
+                            anyhow::anyhow!("rule {}: invalid address {cidr}", rule.id)
+                        })?;
+                    }
                 }
             }
             for target in &rule.destinations {
@@ -355,13 +373,23 @@ impl NetworkAcl {
         let count = self.rules.len();
         for (position, rule) in self.rules.iter().enumerate() {
             let priority = ((count - position) * 10) as u32;
-            let mut sources: Vec<_> = if rule.sources.contains(&AclPeer::All) {
-                Vec::new()
+            // A core rule needs every source condition it names, so groups
+            // and addresses become separate core rules of the same name.
+            let everyone = rule.sources.contains(&AclPeer::All);
+            let mut groups: Vec<_> = rule.sources.iter().filter_map(peer_group).collect();
+            groups.sort();
+            groups.dedup();
+            let mut addresses: Vec<_> = rule.sources.iter().filter_map(peer_address).collect();
+            addresses.sort();
+            addresses.dedup();
+            let sources: Vec<(Vec<String>, Vec<String>)> = if everyone {
+                vec![(Vec::new(), Vec::new())]
             } else {
-                rule.sources.iter().filter_map(peer_group).collect()
+                [(groups, Vec::new()), (Vec::new(), addresses)]
+                    .into_iter()
+                    .filter(|(groups, addresses)| !groups.is_empty() || !addresses.is_empty())
+                    .collect()
             };
-            sources.sort();
-            sources.dedup();
             let peers: Vec<_> = rule
                 .destinations
                 .iter()
@@ -397,29 +425,31 @@ impl NetworkAcl {
             cidrs.sort();
             cidrs.dedup();
             for protocol in &rule.protocols {
-                let core_rule =
-                    |destination_ips: Vec<String>, destination_groups: Vec<String>| Rule {
-                        name: format!("{}:{}", rule.id, protocol_name(protocol.protocol)),
-                        description: rule.name.clone(),
-                        priority,
-                        enabled: rule.enabled,
-                        protocol: core_protocol(protocol.protocol) as i32,
-                        ports: protocol.ports.clone(),
-                        source_ips: Vec::new(),
-                        destination_ips,
-                        source_ports: Vec::new(),
-                        action: core_action(rule.action) as i32,
-                        rate_limit: 0,
-                        burst_limit: 0,
-                        stateful: protocol.stateful,
-                        source_groups: sources.clone(),
-                        destination_groups,
-                    };
-                if let Some(groups) = &destinations {
-                    inbound.push(core_rule(Vec::new(), groups.clone()));
-                }
-                if !cidrs.is_empty() {
-                    forward.push(core_rule(cidrs.clone(), Vec::new()));
+                for (source_groups, source_ips) in &sources {
+                    let core_rule =
+                        |destination_ips: Vec<String>, destination_groups: Vec<String>| Rule {
+                            name: format!("{}:{}", rule.id, protocol_name(protocol.protocol)),
+                            description: rule.name.clone(),
+                            priority,
+                            enabled: rule.enabled,
+                            protocol: core_protocol(protocol.protocol) as i32,
+                            ports: protocol.ports.clone(),
+                            source_ips: source_ips.clone(),
+                            destination_ips,
+                            source_ports: Vec::new(),
+                            action: core_action(rule.action) as i32,
+                            rate_limit: 0,
+                            burst_limit: 0,
+                            stateful: protocol.stateful,
+                            source_groups: source_groups.clone(),
+                            destination_groups,
+                        };
+                    if let Some(groups) = &destinations {
+                        inbound.push(core_rule(Vec::new(), groups.clone()));
+                    }
+                    if !cidrs.is_empty() {
+                        forward.push(core_rule(cidrs.clone(), Vec::new()));
+                    }
                 }
             }
         }
@@ -474,6 +504,7 @@ fn normalized_targets(targets: Vec<AclTarget>) -> Vec<AclTarget> {
             AclTarget::Device { instance_id } => peers.push(AclPeer::Device { instance_id }),
         }
     }
+    // Targets never name addresses: those are subnets.
     let mut targets: Vec<_> = if peers.is_empty() {
         Vec::new()
     } else {
@@ -583,6 +614,20 @@ pub fn read(acl: Option<&Acl>) -> MemberAcl {
             .name
             .rsplit_once(':')
             .map_or(core.name.as_str(), |(id, _)| id);
+        let sources: Vec<AclPeer> =
+            if core.source_groups.is_empty() && core.source_ips.is_empty() {
+                vec![AclPeer::All]
+            } else {
+                core.source_groups
+                    .iter()
+                    .map(|name| peer_of_group(name))
+                    .chain(
+                        core.source_ips
+                            .iter()
+                            .map(|cidr| AclPeer::Address { cidr: cidr.clone() }),
+                    )
+                    .collect()
+            };
         let position = match rules.iter().position(|rule| rule.id == id) {
             Some(position) => position,
             None => {
@@ -591,14 +636,7 @@ pub fn read(acl: Option<&Acl>) -> MemberAcl {
                     name: core.description.clone(),
                     enabled: core.enabled,
                     action: acl_action(core.action()),
-                    sources: if core.source_groups.is_empty() {
-                        vec![AclPeer::All]
-                    } else {
-                        core.source_groups
-                            .iter()
-                            .map(|name| peer_of_group(name))
-                            .collect()
-                    },
+                    sources: Vec::new(),
                     destinations: Vec::new(),
                     protocols: Vec::new(),
                 });
@@ -606,6 +644,7 @@ pub fn read(acl: Option<&Acl>) -> MemberAcl {
             }
         };
         let rule = &mut rules[position];
+        rule.sources.extend(sources);
         if forwarded {
             rule.destinations.push(AclTarget::Subnet {
                 cidrs: core.destination_ips.clone(),
@@ -908,6 +947,35 @@ mod tests {
             ["admins".to_owned(), format!("device:{ME}")].into()
         );
         assert!(!read.own_default);
+    }
+
+    #[test]
+    fn clients_are_named_by_address_and_read_back() {
+        let mut acl = policy();
+        acl.rules[0].sources.push(AclPeer::Address {
+            cidr: "10.126.126.50/32".into(),
+        });
+        let acl = acl.normalized();
+        acl.validate().unwrap();
+        let inbound = &acl.chains()[0];
+        // Groups and addresses must not have to match together.
+        let ssh: Vec<_> = inbound
+            .rules
+            .iter()
+            .filter(|rule| rule.name == "ssh:tcp")
+            .collect();
+        assert_eq!(ssh.len(), 2);
+        assert!(ssh.iter().any(|rule| rule.source_groups == ["admins"] && rule.source_ips.is_empty()));
+        assert!(ssh.iter().any(|rule| rule.source_groups.is_empty() && rule.source_ips == ["10.126.126.50/32"]));
+        let mut me = config(ME);
+        apply(&mut me, Some(&acl));
+        assert_eq!(read(me.acl.as_ref()).network.as_ref(), Some(&rules_of(&acl)));
+
+        let mut bad = acl.clone();
+        bad.rules[0].sources.push(AclPeer::Address {
+            cidr: "not an address".into(),
+        });
+        assert!(bad.validate().is_err());
     }
 
     #[test]

@@ -1956,6 +1956,8 @@ mod tests {
             .update_network_config_state((user_id, device), disabled, true)
             .await
             .unwrap();
+        // The console turns private mode on in official nodes' copies once.
+        core_sync::observe_user(&service.db, &service.client_manager, user_id).await;
         let before = service
             .db
             .list_network_configs(

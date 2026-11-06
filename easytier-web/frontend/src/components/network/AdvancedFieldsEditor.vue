@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue';
 import { Button, InputNumber, Select, SelectButton } from 'primevue';
 import { useI18n } from 'vue-i18n';
 import {
-    ADVANCED_DEFAULTS, ADVANCED_PARAMETERS, ADVANCED_SWITCHES, UNSUPPORTED, advancedLabel, isDefaultValue, sharedKey, valueKey,
+    ADVANCED_CATEGORIES, ADVANCED_DEFAULTS, ADVANCED_PARAMETERS, UNSUPPORTED, advancedLabel, isDefaultValue, sharedKey, valueKey,
     type AdvancedDistribution, type AdvancedValue,
 } from '../../modules/meshAdvanced';
 
@@ -19,20 +20,25 @@ const values = defineModel<Record<string, any>>({ required: true });
 const { t, te } = useI18n();
 
 const parameterOf = (field: string) => ADVANCED_PARAMETERS.find(parameter => parameter.field === field);
-const groups = [
-    { title: 'flags_switch', fields: ADVANCED_SWITCHES },
-    { title: 'web.mesh_network.parameters', fields: ADVANCED_PARAMETERS.map(parameter => parameter.field) },
-];
+// One category at a time, or all of them; each says how many of its
+// settings are changed (edited now, or set away from the default in a preset).
+const category = ref('all');
+const categoryTitle = (key: string) => `web.mesh_network.category_${key}`;
+const changed = (field: string) => props.mode === 'change' ? touched(field) : !isDefaultValue(field, values.value[field]);
+const categoryTabs = computed(() => [
+    { key: 'all', label: t('web.mesh_network.category_all'), changed: ADVANCED_CATEGORIES.flatMap(item => item.fields).filter(changed).length },
+    ...ADVANCED_CATEGORIES.map(item => ({ key: item.key, label: t(categoryTitle(item.key)), changed: item.fields.filter(changed).length })),
+]);
+const groups = computed(() => ADVANCED_CATEGORIES
+    .filter(item => category.value === 'all' || item.key === category.value)
+    .map(item => ({ title: categoryTitle(item.key), fields: item.fields })));
 
 const valueName = (field: string, value: AdvancedValue) => {
     if (typeof value === 'boolean') return t(value ? 'web.mesh_network.value_on' : 'web.mesh_network.value_off');
     const option = parameterOf(field)?.options?.find(option => option.value === value);
     return option ? t(option.label) : String(value);
 };
-// Without a fixed default the device's own one applies.
-const defaultName = (field: string) => field in ADVANCED_DEFAULTS
-    ? t('web.mesh_network.value_default_is', { value: valueName(field, ADVANCED_DEFAULTS[field]) })
-    : t('web.mesh_network.value_device_default');
+const defaultName = (field: string) => t('web.mesh_network.value_default_is', { value: valueName(field, ADVANCED_DEFAULTS[field]) });
 
 // A choice equal to the default is the default, so it is offered once.
 const choicesOf = (field: string) => {
@@ -89,6 +95,12 @@ const unavailable = (field: string) => {
 
 <template>
     <div class="advanced-editor">
+        <div class="advanced-tabs" role="group" :aria-label="t('web.mesh_network.category')">
+            <button v-for="tab in categoryTabs" :key="tab.key" type="button" class="advanced-tab"
+                :class="{ active: category === tab.key }" :aria-pressed="category === tab.key" @click="category = tab.key">
+                {{ tab.label }}<span v-if="tab.changed" class="advanced-tab-count">{{ tab.changed }}</span>
+            </button>
+        </div>
         <section v-for="group in groups" :key="group.title" class="advanced-group">
             <h3>{{ t(group.title) }}</h3>
             <div class="advanced-grid">
@@ -138,6 +150,18 @@ const unavailable = (field: string) => {
 
 <style scoped>
 .advanced-editor { display: flex; flex-direction: column; gap: 22px; }
+.advanced-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.advanced-tab {
+    display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 1px solid var(--console-border);
+    border-radius: 999px; font-size: 13px; color: var(--p-text-muted-color); background: var(--console-panel); cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+}
+.advanced-tab:hover { color: var(--p-text-color); }
+.advanced-tab.active { color: var(--p-primary-color); border-color: var(--p-primary-color); background: color-mix(in srgb, var(--p-primary-color) 8%, var(--console-panel)); }
+.advanced-tab-count {
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 18px;
+    text-align: center; color: var(--p-primary-contrast-color); background: var(--p-primary-color);
+}
 .advanced-group h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--p-text-muted-color); }
 .advanced-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); gap: 8px; }
 .advanced-row {

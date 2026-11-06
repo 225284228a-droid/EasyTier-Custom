@@ -1,5 +1,5 @@
 import { inject, provide, ref, type InjectionKey, type Ref } from 'vue'
-import { Api as LibApi, ConfigStores, Utils } from 'easytier-frontend-lib'
+import { Api as LibApi, ConfigStores, Utils, type NetworkTypes } from 'easytier-frontend-lib'
 import type ApiClient from './api'
 import type { CentralNetworkSummary, MeshMember, MeshNetworkView } from './api'
 import { networkNameIdentity } from './networkTopology'
@@ -23,7 +23,7 @@ export interface NetworkMember {
   pending?: boolean
   /** A temporary member: a central add-on authenticated by a credential. */
   credential?: boolean
-  /** Batch edits from this console leave its advanced settings and running state alone. */
+  /** Batch edits from this console leave its advanced settings and access control alone. */
   locked?: boolean
 }
 
@@ -53,6 +53,68 @@ export interface DeviceNetworkScan {
 
 function instanceIdString(id: Utils.UUID | string): string {
   return typeof id === 'string' ? id : Utils.UuidToStr(id)
+}
+
+/** A peer of a network that is not connected to this console. */
+export interface NetworkClient {
+  key: string
+  peerId: number
+  hostname: string
+  /** Virtual IPv4 with its prefix. */
+  address?: string
+}
+
+/**
+ * What the running members of a network report, by member key, read for
+ * all their devices in one request.
+ */
+export async function memberDetails(api: ApiClient, members: NetworkMember[]): Promise<Map<string, NetworkTypes.NetworkInstanceRunningInfo>> {
+  const running = members.filter(member => member.online && member.running)
+  const devices = [...new Set(running.map(member => member.device.machine_id))].sort()
+  const details = new Map<string, NetworkTypes.NetworkInstanceRunningInfo>()
+  if (!devices.length)
+    return details
+  const machines = await api.collect_topology_network_info(devices)
+  for (const [machineId, { info }] of Object.entries(machines)) {
+    for (const [instanceId, detail] of Object.entries(info?.info?.map ?? {}))
+      details.set(`${machineId}/${instanceId}`, detail)
+  }
+  return details
+}
+
+/**
+ * The peers in the members' route tables that are neither members nor
+ * public servers: clients that joined the network without this console. A
+ * route table lists every peer of the network, not only the direct ones.
+ */
+export function networkClients(details: Map<string, NetworkTypes.NetworkInstanceRunningInfo>, members: NetworkMember[]): NetworkClient[] {
+  const memberInstances = new Set(members.map(member => member.instanceId))
+  const memberPeers = new Set<number>()
+  const memberRoutes: NetworkTypes.Route[] = []
+  for (const member of members) {
+    const detail = details.get(member.key)
+    if (!detail)
+      continue
+    if (detail.my_node_info?.peer_id)
+      memberPeers.add(detail.my_node_info.peer_id)
+    memberRoutes.push(...detail.routes ?? [])
+  }
+  const clients = new Map<string, NetworkClient>()
+  for (const route of memberRoutes) {
+    if (!route.peer_id || memberPeers.has(route.peer_id) || memberInstances.has(route.inst_id)
+      || route.feature_flag?.is_public_server)
+      continue
+    const key = route.inst_id || `peer:${route.peer_id}`
+    if (clients.has(key))
+      continue
+    clients.set(key, {
+      key,
+      peerId: route.peer_id,
+      hostname: route.hostname?.trim() || `Peer ${route.peer_id}`,
+      address: route.ipv4_addr?.address ? Utils.ipv4InetToString(route.ipv4_addr) : undefined,
+    })
+  }
+  return [...clients.values()].sort((left, right) => left.hostname.localeCompare(right.hostname))
 }
 
 export async function scanDeviceNetworks(api: ApiClient, device: Utils.DeviceInfo): Promise<DeviceNetworkScan> {
