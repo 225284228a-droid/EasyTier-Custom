@@ -521,7 +521,11 @@ async fn official_nodes_get_private_mode_on_unless_they_chose() {
     let (config, _) = stored_config(&service, user_id, unset).await;
     assert_eq!(config.enable_private_mode, Some(true));
     let (config, _) = stored_config(&service, user_id, chosen).await;
-    assert_eq!(config.enable_private_mode, Some(false), "an explicit choice stays");
+    assert_eq!(
+        config.enable_private_mode,
+        Some(false),
+        "an explicit choice stays"
+    );
 }
 
 async fn official_member(

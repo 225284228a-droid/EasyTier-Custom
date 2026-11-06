@@ -535,9 +535,15 @@ pub(crate) async fn observe_user(db: &Db, manager: &ClientManager, user_id: User
             let result = async {
                 for stored in stored_configs(db, user_id, device_id).await? {
                     if official_defaults(&stored.config).is_some() {
-                        rewrite_stored(db, manager, user_id, device_id, &stored.instance_id, None, |config| {
-                            Ok(official_defaults(config))
-                        })
+                        rewrite_stored(
+                            db,
+                            manager,
+                            user_id,
+                            device_id,
+                            &stored.instance_id,
+                            None,
+                            |config| Ok(official_defaults(config)),
+                        )
                         .await?;
                     }
                 }

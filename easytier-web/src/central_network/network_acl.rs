@@ -83,10 +83,16 @@ fn enabled() -> bool {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AclPeer {
     All,
-    Group { name: String },
-    Device { instance_id: String },
+    Group {
+        name: String,
+    },
+    Device {
+        instance_id: String,
+    },
     /// A source address or CIDR, for clients that hold no group secret.
-    Address { cidr: String },
+    Address {
+        cidr: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -614,20 +620,19 @@ pub fn read(acl: Option<&Acl>) -> MemberAcl {
             .name
             .rsplit_once(':')
             .map_or(core.name.as_str(), |(id, _)| id);
-        let sources: Vec<AclPeer> =
-            if core.source_groups.is_empty() && core.source_ips.is_empty() {
-                vec![AclPeer::All]
-            } else {
-                core.source_groups
-                    .iter()
-                    .map(|name| peer_of_group(name))
-                    .chain(
-                        core.source_ips
-                            .iter()
-                            .map(|cidr| AclPeer::Address { cidr: cidr.clone() }),
-                    )
-                    .collect()
-            };
+        let sources: Vec<AclPeer> = if core.source_groups.is_empty() && core.source_ips.is_empty() {
+            vec![AclPeer::All]
+        } else {
+            core.source_groups
+                .iter()
+                .map(|name| peer_of_group(name))
+                .chain(
+                    core.source_ips
+                        .iter()
+                        .map(|cidr| AclPeer::Address { cidr: cidr.clone() }),
+                )
+                .collect()
+        };
         let position = match rules.iter().position(|rule| rule.id == id) {
             Some(position) => position,
             None => {
@@ -965,11 +970,21 @@ mod tests {
             .filter(|rule| rule.name == "ssh:tcp")
             .collect();
         assert_eq!(ssh.len(), 2);
-        assert!(ssh.iter().any(|rule| rule.source_groups == ["admins"] && rule.source_ips.is_empty()));
-        assert!(ssh.iter().any(|rule| rule.source_groups.is_empty() && rule.source_ips == ["10.126.126.50/32"]));
+        assert!(
+            ssh.iter()
+                .any(|rule| rule.source_groups == ["admins"] && rule.source_ips.is_empty())
+        );
+        assert!(
+            ssh.iter().any(
+                |rule| rule.source_groups.is_empty() && rule.source_ips == ["10.126.126.50/32"]
+            )
+        );
         let mut me = config(ME);
         apply(&mut me, Some(&acl));
-        assert_eq!(read(me.acl.as_ref()).network.as_ref(), Some(&rules_of(&acl)));
+        assert_eq!(
+            read(me.acl.as_ref()).network.as_ref(),
+            Some(&rules_of(&acl))
+        );
 
         let mut bad = acl.clone();
         bad.rules[0].sources.push(AclPeer::Address {
