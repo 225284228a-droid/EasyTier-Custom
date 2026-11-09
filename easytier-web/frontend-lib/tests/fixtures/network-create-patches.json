@@ -23,8 +23,7 @@
         "network_secret": "",
         "listener_urls": [
           "tcp://0.0.0.0:11010",
-          "udp://0.0.0.0:11010",
-          "wg://0.0.0.0:11011"
+          "udp://0.0.0.0:11010"
         ],
         "latency_first": false,
         "dev_name": "",
@@ -171,8 +170,7 @@
         ],
         "listener_urls": [
           "tcp://0.0.0.0:11010",
-          "udp://0.0.0.0:11010",
-          "wg://0.0.0.0:11011"
+          "udp://0.0.0.0:11010"
         ],
         "latency_first": false,
         "dev_name": "",
@@ -313,8 +311,7 @@
         ],
         "listener_urls": [
           "tcp://0.0.0.0:11010",
-          "udp://0.0.0.0:11010",
-          "wg://0.0.0.0:11011"
+          "udp://0.0.0.0:11010"
         ],
         "latency_first": false,
         "dev_name": "",

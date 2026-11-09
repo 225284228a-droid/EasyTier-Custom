@@ -208,10 +208,10 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
 
     advanced_settings: false,
 
+    // WireGuard is opt-in per device, so the default listens on TCP and UDP only.
     listener_urls: [
       'tcp://0.0.0.0:11010',
       'udp://0.0.0.0:11010',
-      'wg://0.0.0.0:11011',
     ],
     ...newFlagValues(),
     dev_name: '',

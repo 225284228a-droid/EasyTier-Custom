@@ -70,8 +70,7 @@ const openCreate = async () => {
     form.value = { network_name: '', display_name: '', network_secret: '', no_password: false, secure_mode: false, virtual_subnet: '' };
     await loadGatewayInfo();
     peers.value = gatewayInfo.value?.enabled && gatewayInfo.value.peer_url ? [gatewayInfo.value.peer_url] : [];
-    // A new network listens on TCP and UDP; WireGuard is opt-in per device.
-    listeners.value = NetworkTypes.DEFAULT_NETWORK_CONFIG().listener_urls.filter(url => !url.startsWith('wg://'));
+    listeners.value = [...NetworkTypes.DEFAULT_NETWORK_CONFIG().listener_urls];
     selectedDevices.value = [];
     devices.value = undefined;
     createVisible.value = true;

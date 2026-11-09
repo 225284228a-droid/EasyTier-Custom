@@ -438,15 +438,28 @@ pub(super) async fn stored_configs(
         .collect()
 }
 
-/// What the console's copy of an official node's configuration must add so
+/// The WireGuard listener official consoles put in every new configuration.
+const OFFICIAL_DEFAULT_WG_LISTENER: &str = "wg://0.0.0.0:11011";
+
+/// What the console's copy of an official node's configuration must change so
 /// the node runs like this fork's cores: official cores start with private
-/// mode off when the configuration leaves it unset, this fork's with it on.
+/// mode off when the configuration leaves it unset, this fork's with it on,
+/// and official defaults listen on WireGuard, which this fork leaves opt-in.
+/// Both happen once, when the console first takes the copy over: an unset
+/// private mode marks a copy it has not touched yet, so a WireGuard listener
+/// the user adds afterwards stays.
 fn official_defaults(config: &NetworkConfig) -> Option<NetworkConfig> {
     if config.enable_private_mode.is_some() {
         return None;
     }
     Some(NetworkConfig {
         enable_private_mode: Some(true),
+        listener_urls: config
+            .listener_urls
+            .iter()
+            .filter(|url| url.as_str() != OFFICIAL_DEFAULT_WG_LISTENER)
+            .cloned()
+            .collect(),
         ..config.clone()
     })
 }
@@ -1100,6 +1113,36 @@ pub(crate) async fn deliver_credentials(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_copies_drop_the_default_wireguard_listener_once() {
+        let listeners = |urls: &[&str]| urls.iter().map(|url| url.to_string()).collect::<Vec<_>>();
+        let official = NetworkConfig {
+            listener_urls: listeners(&[
+                "tcp://0.0.0.0:11010",
+                "udp://0.0.0.0:11010",
+                OFFICIAL_DEFAULT_WG_LISTENER,
+                "wg://0.0.0.0:22022",
+            ]),
+            ..Default::default()
+        };
+        let taken = official_defaults(&official).unwrap();
+        assert_eq!(taken.enable_private_mode, Some(true));
+        assert_eq!(
+            taken.listener_urls,
+            listeners(&[
+                "tcp://0.0.0.0:11010",
+                "udp://0.0.0.0:11010",
+                "wg://0.0.0.0:22022"
+            ])
+        );
+        // Once taken over, a WireGuard listener the user adds again stays.
+        let readded = NetworkConfig {
+            listener_urls: official.listener_urls.clone(),
+            ..taken
+        };
+        assert!(official_defaults(&readded).is_none());
+    }
 
     fn config(name: &str, secret: Option<&str>) -> NetworkConfig {
         NetworkConfig {

@@ -556,9 +556,18 @@ impl Cli {
         count
     }
 
+    /// Protocols a bare port or address listens on. WireGuard stays opt-in:
+    /// it is only started when named explicitly (`wg`, `wg:PORT`, `wg://…`).
+    fn default_listener_schemes() -> impl Iterator<Item = &'static IpScheme> {
+        IpScheme::VARIANTS.iter().filter(|proto| {
+            let scheme: &'static str = (**proto).into();
+            scheme != "wg"
+        })
+    }
+
     fn gen_listeners(addr: SocketAddr) -> impl Iterator<Item = String> {
         let dynamic = addr.port() == 0;
-        IpScheme::VARIANTS.iter().map(move |proto| {
+        Self::default_listener_schemes().map(move |proto| {
             let mut addr = addr;
             if !dynamic {
                 addr.set_port(addr.port() + proto.port_offset());
@@ -1713,14 +1722,16 @@ mod tests {
         for (input, output) in cases {
             assert_eq!(
                 Cli::parse_listeners(false, vec![input.to_string()]).unwrap(),
-                IpScheme::VARIANTS.iter().map(output).collect::<Vec<_>>()
+                Cli::default_listener_schemes()
+                    .map(output)
+                    .collect::<Vec<_>>()
             );
         }
 
         let input = cases.iter().map(|(i, _)| i.to_string()).collect::<Vec<_>>();
         let output = cases
             .iter()
-            .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
+            .flat_map(|(_, o)| Cli::default_listener_schemes().map(o))
             .collect::<Vec<_>>();
         assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
 
@@ -1759,6 +1770,10 @@ mod tests {
             .flat_map(|(_, o)| IpScheme::VARIANTS.iter().map(o))
             .collect::<Vec<_>>();
         assert_eq!(Cli::parse_listeners(false, input).unwrap(), output);
+
+        let defaults = Cli::parse_listeners(false, vec!["11010".to_string()]).unwrap();
+        assert!(defaults.iter().all(|url| !url.starts_with("wg://")));
+        assert!(defaults.contains(&"tcp://0.0.0.0:11010".to_string()));
 
         let cases = ["tcp://[::1", "xxx", "tcp:/abc", "tcp:abc"];
         for input in cases {
