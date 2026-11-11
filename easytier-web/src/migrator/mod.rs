@@ -15,7 +15,6 @@ mod m20261026_000013_drop_local_config_snapshots;
 mod m20261102_000014_mesh_core_sync;
 mod m20261103_000015_mesh_networks;
 mod m20261104_000016_mesh_network_acl;
-mod m20261108_000017_preset_without_wg;
 
 pub struct Migrator;
 
@@ -37,7 +36,6 @@ impl MigratorTrait for Migrator {
             Box::new(m20261102_000014_mesh_core_sync::Migration),
             Box::new(m20261103_000015_mesh_networks::Migration),
             Box::new(m20261104_000016_mesh_network_acl::Migration),
-            Box::new(m20261108_000017_preset_without_wg::Migration),
         ]
     }
 }
