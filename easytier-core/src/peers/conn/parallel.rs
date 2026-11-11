@@ -143,6 +143,21 @@ impl Drop for ParallelDialReservation {
     }
 }
 
+/// Runs one automatic dial in the peer's parallel pool. A peer whose pool
+/// (`pool_target > 1`) has no free slot for the dial's protocol is skipped:
+/// the dial is not started and `None` is returned.
+pub(crate) async fn dial_in_slot<F: std::future::Future>(
+    reservation: Option<ParallelDialReservation>,
+    pool_target: u32,
+    dial: F,
+) -> Option<F::Output> {
+    match reservation {
+        Some(reservation) => Some(reservation.scope(dial).await),
+        None if pool_target > 1 => None,
+        None => Some(dial.await),
+    }
+}
+
 pub(crate) fn inherit_scope<F: std::future::Future>(
     future: F,
 ) -> impl std::future::Future<Output = F::Output> {

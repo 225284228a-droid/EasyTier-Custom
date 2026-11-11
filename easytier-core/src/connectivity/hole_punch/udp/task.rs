@@ -1,5 +1,5 @@
 use crate::{
-    config::{P2pPolicyFlags, PeerDisguiseP2pFlags, PeerId},
+    config::{P2pDisguiseMode, P2pPolicyFlags, PeerId},
     proto::common::{NatType, PeerFeatureFlag},
 };
 
@@ -14,7 +14,7 @@ pub struct UdpPunchCandidate {
     pub udp_satisfied: bool,
     pub http3_satisfied: bool,
     pub has_recent_traffic: bool,
-    pub peer_disguise_flags: PeerDisguiseP2pFlags,
+    pub peer_disguise: P2pDisguiseMode,
 }
 
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
@@ -47,7 +47,7 @@ where
         .filter_map(|candidate| {
             // Either endpoint may require disguise. Missing capability fields
             // on official peers still select raw UDP in non-strict modes.
-            let transport_policy = policy.transport_policy(Some(&candidate.peer_disguise_flags));
+            let transport_policy = policy.transport_policy(Some(candidate.peer_disguise));
             let require_http3 = transport_policy.require_disguise();
             let use_http3 = transport_policy.select_disguised(
                 http3_supported && (require_http3 || policy.prefer_http3_for_p2p),
@@ -112,7 +112,7 @@ mod tests {
             udp_satisfied: false,
             http3_satisfied: false,
             has_recent_traffic: false,
-            peer_disguise_flags: PeerDisguiseP2pFlags::default(),
+            peer_disguise: P2pDisguiseMode::Off,
         }
     }
 
@@ -147,12 +147,12 @@ mod tests {
     #[test]
     fn strict_mode_negotiates_http3_with_strict_and_passive_peers() {
         let mut compatible = candidate(2, NatType::PortRestricted);
-        compatible.peer_disguise_flags.only_use_wss_http3_for_p2p = true;
+        compatible.peer_disguise = P2pDisguiseMode::Only;
         let tasks = collect(
             1,
             NatType::PortRestricted,
             P2pPolicyFlags {
-                only_use_wss_http3_for_hole_punching: true,
+                disguise: P2pDisguiseMode::Only,
                 ..Default::default()
             },
             vec![candidate(3, NatType::PortRestricted), compatible],
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn passive_mode_honors_peer_requiring_http3() {
         let mut strict_peer = candidate(2, NatType::PortRestricted);
-        strict_peer.peer_disguise_flags.only_use_wss_http3_for_p2p = true;
+        strict_peer.peer_disguise = P2pDisguiseMode::Only;
         let tasks = collect(
             1,
             NatType::PortRestricted,
@@ -185,10 +185,10 @@ mod tests {
     #[test]
     fn strict_http3_punch_continues_after_wss_connects() {
         let mut peer = candidate(2, NatType::PortRestricted);
-        peer.peer_disguise_flags.only_use_wss_http3_for_p2p = true;
+        peer.peer_disguise = P2pDisguiseMode::Only;
         peer.has_direct_connection = true;
         let policy = P2pPolicyFlags {
-            only_use_wss_http3_for_hole_punching: true,
+            disguise: P2pDisguiseMode::Only,
             prefer_http3_for_p2p: true,
             ..Default::default()
         };
@@ -212,11 +212,11 @@ mod tests {
     #[test]
     fn strict_tcp_preference_keeps_existing_wss_connection() {
         let mut peer = candidate(2, NatType::PortRestricted);
-        peer.peer_disguise_flags.only_use_wss_http3_for_p2p = true;
+        peer.peer_disguise = P2pDisguiseMode::Only;
         peer.has_direct_connection = true;
         peer.http3_satisfied = true;
         let policy = P2pPolicyFlags {
-            only_use_wss_http3_for_hole_punching: true,
+            disguise: P2pDisguiseMode::Only,
             prefer_http3_for_p2p: false,
             ..Default::default()
         };
@@ -237,9 +237,9 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].scheme, UdpPunchScheme::Udp);
 
-        peer.peer_disguise_flags.prefer_wss_http3_for_p2p = true;
+        peer.peer_disguise = P2pDisguiseMode::Prefer;
         let policy = P2pPolicyFlags {
-            prefer_wss_http3_for_p2p: true,
+            disguise: P2pDisguiseMode::Prefer,
             prefer_http3_for_p2p: true,
             ..Default::default()
         };
@@ -315,9 +315,9 @@ mod tests {
     #[test]
     fn strict_http3_task_requires_local_http3_runtime() {
         let mut peer = candidate(2, NatType::PortRestricted);
-        peer.peer_disguise_flags.only_use_wss_http3_for_p2p = true;
+        peer.peer_disguise = P2pDisguiseMode::Only;
         let policy = P2pPolicyFlags {
-            only_use_wss_http3_for_hole_punching: true,
+            disguise: P2pDisguiseMode::Only,
             ..Default::default()
         };
 
@@ -337,10 +337,10 @@ mod tests {
     #[test]
     fn prefer_http3_falls_back_to_udp_without_local_runtime() {
         let mut peer = candidate(2, NatType::PortRestricted);
-        peer.peer_disguise_flags.prefer_wss_http3_for_p2p = true;
+        peer.peer_disguise = P2pDisguiseMode::Prefer;
         let policy = P2pPolicyFlags {
             prefer_http3_for_p2p: true,
-            prefer_wss_http3_for_p2p: true,
+            disguise: P2pDisguiseMode::Prefer,
             ..Default::default()
         };
 

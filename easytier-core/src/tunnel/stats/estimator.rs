@@ -107,16 +107,11 @@ impl Throughput {
 
     pub(crate) fn record_peer_traffic_report(
         &self,
-        version: u32,
         peer_rx_bps: u64,
         peer_estimated_tx_bps: u64,
         peer_sample_window: Duration,
     ) {
         self.record_peer_window_estimate(peer_estimated_tx_bps);
-        if version < 2 {
-            return;
-        }
-
         let now = Instant::now();
         let local = self.traffic_rate_at(now);
         let window = peer_sample_window.min(local.sample_window);

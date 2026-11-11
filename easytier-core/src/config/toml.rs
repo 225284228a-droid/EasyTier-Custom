@@ -20,9 +20,6 @@ pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
 pub use crate::proto::common::{Flags, FlagsPatch};
 
-mod legacy;
-pub(crate) use legacy::migrate_legacy_p2p_disguise_flags;
-
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
 }
@@ -750,9 +747,6 @@ impl TomlConfig {
         source_name: &str,
         config_str: &str,
     ) -> Result<Self, anyhow::Error> {
-        let migrated = migrate_legacy_p2p_disguise_flags(config_str)
-            .with_context(|| format!("failed to load config from {source_name}"))?;
-        let config_str = migrated.as_deref().unwrap_or(config_str);
         let mut config = toml::de::from_str::<Config>(config_str).map_err(|err| {
             let message = format_toml_parse_error(source_name, config_str, &err);
             anyhow::Error::new(err).context(message)

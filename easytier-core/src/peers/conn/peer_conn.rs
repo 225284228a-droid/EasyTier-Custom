@@ -1430,19 +1430,14 @@ impl PeerConn {
                             decode_window_report(zc_packet.payload(), false)
                         {
                             throughput.record_peer_traffic_report(
-                                remote_report.version,
-                                remote_report.report.rx_bps,
-                                remote_report.report.estimated_tx_bps,
-                                remote_report.report.sample_window,
+                                remote_report.rx_bps,
+                                remote_report.estimated_tx_bps,
+                                remote_report.sample_window,
                             );
                             let seq =
                                 u32::from_le_bytes(zc_packet.payload()[..4].try_into().unwrap());
-                            let reply = encode_window_report(
-                                seq,
-                                throughput.traffic_report(),
-                                true,
-                                remote_report.version,
-                            );
+                            let reply =
+                                encode_window_report(seq, throughput.traffic_report(), true);
                             zc_packet.mut_payload().copy_from_slice(&reply);
                         }
                         if let Err(e) = sink.send(zc_packet).await {

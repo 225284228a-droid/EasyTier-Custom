@@ -14,8 +14,7 @@ use crate::{
     config::IpPrefix,
     config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfigStore},
     connectivity::{
-        direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost,
-        port_in_use_by_local_listener,
+        direct::DirectConnectorHost, hole_punch::tcp::TcpHolePunchHost, protocol::protocol_uses_udp,
     },
     foundation::stats::{LabelSet, LabelType, MetricName, StatsManager},
     listener::RunningListenerRegistry,
@@ -145,11 +144,14 @@ where
             return false;
         }
 
-        port_in_use_by_local_listener(
-            &self.running_listeners.running_listeners(),
-            destination.port(),
-            is_udp,
-        ) || (!is_udp && self.protected_tcp_ports.contains(destination.port()))
+        self.running_listeners
+            .running_listeners()
+            .iter()
+            .any(|listener| {
+                listener.port() == Some(destination.port())
+                    && protocol_uses_udp(listener.scheme()) == is_udp
+            })
+            || (!is_udp && self.protected_tcp_ports.contains(destination.port()))
     }
 }
 
@@ -435,7 +437,6 @@ mod tests {
         config::peers::{PeerRuntimeConfig, PeerRuntimeSnapshot},
         config::runtime::{CoreInstanceRuntimeConfig, CoreRuntimeConfig},
         config::{CoreConfig, IpPrefix, PeerPolicyConfig, ProxyNetworkConfig, RouteConfig},
-        connectivity::protocol::protocol_uses_udp,
     };
 
     use super::*;

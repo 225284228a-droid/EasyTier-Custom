@@ -654,7 +654,6 @@ mod tests {
             "enable_encryption = true",
             "disable_p2p = false",
             "close_redundant_conns_when_disguised = true",
-            "prefer_wss_http3_for_p2p = true",
             "p2p_disguise_mode = 'prefer'",
             "p2p_disguise_mode = ' Prefer '",
             "mtu = 1380",
@@ -671,7 +670,6 @@ mod tests {
             "default_protocol = 'tcp'",
             "enable_encryption = false",
             "close_redundant_conns_when_disguised = false",
-            "prefer_wss_http3_for_p2p = false",
             "p2p_disguise_mode = 'off'",
             "mtu = 0",
             "instance_recv_bps_limit = 0",
@@ -686,26 +684,28 @@ mod tests {
     }
 
     #[test]
-    fn disguise_policy_spelling_does_not_change_the_runtime_configuration() {
-        let base = "instance_id='11111111-1111-1111-1111-111111111111'\n";
-        for (mode, legacy) in [
-            ("prefer", ""),
-            ("off", "prefer_wss_http3_for_p2p = false\n"),
-        ] {
-            let unified = format!("{base}[flags]\np2p_disguise_mode = '{mode}'\n");
-            let legacy = format!("{base}[flags]\n{legacy}");
-            let active = TomlConfig::new_from_str(&legacy).unwrap();
-            let persisted = TomlConfig::new_from_str(&unified).unwrap();
-            assert!(configs_equivalent(&active, &persisted), "{mode}");
-            assert_eq!(
-                persisted.get_flags_patch().p2p_disguise_mode.as_deref(),
-                Some(mode)
-            );
-        }
-        let prefer = TomlConfig::new_from_str(base).unwrap();
-        let off = TomlConfig::new_from_str(&format!("{base}[flags]\np2p_disguise_mode = 'off'\n"))
-            .unwrap();
-        assert!(!configs_equivalent(&prefer, &off));
+    fn an_explicit_default_disguise_mode_matches_an_omitted_one() {
+        let base = "instance_id='11111111-1111-1111-1111-111111111111'
+";
+        let omitted = TomlConfig::new_from_str(base).unwrap();
+        let explicit = TomlConfig::new_from_str(&format!(
+            "{base}[flags]
+p2p_disguise_mode = 'prefer'
+"
+        ))
+        .unwrap();
+        assert!(configs_equivalent(&omitted, &explicit));
+        assert_eq!(
+            explicit.get_flags_patch().p2p_disguise_mode.as_deref(),
+            Some("prefer")
+        );
+        let off = TomlConfig::new_from_str(&format!(
+            "{base}[flags]
+p2p_disguise_mode = 'off'
+"
+        ))
+        .unwrap();
+        assert!(!configs_equivalent(&omitted, &off));
     }
 
     #[test]

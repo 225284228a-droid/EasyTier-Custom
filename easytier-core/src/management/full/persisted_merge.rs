@@ -125,13 +125,6 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "enable_relay_network_whitelist" | "relay_network_whitelist" => {
             vec!["flags.relay_network_whitelist"]
         }
-        // Writing the mode also retires the legacy booleans it replaces.
-        "p2p_disguise_mode" => vec![
-            "flags.p2p_disguise_mode",
-            "flags.prefer_wss_http3_for_p2p",
-            "flags.disable_wss_http3_for_p2p",
-            "flags.only_use_wss_http3_for_hole_punching",
-        ],
         _ => return easytier_proto::common::Flags::api_document_path(field).map(|path| vec![path]),
     };
     Some(paths)
@@ -574,12 +567,7 @@ mod tests {
     fn generated_flag_paths_keep_compound_document_ownership() {
         assert_eq!(
             document_paths("p2p_disguise_mode").unwrap(),
-            vec![
-                "flags.p2p_disguise_mode",
-                "flags.prefer_wss_http3_for_p2p",
-                "flags.disable_wss_http3_for_p2p",
-                "flags.only_use_wss_http3_for_hole_punching",
-            ]
+            vec!["flags.p2p_disguise_mode"]
         );
         for (fields, path) in [
             (
@@ -726,10 +714,8 @@ mod tests {
     }
 
     #[test]
-    fn unified_disguise_patch_replaces_legacy_flags_and_reset_uses_default() {
-        let original = format!(
-            "{ORIGINAL}prefer_wss_http3_for_p2p = false\nonly_use_wss_http3_for_hole_punching = true\n"
-        );
+    fn disguise_patch_replaces_the_mode_and_reset_uses_default() {
+        let original = format!("{ORIGINAL}p2p_disguise_mode = \"only\"\n");
         let mask = ["p2p_disguise_mode".to_owned()];
         let merged = merge_persisted_config(
             &original,
@@ -743,15 +729,12 @@ mod tests {
         let flags = TomlConfig::new_from_str(&merged).unwrap().get_flags();
         assert_eq!(flags.p2p_disguise().as_str(), "off");
         assert!(merged.contains("# retained comment"));
-        assert!(!merged.contains("prefer_wss_http3_for_p2p ="));
-        assert!(!merged.contains("only_use_wss_http3_for_hole_punching ="));
 
-        // An omitted selected value resets the whole policy, including old overrides.
+        // An omitted selected value resets the policy to the default.
         let reset = merge_persisted_config(&original, &NetworkConfig::default(), &mask).unwrap();
         let flags = TomlConfig::new_from_str(&reset).unwrap().get_flags();
         assert_eq!(flags.p2p_disguise().as_str(), "prefer");
         assert!(!reset.contains("p2p_disguise_mode ="));
-        assert!(!reset.contains("only_use_wss_http3_for_hole_punching ="));
     }
 
     #[test]

@@ -395,8 +395,8 @@ pub(super) fn preferred_conn_sort_key(
 }
 
 fn use_disguise_preference(flags: &Flags, negotiated: Option<bool>) -> bool {
-    !flags.p2p_disguise().forbids()
-        && negotiated.unwrap_or(flags.p2p_disguise().prefers() || flags.p2p_disguise().requires())
+    let mode = flags.p2p_disguise();
+    !mode.forbids() && negotiated.unwrap_or(mode.initiates())
 }
 
 pub(super) fn conn_protocol_rank(conn: &PeerConn, flags: &Flags) -> Option<u8> {

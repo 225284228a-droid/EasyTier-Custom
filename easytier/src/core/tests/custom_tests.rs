@@ -341,15 +341,14 @@ fn cli_preserves_native_state_dir_sni_and_transport_flag_presence() {
 
     let cfg = TomlConfigLoader::new_from_str(
         r#"[flags]
-prefer_wss_http3_for_p2p = true
-disable_wss_http3_for_p2p = true
+p2p_disguise_mode = "disabled"
 disable_p2p = true
 "#,
     )
     .unwrap();
     cli.network_options.merge_into(&cfg).unwrap();
     assert_eq!(cfg.get_sni(), "front.example.com");
-    // The file's legacy booleans load as `disabled`; the CLI mode wins.
+    // The file says `disabled`; the CLI mode wins.
     let merged = cfg.get_flags();
     assert_eq!(
         merged.p2p_disguise(),

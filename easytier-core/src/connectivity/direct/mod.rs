@@ -8,22 +8,22 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 use quanta::Instant;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use url::{Host, Url};
 
 use crate::{
-    config::{PeerDisguiseP2pFlags, PeerId, p2p_protocol_rank, preferred_disguised_scheme},
+    config::{P2pDisguiseMode, PeerId, p2p_protocol_rank, preferred_disguised_scheme},
     connectivity::hole_punch::policy::p2p_engine_gate,
-    connectivity::is_public_ipv6_candidate,
-    connectivity::port_in_use_by_local_listener,
     connectivity::stun::{StunInfoProvider, StunSocketMapper},
     connectivity::{
         LocalListenerUrls,
-        protocol::{ClientProtocolUpgrader, protocol_uses_udp},
-        transport::{self, ConnectedTransport, IpTransport, UdpSessionMode},
+        protocol::{
+            ClientProtocolUpgrader, ProtocolTransport, protocol_transport, protocol_uses_udp,
+        },
+        transport::{self, ConnectedTransport, UdpSessionMode},
     },
-    foundation::backoff::BackOff,
     foundation::expiring_set::ExpiringSet,
     foundation::task::{PeerTaskLauncher, PeerTaskManager},
     host::dns::DnsResolver,
@@ -94,12 +94,29 @@ pub trait DirectConnectorHost: ManualConnectorHost {
     }
 }
 
-/// The direct dialer only dials IP transports; ring/unix byte streams and
-/// unknown schemes are rejected at classification time.
-fn direct_transport_from_url(url: &Url) -> anyhow::Result<IpTransport> {
-    IpTransport::from_url(url, TcpSocketPurpose::DirectConnect)
-        .filter(|transport| !matches!(transport, IpTransport::ByteStream))
-        .ok_or_else(|| anyhow::anyhow!("unsupported direct transport scheme: {}", url.scheme()))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectTransport {
+    Tcp(TcpSocketPurpose),
+    Udp(UdpSessionMode),
+}
+
+impl DirectTransport {
+    fn from_url(url: &Url) -> anyhow::Result<Self> {
+        match protocol_transport(url.scheme()) {
+            Some(ProtocolTransport::Tcp) => Ok(Self::Tcp(TcpSocketPurpose::DirectConnect)),
+            Some(ProtocolTransport::FakeTcp) => Ok(Self::Tcp(TcpSocketPurpose::FakeTcp)),
+            Some(ProtocolTransport::Udp(mode)) => Ok(Self::Udp(mode)),
+            None => anyhow::bail!("unsupported direct transport scheme: {}", url.scheme()),
+        }
+    }
+
+    fn is_udp(self) -> bool {
+        matches!(self, Self::Udp(_))
+    }
+
+    fn supports_interface_bind(self) -> bool {
+        !matches!(self, Self::Tcp(TcpSocketPurpose::FakeTcp))
+    }
 }
 
 fn ordered_direct_listeners(
@@ -146,11 +163,10 @@ impl Default for DirectConnectorOptions {
 }
 
 impl DirectConnectorOptions {
-    fn socket_context(&self, transport: IpTransport, ip_version: IpVersion) -> SocketContext {
+    fn socket_context(&self, transport: DirectTransport, ip_version: IpVersion) -> SocketContext {
         let context = match transport {
-            IpTransport::Tcp(_) => self.tcp_bind.context.clone(),
-            IpTransport::Udp(_) => self.udp_bind.context.clone(),
-            IpTransport::ByteStream => SocketContext::default(),
+            DirectTransport::Tcp(_) => self.tcp_bind.context.clone(),
+            DirectTransport::Udp(_) => self.udp_bind.context.clone(),
         };
         context.with_ip_version(ip_version)
     }
@@ -346,10 +362,11 @@ where
             .await
             .into_iter()
             .filter(|route| {
-                let peer_flags: Option<PeerDisguiseP2pFlags> =
-                    route.feature_flag.as_ref().map(Into::into);
-                let satisfied =
-                    data.connection_satisfies_policy(route.peer_id, peer_flags.as_ref());
+                let peer_flags = route
+                    .feature_flag
+                    .as_ref()
+                    .map(crate::proto::common::PeerFeatureFlag::p2p_disguise);
+                let satisfied = data.connection_satisfies_policy(route.peer_id, peer_flags);
                 should_collect_direct_peer(
                     route.peer_id == my_peer_id,
                     data.peer_blacklist.contains(&route.peer_id),
@@ -382,11 +399,7 @@ impl<H> DirectConnectorData<H>
 where
     H: DirectConnectorHost,
 {
-    fn connection_satisfies_policy(
-        &self,
-        peer_id: PeerId,
-        peer: Option<&PeerDisguiseP2pFlags>,
-    ) -> bool {
+    fn connection_satisfies_policy(&self, peer_id: PeerId, peer: Option<P2pDisguiseMode>) -> bool {
         let use_disguise = self
             .peer_manager
             .p2p_policy_flags()
@@ -418,17 +431,23 @@ where
     /// Disguise flags of the destination peer, or `None` when the route (or
     /// its feature flags) is not known yet. `None` callers must treat the
     /// negotiated disguise preference as unknown instead of "disabled".
-    async fn peer_disguise_flags_opt(&self, dst_peer_id: PeerId) -> Option<PeerDisguiseP2pFlags> {
+    async fn peer_disguise_opt(&self, dst_peer_id: PeerId) -> Option<P2pDisguiseMode> {
         self.peer_manager
             .list_route_snapshots()
             .await
             .into_iter()
             .find(|route| route.peer_id == dst_peer_id)
-            .and_then(|route| route.feature_flag.as_ref().map(Into::into))
+            .and_then(|route| {
+                route
+                    .feature_flag
+                    .as_ref()
+                    .map(crate::proto::common::PeerFeatureFlag::p2p_disguise)
+            })
     }
 
     async fn try_direct_connect(self: Arc<Self>, dst_peer_id: PeerId) -> anyhow::Result<()> {
-        let mut backoff = BackOff::new(vec![1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000]);
+        let backoffs_ms = [1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000];
+        let mut backoff_index = 0usize;
         let mut attempt = 0usize;
 
         loop {
@@ -436,7 +455,9 @@ where
                 anyhow::bail!("peer {dst_peer_id} is blacklisted");
             }
             if attempt > 0 {
-                backoff.sleep_for_next_backoff().await;
+                crate::foundation::time::sleep(Duration::from_millis(backoffs_ms[backoff_index]))
+                    .await;
+                backoff_index = (backoff_index + 1).min(backoffs_ms.len() - 1);
             }
             attempt += 1;
 
@@ -467,10 +488,9 @@ where
                 .try_direct_connect_with_ip_list(dst_peer_id, ip_list)
                 .await;
             tracing::info!(?result, dst_peer_id, "direct-connect attempt returned");
-            if self.connection_satisfies_policy(
-                dst_peer_id,
-                self.peer_disguise_flags_opt(dst_peer_id).await.as_ref(),
-            ) {
+            if self
+                .connection_satisfies_policy(dst_peer_id, self.peer_disguise_opt(dst_peer_id).await)
+            {
                 return Ok(());
             }
         }
@@ -482,8 +502,8 @@ where
         ip_list: GetIpListResponse,
     ) -> anyhow::Result<()> {
         let p2p_policy = self.peer_manager.p2p_policy_flags();
-        let peer_policy_opt = self.peer_disguise_flags_opt(dst_peer_id).await;
-        let transport_policy = p2p_policy.transport_policy(peer_policy_opt.as_ref());
+        let peer_policy_opt = self.peer_disguise_opt(dst_peer_id).await;
+        let transport_policy = p2p_policy.transport_policy(peer_policy_opt);
         // Negotiated disguise preference for this dial round, frozen from one
         // route scan: `Some` when route metadata is present, `None` otherwise.
         // Per-URL tasks and punch decisions reuse this value instead of
@@ -557,7 +577,7 @@ where
                 .await;
             }
             let _ = tasks.join_all().await;
-            if self.connection_satisfies_policy(dst_peer_id, peer_policy_opt.as_ref()) {
+            if self.connection_satisfies_policy(dst_peer_id, peer_policy_opt) {
                 return Ok(());
             }
         }
@@ -587,65 +607,102 @@ where
         let listener_host = addrs.pop();
         let is_udp = protocol_uses_udp(listener.scheme());
         let local_listeners = self.running_listeners.local_listener_urls();
+        let port_has_local_listener = |port: u16| {
+            local_listeners.iter().any(|local| {
+                local.port() == Some(port) && protocol_uses_udp(local.scheme()) == is_udp
+            })
+        };
         let should_deny_target = |target: &SocketAddr| {
-            let port_is_protected =
-                port_in_use_by_local_listener(&local_listeners, target.port(), is_udp)
-                    || (!is_udp && self.protected_tcp_ports.contains(target.port()));
+            let port_is_protected = port_has_local_listener(target.port())
+                || (!is_udp && self.protected_tcp_ports.contains(target.port()));
             port_is_protected && self.host.is_local_ip(&target.ip())
         };
 
-        let Some(listener_addr) = listener_host else {
-            return;
-        };
-        let target_ips: Vec<IpAddr> = match listener_addr.ip() {
-            // An unspecified listener host means "dial me on any of my
-            // addresses": expand to the peer's observed interface and public
-            // addresses (public IPv6 additionally filtered for usability).
-            ip if ip.is_unspecified() => match ip {
-                IpAddr::V4(_) => ip_list
+        match listener_host {
+            Some(SocketAddr::V4(socket_addr)) if socket_addr.ip().is_unspecified() => {
+                for ip in ip_list
                     .interface_ipv4s
                     .iter()
                     .chain(ip_list.public_ipv4.iter())
-                    .map(|ip| IpAddr::V4(ip.addr.into()))
-                    .collect(),
-                IpAddr::V6(_) => {
-                    let mut candidates = HashSet::new();
-                    for ip in ip_list
-                        .interface_ipv6s
-                        .iter()
-                        .chain(ip_list.public_ipv6.iter())
-                        .map(|ip| Ipv6Addr::from(*ip))
-                    {
-                        if self.is_usable_public_ipv6(&ip).await {
-                            candidates.insert(ip);
-                        }
+                {
+                    let target = SocketAddr::new(IpAddr::V4(ip.addr.into()), socket_addr.port());
+                    if should_deny_target(&target) {
+                        continue;
                     }
-                    candidates.into_iter().map(IpAddr::V6).collect()
+                    let mut url = listener.clone();
+                    if url.set_ip_host(target.ip()).is_ok() {
+                        tasks.spawn(Self::try_connect_to_url(
+                            self.clone(),
+                            dst_peer_id,
+                            url.to_string(),
+                            use_disguise_opt,
+                            use_disguise_protocols,
+                        ));
+                    }
                 }
-            },
-            IpAddr::V6(ip) if self.peer_manager.is_easytier_managed_ipv6(&ip).await => {
-                tracing::debug!(?listener, "skip managed IPv6 direct target");
-                return;
             }
-            ip if ip.is_loopback() && !self.options.testing => Vec::new(),
-            ip => vec![ip],
-        };
-
-        for ip in target_ips {
-            let target = SocketAddr::new(ip, listener_addr.port());
-            if should_deny_target(&target) {
-                continue;
-            }
-            let mut url = listener.clone();
-            if url.set_ip_host(ip).is_ok() {
+            Some(SocketAddr::V4(socket_addr))
+                if (!socket_addr.ip().is_loopback() || self.options.testing)
+                    && !should_deny_target(&SocketAddr::V4(socket_addr)) =>
+            {
                 tasks.spawn(Self::try_connect_to_url(
                     self.clone(),
                     dst_peer_id,
-                    url.to_string(),
+                    listener.to_string(),
                     use_disguise_opt,
                     use_disguise_protocols,
                 ));
             }
+            Some(SocketAddr::V6(socket_addr)) if socket_addr.ip().is_unspecified() => {
+                let mut candidates = HashSet::new();
+                for ip in ip_list
+                    .interface_ipv6s
+                    .iter()
+                    .chain(ip_list.public_ipv6.iter())
+                    .map(|ip| Ipv6Addr::from(*ip))
+                {
+                    if self.is_usable_public_ipv6(&ip).await {
+                        candidates.insert(ip);
+                    }
+                }
+                for ip in candidates {
+                    let target = SocketAddr::new(IpAddr::V6(ip), socket_addr.port());
+                    if should_deny_target(&target) {
+                        continue;
+                    }
+                    let mut url = listener.clone();
+                    if url.set_ip_host(target.ip()).is_ok() {
+                        tasks.spawn(Self::try_connect_to_url(
+                            self.clone(),
+                            dst_peer_id,
+                            url.to_string(),
+                            use_disguise_opt,
+                            use_disguise_protocols,
+                        ));
+                    }
+                }
+            }
+            Some(SocketAddr::V6(socket_addr))
+                if self
+                    .peer_manager
+                    .is_easytier_managed_ipv6(socket_addr.ip())
+                    .await =>
+            {
+                tracing::debug!(?listener, "skip managed IPv6 direct target");
+            }
+            Some(SocketAddr::V6(socket_addr))
+                if (!socket_addr.ip().is_loopback() || self.options.testing)
+                    && !should_deny_target(&SocketAddr::V6(socket_addr)) =>
+            {
+                tasks.spawn(Self::try_connect_to_url(
+                    self.clone(),
+                    dst_peer_id,
+                    listener.to_string(),
+                    use_disguise_opt,
+                    use_disguise_protocols,
+                ));
+            }
+            _ => {}
         }
     }
 
@@ -662,9 +719,8 @@ where
             anyhow::bail!("direct listener URL is blacklisted");
         }
 
-        let backoffs = [1000, 2000, 4000];
-        let mut backoff = BackOff::new(backoffs.to_vec());
-        for attempt in 0..=backoffs.len() {
+        let backoffs_ms = [1000i64, 2000, 4000];
+        for attempt in 0..=backoffs_ms.len() {
             let target_url = Url::parse(&url)?;
             let connected = || {
                 self.peer_manager.has_connection_at_least_as_preferred(
@@ -682,14 +738,19 @@ where
             if result.is_ok() || connected() {
                 return Ok(());
             }
-            if attempt == backoffs.len() {
+            if attempt == backoffs_ms.len() {
                 self.listener_blacklist
                     .insert(key, DIRECT_CONNECTOR_BLACKLIST_TIMEOUT);
                 return result;
             }
 
-            let delay_ms = backoff.next_backoff_jittered();
-            crate::foundation::time::sleep(Duration::from_millis(delay_ms)).await;
+            let base = backoffs_ms[attempt];
+            let delta = base >> 1;
+            let delay_ms = {
+                let mut rng = rand::thread_rng();
+                base + rng.gen_range(-delta..delta)
+            };
+            crate::foundation::time::sleep(Duration::from_millis(delay_ms as u64)).await;
         }
         unreachable!("direct URL retry loop must return")
     }
@@ -701,27 +762,14 @@ where
         use_disguise_protocols: bool,
     ) -> anyhow::Result<()> {
         let target = Url::parse(raw_url)?;
-        let reservation = self
-            .peer_manager
-            .reserve_parallel_slot_for_protocol(dst_peer_id, target.scheme());
-        if self.peer_manager.parallel_connection_target(dst_peer_id) > 1 && reservation.is_none() {
-            return Ok(());
-        }
-        match reservation {
-            Some(reservation) => {
-                reservation
-                    .scope(self.connect_to_url_once_in_slot(
-                        dst_peer_id,
-                        raw_url,
-                        use_disguise_protocols,
-                    ))
-                    .await
-            }
-            None => {
-                self.connect_to_url_once_in_slot(dst_peer_id, raw_url, use_disguise_protocols)
-                    .await
-            }
-        }
+        crate::peers::conn::parallel::dial_in_slot(
+            self.peer_manager
+                .reserve_parallel_slot_for_protocol(dst_peer_id, target.scheme()),
+            self.peer_manager.parallel_connection_target(dst_peer_id),
+            self.connect_to_url_once_in_slot(dst_peer_id, raw_url, use_disguise_protocols),
+        )
+        .await
+        .unwrap_or(Ok(()))
     }
 
     async fn connect_to_url_once_in_slot(
@@ -767,7 +815,7 @@ where
         dst_peer_id: PeerId,
         url: Url,
     ) -> anyhow::Result<(PeerId, PeerConnId)> {
-        let transport = direct_transport_from_url(&url)?;
+        let transport = DirectTransport::from_url(&url)?;
         let normalized = convert_idn_to_ascii(url.clone())?;
         let default_port = mapped_listener_port(&normalized)
             .ok_or_else(|| anyhow::anyhow!("listener has no port: {url}"))?;
@@ -797,7 +845,7 @@ where
         };
         crate::foundation::time::timeout(DIRECT_CONNECT_TIMEOUT, async {
             let connected = match transport {
-                IpTransport::Tcp(purpose) => ConnectedTransport::Tcp(
+                DirectTransport::Tcp(purpose) => ConnectedTransport::Tcp(
                     transport::connect_tcp(
                         self.host.clone(),
                         remote_addr,
@@ -807,7 +855,7 @@ where
                     )
                     .await?,
                 ),
-                IpTransport::Udp(mode @ UdpSessionMode::Classified(_)) => {
+                DirectTransport::Udp(mode @ UdpSessionMode::Classified(_)) => {
                     let protocol = self.protocol.clone();
                     let tunnel = transport::connect_udp_with(
                         self.host.clone(),
@@ -828,7 +876,7 @@ where
                     .await?;
                     return self.admit(tunnel, dst_peer_id).await;
                 }
-                IpTransport::Udp(mode) => ConnectedTransport::Udp(
+                DirectTransport::Udp(mode) => ConnectedTransport::Udp(
                     transport::connect_udp(
                         self.host.clone(),
                         remote_addr,
@@ -838,11 +886,6 @@ where
                     )
                     .await?,
                 ),
-                // direct_transport_from_url already rejected byte streams;
-                // this arm only satisfies the shared enum's exhaustiveness.
-                IpTransport::ByteStream => {
-                    anyhow::bail!("unsupported direct transport scheme: {}", url.scheme())
-                }
             };
             let tunnel = self.protocol.upgrade_client(connected, url).await?;
             self.admit(tunnel, dst_peer_id).await
@@ -965,7 +1008,12 @@ where
 
     async fn is_usable_public_ipv6(&self, ip: &Ipv6Addr) -> bool {
         !self.peer_manager.is_easytier_managed_ipv6(ip).await
-            && (self.options.testing || is_public_ipv6_candidate(*ip))
+            && (self.options.testing
+                || (!ip.is_loopback()
+                    && !ip.is_unspecified()
+                    && !ip.is_unique_local()
+                    && !ip.is_unicast_link_local()
+                    && !ip.is_multicast()))
     }
 
     async fn remote_send_udp_hole_punch_packet(
@@ -1705,13 +1753,13 @@ mod tests {
     #[test]
     fn faketcp_uses_specialized_tcp_socket_without_interface_binding() {
         let transport =
-            direct_transport_from_url(&"faketcp://127.0.0.1:11013".parse().unwrap()).unwrap();
+            DirectTransport::from_url(&"faketcp://127.0.0.1:11013".parse().unwrap()).unwrap();
 
-        assert_eq!(transport, IpTransport::Tcp(TcpSocketPurpose::FakeTcp));
+        assert_eq!(transport, DirectTransport::Tcp(TcpSocketPurpose::FakeTcp));
         assert!(!transport.supports_interface_bind());
         assert!(!transport.is_udp());
         // Byte-stream endpoints are not direct-dialable and must be rejected.
-        assert!(direct_transport_from_url(&"ring://local".parse().unwrap()).is_err());
+        assert!(DirectTransport::from_url(&"ring://local".parse().unwrap()).is_err());
     }
 
     #[test]

@@ -130,41 +130,6 @@ fn form_default_pruning_preserves_both_dhcp_subnets() {
 }
 
 #[test]
-fn legacy_disguise_flags_load_as_the_equivalent_mode() {
-    for (input, mode) in [
-        ("prefer_wss_http3_for_p2p = true", "prefer"),
-        ("prefer_wss_http3_for_p2p = false", "off"),
-        ("disable_wss_http3_for_p2p = true", "disabled"),
-        ("only_use_wss_http3_for_hole_punching = true", "only"),
-        (
-            "prefer_wss_http3_for_p2p = true\nonly_use_wss_http3_for_hole_punching = true",
-            "only",
-        ),
-        // A mode that is already set wins over the booleans it replaced.
-        (
-            "p2p_disguise_mode = 'off'\ndisable_wss_http3_for_p2p = true",
-            "off",
-        ),
-    ] {
-        let config = TomlConfig::new_from_str(&format!("[flags]\n{input}\nmtu = 1300\n"))
-            .unwrap_or_else(|error| panic!("{input}: {error}"));
-        assert_eq!(config.get_flags().p2p_disguise().as_str(), mode, "{input}");
-        assert_eq!(config.get_flags().mtu, 1300);
-        let dumped = config.dump();
-        assert!(!dumped.contains("wss_http3"), "{dumped}");
-    }
-    let error = TomlConfig::new_from_str(
-        "[flags]\nonly_use_wss_http3_for_hole_punching = true\ndisable_wss_http3_for_p2p = true\n",
-    )
-    .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("mutually exclusive"),
-        "{error:#}"
-    );
-    assert!(TomlConfig::new_from_str("[flags]\nprefer_wss_http3_for_p2p = 'yes'\n").is_err());
-}
-
-#[test]
 fn mode_patches_keep_unrelated_flags() {
     let config = TomlConfig::new_from_str("[flags]\np2p_disguise_mode = 'off'\n").unwrap();
     config.patch_flags(FlagsPatch {
@@ -196,9 +161,7 @@ relay_network_whitelist = "allowed"
 mtu = 1420
 instance_recv_bps_limit = 1024
 socket_mark = 66
-only_use_wss_http3_for_hole_punching = false
-prefer_wss_http3_for_p2p = true
-disable_wss_http3_for_p2p = true
+p2p_disguise_mode = "disabled"
 close_redundant_conns_when_disguised = true
 "#,
     )

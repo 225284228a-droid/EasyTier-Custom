@@ -5,17 +5,22 @@ use crate::proto::common::TunnelInfo;
 #[cfg(test)]
 use crate::socket::tcp::RuntimeTcpSocket;
 use anyhow::Context as _;
+use bytes::BytesMut;
 use cidr::IpCidr;
 use easytier_core::socket::tcp::VirtualTcpListener;
 use easytier_core::{
+    packet::{ZCPacket, ZCPacketType},
     socket::tcp::VirtualTcpSocket,
     tunnel::{IpVersion, Tunnel, TunnelError, wrapper::TunnelWrapper},
 };
 use forwarded_header_value::ForwardedHeaderValue;
-use futures::StreamExt;
+use futures::{Sink, StreamExt};
 use std::{
+    collections::VecDeque,
     net::{IpAddr, SocketAddr},
+    pin::Pin,
     sync::{Arc, LazyLock},
+    task::{Context, Poll, ready},
     time::Duration,
 };
 #[cfg(test)]
@@ -23,7 +28,8 @@ use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::either::Either;
-use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, ServerBuilder};
+use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
+use zerocopy::AsBytes as _;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const SERVER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -33,10 +39,7 @@ mod disguise;
 #[cfg(test)]
 mod official_interop;
 
-use codec::{
-    TRANSPORT_FEATURES_HEADER, WS_TEXT_PADDING_V1, WebSocketPacketSink, map_from_ws_message,
-    supports_text_padding,
-};
+use codec::{TRANSPORT_FEATURES_HEADER, WS_TEXT_PADDING_V1, supports_text_padding};
 pub use disguise::WssDisguise;
 
 static TRUSTED_PROXIES: LazyLock<Vec<IpCidr>> = LazyLock::new(|| {
@@ -71,6 +74,191 @@ fn is_wss(url: &url::Url) -> Result<bool, TunnelError> {
         "wss" => Ok(true),
         scheme => Err(TunnelError::InvalidProtocol(scheme.to_owned())),
     }
+}
+
+/// Padding frames are carried as WebSocket **text** messages so they can never
+/// collide with real ZCPacket payloads, which are always binary. A real
+/// ZCPacket over a ws/wss tunnel starts with its `PeerManagerHeader`, whose
+/// first byte is the low byte of `from_peer_id` (little-endian) and can legally
+/// be `0x00`, so no in-band binary marker could disambiguate padding from real
+/// traffic. Text frames are out-of-band at the WebSocket layer and are simply
+/// dropped on receive.
+struct WebSocketPacketSink<S> {
+    inner: S,
+    padding: Option<WebSocketPadding>,
+    /// Frames already accepted via `start_send` (real packets and any due
+    /// padding) but not yet handed to `inner`. `poll_ready` / `poll_flush` /
+    /// `poll_close` only drain this buffer; they never produce new frames, so
+    /// the `Sink` contract (poll_ready is side-effect-free beyond readiness)
+    /// is honored. Padding is generated in `start_send` instead.
+    pending: VecDeque<Message>,
+}
+
+struct WebSocketPadding {
+    interval: Duration,
+    size: usize,
+    next_at: std::time::Instant,
+}
+
+impl<S> WebSocketPacketSink<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            padding: None,
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn with_padding(inner: S, interval: Duration, size: usize) -> Self {
+        Self {
+            inner,
+            padding: Some(WebSocketPadding {
+                interval,
+                size,
+                next_at: std::time::Instant::now(),
+            }),
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn pending_padding(&self) -> bool {
+        self.padding
+            .as_ref()
+            .is_some_and(|padding| std::time::Instant::now() >= padding.next_at)
+    }
+
+    fn take_padding_frame(&mut self) -> Message {
+        let padding = self.padding.as_mut().expect("padding checked before");
+        let mut payload = vec![0u8; padding.size.max(2)];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut payload);
+        padding.next_at = std::time::Instant::now() + padding.interval;
+        // Base64 keeps the random payload valid UTF-8 so it can be sent as a
+        // WebSocket text frame; text frames are out-of-band from the binary
+        // wire format of real ZCPackets, so padding can never collide with
+        // legitimate traffic.
+        use base64::{Engine as _, prelude::BASE64_STANDARD};
+        Message::text(BASE64_STANDARD.encode(payload))
+    }
+
+    /// Drain previously-accepted frames from `pending` into `inner`. This is
+    /// the only side effect `poll_ready` / `poll_flush` / `poll_close` perform:
+    /// pushing already-accepted items downstream, exactly like
+    /// `futures::sink::Buffer`. No new frames are produced here.
+    fn drain_pending<E>(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), TunnelError>>
+    where
+        S: Sink<Message, Error = E> + Unpin,
+        E: std::fmt::Display,
+    {
+        loop {
+            if self.pending.is_empty() {
+                return Poll::Ready(Ok(()));
+            }
+            ready!(
+                Pin::new(&mut self.inner)
+                    .poll_ready(cx)
+                    .map_err(websocket_error)
+            )?;
+            let frame = self.pending.pop_front().expect("pending was non-empty");
+            Pin::new(&mut self.inner)
+                .start_send(frame)
+                .map_err(websocket_error)?;
+        }
+    }
+}
+
+impl<S, E> Sink<ZCPacket> for WebSocketPacketSink<S>
+where
+    S: Sink<Message, Error = E> + Unpin,
+    E: std::fmt::Display,
+{
+    type Error = TunnelError;
+
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // Drain previously-accepted frames first. No new frames are generated
+        // here, so `poll_ready` is free of the side effect that previously
+        // violated the `Sink` contract.
+        ready!(self.drain_pending(cx))?;
+        Pin::new(&mut self.inner)
+            .poll_ready(cx)
+            .map(|result| result.map_err(websocket_error))
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, packet: ZCPacket) -> Result<(), Self::Error> {
+        // Keep the official zero-copy fast path when padding is disabled. The
+        // queue is only needed when an optional disguise frame must precede
+        // the packet and the inner sink may accept one frame per readiness
+        // notification.
+        if self.padding.is_none() && self.pending.is_empty() {
+            return Pin::new(&mut self.inner)
+                .start_send(Message::binary(packet.tunnel_payload_bytes().freeze()))
+                .map_err(websocket_error);
+        }
+        // Padding is generated here, in `start_send` - a method explicitly
+        // allowed to begin sending. The padding frame is enqueued ahead of the
+        // real packet so the next `poll_ready` drains them in wire order
+        // (padding, then packet), matching the pre-bug behavior. Both items go
+        // through `pending` so we never rely on `inner` being ready for two
+        // `start_send` calls (the trait only guarantees one slot per
+        // `poll_ready`).
+        if self.pending_padding() {
+            let frame = self.take_padding_frame();
+            self.pending.push_back(frame);
+        }
+        self.pending
+            .push_back(Message::binary(packet.tunnel_payload_bytes().freeze()));
+        Ok(())
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        ready!(self.drain_pending(cx))?;
+        Pin::new(&mut self.inner)
+            .poll_flush(cx)
+            .map(|result| result.map_err(websocket_error))
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        ready!(self.drain_pending(cx))?;
+        Pin::new(&mut self.inner)
+            .poll_close(cx)
+            .map(|result| result.map_err(websocket_error))
+    }
+}
+
+async fn map_from_ws_message(
+    message: Result<Message, tokio_websockets::Error>,
+    padding_expected: bool,
+) -> Option<Result<ZCPacket, TunnelError>> {
+    let message = match message {
+        Ok(message) => message,
+        Err(error) => {
+            tracing::error!(?error, "recv from websocket error");
+            return Some(Err(websocket_error(error)));
+        }
+    };
+    if message.is_close() {
+        tracing::warn!("recv close message from websocket");
+        return None;
+    }
+    if message.is_text() {
+        if padding_expected {
+            tracing::trace!("dropping websocket text padding frame");
+            return None;
+        } else {
+            return Some(Err(TunnelError::InvalidPacket(
+                "unnegotiated websocket text frame".to_owned(),
+            )));
+        }
+    }
+    if !message.is_binary() {
+        let message = format!("{message:?}");
+        tracing::error!(?message, "Invalid packet");
+        return Some(Err(TunnelError::InvalidPacket(message)));
+    }
+    let payload = message.into_payload();
+    Some(Ok(ZCPacket::new_from_buf(
+        BytesMut::from(payload.as_bytes()),
+        ZCPacketType::DummyTunnel,
+    )))
 }
 
 pub(crate) async fn upgrade_accepted<S>(

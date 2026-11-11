@@ -1004,7 +1004,7 @@ mod tests {
             println!("Server: Waiting for connection...");
             if let Some(conn) = server_endpoint.accept().await {
                 let connection = conn.await.unwrap();
-                crate::tunnel::quic::tests::assert_bbr_controller(&connection);
+                crate::tunnel::quic::session_tests::assert_bbr_controller(&connection);
                 println!(
                     "Server: Connection accepted from {}",
                     connection.remote_address()
@@ -1031,7 +1031,7 @@ mod tests {
         // Note: The connect address here must be V4, because try_send is limited to SocketAddr::V4
         println!("Client: Connecting...");
         let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
-        crate::tunnel::quic::tests::assert_bbr_controller(&connection);
+        crate::tunnel::quic::session_tests::assert_bbr_controller(&connection);
         println!("Client: Connected!");
 
         // Open a stream and send data
@@ -1342,7 +1342,7 @@ mod tests {
     }
 
     async fn assert_stream_roundtrip(connection: &Connection) -> anyhow::Result<()> {
-        crate::tunnel::quic::tests::assert_bbr_controller(connection);
+        crate::tunnel::quic::session_tests::assert_bbr_controller(connection);
         let (mut send, mut recv) = connection.open_bi().await?;
         send.write_all(b"ping").await?;
         send.finish()?;
@@ -1366,7 +1366,7 @@ mod tests {
                 panic!("no incoming connection");
             };
             let connection = incoming.await.unwrap();
-            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
+            crate::tunnel::quic::session_tests::assert_bbr_controller(&connection);
             let (mut send, mut recv) = connection.accept_bi().await.unwrap();
             let mut buf = vec![0u8; 4];
             recv.read_exact(&mut buf).await.unwrap();
@@ -1379,7 +1379,7 @@ mod tests {
             .connect_with(etq1_client_config(), server_addr, "localhost")?
             .await?;
 
-        crate::tunnel::quic::tests::assert_bbr_controller(&connection);
+        crate::tunnel::quic::session_tests::assert_bbr_controller(&connection);
         let (mut send, mut recv) = connection.open_bi().await?;
         send.write_all(b"ping").await?;
         send.finish()?;
@@ -1406,7 +1406,7 @@ mod tests {
                 return;
             };
             let connection = incoming.await.unwrap();
-            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
+            crate::tunnel::quic::session_tests::assert_bbr_controller(&connection);
             if let Ok((mut send, mut recv)) = connection.accept_bi().await {
                 let mut buf = vec![0u8; 4];
                 recv.read_exact(&mut buf).await.unwrap();
@@ -1447,7 +1447,7 @@ mod tests {
                 return;
             };
             let connection = incoming.await.unwrap();
-            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
+            crate::tunnel::quic::session_tests::assert_bbr_controller(&connection);
             if let Ok((mut send, mut recv)) = connection.accept_bi().await {
                 let mut buf = vec![0u8; 4];
                 recv.read_exact(&mut buf).await.unwrap();
@@ -1478,7 +1478,7 @@ mod tests {
                 return;
             };
             let connection = incoming.await.unwrap();
-            crate::tunnel::quic::tests::assert_bbr_controller(&connection);
+            crate::tunnel::quic::session_tests::assert_bbr_controller(&connection);
             if let Ok((mut send, mut recv)) = connection.accept_bi().await {
                 let mut buf = vec![0u8; 4];
                 recv.read_exact(&mut buf).await.unwrap();

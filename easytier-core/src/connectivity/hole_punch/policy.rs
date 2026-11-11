@@ -1,7 +1,40 @@
-use crate::config::P2pPolicyFlags;
+use std::future::Future;
+
+use crate::config::{P2pPolicyFlags, PeerId};
 use crate::proto::common::PeerFeatureFlag;
 
-pub use crate::foundation::backoff::BackOff;
+#[derive(Debug)]
+pub struct BackOff {
+    backoffs_ms: Vec<u64>,
+    current_idx: usize,
+}
+
+impl BackOff {
+    pub fn new(backoffs_ms: Vec<u64>) -> Self {
+        Self {
+            backoffs_ms,
+            current_idx: 0,
+        }
+    }
+
+    pub fn next_backoff(&mut self) -> u64 {
+        let backoff = self.backoffs_ms[self.current_idx];
+        self.current_idx = (self.current_idx + 1).min(self.backoffs_ms.len() - 1);
+        backoff
+    }
+
+    pub fn rollback(&mut self) {
+        self.current_idx = self.current_idx.saturating_sub(1);
+    }
+
+    pub async fn sleep_for_next_backoff(&mut self) {
+        let backoff = self.next_backoff();
+        if backoff > 0 {
+            crate::foundation::time::sleep(crate::foundation::time::Duration::from_millis(backoff))
+                .await;
+        }
+    }
+}
 
 pub fn should_try_p2p_with_peer(
     feature_flag: Option<&PeerFeatureFlag>,
@@ -33,13 +66,30 @@ pub fn should_background_p2p_with_peer(
     ) && (!lazy_p2p || feature_flag.map(|flag| flag.need_p2p).unwrap_or(false))
 }
 
-/// Whether an inbound hole-punch request from a peer advertising
-/// `caller_need_p2p` is accepted when the local node disabled P2P. The
-/// `need_p2p` flag stays the only exception; peers without the flag are
-/// rejected, mirroring the initiator-side `unwrap_or(!local_disable_p2p)`
-/// strictness from the disabled node's point of view.
-pub fn should_accept_inbound_punch(local_disable_p2p: bool, caller_need_p2p: bool) -> bool {
-    !local_disable_p2p || caller_need_p2p
+/// Whether an inbound hole-punch request is accepted under the local P2P
+/// policy. A node that disabled P2P only serves callers advertising
+/// `need_p2p`; callers it cannot identify or look up are rejected, mirroring
+/// the initiator-side `unwrap_or(!local_disable_p2p)` strictness from the
+/// disabled node's point of view. `caller_feature_flag` is only awaited when
+/// the answer depends on it.
+pub async fn accept_inbound_punch<F>(
+    local_disable_p2p: bool,
+    caller_peer_id: Option<u64>,
+    caller_feature_flag: impl FnOnce(PeerId) -> F,
+) -> bool
+where
+    F: Future<Output = Option<PeerFeatureFlag>>,
+{
+    if !local_disable_p2p {
+        return true;
+    }
+    let Some(caller_peer_id) = caller_peer_id.and_then(|peer_id| PeerId::try_from(peer_id).ok())
+    else {
+        return false;
+    };
+    caller_feature_flag(caller_peer_id)
+        .await
+        .is_some_and(|flag| flag.need_p2p)
 }
 
 /// Shared per-peer admission gate for the automatic P2P engines (direct
@@ -210,16 +260,28 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn inbound_punch_respects_local_disable_with_need_p2p_exception() {
+    #[tokio::test]
+    async fn inbound_punch_respects_local_disable_with_need_p2p_exception() {
+        let flag = |need_p2p| {
+            move |_| async move {
+                Some(PeerFeatureFlag {
+                    need_p2p,
+                    ..Default::default()
+                })
+            }
+        };
+        let unknown = |_| async { None };
         // When P2P is enabled locally every inbound punch is accepted.
-        assert!(should_accept_inbound_punch(false, false));
-        assert!(should_accept_inbound_punch(false, true));
+        assert!(accept_inbound_punch(false, Some(7), flag(false)).await);
+        assert!(accept_inbound_punch(false, None, unknown).await);
 
         // A disabled node rejects normal peers and unknown callers, but
         // still serves peers that explicitly declare need_p2p.
-        assert!(!should_accept_inbound_punch(true, false));
-        assert!(should_accept_inbound_punch(true, true));
+        assert!(!accept_inbound_punch(true, Some(7), flag(false)).await);
+        assert!(!accept_inbound_punch(true, Some(7), unknown).await);
+        assert!(!accept_inbound_punch(true, None, flag(true)).await);
+        assert!(!accept_inbound_punch(true, Some(u64::MAX), flag(true)).await);
+        assert!(accept_inbound_punch(true, Some(7), flag(true)).await);
     }
 
     #[test]

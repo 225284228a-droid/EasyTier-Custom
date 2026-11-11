@@ -115,33 +115,25 @@ pub struct UdpPunchListener<S> {
 pub enum UdpPunchScheme {
     Udp,
     Http3,
-    /// Compatibility with peers that encapsulate HTTP3 in EasyTier UDP sessions.
-    Http3Mux,
 }
 
 impl UdpPunchScheme {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Udp => "udp",
-            Self::Http3 | Self::Http3Mux => "http3",
+            Self::Http3 => "http3",
         }
     }
 
-    pub fn is_native_http3(self) -> bool {
+    pub fn is_http3(self) -> bool {
         self == Self::Http3
     }
 
-    pub fn is_http3(self) -> bool {
-        matches!(self, Self::Http3 | Self::Http3Mux)
-    }
-
-    pub fn from_wire(value: &str, native_http3: bool) -> Self {
+    /// The `native_http3` flag sent next to the scheme is not read: every
+    /// HTTP3 punch is native. It is still sent for peers that check it.
+    pub fn from_wire(value: &str) -> Self {
         if value.eq_ignore_ascii_case("http3") {
-            if native_http3 {
-                Self::Http3
-            } else {
-                Self::Http3Mux
-            }
+            Self::Http3
         } else {
             Self::Udp
         }
@@ -475,22 +467,18 @@ where
     P: UdpHolePunchPeerSource + Send + Sync + 'static,
 {
     async fn allow_inbound_punch(&self, caller_peer_id: Option<u64>) -> bool {
-        if !self.p2p_policy_flags().disable_p2p {
-            return true;
-        }
-        let Some(caller_peer_id) =
-            caller_peer_id.and_then(|peer_id| crate::config::PeerId::try_from(peer_id).ok())
-        else {
-            return false;
-        };
-        let caller_need_p2p = self
-            .candidates()
-            .await
-            .into_iter()
-            .find(|candidate| candidate.peer_id == caller_peer_id)
-            .and_then(|candidate| candidate.feature_flag)
-            .is_some_and(|flag| flag.need_p2p);
-        crate::connectivity::hole_punch::policy::should_accept_inbound_punch(true, caller_need_p2p)
+        crate::connectivity::hole_punch::policy::accept_inbound_punch(
+            self.p2p_policy_flags().disable_p2p,
+            caller_peer_id,
+            |caller| async move {
+                self.candidates()
+                    .await
+                    .into_iter()
+                    .find(|candidate| candidate.peer_id == caller)
+                    .and_then(|candidate| candidate.feature_flag)
+            },
+        )
+        .await
     }
 }
 
@@ -612,7 +600,7 @@ mod tests {
             udp_satisfied: false,
             http3_satisfied: false,
             has_recent_traffic: false,
-            peer_disguise_flags: Default::default(),
+            peer_disguise: crate::config::P2pDisguiseMode::Off,
         }
     }
 

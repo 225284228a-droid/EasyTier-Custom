@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use super::{Flags, FlagsPatch};
+use super::{Flags, FlagsPatch, PeerFeatureFlag};
 
 /// Automatic P2P disguise policy. Peer feature flags deliberately retain their
 /// existing boolean wire representation for compatibility with older peers.
@@ -58,24 +58,54 @@ impl P2pDisguiseMode {
         self == Self::Only
     }
 
-    /// The policy of the former three boolean flags (`prefer_wss_http3_for_p2p`,
-    /// `disable_wss_http3_for_p2p`, `only_use_wss_http3_for_hole_punching`),
-    /// with their defaults for omitted values.
-    pub fn from_legacy_flags(
-        prefer: Option<bool>,
-        disable: Option<bool>,
-        only: Option<bool>,
-    ) -> anyhow::Result<Self> {
-        match (disable == Some(true), only == Some(true)) {
-            (true, true) => anyhow::bail!(
-                "disable_wss_http3_for_p2p and only_use_wss_http3_for_hole_punching are mutually \
-                 exclusive: the first forbids the disguised transport while the second forbids the raw transport"
-            ),
-            (true, false) => Ok(Self::Disabled),
-            (false, true) => Ok(Self::Only),
-            (false, false) if prefer == Some(false) => Ok(Self::Off),
-            (false, false) => Ok(Self::Prefer),
+    /// Dials disguise without waiting for the peer to ask for it.
+    pub fn initiates(self) -> bool {
+        matches!(self, Self::Prefer | Self::Only)
+    }
+
+    /// Whether two endpoints with these policies disguise their automatic P2P.
+    pub fn disguises_with(self, peer: Self) -> bool {
+        !self.forbids()
+            && !peer.forbids()
+            && (self.requires() || peer.requires() || (self.prefers() && peer.prefers()))
+    }
+
+    /// Whether two endpoints with these policies may use a raw transport.
+    pub fn allows_raw_with(self, peer: Self) -> bool {
+        !self.requires() && !peer.requires()
+    }
+
+    /// The policy that the three wire booleans stand for. A peer that sets
+    /// none of them, such as an official node, is `Off`. Nodes derive the
+    /// booleans from one mode, so at most one is set; if several are,
+    /// `disable` wins over `only`, which wins over `prefer`.
+    pub fn from_wire(prefer: bool, disable: bool, only: bool) -> Self {
+        if disable {
+            Self::Disabled
+        } else if only {
+            Self::Only
+        } else if prefer {
+            Self::Prefer
+        } else {
+            Self::Off
         }
+    }
+}
+
+impl PeerFeatureFlag {
+    /// The disguise policy this peer advertises.
+    pub fn p2p_disguise(&self) -> P2pDisguiseMode {
+        P2pDisguiseMode::from_wire(
+            self.prefer_wss_http3_for_p2p,
+            self.disable_wss_http3_for_p2p,
+            self.only_use_wss_http3_for_p2p,
+        )
+    }
+
+    pub fn set_p2p_disguise(&mut self, mode: P2pDisguiseMode) {
+        self.prefer_wss_http3_for_p2p = mode.prefers();
+        self.disable_wss_http3_for_p2p = mode.forbids();
+        self.only_use_wss_http3_for_p2p = mode.requires();
     }
 }
 
@@ -130,36 +160,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_flags_map_to_the_equivalent_mode() {
-        for (prefer, disable, only, expected) in [
-            (None, None, None, P2pDisguiseMode::Prefer),
-            (
-                Some(true),
-                Some(false),
-                Some(false),
-                P2pDisguiseMode::Prefer,
-            ),
-            (Some(false), None, None, P2pDisguiseMode::Off),
-            (Some(true), Some(true), None, P2pDisguiseMode::Disabled),
-            (
-                Some(false),
-                Some(true),
-                Some(false),
-                P2pDisguiseMode::Disabled,
-            ),
-            (Some(true), None, Some(true), P2pDisguiseMode::Only),
-            (Some(false), Some(false), Some(true), P2pDisguiseMode::Only),
-        ] {
-            assert_eq!(
-                P2pDisguiseMode::from_legacy_flags(prefer, disable, only).unwrap(),
-                expected,
-                "{prefer:?} {disable:?} {only:?}"
-            );
-        }
-        assert!(P2pDisguiseMode::from_legacy_flags(None, Some(true), Some(true)).is_err());
-    }
-
-    #[test]
     fn omitted_mode_resolves_to_the_default_prefer() {
         let flags = Flags::resolve(FlagsPatch::default());
         assert_eq!(flags.p2p_disguise(), P2pDisguiseMode::Prefer);
@@ -174,6 +174,33 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(flags.p2p_disguise(), P2pDisguiseMode::Only);
+    }
+
+    #[test]
+    fn peer_feature_flags_round_trip_every_mode() {
+        for mode in [
+            P2pDisguiseMode::Prefer,
+            P2pDisguiseMode::Off,
+            P2pDisguiseMode::Disabled,
+            P2pDisguiseMode::Only,
+        ] {
+            let mut feature = PeerFeatureFlag::default();
+            feature.set_p2p_disguise(mode);
+            assert_eq!(feature.p2p_disguise(), mode);
+        }
+        // An official peer advertises none of the booleans.
+        assert_eq!(
+            PeerFeatureFlag::default().p2p_disguise(),
+            P2pDisguiseMode::Off
+        );
+        assert_eq!(
+            P2pDisguiseMode::from_wire(true, true, true),
+            P2pDisguiseMode::Disabled
+        );
+        assert_eq!(
+            P2pDisguiseMode::from_wire(true, false, true),
+            P2pDisguiseMode::Only
+        );
     }
 
     #[test]

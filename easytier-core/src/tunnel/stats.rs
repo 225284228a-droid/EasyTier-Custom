@@ -236,7 +236,7 @@ mod tests {
         let throughput = Throughput::new();
         throughput.record_tx_bytes(12_500_000);
         seed_rates(&throughput, Instant::now(), 100_000_000, 0);
-        throughput.record_peer_traffic_report(2, 10_000_000, 0, Duration::from_secs(1));
+        throughput.record_peer_traffic_report(10_000_000, 0, Duration::from_secs(1));
         assert_eq!(throughput.estimated_tx_bps(), 10_000_000);
         assert_eq!(throughput.estimated_rx_bps(), 0);
     }
@@ -247,7 +247,7 @@ mod tests {
         throughput.record_rx_bytes(12_500_000);
         seed_rates(&throughput, Instant::now(), 0, 10_000_000);
         throughput.record_peer_window_estimate(80_000_000);
-        throughput.record_peer_traffic_report(2, 0, 0, Duration::from_secs(1));
+        throughput.record_peer_traffic_report(0, 0, Duration::from_secs(1));
         assert_eq!(throughput.estimated_rx_bps(), 10_000_000);
         assert_eq!(throughput.estimated_tx_bps(), 0);
     }
@@ -268,16 +268,6 @@ mod tests {
         assert_eq!(rate.estimate(now + second), 50_000_000);
         assert_eq!(rate.estimate(now + DELIVERY_SAMPLE_TTL), 10_000_000);
         assert_eq!(rate.estimate(now + second + DELIVERY_SAMPLE_TTL), 0);
-    }
-
-    #[test]
-    fn v1_reports_only_carry_the_peer_window() {
-        let throughput = Throughput::new();
-        throughput.record_rx_bytes(12_500_000);
-        seed_rates(&throughput, Instant::now(), 100_000_000, 10_000_000);
-        throughput.record_peer_traffic_report(1, 10_000_000, 40_000_000, Duration::from_secs(1));
-        assert_eq!(throughput.delivered_tx_bps(), 0);
-        assert_eq!(throughput.estimated_rx_bps(), 40_000_000);
     }
 
     #[test]

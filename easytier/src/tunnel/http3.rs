@@ -161,7 +161,7 @@ fn request_uri(url: &url::Url, style: TrafficStyle) -> anyhow::Result<http::Uri>
 }
 /// Last tunnel half owns cancellation, endpoint lifetime and connection close.
 struct H3Lifetime {
-    connection: session_common::ConnWrapper,
+    connection: super::quic::ConnWrapper,
     tasks: Mutex<Vec<AbortOnDropHandle<()>>>,
 }
 impl H3Lifetime {
@@ -325,7 +325,7 @@ pub(crate) async fn upgrade_connected(
         .context("HTTP3 TLS connection failed")?;
     let resolved_remote_addr = connection.remote_address();
     let lifetime = Arc::new(H3Lifetime {
-        connection: session_common::ConnWrapper::new(connection.clone(), endpoint),
+        connection: super::quic::ConnWrapper::new(connection.clone(), endpoint),
         tasks: Mutex::new(Vec::new()),
     });
     let (mut driver, mut requests) = tokio::time::timeout(
@@ -430,7 +430,7 @@ async fn finish_http3_tunnel(
         .context("HTTP3 incoming TLS connection failed")?;
     let remote_addr = connection.remote_address();
     let lifetime = Arc::new(H3Lifetime {
-        connection: session_common::ConnWrapper::new(connection.clone(), endpoint),
+        connection: super::quic::ConnWrapper::new(connection.clone(), endpoint),
         tasks: Mutex::new(Vec::new()),
     });
     let mut driver: H3ServerConnection = tokio::time::timeout(
@@ -587,7 +587,7 @@ mod tests {
 
     #[tokio::test]
     async fn http3_endpoints_keep_bbr() {
-        super::super::quic::tests::assert_endpoint_controllers(
+        super::super::quic::session_tests::assert_endpoint_controllers(
             client_config().unwrap(),
             server_config().unwrap(),
         )

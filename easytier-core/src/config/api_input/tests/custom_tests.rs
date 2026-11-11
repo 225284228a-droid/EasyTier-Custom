@@ -390,42 +390,18 @@ fn display_name_names_the_instance_and_round_trips() {
 
 #[cfg(feature = "browser-config")]
 #[test]
-fn browser_merge_to_the_default_mode_drops_legacy_disguise_flags() {
-    let original = r#"
-[flags]
-only_use_wss_http3_for_hole_punching = true
-prefer_wss_http3_for_p2p = true
-"#;
-    let parsed = TomlConfigLoader::new_from_str(original).unwrap();
-    let mut config = NetworkConfig::new_from_config(&parsed).unwrap();
-    assert_eq!(config.p2p_disguise_mode.as_deref(), Some("only"));
-    // The default mode is compacted out of the form snapshot, so the merge
-    // must not leave the legacy booleans to reload as the old mode.
-    config.p2p_disguise_mode = Some("prefer".to_owned());
-
-    let merged = merge_network_config_toml(original, &config).unwrap();
-    assert!(!merged.contains("wss_http3"), "{merged}");
-    let restored = TomlConfigLoader::new_from_str(&merged).unwrap();
-    assert_eq!(restored.get_flags().p2p_disguise_mode, "prefer");
-}
-
-#[cfg(feature = "browser-config")]
-#[test]
 fn browser_merge_updates_sni_protocol_and_disguise_flags() {
     let original = r#"
 sni = "old.example.com"
 
 [flags]
 default_protocol = "tcp"
-only_use_wss_http3_for_hole_punching = true
-prefer_wss_http3_for_p2p = true
-disable_wss_http3_for_p2p = false
+p2p_disguise_mode = "only"
 close_redundant_conns_when_disguised = true
 multi_thread_count = 7
 "#;
     let parsed = TomlConfigLoader::new_from_str(original).unwrap();
     let mut config = NetworkConfig::new_from_config(&parsed).unwrap();
-    // The legacy booleans load as the equivalent mode.
     assert_eq!(config.p2p_disguise_mode.as_deref(), Some("only"));
     config.sni = Some("new.example.com".to_owned());
     config.p2p_prefer_protocol = Some("udp".to_owned());
@@ -438,7 +414,6 @@ multi_thread_count = 7
     assert_eq!(output.sni.as_deref(), Some("new.example.com"));
     assert_eq!(output.p2p_prefer_protocol, None);
     assert_eq!(output.p2p_disguise_mode.as_deref(), Some("off"));
-    assert!(!merged.contains("wss_http3"), "{merged}");
     assert_eq!(output.close_redundant_conns_when_disguised, Some(false));
     assert_eq!(restored.get_flags().multi_thread_count, 7);
 }

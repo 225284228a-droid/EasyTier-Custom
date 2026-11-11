@@ -144,11 +144,10 @@ impl PeerRuntimeSnapshot {
             need_p2p: flags.need_p2p,
             disable_p2p: flags.disable_p2p,
             avoid_relay_data: flags.disable_relay_data,
-            prefer_wss_http3_for_p2p: flags.p2p_disguise().prefers(),
-            disable_wss_http3_for_p2p: flags.p2p_disguise().forbids(),
-            only_use_wss_http3_for_p2p: flags.p2p_disguise().requires(),
             ..Default::default()
         };
+        let mut feature_flags = feature_flags;
+        feature_flags.set_p2p_disguise(flags.p2p_disguise());
         let peer_policy = PeerPolicyConfig {
             p2p_enabled: !flags.disable_p2p,
             relay_peer_rpc: flags.relay_all_peer_rpc,

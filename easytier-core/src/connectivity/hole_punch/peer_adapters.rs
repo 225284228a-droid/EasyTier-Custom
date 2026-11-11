@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 use quanta::Instant;
 
-use crate::config::PeerDisguiseP2pFlags;
+use crate::config::P2pDisguiseMode;
 
 use crate::{
     config::{P2pPolicyFlags, PeerId},
@@ -69,11 +69,13 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                 // checks then rank with the last negotiated preference and
                 // leave the negotiated state untouched instead of flipping
                 // it to "no disguise".
-                let peer_disguise_flags: Option<PeerDisguiseP2pFlags> =
-                    route.feature_flag.as_ref().map(Into::into);
+                let peer_disguise = route
+                    .feature_flag
+                    .as_ref()
+                    .map(crate::proto::common::PeerFeatureFlag::p2p_disguise);
                 let use_disguise = self
                     .p2p_policy_flags()
-                    .transport_policy(peer_disguise_flags.as_ref())
+                    .transport_policy(peer_disguise)
                     .negotiated_disguise();
                 Some(UdpPunchCandidate {
                     peer_id: route.peer_id,
@@ -91,7 +93,7 @@ impl UdpHolePunchPeerSource for PeerManagerCore {
                         use_disguise,
                     ),
                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
-                    peer_disguise_flags: peer_disguise_flags.unwrap_or_default(),
+                    peer_disguise: peer_disguise.unwrap_or(P2pDisguiseMode::Off),
                 })
             })
             .collect()
@@ -191,11 +193,13 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
             .map(|route| {
                 // Single conversion; `use_disguise` stays `None` while the
                 // route metadata is missing (see the UDP builder above).
-                let peer_disguise_flags: Option<PeerDisguiseP2pFlags> =
-                    route.feature_flag.as_ref().map(Into::into);
+                let peer_disguise = route
+                    .feature_flag
+                    .as_ref()
+                    .map(crate::proto::common::PeerFeatureFlag::p2p_disguise);
                 let use_disguise = self
                     .p2p_policy_flags()
-                    .transport_policy(peer_disguise_flags.as_ref())
+                    .transport_policy(peer_disguise)
                     .negotiated_disguise();
                 TcpPunchCandidate {
                     tcp_satisfied: self.has_connection_at_least_as_preferred(
@@ -218,7 +222,7 @@ impl TcpHolePunchPeerSource for PeerManagerCore {
                     feature_flag: route.feature_flag,
                     has_direct_connection: peer_map.has_peer(route.peer_id),
                     has_recent_traffic: self.has_recent_traffic(route.peer_id, now),
-                    peer_disguise_flags: peer_disguise_flags.unwrap_or_default(),
+                    peer_disguise: peer_disguise.unwrap_or(P2pDisguiseMode::Off),
                 }
             })
             .collect()

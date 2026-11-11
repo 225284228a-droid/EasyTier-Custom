@@ -18,11 +18,11 @@ use tokio::task::JoinSet;
 use tokio_util::task::AbortOnDropHandle;
 
 use crate::{
-    config::{P2pPolicyFlags, PeerDisguiseP2pFlags, PeerId},
+    config::{P2pDisguiseMode, P2pPolicyFlags, PeerId},
     connectivity::{
         hole_punch::{
             HolePunchRpcRegistry, HolePunchTunnelSink, PEER_BLACKLIST_TIMEOUT,
-            policy::{BackOff, p2p_engine_gate, should_accept_inbound_punch},
+            policy::{BackOff, accept_inbound_punch, p2p_engine_gate},
         },
         protocol::{ClientProtocolUpgrader, ServerProtocolUpgrade, ServerProtocolUpgrader},
         stun::StunInfoProvider,
@@ -69,7 +69,18 @@ pub struct TcpPunchCandidate {
     pub tcp_satisfied: bool,
     pub wss_satisfied: bool,
     pub has_recent_traffic: bool,
-    pub peer_disguise_flags: PeerDisguiseP2pFlags,
+    pub peer_disguise: P2pDisguiseMode,
+}
+
+async fn find_candidate<P: TcpHolePunchPeerSource>(
+    peer_source: &P,
+    peer_id: PeerId,
+) -> Option<TcpPunchCandidate> {
+    peer_source
+        .candidates()
+        .await
+        .into_iter()
+        .find(|candidate| candidate.peer_id == peer_id)
 }
 
 /// Narrow peer-graph view required by the TCP hole-punch engine.
@@ -302,93 +313,8 @@ where
     Ok(port)
 }
 
-pub struct TcpHolePunchDialOptions<'a> {
-    pub remote_mapped_addr: SocketAddr,
-    pub local_port: u16,
-    pub context: SocketContext,
-    pub admission: TcpHolePunchAdmission,
-    pub max_attempts: u32,
-    pub scheme: &'a str,
-}
-
-async fn complete_punch_within<F>(window: Duration, attempt: F) -> anyhow::Result<()>
-where
-    F: Future<Output = anyhow::Result<()>>,
-{
-    // The window includes protocol upgrade and admission, not just TCP dialing.
-    crate::foundation::time::timeout(window, attempt)
-        .await
-        .context("TCP hole-punch connect and upgrade window elapsed")?
-}
-
-/// One TCP punch dial attempt: connect within a timeout and hand the socket
-/// to the transport sink. Shared by the plain connect loop, the symmetric
-/// responder fan-out and the predicted-port spray, which keep their own
-/// loop shells, windows and sleep ranges.
-struct TcpPunchDialer<'a, H, AcceptedSocket>
-where
-    H: VirtualTcpSocketFactory,
-    AcceptedSocket: 'static,
-{
-    host: &'a H,
-    sink: &'a dyn TcpHolePunchTransportSink<
-        ConnectedSocket = <H as VirtualTcpSocketFactory>::Socket,
-        AcceptedSocket = AcceptedSocket,
-    >,
-    admission: TcpHolePunchAdmission,
-    requested_url: &'a url::Url,
-}
-
-impl<H, AcceptedSocket> TcpPunchDialer<'_, H, AcceptedSocket>
-where
-    H: VirtualTcpSocketFactory,
-    AcceptedSocket: 'static,
-{
-    /// `Ok(true)`: connected and admitted, the caller can stop. `Ok(false)`:
-    /// connect or admission failed (logged), retry after sleeping. `Err`:
-    /// the protocol upgrade failed irrecoverably.
-    async fn attempt(
-        &self,
-        options: &TcpConnectOptions,
-        dial_timeout: Duration,
-        label: &'static str,
-        remote_addr: SocketAddr,
-    ) -> anyhow::Result<bool> {
-        let Ok(Ok(socket)) =
-            crate::foundation::time::timeout(dial_timeout, self.host.connect_tcp(options.clone()))
-                .await
-        else {
-            tracing::trace!(?remote_addr, label, "tcp hole punch connect attempt failed");
-            return Ok(false);
-        };
-        match self
-            .sink
-            .add_connected_transport(socket, self.requested_url.clone(), self.admission)
-            .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    ?remote_addr,
-                    label,
-                    "tcp hole punch connected and added tunnel"
-                );
-                Ok(true)
-            }
-            Err(TcpHolePunchTransportError::Upgrade(error)) => Err(error),
-            Err(TcpHolePunchTransportError::Admission(error)) => {
-                tracing::warn!(
-                    ?remote_addr,
-                    label,
-                    ?error,
-                    "tcp hole punch tunnel admission failed"
-                );
-                Ok(false)
-            }
-        }
-    }
-}
-
 // TCP supports simultaneous connect, so both peers may dial from the mapped port.
+#[allow(clippy::too_many_arguments)]
 pub async fn try_connect_to_remote<H, AcceptedSocket>(
     host: Arc<H>,
     transport_sink: Arc<
@@ -397,20 +323,17 @@ pub async fn try_connect_to_remote<H, AcceptedSocket>(
                 AcceptedSocket = AcceptedSocket,
             >,
     >,
-    options: TcpHolePunchDialOptions<'_>,
+    remote_mapped_addr: SocketAddr,
+    local_port: u16,
+    context: SocketContext,
+    admission: TcpHolePunchAdmission,
+    max_attempts: u32,
+    scheme: &str,
 ) -> anyhow::Result<()>
 where
     H: VirtualTcpSocketFactory,
     AcceptedSocket: 'static,
 {
-    let TcpHolePunchDialOptions {
-        remote_mapped_addr,
-        local_port,
-        context,
-        admission,
-        max_attempts,
-        scheme,
-    } = options;
     tracing::info!(
         ?remote_mapped_addr,
         local_port,
@@ -425,49 +348,164 @@ where
     });
     let requested_url = mapped_addr_url(scheme, remote_mapped_addr)?;
 
-    complete_punch_within(Duration::from_secs(10), async {
-        let start = crate::foundation::time::Instant::now();
-        let mut attempts = 0_u32;
-        let dialer = TcpPunchDialer {
-            host: host.as_ref(),
-            sink: transport_sink.as_ref(),
-            admission,
-            requested_url: &requested_url,
-        };
-        while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
-            attempts = attempts.wrapping_add(1);
-            let bind = hole_punch_bind_options(context.clone(), bind_addr);
-            let options =
-                TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
-            match dialer
-                .attempt(
-                    &options,
-                    Duration::from_secs(3),
-                    "server connect loop",
-                    remote_mapped_addr,
-                )
+    let start = crate::foundation::time::Instant::now();
+    let mut attempts = 0_u32;
+    while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
+        attempts = attempts.wrapping_add(1);
+        let bind = hole_punch_bind_options(context.clone(), bind_addr);
+        let options =
+            TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
+        if let Ok(Ok(socket)) =
+            crate::foundation::time::timeout(Duration::from_secs(3), host.connect_tcp(options))
                 .await
-            {
-                Ok(true) => return Ok(()),
-                Ok(false) => {}
-                Err(error) => return Err(error),
+        {
+            let admission_result = transport_sink
+                .add_connected_transport(socket, requested_url.clone(), admission)
+                .await;
+            match admission_result {
+                Ok(()) => {}
+                Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
+                Err(TcpHolePunchTransportError::Admission(error)) => {
+                    tracing::error!(
+                        ?remote_mapped_addr,
+                        local_port,
+                        attempts,
+                        ?error,
+                        "tcp hole punch server connected and added client tunnel failed"
+                    );
+                    continue;
+                }
             }
-            let sleep_ms = rand::thread_rng().gen_range(10..100);
-            crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
-        }
 
-        tracing::warn!(
+            tracing::info!(
+                ?remote_mapped_addr,
+                local_port,
+                attempts,
+                ?admission,
+                "tcp hole punch server connected and added tunnel"
+            );
+            return Ok(());
+        }
+        tracing::trace!(
             ?remote_mapped_addr,
             local_port,
             attempts,
-            "tcp hole punch server connect loop timeout"
+            "tcp hole punch server connect attempt failed"
         );
+        let sleep_ms = rand::thread_rng().gen_range(10..100);
+        crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
+    }
 
-        Err(anyhow::anyhow!(
-            "tcp hole punch server connect loop timeout"
-        ))
-    })
-    .await
+    tracing::warn!(
+        ?remote_mapped_addr,
+        local_port,
+        attempts,
+        "tcp hole punch server connect loop timeout"
+    );
+
+    Err(anyhow::anyhow!(
+        "tcp hole punch server connect loop timeout"
+    ))
+}
+
+async fn complete_punch_within<F>(window: Duration, attempt: F) -> anyhow::Result<()>
+where
+    F: Future<Output = anyhow::Result<()>>,
+{
+    // The window includes protocol upgrade and admission, not just TCP dialing.
+    crate::foundation::time::timeout(window, attempt)
+        .await
+        .context("TCP hole-punch connect and upgrade window elapsed")?
+}
+
+/// What distinguishes one multi-socket dial from another.
+#[derive(Clone, Copy)]
+struct FanOutDial {
+    window: Duration,
+    dial_timeout: Duration,
+    label: &'static str,
+}
+
+/// Redials every `(connect options, requested URL)` pair from its own task
+/// until one is connected and admitted or the window elapses. The first
+/// success wins; the other sockets are dropped with the task set.
+async fn fan_out_dial<H, AcceptedSocket>(
+    host: Arc<H>,
+    transport_sink: Arc<
+        dyn TcpHolePunchTransportSink<
+                ConnectedSocket = <H as VirtualTcpSocketFactory>::Socket,
+                AcceptedSocket = AcceptedSocket,
+            >,
+    >,
+    dials: Vec<(TcpConnectOptions, url::Url)>,
+    admission: TcpHolePunchAdmission,
+    fan_out: FanOutDial,
+) -> anyhow::Result<()>
+where
+    H: VirtualTcpSocketFactory,
+    AcceptedSocket: 'static,
+{
+    let FanOutDial {
+        window,
+        dial_timeout,
+        label,
+    } = fan_out;
+    let mut tasks = JoinSet::new();
+    for (options, requested_url) in dials {
+        let host = host.clone();
+        let transport_sink = transport_sink.clone();
+        tasks.spawn(crate::peers::conn::parallel::inherit_scope(
+            complete_punch_within(window, async move {
+                let start = crate::foundation::time::Instant::now();
+                while start.elapsed() < window {
+                    match crate::foundation::time::timeout(
+                        dial_timeout,
+                        host.connect_tcp(options.clone()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(socket)) => match transport_sink
+                            .add_connected_transport(socket, requested_url.clone(), admission)
+                            .await
+                        {
+                            Ok(()) => {
+                                tracing::info!(
+                                    %requested_url,
+                                    label,
+                                    "tcp hole punch connected and added tunnel"
+                                );
+                                return Ok(());
+                            }
+                            Err(TcpHolePunchTransportError::Upgrade(error)) => return Err(error),
+                            Err(TcpHolePunchTransportError::Admission(error)) => tracing::warn!(
+                                %requested_url,
+                                label,
+                                ?error,
+                                "tcp hole punch tunnel admission failed"
+                            ),
+                        },
+                        _ => tracing::trace!(
+                            %requested_url,
+                            label,
+                            "tcp hole punch connect attempt failed"
+                        ),
+                    }
+                    let sleep_ms = rand::thread_rng().gen_range(50..150);
+                    crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
+                }
+                Err(anyhow::anyhow!("tcp hole punch {label} timeout"))
+            }),
+        ));
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        if let Ok(Ok(())) = result {
+            return Ok(());
+        }
+    }
+
+    tracing::warn!(label, "tcp hole punch dial loop timeout");
+    Err(anyhow::anyhow!("tcp hole punch {label} timeout"))
 }
 
 /// Symmetric-side fan-out dialer: keeps `SYMMETRIC_RESPONDER_SOCKET_COUNT`
@@ -503,66 +541,31 @@ where
     let is_v6 = remote_mapped_addr.is_ipv6();
     let context = context.with_ip_version(if is_v6 { IpVersion::V6 } else { IpVersion::V4 });
     let requested_url = mapped_addr_url(scheme, remote_mapped_addr)?;
-
-    let mut tasks = JoinSet::new();
-    for index in 0..SYMMETRIC_RESPONDER_SOCKET_COUNT {
-        // The first socket reuses the announced listener port; the rest let
-        // the OS pick distinct local ports, each allocating a fresh mapping.
-        let port = if index == 0 { local_port } else { 0 };
-        let bind_addr = bind_addr_for_port(port, is_v6);
-        let bind = hole_punch_bind_options(context.clone(), bind_addr);
-        let options =
-            TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind);
-        let host = host.clone();
-        let transport_sink = transport_sink.clone();
-        let requested_url = requested_url.clone();
-        tasks.spawn(crate::peers::conn::parallel::inherit_scope(async move {
-            complete_punch_within(SYMMETRIC_RESPONDER_HOLD, async {
-                let start = crate::foundation::time::Instant::now();
-                let dialer = TcpPunchDialer {
-                    host: host.as_ref(),
-                    sink: transport_sink.as_ref(),
-                    admission,
-                    requested_url: &requested_url,
-                };
-                while start.elapsed() < SYMMETRIC_RESPONDER_HOLD {
-                    match dialer
-                        .attempt(
-                            &options,
-                            SYMMETRIC_RESPONDER_DIAL_TIMEOUT,
-                            "symmetric responder fan-out",
-                            remote_mapped_addr,
-                        )
-                        .await
-                    {
-                        Ok(true) => return Ok(()),
-                        Ok(false) => {}
-                        Err(error) => return Err(error),
-                    }
-                    let sleep_ms = rand::thread_rng().gen_range(50..150);
-                    crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
-                }
-                Err(anyhow::anyhow!(
-                    "tcp hole punch symmetric responder dial loop timeout"
-                ))
-            })
-            .await
-        }));
-    }
-
-    while let Some(result) = tasks.join_next().await {
-        if let Ok(Ok(())) = result {
-            return Ok(());
-        }
-    }
-
-    tracing::warn!(
-        ?remote_mapped_addr,
-        "tcp hole punch symmetric responder fan-out dial loop timeout"
-    );
-    Err(anyhow::anyhow!(
-        "tcp hole punch symmetric responder fan-out dial loop timeout"
-    ))
+    let dials = (0..SYMMETRIC_RESPONDER_SOCKET_COUNT)
+        .map(|index| {
+            // The first socket reuses the announced listener port; the rest let
+            // the OS pick distinct local ports, each allocating a fresh mapping.
+            let port = if index == 0 { local_port } else { 0 };
+            let bind_addr = bind_addr_for_port(port, is_v6);
+            let bind = hole_punch_bind_options(context.clone(), bind_addr);
+            (
+                TcpConnectOptions::hole_punch(remote_mapped_addr, Some(bind_addr)).with_bind(bind),
+                requested_url.clone(),
+            )
+        })
+        .collect();
+    fan_out_dial(
+        host,
+        transport_sink,
+        dials,
+        admission,
+        FanOutDial {
+            window: SYMMETRIC_RESPONDER_HOLD,
+            dial_timeout: SYMMETRIC_RESPONDER_DIAL_TIMEOUT,
+            label: "symmetric responder fan-out",
+        },
+    )
+    .await
 }
 
 /// Cone-side spray: dials every predicted port of the symmetric responder
@@ -598,56 +601,28 @@ where
     // All spray sockets share the connector port: the symmetric responder's
     // NAT only lets return traffic through for mappings created from it.
     let bind_addr = bind_addr_for_port(local_port, is_v6);
-
-    let mut tasks = JoinSet::new();
-    for target_addr in target_addrs {
-        let bind = hole_punch_bind_options(context.clone(), bind_addr);
-        let options = TcpConnectOptions::hole_punch(target_addr, Some(bind_addr)).with_bind(bind);
-        let host = host.clone();
-        let transport_sink = transport_sink.clone();
-        let requested_url = mapped_addr_url(scheme, target_addr)?;
-        tasks.spawn(crate::peers::conn::parallel::inherit_scope(async move {
-            complete_punch_within(SPRAY_WINDOW, async {
-                let start = crate::foundation::time::Instant::now();
-                let dialer = TcpPunchDialer {
-                    host: host.as_ref(),
-                    sink: transport_sink.as_ref(),
-                    admission,
-                    requested_url: &requested_url,
-                };
-                while start.elapsed() < SPRAY_WINDOW {
-                    match dialer
-                        .attempt(
-                            &options,
-                            SPRAY_DIAL_TIMEOUT,
-                            "predicted-port spray",
-                            target_addr,
-                        )
-                        .await
-                    {
-                        Ok(true) => return Ok(()),
-                        Ok(false) => {}
-                        Err(error) => return Err(error),
-                    }
-                    let sleep_ms = rand::thread_rng().gen_range(50..150);
-                    crate::foundation::time::sleep(Duration::from_millis(sleep_ms)).await;
-                }
-                Err(anyhow::anyhow!("tcp hole punch spray timeout"))
-            })
-            .await
-        }));
-    }
-
-    while let Some(result) = tasks.join_next().await {
-        if let Ok(Ok(())) = result {
-            return Ok(());
-        }
-    }
-
-    tracing::warn!("tcp hole punch initiator spray connect loop timeout");
-    Err(anyhow::anyhow!(
-        "tcp hole punch initiator spray connect loop timeout"
-    ))
+    let dials = target_addrs
+        .into_iter()
+        .map(|target_addr| {
+            let bind = hole_punch_bind_options(context.clone(), bind_addr);
+            Ok((
+                TcpConnectOptions::hole_punch(target_addr, Some(bind_addr)).with_bind(bind),
+                mapped_addr_url(scheme, target_addr)?,
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    fan_out_dial(
+        host,
+        transport_sink,
+        dials,
+        admission,
+        FanOutDial {
+            window: SPRAY_WINDOW,
+            dial_timeout: SPRAY_DIAL_TIMEOUT,
+            label: "predicted-port spray",
+        },
+    )
+    .await
 }
 
 pub async fn accept_connections<L, ConnectedSocket>(
@@ -692,6 +667,9 @@ where
 
 const WSS_EXCHANGE_FAILURE_BLACKLIST_THRESHOLD: u32 = 3;
 
+/// Bounds one single-socket connect loop including its protocol upgrade;
+/// equal to the loop's own dialing window.
+const CONNECT_LOOP_WINDOW: Duration = Duration::from_secs(10);
 /// Local ports the symmetric responder fans out toward the cone initiator.
 /// Each dial keeps one NAT mapping alive inside the initiator's spray window.
 const SYMMETRIC_RESPONDER_SOCKET_COUNT: usize = 32;
@@ -700,10 +678,9 @@ const SYMMETRIC_RESPONDER_SOCKET_COUNT: usize = 32;
 /// `SYMMETRIC_RESPONDER_HOLD`, so this bounds the worst-case handle usage;
 /// requests beyond it are rejected as busy (the initiator retries later).
 const MAX_CONCURRENT_RESPONDER_PUNCHES: usize = 4;
-/// Ports advertised to the cone initiator for spraying (`k = 0..max-1`).
+/// Ports advertised to the cone initiator for spraying (`k = 0..max-1`), and
+/// the upper bound for a peer-supplied `max_port_num`, bounding spray sockets.
 const PREDICTED_PORT_NUM: u32 = 50;
-/// Upper bound for a peer-supplied `max_port_num`, bounding spray sockets.
-const PREDICTED_PORT_NUM_LIMIT: u32 = 50;
 /// How long the responder keeps its fan-out sockets dialing. Must outlive an
 /// unpatched initiator's connect timeout plus its fallback-listener window.
 const SYMMETRIC_RESPONDER_HOLD: Duration = Duration::from_secs(15);
@@ -809,11 +786,6 @@ fn initiator_eligible(local_nat_type: NatType) -> bool {
     !is_symmetric_tcp_nat(local_nat_type)
 }
 
-/// Whether the RPC responder answers with the symmetric multi-socket dialer.
-///
-/// Easy-symmetric responders publish a port prediction window; unknown
-/// responders still fan out because the fan-out needs no remote cooperation.
-/// Plain symmetric NATs keep the legacy single-port dialer.
 /// Local TCP NAT type for punch decisions. A UDP-derived approximation
 /// (`tcp_nat_type_is_approximated`, i.e. the TCP STUN test was inconclusive)
 /// must not drive initiator eligibility, responder fan-out mode or spray
@@ -831,6 +803,11 @@ fn normalize_local_tcp_nat_type(stun: &dyn StunInfoProvider) -> NatType {
     nat_type
 }
 
+/// Whether the RPC responder answers with the symmetric multi-socket dialer.
+///
+/// Easy-symmetric responders publish a port prediction window; unknown
+/// responders still fan out because the fan-out needs no remote cooperation.
+/// Plain symmetric NATs keep the single-port dialer.
 fn responder_uses_multi_socket(local_nat_type: NatType, disable_sym_hole_punching: bool) -> bool {
     !disable_sym_hole_punching
         && (local_nat_type == NatType::Unknown || is_easy_symmetric_tcp_nat(local_nat_type))
@@ -843,7 +820,7 @@ fn spray_target_addrs(
     direction: PortSequenceDirection,
     max_port_num: u32,
 ) -> Vec<SocketAddr> {
-    let count = max_port_num.clamp(1, PREDICTED_PORT_NUM_LIMIT);
+    let count = max_port_num.clamp(1, PREDICTED_PORT_NUM);
     match direction {
         PortSequenceDirection::Incremental => (0..count)
             .filter_map(|offset| base.port().checked_add(offset as u16))
@@ -918,29 +895,6 @@ where
         self.transport_sink.supports_wss_hole_punching()
     }
 
-    /// Whether an inbound punch from `caller` is accepted under the local
-    /// P2P policy. Only the `need_p2p` exception passes a disabled node;
-    /// unknown callers are rejected because their intent cannot be verified.
-    async fn accept_inbound_punch(&self, caller_peer_id: Option<u64>) -> bool {
-        if !self.peer_source.p2p_policy_flags().disable_p2p {
-            return true;
-        }
-        let Some(caller_peer_id) =
-            caller_peer_id.and_then(|peer_id| PeerId::try_from(peer_id).ok())
-        else {
-            return false;
-        };
-        let caller_need_p2p = self
-            .peer_source
-            .candidates()
-            .await
-            .into_iter()
-            .find(|candidate| candidate.peer_id == caller_peer_id)
-            .and_then(|candidate| candidate.feature_flag)
-            .is_some_and(|flag| flag.need_p2p);
-        should_accept_inbound_punch(true, caller_need_p2p)
-    }
-
     fn start(&self) {
         let mut reaper = self.reaper.lock().unwrap();
         if reaper.as_ref().is_some_and(|task| !task.is_finished()) {
@@ -999,9 +953,16 @@ where
                 "tcp hole punch rpc with unknown local nat type, continuing"
             );
         }
-        if !self
-            .accept_inbound_punch(controller.get_caller_peer_id())
-            .await
+        if !accept_inbound_punch(
+            policy.disable_p2p,
+            controller.get_caller_peer_id(),
+            |caller| async move {
+                find_candidate(self.peer_source.as_ref(), caller)
+                    .await
+                    .and_then(|candidate| candidate.feature_flag)
+            },
+        )
+        .await
         {
             tracing::warn!(
                 caller = ?controller.get_caller_peer_id(),
@@ -1015,13 +976,13 @@ where
         let parallel_member = crate::peers::conn::parallel::ParallelMemberToken::from_features(
             std::slice::from_ref(&input.parallel_member),
         );
-        if requested_scheme.is_empty() && policy.only_use_wss_http3_for_hole_punching {
+        if requested_scheme.is_empty() && policy.disguise.requires() {
             return Err(anyhow::anyhow!(
                 "raw TCP hole punching is disabled by WSS/HTTP3-only policy"
             )
             .into());
         }
-        if requested_scheme == "wss" && policy.disable_wss_http3_for_p2p {
+        if requested_scheme == "wss" && policy.disguise.forbids() {
             return Err(
                 anyhow::anyhow!("WSS hole punching is disabled by the local P2P policy").into(),
             );
@@ -1109,17 +1070,18 @@ where
                     )
                     .await;
                 } else {
-                    let _ = try_connect_to_remote(
-                        host,
-                        transport_sink,
-                        TcpHolePunchDialOptions {
+                    let _ = complete_punch_within(
+                        CONNECT_LOOP_WINDOW,
+                        try_connect_to_remote(
+                            host,
+                            transport_sink,
                             remote_mapped_addr,
                             local_port,
-                            context: socket_context,
-                            admission: TcpHolePunchAdmission::Client,
-                            max_attempts: 5,
-                            scheme: &connect_scheme,
-                        },
+                            socket_context,
+                            TcpHolePunchAdmission::Client,
+                            5,
+                            &connect_scheme,
+                        ),
                     )
                     .await;
                 }
@@ -1192,14 +1154,10 @@ where
     #[tracing::instrument(skip(self), fields(dst_peer_id), err)]
     async fn do_punch_as_initiator(&self, dst_peer_id: PeerId) -> anyhow::Result<()> {
         let policy = self.peer_source.p2p_policy_flags();
-        let peer_policy = self
-            .peer_source
-            .candidates()
+        let peer_policy = find_candidate(self.peer_source.as_ref(), dst_peer_id)
             .await
-            .into_iter()
-            .find(|candidate| candidate.peer_id == dst_peer_id)
-            .map(|candidate| candidate.peer_disguise_flags);
-        let transport_policy = policy.transport_policy(peer_policy.as_ref());
+            .map(|candidate| candidate.peer_disguise);
+        let transport_policy = policy.transport_policy(peer_policy);
         let Some(use_wss) = transport_policy.select_disguised(self.supports_wss_hole_punching)
         else {
             tracing::debug!(
@@ -1356,17 +1314,18 @@ where
                 .await
             }
             None => {
-                try_connect_to_remote(
-                    self.host.clone(),
-                    self.transport_sink.clone(),
-                    TcpHolePunchDialOptions {
+                complete_punch_within(
+                    CONNECT_LOOP_WINDOW,
+                    try_connect_to_remote(
+                        self.host.clone(),
+                        self.transport_sink.clone(),
                         remote_mapped_addr,
                         local_port,
-                        context: self.socket_context.clone(),
-                        admission: TcpHolePunchAdmission::Server,
-                        max_attempts: 1,
-                        scheme: requested_scheme,
-                    },
+                        self.socket_context.clone(),
+                        TcpHolePunchAdmission::Server,
+                        1,
+                        requested_scheme,
+                    ),
                 )
                 .await
             }
@@ -1443,7 +1402,7 @@ where
         let local_peer_id = self.peer_source.local_peer_id();
         let mut peers_to_connect = Vec::new();
         for candidate in self.peer_source.candidates().await {
-            let transport_policy = policy.transport_policy(Some(&candidate.peer_disguise_flags));
+            let transport_policy = policy.transport_policy(Some(candidate.peer_disguise));
             let Some(use_wss_engine) =
                 transport_policy.select_disguised(self.supports_wss_hole_punching)
             else {
@@ -1535,17 +1494,13 @@ where
     ) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         let data = self.0.clone();
         tokio::spawn(async move {
-            let peer_policy = data
-                .peer_source
-                .candidates()
+            let peer_policy = find_candidate(data.peer_source.as_ref(), dst_peer_id)
                 .await
-                .into_iter()
-                .find(|peer| peer.peer_id == dst_peer_id)
-                .map(|peer| peer.peer_disguise_flags);
+                .map(|candidate| candidate.peer_disguise);
             let policy = data
                 .peer_source
                 .p2p_policy_flags()
-                .transport_policy(peer_policy.as_ref());
+                .transport_policy(peer_policy);
             let scheme = if policy
                 .select_disguised(data.supports_wss_hole_punching)
                 .unwrap_or(false)
@@ -1554,21 +1509,14 @@ where
             } else {
                 "tcp"
             };
-            let reservation = data
-                .peer_source
-                .reserve_parallel_slot_for_protocol(dst_peer_id, scheme);
-            if data.peer_source.parallel_connection_target(dst_peer_id) > 1 && reservation.is_none()
-            {
-                return Ok(());
-            }
-            match reservation {
-                Some(reservation) => {
-                    reservation
-                        .scope(data.punch_as_initiator(dst_peer_id))
-                        .await
-                }
-                None => data.punch_as_initiator(dst_peer_id).await,
-            }
+            crate::peers::conn::parallel::dial_in_slot(
+                data.peer_source
+                    .reserve_parallel_slot_for_protocol(dst_peer_id, scheme),
+                data.peer_source.parallel_connection_target(dst_peer_id),
+                data.punch_as_initiator(dst_peer_id),
+            )
+            .await
+            .unwrap_or(Ok(()))
         })
     }
 
@@ -1639,8 +1587,7 @@ where
             return;
         }
         let policy = self.peer_source.p2p_policy_flags();
-        if policy.only_use_wss_http3_for_hole_punching && !self.server.supports_wss_hole_punching()
-        {
+        if policy.disguise.requires() && !self.server.supports_wss_hole_punching() {
             tracing::debug!("WSS hole punching disabled because the runtime lacks WSS");
             return;
         }
@@ -1668,4 +1615,231 @@ where
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::tunnel::Tunnel;
+
+    mod custom_tests;
+
+    #[derive(Default)]
+    struct MockProtocols {
+        client_upgrades: AtomicUsize,
+        server_upgrades: AtomicUsize,
+        fail_client_upgrade: AtomicBool,
+    }
+
+    #[async_trait]
+    impl ClientProtocolUpgrader<()> for MockProtocols {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            matches!(scheme, "tcp" | "wss")
+        }
+
+        async fn upgrade_client(
+            &self,
+            connected: ConnectedTransport<()>,
+            _requested_url: url::Url,
+        ) -> anyhow::Result<Box<dyn Tunnel>> {
+            let ConnectedTransport::Tcp(()) = connected else {
+                anyhow::bail!("expected TCP transport");
+            };
+            if self.fail_client_upgrade.load(Ordering::Relaxed) {
+                anyhow::bail!("mock client upgrade failure");
+            }
+            self.client_upgrades.fetch_add(1, Ordering::Relaxed);
+            Ok(crate::tunnel::ring::create_ring_tunnel_pair().0)
+        }
+    }
+
+    #[async_trait]
+    impl ServerProtocolUpgrader<()> for MockProtocols {
+        fn supports_scheme(&self, scheme: &str) -> bool {
+            matches!(scheme, "tcp" | "wss")
+        }
+
+        async fn upgrade_tcp(
+            &self,
+            _socket: (),
+            _local_url: url::Url,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            self.server_upgrades.fetch_add(1, Ordering::Relaxed);
+            Ok(ServerProtocolUpgrade::Tunnel(
+                crate::tunnel::ring::create_ring_tunnel_pair().0,
+            ))
+        }
+
+        async fn upgrade_udp(
+            &self,
+            _session: crate::socket::udp::UdpSession,
+            _local_url: url::Url,
+            _admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            anyhow::bail!("unexpected UDP transport")
+        }
+
+        async fn upgrade_byte_stream(
+            &self,
+            _socket: (),
+            _local_url: url::Url,
+            _remote_url: Option<url::Url>,
+        ) -> anyhow::Result<ServerProtocolUpgrade> {
+            anyhow::bail!("unexpected byte stream")
+        }
+    }
+
+    #[derive(Default)]
+    struct MockTunnelSink {
+        clients: AtomicUsize,
+        servers: AtomicUsize,
+        fail_client_admission: AtomicBool,
+    }
+
+    #[async_trait]
+    impl HolePunchTunnelSink for MockTunnelSink {
+        async fn add_client_tunnel(
+            &self,
+            _tunnel: Box<dyn Tunnel>,
+            origin: PeerConnectionOrigin,
+        ) -> anyhow::Result<()> {
+            assert_eq!(origin, PeerConnectionOrigin::TcpHolePunch);
+            if self.fail_client_admission.load(Ordering::Relaxed) {
+                anyhow::bail!("mock client admission failure");
+            }
+            self.clients.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn add_server_tunnel(
+            &self,
+            _tunnel: Box<dyn Tunnel>,
+            origin: PeerConnectionOrigin,
+        ) -> anyhow::Result<()> {
+            assert_eq!(origin, PeerConnectionOrigin::TcpHolePunch);
+            self.servers.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_sink_upgrades_before_tcp_hole_punch_admission() {
+        let protocols = Arc::new(MockProtocols::default());
+        let tunnel_sink = Arc::new(MockTunnelSink::default());
+        let sink = ProtocolTcpHolePunchTransportSink::new(
+            protocols.clone(),
+            protocols.clone(),
+            protocols.clone(),
+            tunnel_sink.clone(),
+        );
+        let url = url::Url::parse("tcp://198.51.100.1:11010").unwrap();
+
+        sink.add_connected_transport((), url.clone(), TcpHolePunchAdmission::Client)
+            .await
+            .unwrap();
+        sink.add_connected_transport((), url.clone(), TcpHolePunchAdmission::Server)
+            .await
+            .unwrap();
+        sink.add_accepted_transport((), url).await.unwrap();
+
+        assert_eq!(protocols.client_upgrades.load(Ordering::Relaxed), 2);
+        assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_sink.clients.load(Ordering::Relaxed), 1);
+        assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 2);
+
+        sink.add_connected_transport(
+            (),
+            url::Url::parse("wss://198.51.100.1:443").unwrap(),
+            TcpHolePunchAdmission::Server,
+        )
+        .await
+        .unwrap();
+        assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 2);
+        assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 3);
+
+        protocols.fail_client_upgrade.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            sink.add_connected_transport(
+                (),
+                url::Url::parse("tcp://198.51.100.1:11010").unwrap(),
+                TcpHolePunchAdmission::Client,
+            )
+            .await,
+            Err(TcpHolePunchTransportError::Upgrade(_))
+        ));
+        protocols
+            .fail_client_upgrade
+            .store(false, Ordering::Relaxed);
+        tunnel_sink
+            .fail_client_admission
+            .store(true, Ordering::Relaxed);
+        assert!(matches!(
+            sink.add_connected_transport(
+                (),
+                url::Url::parse("tcp://198.51.100.1:11010").unwrap(),
+                TcpHolePunchAdmission::Client,
+            )
+            .await,
+            Err(TcpHolePunchTransportError::Admission(_))
+        ));
+    }
+
+    #[test]
+    fn bind_address_tracks_requested_family_and_port() {
+        assert_eq!(
+            bind_addr_for_port(1234, false),
+            "0.0.0.0:1234".parse().unwrap()
+        );
+        assert_eq!(bind_addr_for_port(4321, true), "[::]:4321".parse().unwrap());
+    }
+
+    #[test]
+    fn symmetric_tcp_nat_variants_are_ineligible_initiators() {
+        assert!(is_symmetric_tcp_nat(NatType::Symmetric));
+        assert!(is_symmetric_tcp_nat(NatType::SymmetricEasyInc));
+        assert!(is_symmetric_tcp_nat(NatType::SymmetricEasyDec));
+        assert!(!is_symmetric_tcp_nat(NatType::PortRestricted));
+        assert!(!is_symmetric_tcp_nat(NatType::Unknown));
+    }
+
+    #[test]
+    fn blacklist_tracks_and_cleans_entries() {
+        let blacklist = TcpHolePunchBlacklist::new();
+        assert!(!blacklist.contains(7));
+        blacklist.insert(7);
+        assert!(blacklist.contains(7));
+        blacklist.cleanup();
+        assert!(blacklist.contains(7));
+    }
+
+    #[test]
+    fn fallback_listener_normalizes_context_to_ipv4() {
+        let bind_addr = "0.0.0.0:23333".parse().unwrap();
+        let context = SocketContext::default()
+            .with_socket_mark(Some(0))
+            .with_netns(Some(crate::socket::NetNamespace::new("test-netns")));
+
+        let options = fallback_listener_options(context, bind_addr);
+
+        assert_eq!(
+            options.purpose,
+            crate::socket::tcp::TcpListenPurpose::HolePunch
+        );
+        assert_eq!(options.bind.local_addr, Some(bind_addr));
+        assert_eq!(options.bind.context.ip_version, IpVersion::V4);
+        assert_eq!(options.bind.context.socket_mark, Some(0));
+        assert_eq!(
+            options
+                .bind
+                .context
+                .netns
+                .as_ref()
+                .map(|netns| netns.token()),
+            Some("test-netns")
+        );
+        assert!(options.bind.only_v6);
+        // The listener shares the punch port with the dial sockets so both
+        // can be alive during the simultaneous-open window.
+        assert_eq!(options.bind.reuse_addr, Some(true));
+        assert!(options.bind.reuse_port);
+    }
+}

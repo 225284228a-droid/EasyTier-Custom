@@ -18,10 +18,7 @@ use crate::{
     packet::{PacketType, ZCPacket},
     peers::{conn::peer_conn_liveness::PeerConnLiveness, context::ArcPeerContext, error::Error},
     tunnel::{
-        bandwidth::{
-            BANDWIDTH_ESTIMATE_VERSION, TrafficRateReport, decode_window_report,
-            encode_window_report,
-        },
+        bandwidth::{TrafficRateReport, decode_window_report, encode_window_report},
         mpsc::MpscTunnelSender,
         stats::{Throughput, WindowLatency},
     },
@@ -190,7 +187,7 @@ impl PeerConnPinger {
         seq: u32,
         report: TrafficRateReport,
     ) -> ZCPacket {
-        let payload = encode_window_report(seq, report, false, BANDWIDTH_ESTIMATE_VERSION);
+        let payload = encode_window_report(seq, report, false);
         let mut packet = ZCPacket::new_with_payload(&payload);
         packet.fill_peer_manager_hdr(my_node_id, peer_id, PacketType::Ping as u8);
         packet
@@ -226,10 +223,9 @@ impl PeerConnPinger {
                         if resp_seq == seq {
                             if let Some(report) = decode_window_report(payload, true) {
                                 self.throughput_stats.record_peer_traffic_report(
-                                    report.version,
-                                    report.report.rx_bps,
-                                    report.report.estimated_tx_bps,
-                                    report.report.sample_window,
+                                    report.rx_bps,
+                                    report.estimated_tx_bps,
+                                    report.sample_window,
                                 );
                             }
                             break;
@@ -429,7 +425,6 @@ mod tests {
             assert_eq!(
                 decode_window_report(request.payload(), false)
                     .expect("v2 request")
-                    .report
                     .estimated_tx_bps,
                 100_000_000
             );
@@ -437,12 +432,8 @@ mod tests {
                 estimated_tx_bps: 40_000_000,
                 ..Default::default()
             };
-            let mut reply = ZCPacket::new_with_payload(&encode_window_report(
-                7,
-                reply_report,
-                true,
-                BANDWIDTH_ESTIMATE_VERSION,
-            ));
+            let mut reply =
+                ZCPacket::new_with_payload(&encode_window_report(7, reply_report, true));
             reply.fill_peer_manager_hdr(2, 1, PacketType::Pong as u8);
             tokio::time::sleep(Duration::from_millis(30)).await;
             ctrl_sender.send(reply).unwrap();

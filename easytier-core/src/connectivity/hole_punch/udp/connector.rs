@@ -429,19 +429,18 @@ where
         let raw_fallback_peers: HashSet<_> = candidates
             .iter()
             .filter(|candidate| {
-                !candidate.udp_satisfied
-                    && policy.allow_raw_with_peer(&candidate.peer_disguise_flags)
+                !candidate.udp_satisfied && policy.disguise.allows_raw_with(candidate.peer_disguise)
             })
             .map(|candidate| candidate.peer_id)
             .collect();
         data.preferred_attempt_started.retain(|peer_id, _| {
             candidates.iter().any(|candidate| {
                 candidate.peer_id == *peer_id
-                    && policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags)
+                    && policy.disguise.disguises_with(candidate.peer_disguise)
             })
         });
         for candidate in &candidates {
-            if policy.use_wss_http3_with_peer(&candidate.peer_disguise_flags) {
+            if policy.disguise.disguises_with(candidate.peer_disguise) {
                 data.preferred_attempt_started
                     .entry(candidate.peer_id)
                     .or_insert_with(Instant::now);
@@ -495,14 +494,9 @@ where
             let reservation = data
                 .peer_source
                 .reserve_parallel_slot_for_protocol(item.dst_peer_id, item.scheme.as_str());
-            if data
+            let pool_target = data
                 .peer_source
-                .parallel_connection_target(item.dst_peer_id)
-                > 1
-                && reservation.is_none()
-            {
-                return Ok(());
-            }
+                .parallel_connection_target(item.dst_peer_id);
             let work = async move {
                 match punch_method {
                     UdpPunchClientMethod::ConeToCone => data.cone_to_cone(item).await,
@@ -511,10 +505,9 @@ where
                     _ => unreachable!(),
                 }
             };
-            match reservation {
-                Some(reservation) => reservation.scope(work).await,
-                None => work.await,
-            }
+            crate::peers::conn::parallel::dial_in_slot(reservation, pool_target, work)
+                .await
+                .unwrap_or(Ok(()))
         })
     }
 

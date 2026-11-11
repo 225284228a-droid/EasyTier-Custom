@@ -1417,7 +1417,6 @@ mod tests {
         let runtime = Arc::new(MockRuntime::new(vec![
             listener_with_scheme(10010, Vec::new(), UdpPunchScheme::Http3),
             listener_with_scheme(10011, Vec::new(), UdpPunchScheme::Udp),
-            listener_with_scheme(10013, Vec::new(), UdpPunchScheme::Http3Mux),
         ]));
         let sink = Arc::new(MockSink::default());
         let common = UdpHolePunchServerCommon::new(runtime.clone(), mock_stun(), sink);
@@ -1430,24 +1429,14 @@ mod tests {
             .select_listener(false, false, UdpPunchScheme::Udp)
             .await
             .unwrap();
-        let legacy_http3 = common
-            .select_listener(false, false, UdpPunchScheme::Http3Mux)
-            .await
-            .unwrap();
 
         assert_eq!(http3.scheme, UdpPunchScheme::Http3);
         assert_eq!(http3.mapped_addr.port(), 10010);
         assert_eq!(udp.scheme, UdpPunchScheme::Udp);
         assert_eq!(udp.mapped_addr.port(), 10011);
-        assert_eq!(legacy_http3.scheme, UdpPunchScheme::Http3Mux);
-        assert_eq!(legacy_http3.mapped_addr.port(), 10013);
         assert_eq!(
             runtime.created_schemes.lock().unwrap().as_slice(),
-            [
-                UdpPunchScheme::Http3,
-                UdpPunchScheme::Udp,
-                UdpPunchScheme::Http3Mux
-            ]
+            [UdpPunchScheme::Http3, UdpPunchScheme::Udp]
         );
     }
 
@@ -1493,11 +1482,7 @@ mod tests {
         );
         server.start().await;
 
-        for scheme in [
-            UdpPunchScheme::Udp,
-            UdpPunchScheme::Http3,
-            UdpPunchScheme::Http3Mux,
-        ] {
+        for scheme in [UdpPunchScheme::Udp, UdpPunchScheme::Http3] {
             let err = server
                 .select_punch_listener(SelectPunchListener {
                     transaction_id: None,
@@ -1513,11 +1498,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strict_mode_preserves_native_and_legacy_http3_negotiation() {
-        let runtime = Arc::new(MockRuntime::new(vec![
-            listener_with_scheme(10014, Vec::new(), UdpPunchScheme::Http3),
-            listener_with_scheme(10015, Vec::new(), UdpPunchScheme::Http3Mux),
-        ]));
+    async fn strict_mode_accepts_native_http3_negotiation() {
+        let runtime = Arc::new(MockRuntime::new(vec![listener_with_scheme(
+            10014,
+            Vec::new(),
+            UdpPunchScheme::Http3,
+        )]));
         let sink = Arc::new(MockSink {
             http3_supported: true,
             ..Default::default()
@@ -1532,18 +1518,17 @@ mod tests {
         );
         server.start().await;
 
-        for scheme in [UdpPunchScheme::Http3, UdpPunchScheme::Http3Mux] {
-            let response = server
-                .select_punch_listener(SelectPunchListener {
-                    transaction_id: None,
-                    force_new: false,
-                    prefer_port_mapping: false,
-                    scheme,
-                })
-                .await
-                .unwrap();
-            assert_eq!(response.scheme, scheme);
-        }
+        let scheme = UdpPunchScheme::Http3;
+        let response = server
+            .select_punch_listener(SelectPunchListener {
+                transaction_id: None,
+                force_new: false,
+                prefer_port_mapping: false,
+                scheme,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.scheme, scheme);
         server.stop().await;
     }
 
@@ -1566,39 +1551,38 @@ mod tests {
             );
             server.start().await;
 
-            for scheme in [UdpPunchScheme::Http3, UdpPunchScheme::Http3Mux] {
-                let error = server
-                    .select_punch_listener(SelectPunchListener {
-                        transaction_id: None,
-                        force_new: true,
-                        prefer_port_mapping: false,
-                        scheme,
-                    })
-                    .await
-                    .unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains("disabled by the local P2P policy")
-                );
+            let scheme = UdpPunchScheme::Http3;
+            let error = server
+                .select_punch_listener(SelectPunchListener {
+                    transaction_id: None,
+                    force_new: true,
+                    prefer_port_mapping: false,
+                    scheme,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("disabled by the local P2P policy")
+            );
 
-                let error = server
-                    .send_punch_packet_both_easy_sym(SendPunchPacketBothEasySym {
-                        udp_socket_count: 1,
-                        public_ip: Ipv4Addr::new(198, 51, 100, 1),
-                        transaction_id: 9,
-                        dst_port_num: 20000,
-                        wait_time_ms: 500,
-                        scheme,
-                    })
-                    .await
-                    .unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains("disabled by the local P2P policy")
-                );
-            }
+            let error = server
+                .send_punch_packet_both_easy_sym(SendPunchPacketBothEasySym {
+                    udp_socket_count: 1,
+                    public_ip: Ipv4Addr::new(198, 51, 100, 1),
+                    transaction_id: 9,
+                    dst_port_num: 20000,
+                    wait_time_ms: 500,
+                    scheme,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("disabled by the local P2P policy")
+            );
 
             assert!(runtime.created_schemes.lock().unwrap().is_empty());
             assert_eq!(runtime.bound_sockets.load(Ordering::Relaxed), 0);

@@ -1005,9 +1005,7 @@ impl PeerManagerCore {
         runtime.feature_flags.disable_p2p = flags.disable_p2p;
         runtime.feature_flags.need_p2p = flags.need_p2p;
         runtime.feature_flags.avoid_relay_data |= flags.disable_relay_data;
-        runtime.feature_flags.prefer_wss_http3_for_p2p = flags.p2p_disguise().prefers();
-        runtime.feature_flags.disable_wss_http3_for_p2p = flags.p2p_disguise().forbids();
-        runtime.feature_flags.only_use_wss_http3_for_p2p = flags.p2p_disguise().requires();
+        runtime.feature_flags.set_p2p_disguise(flags.p2p_disguise());
         runtime_config.update_peer(Arc::new(config.snapshot.clone()));
         let public_ipv6_state = public_ipv6_runtime.clone();
         let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> = public_ipv6_runtime;
@@ -1616,11 +1614,9 @@ impl PeerManagerCore {
             lazy_p2p: flags.lazy_p2p,
             disable_p2p: flags.disable_p2p,
             need_p2p: flags.need_p2p,
-            only_use_wss_http3_for_hole_punching: flags.p2p_disguise().requires(),
+            disguise: flags.p2p_disguise(),
             prefer_http3_for_p2p: preferred_disguised_scheme(&flags.default_protocol)
                 == Some("http3"),
-            prefer_wss_http3_for_p2p: flags.p2p_disguise().prefers(),
-            disable_wss_http3_for_p2p: flags.p2p_disguise().forbids(),
         }
     }
 

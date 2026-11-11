@@ -193,8 +193,8 @@ where
                 sym_punch_lock,
                 runtime,
                 peer_source.clone(),
-                policy.only_use_wss_http3_for_hole_punching,
-                policy.disable_wss_http3_for_p2p,
+                policy.disguise.requires(),
+                policy.disguise.forbids(),
             ),
             client,
             peer_source,
@@ -210,7 +210,7 @@ where
         // Under the only-WSS/HTTP3 policy UDP punching is still possible,
         // but every punch must upgrade to HTTP3; without that capability
         // there is no compliant UDP transport left.
-        if policy.only_use_wss_http3_for_hole_punching && !self.http3_supported {
+        if policy.disguise.requires() && !self.http3_supported {
             tracing::warn!("HTTP3 hole punching unavailable: this runtime lacks HTTP3 support");
             return Ok(());
         }
@@ -717,52 +717,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_and_legacy_http3_punch_keep_easytier_mux_wire_protocol() {
-        for scheme in [UdpPunchScheme::Udp, UdpPunchScheme::Http3Mux] {
-            let (client_socket, server_socket) = WireSocket::pair();
-            let client_layer = wire_layer(client_socket.clone());
-            let server_layer = wire_layer(server_socket.clone());
-            let mut acceptor = CoreUdpPunchAcceptor::<WireHost> {
-                layer: server_layer.clone(),
-                scheme,
-            };
-            let (client, accepted) = tokio::time::timeout(Duration::from_secs(1), async {
-                tokio::join!(
-                    client_layer.connect(server_socket.local_addr),
-                    acceptor.accept()
-                )
-            })
-            .await
-            .unwrap();
-            let client = client.unwrap();
-            let (connected, url) = accepted.unwrap().into_connected();
-            let (server, _guard) = connected.into_parts();
-            assert_eq!(url.scheme(), scheme.as_str());
-            assert_eq!(client.kind(), UdpSessionKind::EasyTierMux);
-            assert_eq!(server.kind(), UdpSessionKind::EasyTierMux);
-            let counter = CoreUdpPunchConnCounter::<WireHost> {
-                layer: Arc::downgrade(&server_layer),
-            };
-            assert_eq!(counter.get(), Some(1));
+    async fn raw_punch_keeps_easytier_mux_wire_protocol() {
+        let scheme = UdpPunchScheme::Udp;
+        let (client_socket, server_socket) = WireSocket::pair();
+        let client_layer = wire_layer(client_socket.clone());
+        let server_layer = wire_layer(server_socket.clone());
+        let mut acceptor = CoreUdpPunchAcceptor::<WireHost> {
+            layer: server_layer.clone(),
+            scheme,
+        };
+        let (client, accepted) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                client_layer.connect(server_socket.local_addr),
+                acceptor.accept()
+            )
+        })
+        .await
+        .unwrap();
+        let client = client.unwrap();
+        let (connected, url) = accepted.unwrap().into_connected();
+        let (server, _guard) = connected.into_parts();
+        assert_eq!(url.scheme(), scheme.as_str());
+        assert_eq!(client.kind(), UdpSessionKind::EasyTierMux);
+        assert_eq!(server.kind(), UdpSessionKind::EasyTierMux);
+        let counter = CoreUdpPunchConnCounter::<WireHost> {
+            layer: Arc::downgrade(&server_layer),
+        };
+        assert_eq!(counter.get(), Some(1));
 
-            let payload = b"mux-payload";
-            client.send(payload).await.unwrap();
-            let mut buf = [0; 64];
-            let len = tokio::time::timeout(Duration::from_secs(1), server.recv(&mut buf))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(&buf[..len], payload);
-            let sent = client_socket.sent.lock().unwrap();
-            let datagram = &sent.last().unwrap().0;
-            assert_eq!(datagram.len(), payload.len() + UDP_TUNNEL_HEADER_SIZE);
-            assert_eq!(&datagram[UDP_TUNNEL_HEADER_SIZE..], payload);
-            drop(sent);
-            drop(server);
-            assert_eq!(counter.get(), Some(0));
-            drop(client);
-            assert_eq!(client_layer.active_session_count(), 0);
-        }
+        let payload = b"mux-payload";
+        client.send(payload).await.unwrap();
+        let mut buf = [0; 64];
+        let len = tokio::time::timeout(Duration::from_secs(1), server.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf[..len], payload);
+        let sent = client_socket.sent.lock().unwrap();
+        let datagram = &sent.last().unwrap().0;
+        assert_eq!(datagram.len(), payload.len() + UDP_TUNNEL_HEADER_SIZE);
+        assert_eq!(&datagram[UDP_TUNNEL_HEADER_SIZE..], payload);
+        drop(sent);
+        drop(server);
+        assert_eq!(counter.get(), Some(0));
+        drop(client);
+        assert_eq!(client_layer.active_session_count(), 0);
     }
 
     struct MockStun {

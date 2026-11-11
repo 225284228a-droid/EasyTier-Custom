@@ -98,8 +98,7 @@ message Flags {
   // advertising another direct edge to the same destination.
   bool prefer_peer_relay = 44 [(easytier.flag) = { default: "false" }];
 
-  // Legacy disguise booleans, replaced by p2p_disguise_mode. Configuration
-  // files that still use them are migrated when they are loaded.
+  // Former disguise booleans, replaced by p2p_disguise_mode.
   reserved 50045, 50046, 50047;
   reserved "only_use_wss_http3_for_hole_punching", "prefer_wss_http3_for_p2p", "disable_wss_http3_for_p2p";
 

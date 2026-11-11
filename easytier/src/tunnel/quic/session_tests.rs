@@ -1,10 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use easytier_core::{
-    connectivity::{
-        protocol::ServerTunnelAcceptor,
-        transport::{ConnectedUdpSession, UdpSessionMode, connect_udp},
-    },
+    connectivity::transport::{ConnectedUdpSession, UdpSessionMode, connect_udp},
     packet::{PEER_MANAGER_HEADER_SIZE, ZCPacket},
     socket::{
         SocketListener,
@@ -13,23 +10,23 @@ use easytier_core::{
             VirtualUdpSocket,
         },
     },
-    tunnel::{
-        Tunnel, TunnelError,
-        framed::{FramedReader, FramedWriter},
-    },
+    tunnel::{Tunnel, TunnelError},
 };
 use futures::{SinkExt, StreamExt};
-use quinn::Endpoint;
+use quinn::{ClientConfig, Connection, Endpoint, ServerConfig, default_runtime};
 use tokio::task::JoinHandle;
 
 use crate::{
     common::netns::NetNS,
     host_runtime::native_host_runtime,
     socket::udp::{RuntimeUdpSessionSocketListener, new_runtime_udp_session_listener},
-    tunnel::common::tests::_tunnel_echo_server,
 };
 
-use super::session_common::MAX_TUNNEL_BODY_SIZE;
+use super::{
+    QuicAcceptedSession, client_config, endpoint_config, server_config,
+    session_common::MAX_TUNNEL_BODY_SIZE, upgrade_connected, window_source,
+};
+use easytier_core::connectivity::protocol::ServerProtocolAdmissionController;
 
 pub(crate) async fn connected_udp_session_fixture(
     scheme: &str,
@@ -61,78 +58,6 @@ pub(crate) async fn connected_udp_session_fixture(
     .await
     .unwrap();
     (listener, connected, remote_addr)
-}
-
-pub(crate) async fn accept_two_connections_on_same_session(
-    accepted: &mut dyn ServerTunnelAcceptor,
-    listener: &mut RuntimeUdpSessionSocketListener,
-) -> (Box<dyn Tunnel>, Box<dyn Tunnel>) {
-    let first = accepted.accept().await.unwrap();
-    let second = accepted.accept().await.unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), listener.accept())
-            .await
-            .is_err(),
-        "both {} connections must use the first accepted UDP session",
-        listener.local_url().scheme(),
-    );
-    (first, second)
-}
-
-pub(crate) async fn assert_second_connection_survives_first_close(
-    endpoint: Endpoint,
-    remote_addr: SocketAddr,
-    server_task: JoinHandle<(Box<dyn Tunnel>, Box<dyn Tunnel>)>,
-    protocol_name: &str,
-) {
-    let first_connection = endpoint
-        .connect(remote_addr, "localhost")
-        .unwrap()
-        .await
-        .unwrap();
-    super::tests::assert_bbr_controller(&first_connection);
-    let (first_write, first_read) = first_connection.open_bi().await.unwrap();
-    let mut first_send = FramedWriter::new(first_write);
-    first_send
-        .send(ZCPacket::new_with_payload(
-            format!("first {protocol_name} connection").as_bytes(),
-        ))
-        .await
-        .unwrap();
-    let second_connection = endpoint
-        .connect(remote_addr, "localhost")
-        .unwrap()
-        .await
-        .unwrap();
-    let (second_write, second_read) = second_connection.open_bi().await.unwrap();
-    let mut second_send = FramedWriter::new(second_write);
-    let ready_payload = format!("second {protocol_name} connection ready");
-    second_send
-        .send(ZCPacket::new_with_payload(ready_payload.as_bytes()))
-        .await
-        .unwrap();
-    let (first_server, second_server) = server_task.await.unwrap();
-
-    drop(first_send);
-    drop(first_read);
-    drop(first_server);
-    first_connection.close(0u32.into(), b"first connection done");
-
-    let echo_task = tokio::spawn(_tunnel_echo_server(second_server, false));
-    let mut recv = FramedReader::new(second_read, MAX_TUNNEL_BODY_SIZE);
-    let ready = recv.next().await.unwrap().unwrap();
-    assert_eq!(ready.payload(), ready_payload.as_bytes());
-    let after_close_payload = format!("second {protocol_name} connection after first closed");
-    second_send
-        .send(ZCPacket::new_with_payload(after_close_payload.as_bytes()))
-        .await
-        .unwrap();
-    let packet = recv.next().await.unwrap().unwrap();
-    assert_eq!(packet.payload(), after_close_payload.as_bytes());
-    let _ = second_send.close().await;
-    echo_task.await.unwrap();
-    second_connection.close(0u32.into(), b"second connection done");
-    endpoint.close(0u32.into(), b"test done");
 }
 
 pub(crate) async fn assert_bidirectional_frame_boundaries(
@@ -193,4 +118,88 @@ pub(crate) async fn assert_bidirectional_frame_boundaries(
     }
     assert!(server_read.next().await.is_none());
     assert!(client_read.next().await.is_none());
+}
+
+pub(crate) fn assert_bbr_controller(connection: &Connection) {
+    let controller = connection.congestion_state().into_any();
+    assert!(controller.is::<quinn::congestion::Bbr>());
+}
+
+pub(crate) async fn assert_endpoint_controllers(
+    client_config: ClientConfig,
+    server_config: ServerConfig,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let runtime = default_runtime().unwrap();
+        let server_endpoint = Endpoint::new(
+            endpoint_config(),
+            Some(server_config),
+            std::net::UdpSocket::bind("127.0.0.1:0").unwrap(),
+            runtime.clone(),
+        )
+        .unwrap();
+        let mut client_endpoint = Endpoint::new(
+            endpoint_config(),
+            None,
+            std::net::UdpSocket::bind("127.0.0.1:0").unwrap(),
+            runtime,
+        )
+        .unwrap();
+        client_endpoint.set_default_client_config(client_config);
+        let connecting = client_endpoint
+            .connect(server_endpoint.local_addr().unwrap(), "localhost")
+            .unwrap();
+        let (client, server) = tokio::join!(connecting, async {
+            server_endpoint.accept().await.unwrap().await.unwrap()
+        });
+        let client = client.unwrap();
+        assert_bbr_controller(&client);
+        assert_bbr_controller(&server);
+        let client_source = window_source(&client);
+        let server_source = window_source(&server);
+        for source in [&client_source, &server_source] {
+            let window = source
+                .transmission_window()
+                .expect("a newly established QUIC path must expose its sending window");
+            assert_eq!(
+                window.congestion_control,
+                easytier_core::foundation::bandwidth::CongestionControl::Bbr,
+            );
+            assert!(window.congestion_window_bytes > 0);
+            assert!(window.estimated_bps().is_some());
+        }
+        client_endpoint.close(0u32.into(), b"test done");
+        server_endpoint.close(0u32.into(), b"test done");
+        let _ = tokio::join!(client.closed(), server.closed());
+        assert!(client_source.transmission_window().is_none());
+        assert!(server_source.transmission_window().is_none());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn quic_endpoints_use_bbr() {
+    assert_endpoint_controllers(client_config(), server_config()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn quic_tunnel_enforces_bidirectional_frame_boundary() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (mut listener, connected, _) = connected_udp_session_fixture("quic").await;
+        let local_url = listener.local_url();
+        let remote_url = local_url.clone();
+        let server_task = tokio::spawn(async move {
+            let session = listener.accept().await.unwrap();
+            let admission = ServerProtocolAdmissionController::quic()
+                .try_admit()
+                .unwrap();
+            let mut accepted = QuicAcceptedSession::new(session, local_url, admission).unwrap();
+            accepted.accept().await.unwrap()
+        });
+        let client = upgrade_connected(connected, remote_url).await.unwrap();
+        assert_bidirectional_frame_boundaries(client, server_task).await;
+    })
+    .await
+    .unwrap();
 }

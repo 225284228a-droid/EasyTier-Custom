@@ -173,9 +173,6 @@ pub(crate) fn merge_network_config_toml(
     config: &NetworkConfig,
 ) -> Result<String, anyhow::Error> {
     let generated_toml = config.gen_config()?.dump();
-    // Fold legacy disguise booleans into `p2p_disguise_mode`, which the form owns.
-    let migrated = crate::config::toml::migrate_legacy_p2p_disguise_flags(original_toml)?;
-    let original_toml = migrated.as_deref().unwrap_or(original_toml);
     let mut original = toml::from_str::<toml::Table>(original_toml)
         .context("failed to parse the original TOML document")?;
     let mut generated = toml::from_str::<toml::Table>(&generated_toml)

@@ -23,8 +23,8 @@ use crate::tunnel::ring::RingTunnelRegistry;
 use crate::{
     config::PeerId,
     connectivity::{
-        protocol::ClientProtocolUpgrader,
-        transport::{self, ConnectedByteStream, ConnectedTransport, IpTransport, UdpSessionMode},
+        protocol::{ClientProtocolUpgrader, ProtocolTransport, protocol_transport},
+        transport::{self, ConnectedByteStream, ConnectedTransport, UdpSessionMode},
     },
     events::{CoreEvent, CoreEventSink},
     foundation::bandwidth::TransmissionWindowSource,
@@ -52,18 +52,41 @@ fn is_manual_endpoint_scheme(scheme: &str) -> bool {
 
 /// Checks supported connector and discovery schemes without resolving the URL.
 pub fn validate_manual_url(url: &Url) -> anyhow::Result<()> {
-    if manual_transport_from_url(url).is_ok() || is_manual_endpoint_scheme(url.scheme()) {
+    if ManualTransport::from_url(url).is_ok() || is_manual_endpoint_scheme(url.scheme()) {
         Ok(())
     } else {
         anyhow::bail!("unsupported core manual connector URL: {url}")
     }
 }
 
-/// Classifies a manual endpoint URL into its transport for the manual
-/// connector's socket purpose.
-fn manual_transport_from_url(url: &Url) -> anyhow::Result<IpTransport> {
-    IpTransport::from_url(url, TcpSocketPurpose::ManualConnect)
-        .ok_or_else(|| anyhow::anyhow!("unsupported core manual connector URL: {url}"))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManualTransport {
+    Tcp(TcpSocketPurpose),
+    Udp(UdpSessionMode),
+    ByteStream,
+}
+
+impl ManualTransport {
+    pub(crate) fn from_url(url: &Url) -> anyhow::Result<Self> {
+        match protocol_transport(url.scheme()) {
+            Some(ProtocolTransport::Tcp) => Ok(Self::Tcp(TcpSocketPurpose::ManualConnect)),
+            Some(ProtocolTransport::FakeTcp) => Ok(Self::Tcp(TcpSocketPurpose::FakeTcp)),
+            Some(ProtocolTransport::Udp(mode)) => Ok(Self::Udp(mode)),
+            None if matches!(url.scheme(), "ring" | "unix") => Ok(Self::ByteStream),
+            None => anyhow::bail!("unsupported core manual connector URL: {url}"),
+        }
+    }
+
+    fn is_udp(self) -> bool {
+        matches!(self, Self::Udp(_))
+    }
+
+    fn supports_interface_bind(self) -> bool {
+        !matches!(
+            self,
+            Self::Tcp(TcpSocketPurpose::FakeTcp) | Self::ByteStream
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,8 +216,8 @@ where
             );
         }
 
-        let transport = manual_transport_from_url(&endpoint.url)?;
-        let tunnel = if transport == IpTransport::ByteStream {
+        let transport = ManualTransport::from_url(&endpoint.url)?;
+        let tunnel = if transport == ManualTransport::ByteStream {
             self.protocol
                 .upgrade_client(
                     ConnectedTransport::ByteStream(
@@ -315,13 +338,13 @@ impl ManualConnectorOptions {
 
     pub(crate) fn socket_context(
         &self,
-        transport: IpTransport,
+        transport: ManualTransport,
         ip_version: IpVersion,
     ) -> SocketContext {
         let context = match transport {
-            IpTransport::Tcp(_) => self.tcp_bind.context.clone(),
-            IpTransport::Udp(_) => self.udp_bind.context.clone(),
-            IpTransport::ByteStream => SocketContext::default(),
+            ManualTransport::Tcp(_) => self.tcp_bind.context.clone(),
+            ManualTransport::Udp(_) => self.udp_bind.context.clone(),
+            ManualTransport::ByteStream => SocketContext::default(),
         };
         context.with_ip_version(ip_version)
     }
@@ -680,7 +703,7 @@ async fn resolve_manual_endpoint(
         if !visited.insert(url.clone()) {
             anyhow::bail!("manual endpoint resolution cycle detected at {url}");
         }
-        if manual_transport_from_url(&url).is_ok() {
+        if ManualTransport::from_url(&url).is_ok() {
             return Ok(ResolvedManualEndpoint {
                 url,
                 tunnel_prefixes,
@@ -741,7 +764,10 @@ async fn resolve_reconnect_ip_versions(
     context: SocketContext,
     dns: &dyn DnsResolver,
 ) -> anyhow::Result<Vec<IpVersion>> {
-    if matches!(manual_transport_from_url(url), Ok(IpTransport::ByteStream)) {
+    if matches!(
+        ManualTransport::from_url(url),
+        Ok(ManualTransport::ByteStream)
+    ) {
         return Ok(vec![IpVersion::Both]);
     }
     if matches!(url.scheme(), "txt" | "srv") {
@@ -792,7 +818,7 @@ where
         resolve_reconnect_ip_versions(
             &normalized_url,
             connect_timeout,
-            manual_transport_from_url(&normalized_url)
+            ManualTransport::from_url(&normalized_url)
                 .ok()
                 .map(|transport| data.options.socket_context(transport, IpVersion::Both))
                 .unwrap_or_default(),
@@ -860,10 +886,10 @@ where
         );
     }
     let transport = (endpoint.url.scheme() != "ring" && !uses_external_tunnel)
-        .then(|| manual_transport_from_url(&endpoint.url))
+        .then(|| ManualTransport::from_url(&endpoint.url))
         .transpose()?;
     let resolved = match transport {
-        None | Some(IpTransport::ByteStream) => None,
+        None | Some(ManualTransport::ByteStream) => None,
         Some(transport) => Some(
             with_timeout_budget("resolve", started_at, connect_timeout, async {
                 let peer_manager = data.peer_manager.upgrade().ok_or_else(|| {
@@ -963,7 +989,7 @@ where
 
 pub(crate) async fn connect_resolved<H>(
     host: Arc<H>,
-    transport: IpTransport,
+    transport: ManualTransport,
     remote_addr: SocketAddr,
     bind_addrs: Vec<SocketAddr>,
     tcp_bind: TcpBindOptions,
@@ -973,17 +999,17 @@ where
     H: ManualConnectorHost,
 {
     match transport {
-        IpTransport::Tcp(purpose) => {
+        ManualTransport::Tcp(purpose) => {
             transport::connect_tcp(host, remote_addr, bind_addrs, tcp_bind, purpose)
                 .await
                 .map(ConnectedTransport::Tcp)
         }
-        IpTransport::Udp(mode) => {
+        ManualTransport::Udp(mode) => {
             transport::connect_udp(host, remote_addr, bind_addrs, udp_bind, mode)
                 .await
                 .map(ConnectedTransport::Udp)
         }
-        IpTransport::ByteStream => {
+        ManualTransport::ByteStream => {
             anyhow::bail!("external byte streams do not use an IP transport address")
         }
     }
@@ -992,7 +1018,7 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn connect_resolved_tunnel<H>(
     host: Arc<H>,
-    transport: IpTransport,
+    transport: ManualTransport,
     remote_addr: SocketAddr,
     bind_addrs: Vec<SocketAddr>,
     tcp_bind: TcpBindOptions,
@@ -1003,7 +1029,7 @@ async fn connect_resolved_tunnel<H>(
 where
     H: ManualConnectorHost,
 {
-    if let IpTransport::Udp(mode @ UdpSessionMode::Classified(_)) = transport {
+    if let ManualTransport::Udp(mode @ UdpSessionMode::Classified(_)) = transport {
         return transport::connect_udp_with(
             host,
             remote_addr,
@@ -1304,43 +1330,43 @@ mod tests {
         let cases = [
             (
                 "tcp://127.0.0.1:1",
-                IpTransport::Tcp(TcpSocketPurpose::ManualConnect),
+                ManualTransport::Tcp(TcpSocketPurpose::ManualConnect),
             ),
             (
                 "ws://127.0.0.1:1",
-                IpTransport::Tcp(TcpSocketPurpose::ManualConnect),
+                ManualTransport::Tcp(TcpSocketPurpose::ManualConnect),
             ),
             (
                 "wss://127.0.0.1:1",
-                IpTransport::Tcp(TcpSocketPurpose::ManualConnect),
+                ManualTransport::Tcp(TcpSocketPurpose::ManualConnect),
             ),
             (
                 "faketcp://127.0.0.1:1",
-                IpTransport::Tcp(TcpSocketPurpose::FakeTcp),
+                ManualTransport::Tcp(TcpSocketPurpose::FakeTcp),
             ),
             (
                 "udp://127.0.0.1:1",
-                IpTransport::Udp(UdpSessionMode::EasyTierMux),
+                ManualTransport::Udp(UdpSessionMode::EasyTierMux),
             ),
             (
                 "wg://127.0.0.1:1",
-                IpTransport::Udp(UdpSessionMode::Classified(UdpSessionProtocol::WireGuard)),
+                ManualTransport::Udp(UdpSessionMode::Classified(UdpSessionProtocol::WireGuard)),
             ),
             (
                 "quic://127.0.0.1:1",
-                IpTransport::Udp(UdpSessionMode::Classified(UdpSessionProtocol::Quic)),
+                ManualTransport::Udp(UdpSessionMode::Classified(UdpSessionProtocol::Quic)),
             ),
-            ("ring://local", IpTransport::ByteStream),
-            ("unix:///tmp/easytier.sock", IpTransport::ByteStream),
+            ("ring://local", ManualTransport::ByteStream),
+            ("unix:///tmp/easytier.sock", ManualTransport::ByteStream),
         ];
 
         for (url, expected) in cases {
             assert_eq!(
-                manual_transport_from_url(&url.parse().unwrap()).unwrap(),
+                ManualTransport::from_url(&url.parse().unwrap()).unwrap(),
                 expected
             );
         }
-        assert!(manual_transport_from_url(&"http://127.0.0.1:1".parse().unwrap()).is_err());
+        assert!(ManualTransport::from_url(&"http://127.0.0.1:1".parse().unwrap()).is_err());
         assert!(validate_manual_url(&"http://127.0.0.1:1".parse().unwrap()).is_ok());
     }
 
@@ -1393,7 +1419,7 @@ mod tests {
         let url: Url = "http3://198.51.100.1:11014".parse().unwrap();
         let tunnel = connect_resolved_tunnel(
             Arc::new(TestHost::default()),
-            manual_transport_from_url(&url).unwrap(),
+            ManualTransport::from_url(&url).unwrap(),
             "198.51.100.1:11014".parse().unwrap(),
             vec![
                 "192.0.2.1:0".parse().unwrap(),

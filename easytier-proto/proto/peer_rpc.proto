@@ -208,7 +208,7 @@ message SelectPunchListenerRequest {
   bool prefer_port_mapping = 2;
   // Empty keeps the official raw-UDP punch protocol compatible.
   string scheme = 50003;
-  // Only used with http3. Absent keeps legacy EasyTier UDP encapsulation.
+  // Always set with http3; receivers no longer read it.
   bool native_http3 = 50004;
   // Register source observation before returning the listener address.
   optional uint32 transaction_id = 3;

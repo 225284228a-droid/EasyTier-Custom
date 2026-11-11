@@ -1,5 +1,5 @@
 use crate::{
-    config::{P2pPolicyFlags, PeerDisguiseP2pFlags, normalized_p2p_protocol, p2p_protocol_rank},
+    config::{P2pDisguiseMode, normalized_p2p_protocol, p2p_protocol_rank},
     peers::PeerConnectionOrigin,
     proto::common::Flags,
 };
@@ -15,18 +15,14 @@ const FEATURE_PREFIX: &str = "p2p-cleanup-v2:";
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CleanupPolicySnapshot {
     protocol: String,
-    prefer: bool,
-    only: bool,
-    disabled: bool,
+    disguise: P2pDisguiseMode,
 }
 
 impl CleanupPolicySnapshot {
     fn from_flags(flags: &Flags) -> Self {
         Self {
             protocol: normalized_p2p_protocol(&flags.default_protocol),
-            prefer: flags.p2p_disguise().prefers(),
-            only: flags.p2p_disguise().requires(),
-            disabled: flags.p2p_disguise().forbids(),
+            disguise: flags.p2p_disguise(),
         }
     }
 
@@ -36,14 +32,6 @@ impl CleanupPolicySnapshot {
             && bytes.all(|byte| {
                 byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"+.-".contains(&byte)
             })
-    }
-
-    fn peer_disguise_flags(&self) -> PeerDisguiseP2pFlags {
-        PeerDisguiseP2pFlags {
-            prefer_wss_http3_for_p2p: self.prefer,
-            only_use_wss_http3_for_p2p: self.only,
-            disable_wss_http3_for_p2p: self.disabled,
-        }
     }
 }
 
@@ -69,9 +57,9 @@ impl CleanupOffer {
             format!(
                 "{FEATURE_PREFIX}{}:{}:{}:{}:{}:{origin}:{}",
                 self.policy.protocol,
-                u8::from(self.policy.prefer),
-                u8::from(self.policy.only),
-                u8::from(self.policy.disabled),
+                u8::from(self.policy.disguise.prefers()),
+                u8::from(self.policy.disguise.requires()),
+                u8::from(self.policy.disguise.forbids()),
                 u8::from(self.enabled),
                 self.conn_id,
             )
@@ -123,9 +111,7 @@ impl CleanupOffer {
             policy = Some(Self {
                 policy: CleanupPolicySnapshot {
                     protocol: protocol.to_owned(),
-                    prefer,
-                    only,
-                    disabled,
+                    disguise: P2pDisguiseMode::from_wire(prefer, disabled, only),
                 },
                 enabled,
                 origin,
@@ -210,12 +196,10 @@ impl CleanupPolicyPair {
         } else {
             &remote.policy
         };
-        let disguise = !self.local.policy.disabled
-            && !remote.policy.disabled
-            && (self.local.policy.prefer
-                || self.local.policy.only
-                || remote.policy.prefer
-                || remote.policy.only);
+        let (local_mode, remote_mode) = (self.local.policy.disguise, remote.policy.disguise);
+        let disguise = !local_mode.forbids()
+            && !remote_mode.forbids()
+            && (local_mode.initiates() || remote_mode.initiates());
         Some(p2p_protocol_rank(&preferred.protocol, disguise, tunnel))
     }
 
@@ -259,8 +243,9 @@ impl CleanupPolicyPair {
         [&self.local.policy, &remote.policy]
             .into_iter()
             .all(|policy| {
-                p2p_protocol_rank(&policy.protocol, !policy.disabled, replacement)
-                    < p2p_protocol_rank(&policy.protocol, !policy.disabled, candidate)
+                let disguise = !policy.disguise.forbids();
+                p2p_protocol_rank(&policy.protocol, disguise, replacement)
+                    < p2p_protocol_rank(&policy.protocol, disguise, candidate)
             })
     }
 
@@ -269,13 +254,12 @@ impl CleanupPolicyPair {
         if !self.matches_current_flags(current_flags) {
             return None;
         }
-        let local = P2pPolicyFlags {
-            prefer_wss_http3_for_p2p: self.local.policy.prefer,
-            only_use_wss_http3_for_hole_punching: self.local.policy.only,
-            disable_wss_http3_for_p2p: self.local.policy.disabled,
-            ..Default::default()
-        };
-        Some(local.use_wss_http3_with_peer(&remote.policy.peer_disguise_flags()))
+        Some(
+            self.local
+                .policy
+                .disguise
+                .disguises_with(remote.policy.disguise),
+        )
     }
 }
 

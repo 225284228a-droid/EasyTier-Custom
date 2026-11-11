@@ -23,8 +23,6 @@ pub use dhcp::DhcpConfig;
 pub(crate) use dhcp::valid_ipv6_subnet;
 pub use encryption::EncryptionAlgorithm;
 
-use crate::proto::common::PeerFeatureFlag;
-
 pub(crate) const DEFAULT_PROTOCOL: &str = "udp";
 
 pub(crate) const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
@@ -313,7 +311,7 @@ impl Default for PeerPolicyConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct P2pPolicyFlags {
     pub disable_udp_hole_punching: bool,
     pub disable_sym_hole_punching: bool,
@@ -321,52 +319,36 @@ pub struct P2pPolicyFlags {
     pub lazy_p2p: bool,
     pub disable_p2p: bool,
     pub need_p2p: bool,
-    pub only_use_wss_http3_for_hole_punching: bool,
+    pub disguise: P2pDisguiseMode,
     pub prefer_http3_for_p2p: bool,
-    pub prefer_wss_http3_for_p2p: bool,
-    pub disable_wss_http3_for_p2p: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PeerDisguiseP2pFlags {
-    pub prefer_wss_http3_for_p2p: bool,
-    pub disable_wss_http3_for_p2p: bool,
-    pub only_use_wss_http3_for_p2p: bool,
-}
-
-impl From<&PeerFeatureFlag> for PeerDisguiseP2pFlags {
-    fn from(value: &PeerFeatureFlag) -> Self {
+/// No policy set: like an official node, this does not initiate disguise.
+impl Default for P2pPolicyFlags {
+    fn default() -> Self {
         Self {
-            prefer_wss_http3_for_p2p: value.prefer_wss_http3_for_p2p,
-            disable_wss_http3_for_p2p: value.disable_wss_http3_for_p2p,
-            only_use_wss_http3_for_p2p: value.only_use_wss_http3_for_p2p,
+            disable_udp_hole_punching: false,
+            disable_sym_hole_punching: false,
+            disable_upnp: false,
+            lazy_p2p: false,
+            disable_p2p: false,
+            need_p2p: false,
+            disguise: P2pDisguiseMode::Off,
+            prefer_http3_for_p2p: false,
         }
     }
 }
 
 impl P2pPolicyFlags {
-    pub fn use_wss_http3_with_peer(&self, peer: &PeerDisguiseP2pFlags) -> bool {
-        if self.disable_wss_http3_for_p2p || peer.disable_wss_http3_for_p2p {
-            return false;
-        }
-        self.only_use_wss_http3_for_hole_punching
-            || peer.only_use_wss_http3_for_p2p
-            || (self.prefer_wss_http3_for_p2p && peer.prefer_wss_http3_for_p2p)
-    }
-
-    pub fn allow_raw_with_peer(&self, peer: &PeerDisguiseP2pFlags) -> bool {
-        !self.only_use_wss_http3_for_hole_punching && !peer.only_use_wss_http3_for_p2p
-    }
-
-    pub(crate) fn transport_policy(
-        &self,
-        peer: Option<&PeerDisguiseP2pFlags>,
-    ) -> P2pTransportPolicy {
-        let peer_flags = peer.copied().unwrap_or_default();
-        let use_disguise = self.use_wss_http3_with_peer(&peer_flags);
+    /// `peer` is the policy the peer advertises, or `None` while its route
+    /// metadata is unknown; such a peer is dialed like one that advertises
+    /// nothing.
+    pub(crate) fn transport_policy(&self, peer: Option<P2pDisguiseMode>) -> P2pTransportPolicy {
+        let peer_mode = peer.unwrap_or(P2pDisguiseMode::Off);
+        let use_disguise = self.disguise.disguises_with(peer_mode);
         P2pTransportPolicy {
             use_disguise,
-            allow_raw: self.allow_raw_with_peer(&peer_flags),
+            allow_raw: self.disguise.allows_raw_with(peer_mode),
             negotiated_disguise: peer.map(|_| use_disguise),
         }
     }
@@ -813,19 +795,13 @@ mod tests {
 
     fn flags(prefer: bool, disable: bool, only: bool) -> P2pPolicyFlags {
         P2pPolicyFlags {
-            prefer_wss_http3_for_p2p: prefer,
-            disable_wss_http3_for_p2p: disable,
-            only_use_wss_http3_for_hole_punching: only,
+            disguise: peer(prefer, disable, only),
             ..Default::default()
         }
     }
 
-    fn peer(prefer: bool, disable: bool, only: bool) -> PeerDisguiseP2pFlags {
-        PeerDisguiseP2pFlags {
-            prefer_wss_http3_for_p2p: prefer,
-            disable_wss_http3_for_p2p: disable,
-            only_use_wss_http3_for_p2p: only,
-        }
+    fn peer(prefer: bool, disable: bool, only: bool) -> P2pDisguiseMode {
+        P2pDisguiseMode::from_wire(prefer, disable, only)
     }
 
     #[test]
@@ -835,14 +811,14 @@ mod tests {
         let disable = flags(false, true, false);
         let only = flags(false, false, true);
 
-        assert!(prefer.use_wss_http3_with_peer(&peer(true, false, false)));
-        assert!(!prefer.use_wss_http3_with_peer(&peer(false, false, false)));
-        assert!(prefer.use_wss_http3_with_peer(&peer(false, false, true)));
-        assert!(only.use_wss_http3_with_peer(&peer(false, false, false)));
-        assert!(!prefer.use_wss_http3_with_peer(&peer(false, true, false)));
-        assert!(!disable.use_wss_http3_with_peer(&peer(false, false, true)));
-        assert!(standard.allow_raw_with_peer(&peer(false, false, false)));
-        assert!(!only.allow_raw_with_peer(&peer(false, false, false)));
+        assert!(prefer.disguise.disguises_with(peer(true, false, false)));
+        assert!(!prefer.disguise.disguises_with(peer(false, false, false)));
+        assert!(prefer.disguise.disguises_with(peer(false, false, true)));
+        assert!(only.disguise.disguises_with(peer(false, false, false)));
+        assert!(!prefer.disguise.disguises_with(peer(false, true, false)));
+        assert!(!disable.disguise.disguises_with(peer(false, false, true)));
+        assert!(standard.disguise.allows_raw_with(peer(false, false, false)));
+        assert!(!only.disguise.allows_raw_with(peer(false, false, false)));
     }
 
     #[test]
@@ -871,7 +847,7 @@ mod tests {
         ];
         for (local_index, (local_name, local, _)) in modes.iter().enumerate() {
             for (remote_index, (remote_name, _, remote)) in modes.iter().enumerate() {
-                let policy = local.transport_policy(Some(remote));
+                let policy = local.transport_policy(Some(*remote));
                 let (disguised, raw) = expected[local_index][remote_index];
                 let label = format!("{local_name} -> {remote_name}");
                 assert_eq!(policy.use_disguise(), disguised, "{label}");
@@ -908,7 +884,7 @@ mod tests {
             flags(false, false, true),
         ] {
             let unknown = local.transport_policy(None);
-            let legacy = local.transport_policy(Some(&PeerDisguiseP2pFlags::default()));
+            let legacy = local.transport_policy(Some(P2pDisguiseMode::Off));
             assert_eq!(unknown.negotiated_disguise(), None);
             assert_eq!(legacy.negotiated_disguise(), Some(legacy.use_disguise()));
             // Unknown peers keep legacy dialing compatibility without
@@ -925,15 +901,15 @@ mod tests {
             );
         }
         let prefer = flags(true, false, false);
-        let rejected = prefer.transport_policy(Some(&peer(false, true, false)));
+        let rejected = prefer.transport_policy(Some(peer(false, true, false)));
         assert_eq!(rejected.negotiated_disguise(), Some(false));
     }
 
     #[test]
     fn p2p_transport_policy_capability_fallback_keeps_negotiation() {
         let remote = peer(true, false, false);
-        let prefer = flags(true, false, false).transport_policy(Some(&remote));
-        let only = flags(false, false, true).transport_policy(Some(&remote));
+        let prefer = flags(true, false, false).transport_policy(Some(remote));
+        let only = flags(false, false, true).transport_policy(Some(remote));
         assert_eq!(prefer.select_disguised(false), Some(false));
         assert_eq!(only.select_disguised(false), None);
         assert_eq!(prefer.negotiated_disguise(), Some(true));

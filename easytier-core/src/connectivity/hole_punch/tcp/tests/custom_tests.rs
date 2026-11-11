@@ -1,74 +1,10 @@
+//! Custom tests for TCP hole punching, kept out of the upstream `tests`
+//! module so upstream test changes merge without touching them.
+
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::*;
 use crate::proto::common::StunInfo;
-use crate::tunnel::Tunnel;
-
-#[derive(Default)]
-struct MockProtocols {
-    client_upgrades: AtomicUsize,
-    server_upgrades: AtomicUsize,
-    fail_client_upgrade: AtomicBool,
-}
-
-#[async_trait]
-impl ClientProtocolUpgrader<()> for MockProtocols {
-    fn supports_scheme(&self, scheme: &str) -> bool {
-        matches!(scheme, "tcp" | "wss")
-    }
-
-    async fn upgrade_client(
-        &self,
-        connected: ConnectedTransport<()>,
-        _requested_url: url::Url,
-    ) -> anyhow::Result<Box<dyn Tunnel>> {
-        let ConnectedTransport::Tcp(()) = connected else {
-            anyhow::bail!("expected TCP transport");
-        };
-        if self.fail_client_upgrade.load(Ordering::Relaxed) {
-            anyhow::bail!("mock client upgrade failure");
-        }
-        self.client_upgrades.fetch_add(1, Ordering::Relaxed);
-        Ok(crate::tunnel::ring::create_ring_tunnel_pair().0)
-    }
-}
-
-#[async_trait]
-impl ServerProtocolUpgrader<()> for MockProtocols {
-    fn supports_scheme(&self, scheme: &str) -> bool {
-        matches!(scheme, "tcp" | "wss")
-    }
-
-    async fn upgrade_tcp(
-        &self,
-        _socket: (),
-        _local_url: url::Url,
-    ) -> anyhow::Result<ServerProtocolUpgrade> {
-        self.server_upgrades.fetch_add(1, Ordering::Relaxed);
-        Ok(ServerProtocolUpgrade::Tunnel(
-            crate::tunnel::ring::create_ring_tunnel_pair().0,
-        ))
-    }
-
-    async fn upgrade_udp(
-        &self,
-        _session: crate::socket::udp::UdpSession,
-        _local_url: url::Url,
-        _admission: Option<crate::connectivity::protocol::ServerProtocolAdmission>,
-    ) -> anyhow::Result<ServerProtocolUpgrade> {
-        anyhow::bail!("unexpected UDP transport")
-    }
-
-    async fn upgrade_byte_stream(
-        &self,
-        _socket: (),
-        _local_url: url::Url,
-        _remote_url: Option<url::Url>,
-    ) -> anyhow::Result<ServerProtocolUpgrade> {
-        anyhow::bail!("unexpected byte stream")
-    }
-}
 
 // Same fake upgraders for the mock host's socket type.
 #[async_trait]
@@ -127,161 +63,6 @@ impl ServerProtocolUpgrader<MockPunchSocket> for MockProtocols {
     ) -> anyhow::Result<ServerProtocolUpgrade> {
         anyhow::bail!("unexpected byte stream")
     }
-}
-
-#[derive(Default)]
-struct MockTunnelSink {
-    clients: AtomicUsize,
-    servers: AtomicUsize,
-    fail_client_admission: AtomicBool,
-}
-
-#[async_trait]
-impl HolePunchTunnelSink for MockTunnelSink {
-    async fn add_client_tunnel(
-        &self,
-        _tunnel: Box<dyn Tunnel>,
-        origin: PeerConnectionOrigin,
-    ) -> anyhow::Result<()> {
-        assert_eq!(origin, PeerConnectionOrigin::TcpHolePunch);
-        if self.fail_client_admission.load(Ordering::Relaxed) {
-            anyhow::bail!("mock client admission failure");
-        }
-        self.clients.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    async fn add_server_tunnel(
-        &self,
-        _tunnel: Box<dyn Tunnel>,
-        origin: PeerConnectionOrigin,
-    ) -> anyhow::Result<()> {
-        assert_eq!(origin, PeerConnectionOrigin::TcpHolePunch);
-        self.servers.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn protocol_sink_upgrades_before_tcp_hole_punch_admission() {
-    let protocols = Arc::new(MockProtocols::default());
-    let tunnel_sink = Arc::new(MockTunnelSink::default());
-    let sink = ProtocolTcpHolePunchTransportSink::new(
-        protocols.clone(),
-        protocols.clone(),
-        protocols.clone(),
-        tunnel_sink.clone(),
-    );
-    let url = url::Url::parse("tcp://198.51.100.1:11010").unwrap();
-
-    sink.add_connected_transport((), url.clone(), TcpHolePunchAdmission::Client)
-        .await
-        .unwrap();
-    sink.add_connected_transport((), url.clone(), TcpHolePunchAdmission::Server)
-        .await
-        .unwrap();
-    sink.add_accepted_transport((), url).await.unwrap();
-
-    assert_eq!(protocols.client_upgrades.load(Ordering::Relaxed), 2);
-    assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 1);
-    assert_eq!(tunnel_sink.clients.load(Ordering::Relaxed), 1);
-    assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 2);
-
-    sink.add_connected_transport(
-        (),
-        url::Url::parse("wss://198.51.100.1:443").unwrap(),
-        TcpHolePunchAdmission::Server,
-    )
-    .await
-    .unwrap();
-    assert_eq!(protocols.server_upgrades.load(Ordering::Relaxed), 2);
-    assert_eq!(tunnel_sink.servers.load(Ordering::Relaxed), 3);
-
-    protocols.fail_client_upgrade.store(true, Ordering::Relaxed);
-    assert!(matches!(
-        sink.add_connected_transport(
-            (),
-            url::Url::parse("tcp://198.51.100.1:11010").unwrap(),
-            TcpHolePunchAdmission::Client,
-        )
-        .await,
-        Err(TcpHolePunchTransportError::Upgrade(_))
-    ));
-    protocols
-        .fail_client_upgrade
-        .store(false, Ordering::Relaxed);
-    tunnel_sink
-        .fail_client_admission
-        .store(true, Ordering::Relaxed);
-    assert!(matches!(
-        sink.add_connected_transport(
-            (),
-            url::Url::parse("tcp://198.51.100.1:11010").unwrap(),
-            TcpHolePunchAdmission::Client,
-        )
-        .await,
-        Err(TcpHolePunchTransportError::Admission(_))
-    ));
-}
-
-#[test]
-fn bind_address_tracks_requested_family_and_port() {
-    assert_eq!(
-        bind_addr_for_port(1234, false),
-        "0.0.0.0:1234".parse().unwrap()
-    );
-    assert_eq!(bind_addr_for_port(4321, true), "[::]:4321".parse().unwrap());
-}
-
-#[test]
-fn symmetric_tcp_nat_variants_are_ineligible_initiators() {
-    assert!(is_symmetric_tcp_nat(NatType::Symmetric));
-    assert!(is_symmetric_tcp_nat(NatType::SymmetricEasyInc));
-    assert!(is_symmetric_tcp_nat(NatType::SymmetricEasyDec));
-    assert!(!is_symmetric_tcp_nat(NatType::PortRestricted));
-    assert!(!is_symmetric_tcp_nat(NatType::Unknown));
-}
-
-#[test]
-fn blacklist_tracks_and_cleans_entries() {
-    let blacklist = TcpHolePunchBlacklist::new();
-    assert!(!blacklist.contains(7));
-    blacklist.insert(7);
-    assert!(blacklist.contains(7));
-    blacklist.cleanup();
-    assert!(blacklist.contains(7));
-}
-
-#[test]
-fn fallback_listener_normalizes_context_to_ipv4() {
-    let bind_addr = "0.0.0.0:23333".parse().unwrap();
-    let context = SocketContext::default()
-        .with_socket_mark(Some(0))
-        .with_netns(Some(crate::socket::NetNamespace::new("test-netns")));
-
-    let options = fallback_listener_options(context, bind_addr);
-
-    assert_eq!(
-        options.purpose,
-        crate::socket::tcp::TcpListenPurpose::HolePunch
-    );
-    assert_eq!(options.bind.local_addr, Some(bind_addr));
-    assert_eq!(options.bind.context.ip_version, IpVersion::V4);
-    assert_eq!(options.bind.context.socket_mark, Some(0));
-    assert_eq!(
-        options
-            .bind
-            .context
-            .netns
-            .as_ref()
-            .map(|netns| netns.token()),
-        Some("test-netns")
-    );
-    assert!(options.bind.only_v6);
-    // The listener shares the punch port with the dial sockets so both
-    // can be alive during the simultaneous-open window.
-    assert_eq!(options.bind.reuse_addr, Some(true));
-    assert!(options.bind.reuse_port);
 }
 
 // ---- Mock hole-punch host with an ordered event log ----
@@ -564,9 +345,10 @@ impl TcpHolePunchPeerSource for MockPeerSource {
             tcp_satisfied: false,
             wss_satisfied: false,
             has_recent_traffic: true,
-            peer_disguise_flags: PeerDisguiseP2pFlags {
-                prefer_wss_http3_for_p2p: self.policy.prefer_wss_http3_for_p2p,
-                ..Default::default()
+            peer_disguise: if self.policy.disguise.prefers() {
+                P2pDisguiseMode::Prefer
+            } else {
+                P2pDisguiseMode::Off
             },
         }]
     }
@@ -702,17 +484,18 @@ async fn assert_active_sockets(host: &MockHolePunchHost, expected: usize) {
 #[tokio::test(start_paused = true)]
 async fn single_dial_deadline_cancels_pending_upgrade_and_releases_socket() {
     let host = MockHolePunchHost::new(MockConnectMode::Succeed);
-    let task = tokio::spawn(try_connect_to_remote(
-        host.clone(),
-        Arc::new(PendingTransportSink),
-        TcpHolePunchDialOptions {
-            remote_mapped_addr: "198.51.100.1:443".parse().unwrap(),
-            local_port: MOCK_LOCAL_PORT,
-            context: SocketContext::default(),
-            admission: TcpHolePunchAdmission::Client,
-            max_attempts: 1,
-            scheme: "wss",
-        },
+    let task = tokio::spawn(complete_punch_within(
+        CONNECT_LOOP_WINDOW,
+        try_connect_to_remote(
+            host.clone(),
+            Arc::new(PendingTransportSink),
+            "198.51.100.1:443".parse().unwrap(),
+            MOCK_LOCAL_PORT,
+            SocketContext::default(),
+            TcpHolePunchAdmission::Client,
+            1,
+            "wss",
+        ),
     ));
     assert_active_sockets(&host, 1).await;
 
@@ -771,7 +554,7 @@ async fn strict_wss_retries_transient_execution_error_without_blacklisting() {
         host,
         NatType::FullCone,
         P2pPolicyFlags {
-            only_use_wss_http3_for_hole_punching: true,
+            disguise: P2pDisguiseMode::Only,
             ..Default::default()
         },
         TcpHolePunchResponse {
@@ -803,7 +586,7 @@ async fn strict_wss_blacklists_after_repeated_execution_errors() {
         host,
         NatType::FullCone,
         P2pPolicyFlags {
-            only_use_wss_http3_for_hole_punching: true,
+            disguise: P2pDisguiseMode::Only,
             ..Default::default()
         },
         TcpHolePunchResponse {
@@ -834,7 +617,7 @@ async fn preferred_wss_execution_error_preserves_raw_tcp_fallback() {
         host,
         NatType::FullCone,
         P2pPolicyFlags {
-            prefer_wss_http3_for_p2p: true,
+            disguise: P2pDisguiseMode::Prefer,
             ..Default::default()
         },
         legacy_response(),
@@ -861,7 +644,7 @@ async fn strict_wss_preserves_blacklist_for_explicit_scheme_mismatch() {
         host,
         NatType::FullCone,
         P2pPolicyFlags {
-            only_use_wss_http3_for_hole_punching: true,
+            disguise: P2pDisguiseMode::Only,
             ..Default::default()
         },
         legacy_response(),
@@ -976,7 +759,7 @@ fn spray_targets_walk_the_sequence_direction() {
     );
     assert_eq!(
         spray_target_addrs(base, PortSequenceDirection::Incremental, u32::MAX).len(),
-        PREDICTED_PORT_NUM_LIMIT as usize
+        PREDICTED_PORT_NUM as usize
     );
     // The port space is clamped at the u16 boundaries; k = 0 is the base.
     let top: SocketAddr = "198.51.100.9:65535".parse().unwrap();

@@ -24,7 +24,6 @@ use url::Url;
 use crate::{
     connectivity::{
         composite::{ConnectorEnvironment, ConnectorHostAdapter, ConnectorRuntime},
-        is_public_ipv6_candidate,
         manual::ExternalTunnelConnector,
         transport::ConnectedByteStream,
     },
@@ -83,7 +82,12 @@ impl HostConnectorEnvironmentSnapshot {
     }
 
     fn preferred_ipv6_source(&self, ip: Ipv6Addr) -> Option<PreferredIpv6Source> {
-        if !is_public_ipv6_candidate(ip) {
+        if ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_unique_local()
+            || ip.is_unicast_link_local()
+            || ip.is_multicast()
+        {
             return None;
         }
         self.preferred_ipv6_sources

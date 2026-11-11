@@ -128,7 +128,7 @@ where
 
     // Native QUIC must connect to the source observed by hole-punch traffic.
     // EasyTier UDP sessions perform source observation during their handshake.
-    let native_array = if actual_scheme.is_native_http3() {
+    let native_array = if actual_scheme.is_http3() {
         let array = UdpSocketArray::new_with_context(1, runtime.clone(), runtime.socket_context());
         array.add_interest_tid(tid);
         array.add_new_socket(local_socket.clone()).await?;
@@ -387,7 +387,7 @@ where
                 tracing::debug!("no punched socket found, wait for more time");
                 continue;
             };
-            let remote_addr = if actual_scheme.is_native_http3() {
+            let remote_addr = if actual_scheme.is_http3() {
                 socket.remote_addr
             } else {
                 remote_mapped_addr
@@ -444,7 +444,7 @@ where
 
         // Opening a native QUIC session does not prove reachability; its HTTP3
         // handshake runs only after this punch returns a probed socket.
-        if self.try_direct_connect.load(Ordering::Relaxed) && !actual_scheme.is_native_http3() {
+        if self.try_direct_connect.load(Ordering::Relaxed) && !actual_scheme.is_http3() {
             let socket = self.runtime.bind_direct_connect_udp().await?;
             if let Ok(socket) = self
                 .runtime
@@ -665,7 +665,7 @@ where
                 ?tid,
                 "got punched socket in both easy sym"
             );
-            let remote_addr = if actual_scheme.is_native_http3() {
+            let remote_addr = if actual_scheme.is_http3() {
                 socket.remote_addr
             } else {
                 remote_mapped_addr
@@ -863,7 +863,7 @@ mod tests {
         ) -> anyhow::Result<UdpPunchSocket> {
             self.connect_count.fetch_add(1, Ordering::Relaxed);
             self.connect_remotes.lock().await.push(remote);
-            if scheme.is_native_http3() {
+            if scheme.is_http3() {
                 let session =
                     UdpSession::identity_standalone(socket, remote, UdpSessionKind::Quic)?;
                 return Ok(UdpPunchSocket::new_with_scheme(
@@ -1258,10 +1258,8 @@ mod tests {
     }
 
     #[test]
-    fn strict_http3_accepts_native_and_legacy_responses() {
-        for scheme in [UdpPunchScheme::Http3, UdpPunchScheme::Http3Mux] {
-            assert!(validate_negotiated_scheme(scheme, true).is_ok());
-        }
+    fn strict_http3_accepts_native_responses() {
+        assert!(validate_negotiated_scheme(UdpPunchScheme::Http3, true).is_ok());
         assert!(validate_negotiated_scheme(UdpPunchScheme::Udp, false).is_ok());
     }
 
@@ -1349,37 +1347,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_and_legacy_http3_keep_direct_preflight() {
-        for scheme in [UdpPunchScheme::Udp, UdpPunchScheme::Http3Mux] {
-            let runtime = Arc::new(MockRuntime::new());
-            let signaling = Arc::new(RecordingSignaling::new(42));
-            let client = UdpSymToConePunchClient::new(
-                runtime.clone(),
-                signaling.clone(),
-                Arc::new(MockStunInfoProvider::default()),
-            );
-            let mut last_port_idx = 7;
-            let result = client
-                .do_hole_punching(
-                    2,
-                    3,
-                    &mut last_port_idx,
-                    NatType::SymmetricEasyInc.into(),
-                    scheme,
-                    false,
-                )
-                .await
-                .unwrap();
+    async fn raw_punch_keeps_direct_preflight() {
+        let scheme = UdpPunchScheme::Udp;
+        let runtime = Arc::new(MockRuntime::new());
+        let signaling = Arc::new(RecordingSignaling::new(42));
+        let client = UdpSymToConePunchClient::new(
+            runtime.clone(),
+            signaling.clone(),
+            Arc::new(MockStunInfoProvider::default()),
+        );
+        let mut last_port_idx = 7;
+        let result = client
+            .do_hole_punching(
+                2,
+                3,
+                &mut last_port_idx,
+                NatType::SymmetricEasyInc.into(),
+                scheme,
+                false,
+            )
+            .await
+            .unwrap();
 
-            assert!(result.is_some());
-            assert_eq!(runtime.connect_count.load(Ordering::Relaxed), 1);
-            assert_eq!(
-                runtime.bind_count.load(Ordering::Relaxed),
-                UDP_ARRAY_SIZE_FOR_HARD_SYM + 1
-            );
-            assert!(signaling.easy_requests.lock().await.is_empty());
-            assert!(signaling.hard_requests.lock().await.is_empty());
-        }
+        assert!(result.is_some());
+        assert_eq!(runtime.connect_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            runtime.bind_count.load(Ordering::Relaxed),
+            UDP_ARRAY_SIZE_FOR_HARD_SYM + 1
+        );
+        assert!(signaling.easy_requests.lock().await.is_empty());
+        assert!(signaling.hard_requests.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -1430,25 +1427,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_and_legacy_http3_keep_advertised_target_after_probe() {
+    async fn raw_punch_keeps_advertised_target_after_probe() {
         let observed: SocketAddr = "127.0.0.1:45099".parse().unwrap();
-        for scheme in [UdpPunchScheme::Udp, UdpPunchScheme::Http3Mux] {
-            let runtime = Arc::new(MockRuntime::new().with_observed_remote(observed));
-            let result = punch_cone_to_cone(
-                runtime.clone(),
-                Arc::new(RecordingSignaling::new(42)),
-                2,
-                scheme,
-                false,
-            )
-            .await
-            .unwrap();
-            assert!(result.is_some());
-            assert_eq!(
-                runtime.connect_remotes.lock().await.as_slice(),
-                [SocketAddr::from(([127, 0, 0, 1], 30000))]
-            );
-        }
+        let scheme = UdpPunchScheme::Udp;
+        let runtime = Arc::new(MockRuntime::new().with_observed_remote(observed));
+        let result = punch_cone_to_cone(
+            runtime.clone(),
+            Arc::new(RecordingSignaling::new(42)),
+            2,
+            scheme,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(result.is_some());
+        assert_eq!(
+            runtime.connect_remotes.lock().await.as_slice(),
+            [SocketAddr::from(([127, 0, 0, 1], 30000))]
+        );
     }
 
     #[tokio::test]
