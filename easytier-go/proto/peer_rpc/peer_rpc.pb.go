@@ -1775,7 +1775,7 @@ type SelectPunchListenerRequest struct {
 	PreferPortMapping bool                   `protobuf:"varint,2,opt,name=prefer_port_mapping,json=preferPortMapping,proto3" json:"prefer_port_mapping,omitempty"`
 	// Empty keeps the official raw-UDP punch protocol compatible.
 	Scheme string `protobuf:"bytes,50003,opt,name=scheme,proto3" json:"scheme,omitempty"`
-	// Only used with http3. Absent keeps legacy EasyTier UDP encapsulation.
+	// Always set with http3; receivers no longer read it.
 	NativeHttp3 bool `protobuf:"varint,50004,opt,name=native_http3,json=nativeHttp3,proto3" json:"native_http3,omitempty"`
 	// Register source observation before returning the listener address.
 	TransactionId *uint32 `protobuf:"varint,3,opt,name=transaction_id,json=transactionId,proto3,oneof" json:"transaction_id,omitempty"`
