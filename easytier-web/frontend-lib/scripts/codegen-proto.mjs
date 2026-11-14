@@ -22,6 +22,7 @@ const { FileDescriptorSetSchema } = pluginRequire('@bufbuild/protobuf/wkt')
 const protoFiles = [
   'annotations.proto',
   'common.proto',
+  'core_config.proto',
   'acl.proto',
   'api_instance.proto',
   'api_manage.proto',

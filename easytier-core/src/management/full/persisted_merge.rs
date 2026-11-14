@@ -88,6 +88,7 @@ fn normalized_json(value: Value) -> Value {
 fn document_paths(field: &str) -> Option<Vec<&'static str>> {
     let paths = match field {
         "hostname" => vec!["hostname"],
+        "dns" => vec!["dns"],
         "sni" => vec!["sni"],
         "parallel_connections" => vec!["parallel_connections"],
         "disable_parallel_connections" => vec!["disable_parallel_connections"],

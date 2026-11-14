@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::super::{cleanup_policy::CleanupPolicyPair, parallel};
-use super::{LIVENESS_ECHO_FEATURE, PeerConn, PeerConnectionOrigin};
+use super::{PeerConn, PeerConnectionOrigin};
 use crate::{packet::ZCPacket, tunnel::TunnelError};
 
 impl PeerConn {
@@ -24,7 +24,7 @@ impl PeerConn {
         if let Some(features) = &self.handshake_features_override {
             return features.clone();
         }
-        let mut features = vec![LIVENESS_ECHO_FEATURE.to_owned()];
+        let mut features = self.local_features();
         features.push(self.local_parallel_offer().feature());
         features.push(format!("p2p-tx-v1:{}", self.parallel_tx_epoch));
         if let Some(member) = &self.parallel_member {

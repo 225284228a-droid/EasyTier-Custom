@@ -20,6 +20,9 @@ pub const DEFAULT_ET_DNS_ZONE: &str = "et.net.";
 
 pub use crate::proto::common::{Flags, FlagsPatch};
 
+// File and management inputs share these protobuf Raw messages.
+pub use crate::proto::core_config::{DnsConfigRaw as DnsConfig, DnsZoneConfigRaw as DnsZoneConfig};
+
 pub(crate) fn default_instance_name() -> String {
     "default".to_owned()
 }
@@ -70,6 +73,9 @@ pub trait ConfigLoader: Send + Sync {
         None
     }
     fn set_advanced_sync_at(&self, _stamp: Option<u64>) {}
+
+    fn get_dns(&self) -> Option<DnsConfig>;
+    fn set_dns(&self, dns: Option<DnsConfig>);
 
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
@@ -482,6 +488,7 @@ struct Config {
     traffic_disguise: Option<String>,
     network_sync_at: Option<u64>,
     advanced_sync_at: Option<u64>,
+    dns: Option<DnsConfig>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -761,6 +768,9 @@ impl TomlConfig {
     }
 
     fn new_from_config(mut config: Config) -> Result<Self, anyhow::Error> {
+        if let Some(dns) = &config.dns {
+            super::dns::compile_dns(dns)?;
+        }
         validate_transport_tuning(
             config.parallel_connections,
             config.traffic_disguise.as_deref(),
@@ -938,6 +948,14 @@ impl ConfigLoader for TomlConfig {
 
     fn set_advanced_sync_at(&self, stamp: Option<u64>) {
         self.config.lock().unwrap().advanced_sync_at = stamp;
+    }
+
+    fn get_dns(&self) -> Option<DnsConfig> {
+        self.config.lock().unwrap().dns.clone()
+    }
+
+    fn set_dns(&self, dns: Option<DnsConfig>) {
+        self.config.lock().unwrap().dns = dns;
     }
 
     fn get_netns(&self) -> Option<String> {

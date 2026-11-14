@@ -106,6 +106,11 @@ fn port_forward_read_back_round_trip_preserves_ipv6_rules() {
 fn web_form_omits_defaults_without_changing_effective_flags() {
     let mut input = standalone_config();
     set_network_flags(&mut input, Flags::defaults().downgrade());
+    // The form never sends the deprecated Magic DNS zone.
+    #[allow(deprecated)]
+    {
+        input.tld_dns_zone = None;
+    }
     input.vpn = Some(manage::VpnConfig { rules: vec![] });
     input.hostname = Some(String::new());
     input.secure_mode = Some(Default::default());
@@ -270,25 +275,6 @@ fn disguise_api_flags_preserve_missing_and_explicit_values() {
 }
 
 #[test]
-fn magic_dns_zone_round_trips_missing_default_and_custom_values() {
-    for zone in [None, Some("et.net."), Some("nas.internal.")] {
-        let input = NetworkConfig {
-            tld_dns_zone: zone.map(str::to_owned),
-            ..standalone_config()
-        };
-        let config = input.gen_config().unwrap();
-        let config = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
-        assert_eq!(config.get_flags().tld_dns_zone, zone.unwrap_or("et.net."));
-        let output = NetworkConfig::new_from_config(&config).unwrap();
-        // An explicit default is not kept, like every other flag.
-        assert_eq!(
-            output.tld_dns_zone.as_deref(),
-            zone.filter(|zone| *zone != "et.net.")
-        );
-    }
-}
-
-#[test]
 fn global_sni_round_trips_through_toml_model() {
     let input = NetworkConfig {
         sni: Some("www.cloudflare.com".to_owned()),
@@ -335,25 +321,6 @@ fn parallel_transport_settings_round_trip_and_reset_to_implicit_defaults() {
     input.parallel_connections = Some(1);
     input.traffic_disguise = Some("invalid".into());
     assert!(input.gen_config().is_err());
-}
-
-#[cfg(feature = "browser-config")]
-#[test]
-fn browser_merge_updates_and_clears_magic_dns_zone() {
-    let original = "[flags]\ntld_dns_zone = \"old.internal.\"\n";
-    for zone in [None, Some("et.net."), Some("nas.internal.")] {
-        let input = NetworkConfig {
-            tld_dns_zone: zone.map(str::to_owned),
-            ..standalone_config()
-        };
-        let merged = merge_network_config_toml(original, &input).unwrap();
-        let output = TomlConfigLoader::new_from_str(&merged).unwrap();
-        assert_eq!(output.get_flags().tld_dns_zone, zone.unwrap_or("et.net."));
-        assert_eq!(
-            output.get_flags_patch().tld_dns_zone.as_deref(),
-            zone.filter(|zone| *zone != "et.net.")
-        );
-    }
 }
 
 #[test]

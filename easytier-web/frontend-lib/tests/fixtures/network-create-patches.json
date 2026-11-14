@@ -29,7 +29,6 @@
         "dev_name": "",
         "use_smoltcp": false,
         "disable_ipv6": false,
-        "tld_dns_zone": "et.net.",
         "enable_kcp_proxy": false,
         "disable_kcp_input": false,
         "disable_p2p": false,
@@ -61,6 +60,9 @@
         "disable_relay_data": false,
         "enable_udp_broadcast_relay": false,
         "prefer_peer_relay": false,
+        "enable_udp_fec": false,
+        "enable_udp_fec_kcp": false,
+        "enable_udp_fec_quic": false,
         "sni": "",
         "p2p_prefer_protocol": "udp",
         "close_redundant_conns_when_disguised": true,
@@ -80,7 +82,6 @@
         "dev_name",
         "use_smoltcp",
         "disable_ipv6",
-        "tld_dns_zone",
         "enable_kcp_proxy",
         "disable_kcp_input",
         "disable_p2p",
@@ -131,6 +132,10 @@
         "dhcp_ipv4_cidr",
         "dhcpv6",
         "dhcp_ipv6_cidr",
+        "dns",
+        "enable_udp_fec",
+        "enable_udp_fec_kcp",
+        "enable_udp_fec_quic",
         "sni",
         "p2p_prefer_protocol",
         "close_redundant_conns_when_disguised",
@@ -176,7 +181,6 @@
         "dev_name": "",
         "use_smoltcp": false,
         "disable_ipv6": false,
-        "tld_dns_zone": "et.net.",
         "enable_kcp_proxy": false,
         "disable_kcp_input": false,
         "disable_p2p": false,
@@ -213,6 +217,9 @@
           }
         ],
         "prefer_peer_relay": false,
+        "enable_udp_fec": false,
+        "enable_udp_fec_kcp": false,
+        "enable_udp_fec_quic": false,
         "close_redundant_conns_when_disguised": true
       },
       "field_mask": [
@@ -229,7 +236,6 @@
         "dev_name",
         "use_smoltcp",
         "disable_ipv6",
-        "tld_dns_zone",
         "enable_kcp_proxy",
         "disable_kcp_input",
         "disable_p2p",
@@ -280,6 +286,10 @@
         "dhcp_ipv4_cidr",
         "dhcpv6",
         "dhcp_ipv6_cidr",
+        "dns",
+        "enable_udp_fec",
+        "enable_udp_fec_kcp",
+        "enable_udp_fec_quic",
         "close_redundant_conns_when_disguised"
       ]
     }
@@ -317,7 +327,6 @@
         "dev_name": "",
         "use_smoltcp": false,
         "disable_ipv6": false,
-        "tld_dns_zone": "et.net.",
         "enable_kcp_proxy": false,
         "disable_kcp_input": false,
         "disable_p2p": false,
@@ -353,7 +362,10 @@
             "uri": "tcp://example.test:11010"
           }
         ],
-        "prefer_peer_relay": false
+        "prefer_peer_relay": false,
+        "enable_udp_fec": false,
+        "enable_udp_fec_kcp": false,
+        "enable_udp_fec_quic": false
       },
       "field_mask": [
         "dhcp",
@@ -369,7 +381,6 @@
         "dev_name",
         "use_smoltcp",
         "disable_ipv6",
-        "tld_dns_zone",
         "enable_kcp_proxy",
         "disable_kcp_input",
         "disable_p2p",
@@ -419,7 +430,11 @@
         "prefer_peer_relay",
         "dhcp_ipv4_cidr",
         "dhcpv6",
-        "dhcp_ipv6_cidr"
+        "dhcp_ipv6_cidr",
+        "dns",
+        "enable_udp_fec",
+        "enable_udp_fec_kcp",
+        "enable_udp_fec_quic"
       ]
     }
   },
@@ -449,7 +464,6 @@
         "dev_name": "",
         "use_smoltcp": false,
         "disable_ipv6": false,
-        "tld_dns_zone": "et.net.",
         "enable_kcp_proxy": false,
         "disable_kcp_input": false,
         "disable_p2p": false,
@@ -480,7 +494,10 @@
         "ipv6_public_addr_prefix": "",
         "disable_relay_data": false,
         "enable_udp_broadcast_relay": false,
-        "prefer_peer_relay": false
+        "prefer_peer_relay": false,
+        "enable_udp_fec": false,
+        "enable_udp_fec_kcp": false,
+        "enable_udp_fec_quic": false
       },
       "field_mask": [
         "dhcp",
@@ -496,7 +513,6 @@
         "dev_name",
         "use_smoltcp",
         "disable_ipv6",
-        "tld_dns_zone",
         "enable_kcp_proxy",
         "disable_kcp_input",
         "disable_p2p",
@@ -546,7 +562,11 @@
         "prefer_peer_relay",
         "dhcp_ipv4_cidr",
         "dhcpv6",
-        "dhcp_ipv6_cidr"
+        "dhcp_ipv6_cidr",
+        "dns",
+        "enable_udp_fec",
+        "enable_udp_fec_kcp",
+        "enable_udp_fec_quic"
       ]
     }
   }

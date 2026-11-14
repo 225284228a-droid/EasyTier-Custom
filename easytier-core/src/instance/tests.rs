@@ -842,6 +842,10 @@ network_secret = "network-secret"
             PatchConfigRequest {
                 patch: Some(InstanceConfigPatch {
                     hostname: Some("patched-in-core".to_owned()),
+                    dns: Some(easytier_proto::core_config::DnsConfigRaw {
+                        domain: Some("saved.test".to_owned()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 instance: Some(selector()),
@@ -859,9 +863,14 @@ network_secret = "network-secret"
             .await
             .unwrap();
         assert_eq!(
-            response.config.unwrap().hostname.as_deref(),
+            response.config.as_ref().unwrap().hostname.as_deref(),
             Some("patched-in-core")
         );
+        assert_eq!(
+            response.config.unwrap().dns.unwrap().domain.as_deref(),
+            Some("saved.test")
+        );
+        assert!(response.toml_config.contains("saved.test"));
 
         let secret = BASE64_STANDARD.encode([9u8; 32]);
         rpc.patch_config(
@@ -1128,6 +1137,10 @@ source = "web"
         instance.start().await.unwrap();
         let patch = InstanceConfigPatch {
             hostname: Some("after".to_owned()),
+            dns: Some(easytier_proto::core_config::DnsConfigRaw {
+                domain: Some("saved.test".to_owned()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let persistence = RecordingConfigPatchPersistence {
@@ -1145,6 +1158,7 @@ source = "web"
                 .contains("injected config persistence failure")
         );
         assert_eq!(instance.toml_config().unwrap().get_hostname(), "before");
+        assert_eq!(instance.toml_config().unwrap().get_dns(), None);
 
         persistence.fail.store(false, Ordering::Relaxed);
         crate::management::apply_config_patch(&instance, patch, Some(&persistence))
@@ -1152,10 +1166,15 @@ source = "web"
             .unwrap();
 
         assert_eq!(instance.toml_config().unwrap().get_hostname(), "after");
+        assert_eq!(
+            instance.toml_config().unwrap().get_dns().unwrap().domain,
+            Some("saved.test".to_owned())
+        );
         {
             let persisted = persistence.writes.lock().unwrap();
             assert_eq!(persisted.len(), 1);
             assert!(persisted[0].contains("hostname = \"after\""));
+            assert!(persisted[0].contains("domain = \"saved.test\""));
         }
         instance.stop().await;
     }

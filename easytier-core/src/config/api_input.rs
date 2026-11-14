@@ -96,15 +96,21 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.disable_relay_data = flags.disable_relay_data;
     result.prefer_peer_relay = flags.prefer_peer_relay;
     result.enable_udp_broadcast_relay = flags.enable_udp_broadcast_relay;
+    result.enable_udp_fec = flags.enable_udp_fec;
+    result.enable_udp_fec_kcp = flags.enable_udp_fec_kcp;
+    result.enable_udp_fec_quic = flags.enable_udp_fec_quic;
     result.disable_sym_hole_punching = flags.disable_sym_hole_punching;
     result.enable_magic_dns = flags.accept_dns;
+    #[allow(deprecated)]
+    {
+        result.tld_dns_zone = flags.tld_dns_zone;
+    }
     result.p2p_disguise_mode = flags
         .p2p_disguise_mode
         .filter(|mode| !mode.trim().is_empty())
         .map(|mode| mode.trim().to_ascii_lowercase());
     result.p2p_prefer_protocol = flags.default_protocol;
     result.close_redundant_conns_when_disguised = flags.close_redundant_conns_when_disguised;
-    result.tld_dns_zone = flags.tld_dns_zone;
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
     result.data_compress_algo = flags.data_compress_algo;
     result.encryption_algorithm = flags.encryption_algorithm;
@@ -133,6 +139,7 @@ pub trait NetworkConfigExt {
 ))]
 const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "hostname",
+    "dns",
     "sni",
     "parallel_connections",
     "disable_parallel_connections",
@@ -268,7 +275,11 @@ fn parse_peer_urls(peer_urls: &[String]) -> Result<Vec<PeerConfig>, anyhow::Erro
 impl NetworkConfigExt for NetworkConfig {
     #[allow(deprecated)]
     fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
+        if let Some(dns) = &self.dns {
+            super::dns::compile_dns(dns)?;
+        }
         let cfg = TomlConfigLoader::default();
+        cfg.set_dns(self.dns.clone());
         cfg.set_id(
             self.instance_id
                 .clone()
@@ -592,6 +603,7 @@ impl NetworkConfigExt for NetworkConfig {
                 }
             }),
             accept_dns: self.enable_magic_dns,
+            #[allow(deprecated)]
             tld_dns_zone: self.tld_dns_zone.clone(),
             mtu: self
                 .mtu
@@ -623,6 +635,9 @@ impl NetworkConfigExt for NetworkConfig {
             disable_relay_data: self.disable_relay_data,
             prefer_peer_relay: self.prefer_peer_relay,
             enable_udp_broadcast_relay: self.enable_udp_broadcast_relay,
+            enable_udp_fec: self.enable_udp_fec,
+            enable_udp_fec_kcp: self.enable_udp_fec_kcp,
+            enable_udp_fec_quic: self.enable_udp_fec_quic,
             disable_sym_hole_punching: self.disable_sym_hole_punching,
             p2p_disguise_mode: self.p2p_disguise_mode.clone(),
             close_redundant_conns_when_disguised: self.close_redundant_conns_when_disguised,
@@ -641,6 +656,7 @@ impl NetworkConfigExt for NetworkConfig {
             ..Default::default()
         };
 
+        result.dns = config.get_dns();
         result.instance_id = Some(config.get_id().to_string());
         if config.get_hostname() != default_config.get_hostname() {
             result.hostname = Some(config.get_hostname());
@@ -802,6 +818,190 @@ mod tests {
 
     #[cfg(test)]
     mod custom_tests;
+
+    #[test]
+    fn dns_records_survive_toml_and_form_edits() {
+        for dns in [
+            "",
+            "[dns]\n",
+            "[dns]\ndomain = 'mesh.test.'\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = [{ name = 'nas', type = 'A', value = '10.0.0.8' }, { name = 'nas', type = 'AAAA', value = 'fd00::8' }]\n",
+        ] {
+            let config = TomlConfigLoader::new_from_str(dns).unwrap();
+            let expected = config.get_dns();
+            config.set_hostname(Some("changed".to_owned()));
+            assert_eq!(config.get_dns(), expected);
+            #[cfg(feature = "config-write")]
+            assert_eq!(
+                TomlConfigLoader::new_from_str(&config.dump())
+                    .unwrap()
+                    .get_dns(),
+                expected
+            );
+            #[cfg(feature = "browser-config")]
+            {
+                let api = NetworkConfig::new_from_config(&config).unwrap();
+                let merged = merge_network_config_toml(dns, &api).unwrap();
+                let restored = TomlConfigLoader::new_from_str(&merged).unwrap();
+                assert_eq!(restored.get_dns(), expected);
+                assert_eq!(restored.get_hostname(), "changed");
+            }
+        }
+    }
+
+    #[cfg(feature = "browser-config")]
+    #[test]
+    fn dns_raw_presence_survives_management_json_and_file_roundtrips() {
+        for input in [
+            "",
+            "[dns]\n",
+            "[dns]\ndomain = 'mesh.test.'\n",
+            "[dns]\nzone = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = 0\nrecords = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'A', value = '192.0.2.1' }]\n",
+            r#"[[dns.zone]]
+origin = 'example.test.'
+ttl = 60
+records = [
+    { name = '@', type = 'MX', value = '10 mail' },
+    { name = 'info', type = 'TXT', ttl = 0, value = '"quote\" slash\\ ;" "" "tail"' },
+]
+"#,
+        ] {
+            let config = TomlConfigLoader::new_from_str(input).unwrap();
+            let expected = config.get_dns();
+            let network = NetworkConfig::new_from_config(&config).unwrap();
+            assert_eq!(network.dns, expected, "{input}");
+            let json = serde_json::to_value(&network).unwrap();
+            if let Some(records) = expected.as_ref().and_then(|dns| dns.zone.as_ref()) {
+                assert_eq!(
+                    json["dns"]["zone"].as_array().unwrap().len(),
+                    records.items.len()
+                );
+            }
+            if let Some(domain) = expected.as_ref().and_then(|dns| dns.domain.as_deref()) {
+                assert_eq!(json["dns"]["domain"].as_str(), Some(domain));
+            }
+            let network: NetworkConfig = serde_json::from_value(json).unwrap();
+            let restored = network.gen_config().unwrap();
+            assert_eq!(restored.get_dns(), expected, "{input}");
+            assert_eq!(
+                TomlConfigLoader::new_from_str(&restored.dump())
+                    .unwrap()
+                    .get_dns(),
+                expected
+            );
+            let merged = merge_network_config_toml(input, &network).unwrap();
+            assert_eq!(
+                TomlConfigLoader::new_from_str(&merged).unwrap().get_dns(),
+                expected
+            );
+            #[cfg(feature = "web-client")]
+            assert_eq!(
+                crate::config::api::network_config_from_toml(&config).dns,
+                expected
+            );
+        }
+        let missing = TomlConfigLoader::new_from_str("[dns]\n")
+            .unwrap()
+            .get_dns()
+            .unwrap();
+        let empty = TomlConfigLoader::new_from_str("[dns]\nzone = []\n")
+            .unwrap()
+            .get_dns()
+            .unwrap();
+        assert!(missing.zone.is_none());
+        assert!(empty.zone.unwrap().items.is_empty());
+
+        let input = "[[dns.zone]]\norigin = 'example.test.'\nrecords = []\n";
+        let mut network =
+            NetworkConfig::new_from_config(TomlConfigLoader::new_from_str(input).unwrap()).unwrap();
+        network.dns = None;
+        let cleared = merge_network_config_toml(input, &network).unwrap();
+        assert!(
+            TomlConfigLoader::new_from_str(&cleared)
+                .unwrap()
+                .get_dns()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dns_file_input_rejects_unknown_fields_and_invalid_shapes() {
+        for input in [
+            "[dns]\nzoen = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecrods = []\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = {}\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nttl = -1\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'A', value = '192.0.2.1', txt = { segments = ['x'] } }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'UNKNOWN', value = 'x' }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = [{ name = '@', type = 'TXT', value = '' }]\n",
+            "[[dns.zone]]\norigin = 'example.test.'\nrecords = ['@ IN A 192.0.2.1']\n",
+        ] {
+            assert!(
+                TomlConfigLoader::new_from_str(input).is_err(),
+                "accepted {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn dns_alpn_errors_use_file_and_management_field_paths() {
+        let long_alpn = format!("1 . \"alpn=a ( {})\"", "b ".repeat(1500));
+        for kind in ["HTTPS", "SVCB"] {
+            for (value, valid) in [
+                ("1 . alpn=,", false),
+                ("1 . alpn=h2,,h3", false),
+                (r#"1 . alpn="h2,,h3""#, false),
+                (r"1 . alpn=\@,h2", false),
+                (r"1 . alpn=\(h2", false),
+                (r"1 . alpn=\$TTL", false),
+                (r#"1 . "alpn=;h2""#, false),
+                (r#"1 . "alpn= h2""#, false),
+                (r#"1 . alpn=\"unterminated"#, false),
+                ("1 . alpn=\\\"\\\\\u{0663}ab\\\"", false),
+                ("1 . alpn=\"\\\"\\\\\u{0663}ab\\\"\"", false),
+                ("1 . alpn=\"", false),
+                ("1 . port=\"", false),
+                (r#"1 target key65400="unterminated"#, false),
+                (r#"1 target key65400="tail\""#, false),
+                ("1 target alpn=h2,h3 port=443", true),
+                ("1 target alpn=h\u{0663} port=443", true),
+                (r#"1 target alpn="h2,h3" port=443"#, true),
+                (r#"1 target alpn="f\\\\oo\,bar,h2" port=443"#, true),
+                (r"1 target alpn=\, port=443", true),
+                ("1 target alpn=h2, port=443", true),
+                (long_alpn.as_str(), true),
+                (r#"1 target key65400="complete""#, true),
+                (r#"1 target key65400="tail\\""#, true),
+            ] {
+                let network: NetworkConfig = serde_json::from_value(serde_json::json!({
+                    "networking_method": NetworkingMethod::Standalone as i32,
+                    "dns": { "zone": [{
+                        "origin": "example.test.",
+                        "records": [{ "name": "svc", "type": kind, "value": value }]
+                    }] }
+                }))
+                .unwrap();
+                let file = format!(
+                    "[[dns.zone]]\norigin = 'example.test.'\nrecords = [\
+                     {{ name = 'svc', type = '{kind}', value = '{value}' }}]\n"
+                );
+                for result in [network.gen_config(), TomlConfigLoader::new_from_str(&file)] {
+                    if valid {
+                        assert!(result.is_ok(), "{kind} {value}: {result:?}");
+                    } else {
+                        let error = result.unwrap_err().to_string();
+                        assert!(
+                            error.contains("dns.zone[0].records[0].value"),
+                            "{kind} {value}: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn api_portal_config() -> manage::VpnPortalConfig {
         manage::VpnPortalConfig {
@@ -1203,6 +1403,64 @@ disableP2p = false
         let merged_table: toml::Table = toml::from_str(&merged).unwrap();
         assert!(!merged_table.contains_key("flags"));
     }
+    #[test]
+    fn udp_fec_flags_preserve_presence_through_api_and_toml() {
+        let values = |config: &NetworkConfig| {
+            [
+                config.enable_udp_fec,
+                config.enable_udp_fec_kcp,
+                config.enable_udp_fec_quic,
+            ]
+        };
+        for enabled in [
+            [None; 3],
+            [Some(false); 3],
+            [Some(true); 3],
+            [Some(true), None, None],
+            [None, Some(true), None],
+            [None, None, Some(true)],
+            [Some(true), Some(false), Some(true)],
+        ] {
+            let input = NetworkConfig {
+                enable_udp_fec: enabled[0],
+                enable_udp_fec_kcp: enabled[1],
+                enable_udp_fec_quic: enabled[2],
+                ..standalone_config()
+            };
+            let config = input.gen_config().unwrap();
+            let patch = config.get_flags_patch();
+            // A form value equal to the default is not stored.
+            let enabled = enabled.map(|value| value.filter(|enabled| *enabled));
+            assert_eq!(
+                [
+                    patch.enable_udp_fec,
+                    patch.enable_udp_fec_kcp,
+                    patch.enable_udp_fec_quic,
+                ],
+                enabled
+            );
+            let flags = config.get_flags();
+            assert_eq!(
+                [
+                    flags.enable_udp_fec,
+                    flags.enable_udp_fec_kcp,
+                    flags.enable_udp_fec_quic,
+                ],
+                enabled.map(|value| value.unwrap_or(false))
+            );
+            #[cfg(feature = "config-write")]
+            {
+                let restored = TomlConfigLoader::new_from_str(&config.dump()).unwrap();
+                assert_eq!(
+                    values(&NetworkConfig::new_from_config(restored).unwrap()),
+                    enabled
+                );
+            }
+            let output = NetworkConfig::new_from_config(config).unwrap();
+            assert_eq!(values(&output), enabled);
+        }
+    }
+
     #[test]
     fn manual_routes_preserve_empty_and_automatic_modes() {
         for routes in [Vec::new(), vec!["10.20.0.0/24".to_owned()]] {

@@ -17,6 +17,10 @@ use crate::{
 pub struct MpscTunnelSender(Sender<ZCPacket>);
 
 impl MpscTunnelSender {
+    pub(crate) fn new(sender: Sender<ZCPacket>) -> Self {
+        Self(sender)
+    }
+
     #[cfg(test)]
     pub(crate) fn from_sender(sender: Sender<ZCPacket>) -> Self {
         Self(sender)

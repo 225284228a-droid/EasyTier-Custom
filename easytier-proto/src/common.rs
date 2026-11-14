@@ -611,6 +611,12 @@ impl SecureModeConfig {
     }
 }
 
+impl From<Vec<String>> for RepeatedString {
+    fn from(items: Vec<String>) -> Self {
+        Self { items }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Flags, FlagsPatch, PeerFeatureFlag, TunnelInfo, Url, normalize_tunnel_url};

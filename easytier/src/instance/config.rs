@@ -71,7 +71,7 @@ pub(crate) fn compact_runtime_core_host_config() -> CoreInstanceHostConfig {
     config.force_exit_node = false;
     config.host_routing.local_exit_node_fallback = false;
     config.gateway_enabled = false;
-    config.proxy_enabled = false;
+    config.proxy_enabled = cfg!(feature = "smoltcp");
     config.vpn_portal_enabled = false;
     config.magic_dns_enabled = false;
     config.kcp_enabled = false;

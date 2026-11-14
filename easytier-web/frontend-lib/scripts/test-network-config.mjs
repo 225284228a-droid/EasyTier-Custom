@@ -61,11 +61,12 @@ const BOOLEAN_CONFIG_FIELDS = [
   'disable_tcp_hole_punching',
 ]
 
-const LEGACY_VPN_PORTAL_FIELDS = [
+const LEGACY_NETWORK_CONFIG_FIELDS = [
   'enable_vpn_portal',
   'vpn_portal_listen_port',
   'vpn_portal_client_network_addr',
   'vpn_portal_client_network_len',
+  'tld_dns_zone',
 ]
 
 function readGeneratedNetworkConfigFields() {
@@ -182,7 +183,14 @@ function allFieldFixture() {
     mtu: 1280,
     mapped_listeners: ['tcp://127.0.0.1:13010'],
     enable_magic_dns: true,
-    tld_dns_zone: 'nas.internal.',
+    dns: { zone: [{
+      origin: 'example.test.',
+      ttl: 0,
+      records: [
+        { name: 'nas', type: 'A', value: '192.0.2.1' },
+        { name: 'info', type: 'TXT', ttl: 0, value: String.raw`"quote\" slash\\ ;" "" "tail"` },
+      ],
+    }] },
     enable_private_mode: true,
     enable_quic_proxy: true,
     disable_quic_input: true,
@@ -282,7 +290,7 @@ function allFieldFixture() {
 
 function assertFixtureCoversGeneratedFields() {
   const generatedFields = readGeneratedNetworkConfigFields()
-    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field))
+    .filter((field) => !LEGACY_NETWORK_CONFIG_FIELDS.includes(field))
   const fixtureFields = new Set(Object.keys(allFieldFixture()))
   const missing = generatedFields.filter((field) => !fixtureFields.has(field))
 
@@ -312,7 +320,7 @@ function assertFullFieldRoundTrip() {
   expectNoCamelCaseKeys(backend)
 
   for (const field of readGeneratedNetworkConfigFields()
-    .filter((field) => !LEGACY_VPN_PORTAL_FIELDS.includes(field))) {
+    .filter((field) => !LEGACY_NETWORK_CONFIG_FIELDS.includes(field))) {
     assert.ok(field in backend, `backend JSON should include fixture field ${field}`)
   }
   assert.equal(backend.p2p_disguise_mode, 'prefer')
@@ -669,4 +677,32 @@ const tests = [
 for (const test of tests) {
   test()
   console.log(`ok ${test.name}`)
+}
+
+// A collection wrapper, including an empty one, must survive form normalization.
+for (const dns of [
+  undefined,
+  {},
+  { domain: 'mesh.test.' },
+  { zone: [] },
+  { domain: 'mesh.test.', zone: [{ origin: 'example.test.' }] },
+  { zone: [{ origin: 'example.test.', ttl: 0, records: [] }] },
+  { zone: [{ origin: 'example.test.', records: [
+    { name: '@', type: 'MX', value: '10 mail' },
+    { name: 'info', type: 'TXT', value: '"first" "" "second"' },
+  ] }] },
+]) {
+  const normalized = normalizeNetworkConfig({ ...DEFAULT_NETWORK_CONFIG(), dns });
+  const backend = toBackendNetworkConfig(normalized);
+  const restored = normalizeNetworkConfig(backend);
+  assert.deepEqual(restored.dns, normalized.dns);
+  assert.equal(restored.dns !== undefined, dns !== undefined);
+  assert.equal(restored.dns?.domain, dns?.domain);
+  assert.equal(restored.dns?.zone !== undefined, dns?.zone !== undefined);
+  const before = dns?.zone?.[0];
+  const after = restored.dns?.zone?.[0];
+  if (before) {
+    assert.equal(after.records !== undefined, before.records !== undefined);
+    assert.equal(after.ttl, before.ttl);
+  }
 }

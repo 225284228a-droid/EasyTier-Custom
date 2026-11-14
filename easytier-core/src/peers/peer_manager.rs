@@ -1595,14 +1595,8 @@ impl PeerManagerCore {
         &self.network_name
     }
 
-    pub(crate) fn dns_route_identity(
-        &self,
-    ) -> (String, Option<crate::proto::common::Ipv4Inet>, String) {
-        (
-            self.context.hostname(),
-            self.context.ipv4().map(Into::into),
-            self.context.flags().tld_dns_zone,
-        )
+    pub(crate) fn dns_route_identity(&self) -> (String, Option<crate::proto::common::Ipv4Inet>) {
+        (self.context.hostname(), self.context.ipv4().map(Into::into))
     }
 
     pub fn p2p_policy_flags(&self) -> P2pPolicyFlags {
@@ -2941,6 +2935,7 @@ impl PeerOutboundPacketRouter {
             Some(&self.traffic_metrics),
             msg,
             dst_peer_id,
+            packet_policy.p2p_only,
         )
         .await;
         if result.is_ok() {
@@ -3132,6 +3127,7 @@ impl PeerOutboundPacketRouter {
                 Some(&self.traffic_metrics),
                 msg,
                 cur_to_peer_id,
+                packet_policy.p2p_only,
             )
             .await;
         }
@@ -3210,6 +3206,7 @@ impl PeerOutboundPacketRouter {
                 Some(&self.traffic_metrics),
                 msg,
                 *peer_id,
+                packet_policy.p2p_only,
             )
             .await
             {
@@ -3473,6 +3470,7 @@ impl PeerPacketRouter {
                 tx_metrics,
                 ret,
                 to_peer_id,
+                false,
             )
             .await;
             if ret.is_err() {
@@ -3804,6 +3802,7 @@ pub(crate) async fn send_msg_internal(
     direct_tx_metrics: Option<&Arc<TrafficMetricRecorder>>,
     msg: ZCPacket,
     dst_peer_id: PeerId,
+    p2p_only: bool,
 ) -> Result<(), Error> {
     let policy = get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
     let is_latency_first = msg.peer_manager_header().unwrap().is_latency_first();
@@ -3817,34 +3816,47 @@ pub(crate) async fn send_msg_internal(
     } else {
         None
     };
-    let send_result = if let Some(gateway) = latency_first_gateway
-        && (peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway))
-    {
-        relay_peer_map.send_msg(msg, dst_peer_id, policy).await
-    } else if let Some(peer) = peers.get_peer_by_id(dst_peer_id) {
-        peer.send_msg(msg).await
-    } else if peers.is_self(dst_peer_id) {
-        peers.send_msg_directly(msg, dst_peer_id).await
-    } else if foreign_network_client.has_next_hop(dst_peer_id) {
-        foreign_network_client.send_msg(msg, dst_peer_id).await
-    } else if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {
-        if peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway) {
-            relay_peer_map.send_msg(msg, dst_peer_id, policy).await
+    let send_result = async {
+        if let Some(gateway) = latency_first_gateway
+            && (peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway))
+        {
+            return relay_peer_map.send_msg(msg, dst_peer_id, policy).await;
+        }
+        let msg = if let Some(peer) = peers.get_peer_by_id(dst_peer_id) {
+            match peer.try_send_msg(msg).await? {
+                None => return Ok(()),
+                Some(_) if p2p_only => {
+                    return Err(Error::PeerNoConnectionError(dst_peer_id));
+                }
+                Some(msg) => msg,
+            }
         } else {
-            tracing::warn!(
-                ?gateway,
-                ?dst_peer_id,
-                "cannot send msg to peer through gateway"
-            );
+            msg
+        };
+        if peers.is_self(dst_peer_id) {
+            peers.send_msg_directly(msg, dst_peer_id).await
+        } else if foreign_network_client.has_next_hop(dst_peer_id) {
+            foreign_network_client.send_msg(msg, dst_peer_id).await
+        } else if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {
+            if peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway) {
+                relay_peer_map.send_msg(msg, dst_peer_id, policy).await
+            } else {
+                tracing::warn!(
+                    ?gateway,
+                    ?dst_peer_id,
+                    "cannot send msg to peer through gateway"
+                );
+                Err(Error::RouteError(None))
+            }
+        } else if foreign_network_client.has_next_hop(dst_peer_id) {
+            // check foreign network again. so in happy path we can avoid extra check
+            foreign_network_client.send_msg(msg, dst_peer_id).await
+        } else {
+            tracing::debug!(?dst_peer_id, "no gateway for peer");
             Err(Error::RouteError(None))
         }
-    } else if foreign_network_client.has_next_hop(dst_peer_id) {
-        // check foreign network again. so in happy path we can avoid extra check
-        foreign_network_client.send_msg(msg, dst_peer_id).await
-    } else {
-        tracing::debug!(?dst_peer_id, "no gateway for peer");
-        Err(Error::RouteError(None))
-    };
+    }
+    .await;
 
     if send_result.is_ok()
         && let Some(metrics) = direct_tx_metrics
@@ -4681,7 +4693,6 @@ mod tests {
             (
                 "portable-node".to_owned(),
                 Some("10.20.0.91/16".parse::<cidr::Ipv4Inet>().unwrap().into()),
-                String::new(),
             )
         );
     }
