@@ -9,5 +9,7 @@
   "p2p_prefer_protocol": { "capability": "config:p2p_prefer_protocol", "support": "tcp_udp" },
   "p2p_disguise_mode": { "capability": "config:p2p_disguise_mode", "support": "disguised_p2p" },
   "close_redundant_conns_when_disguised": { "capability": "config:close_redundant_conns_when_disguised", "support": "disguised_p2p" },
-  "vpn": { "capability": "config:vpn-subnet-exit-v1", "support": "always" }
+  "vpn": { "capability": "config:vpn-subnet-exit-v1", "support": "always" },
+  "http3_fec_ratio": { "capability": "config:http3-fec-v1", "support": "http3" },
+  "http3_streams": { "capability": "config:http3-streams-v1", "support": "http3" }
 }

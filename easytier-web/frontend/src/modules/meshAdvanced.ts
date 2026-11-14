@@ -32,6 +32,9 @@ export const ADVANCED_SWITCHES: readonly string[] = [
   'enable_udp_broadcast_relay',
   'close_redundant_conns_when_disguised',
   'disable_parallel_connections',
+  'enable_udp_fec',
+  'enable_udp_fec_kcp',
+  'enable_udp_fec_quic',
 ]
 
 export type AdvancedValue = boolean | number | string
@@ -52,6 +55,8 @@ export const ADVANCED_DEFAULTS: Readonly<Record<string, AdvancedValue>> = {
   mtu: 1380,
   traffic_disguise: 'speedtest',
   parallel_connections: 1,
+  http3_fec_ratio: 0,
+  http3_streams: 8,
   p2p_prefer_protocol: 'udp',
   p2p_disguise_mode: 'prefer',
 }
@@ -105,6 +110,8 @@ export const ADVANCED_PARAMETERS: readonly AdvancedParameter[] = [
   },
   { field: 'mtu', kind: 'number', min: 576, max: 9000 },
   { field: 'parallel_connections', kind: 'number', min: 1, max: 16 },
+  { field: 'http3_fec_ratio', kind: 'number', min: 0, max: 100 },
+  { field: 'http3_streams', kind: 'number', min: 1, max: 32 },
 ]
 
 /**
@@ -124,7 +131,10 @@ export const ADVANCED_CATEGORIES: readonly { key: string; fields: readonly strin
   { key: 'proxy', fields: ['enable_kcp_proxy', 'disable_kcp_input', 'enable_quic_proxy', 'disable_quic_input'] },
   {
     key: 'transport',
-    fields: ['data_compress_algo', 'mtu', 'multi_thread', 'parallel_connections', 'disable_parallel_connections'],
+    fields: [
+      'data_compress_algo', 'mtu', 'multi_thread', 'parallel_connections', 'disable_parallel_connections',
+      'enable_udp_fec', 'enable_udp_fec_kcp', 'enable_udp_fec_quic', 'http3_fec_ratio', 'http3_streams',
+    ],
   },
   { key: 'disguise', fields: ['traffic_disguise', 'p2p_disguise_mode', 'close_redundant_conns_when_disguised'] },
 ]

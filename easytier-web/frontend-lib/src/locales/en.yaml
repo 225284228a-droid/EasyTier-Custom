@@ -183,6 +183,10 @@ enable_udp_fec_kcp: Include KCP proxy traffic in FEC
 enable_udp_fec_kcp_help: "When UDP FEC is active, also protect KCP proxy packets on UDP connections."
 enable_udp_fec_quic: Include QUIC proxy traffic in FEC
 enable_udp_fec_quic_help: "When UDP FEC is active, also protect QUIC proxy packets on UDP connections."
+http3_streams: HTTP3 streams per tunnel
+http3_streams_help: "1–32, default 8. Flows are spread over this many reliable streams of one HTTP3 connection, each flow staying on one, so a lost packet only holds back the flows on its stream. The smaller end's value is used; 1 keeps everything on one stream."
+http3_fec_ratio: HTTP3 FEC redundancy (%)
+http3_fec_ratio_help: "Repair packets per 100 packets on HTTP3 tunnels while FEC is active, 1–100. 0 (default) follows the loss the peer measures: nothing on a clean path, more as loss rises."
 traffic_disguise: WSS / HTTP3 traffic style
 traffic_disguise_speedtest: Speed test
 traffic_disguise_video: Video

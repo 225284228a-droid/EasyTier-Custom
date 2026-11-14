@@ -35,6 +35,38 @@ pub(super) struct ParallelSendState {
     pub(super) busy_until: HashMap<PeerConnId, Instant>,
     pub(super) sent_bytes: HashMap<PeerConnId, u64>,
     pub(super) pool_anchor: Option<(uuid::Uuid, uuid::Uuid)>,
+    /// Each flow's latest sequence; packets without a flow share one chain.
+    pub(super) flows: HashMap<Option<crate::packet::flow::FlowKey>, (u64, Instant)>,
+}
+/// A flow quiet for this long starts a new chain: its earlier packets have
+/// long been handed on or given up.
+const FLOW_IDLE: Duration = Duration::from_secs(2);
+const MAX_FLOWS: usize = 4096;
+impl ParallelSendState {
+    /// The distance back to the flow's previous packet, zero for a new chain.
+    pub(super) fn chain(
+        &mut self,
+        flow: Option<crate::packet::flow::FlowKey>,
+        sequence: u64,
+        now: Instant,
+    ) -> u32 {
+        if self.flows.len() >= MAX_FLOWS && !self.flows.contains_key(&flow) {
+            self.flows
+                .retain(|_, (_, last)| now.saturating_duration_since(*last) < FLOW_IDLE);
+            if self.flows.len() >= MAX_FLOWS {
+                // Too many live flows: the oldest restart their chains.
+                let mut ages: Vec<_> = self.flows.values().map(|(_, last)| *last).collect();
+                ages.sort();
+                let cutoff = ages[ages.len() / 2];
+                self.flows.retain(|_, (_, last)| *last > cutoff);
+            }
+        }
+        let previous = self.flows.insert(flow, (sequence, now));
+        previous
+            .filter(|(_, last)| now.saturating_duration_since(*last) < FLOW_IDLE)
+            .and_then(|(prev, _)| u32::try_from(sequence.checked_sub(prev)?).ok())
+            .unwrap_or(0)
+    }
 }
 impl Default for ParallelSendState {
     fn default() -> Self {
@@ -44,6 +76,7 @@ impl Default for ParallelSendState {
             busy_until: HashMap::new(),
             sent_bytes: HashMap::new(),
             pool_anchor: None,
+            flows: HashMap::new(),
         }
     }
 }
@@ -657,12 +690,14 @@ impl Peer {
             order.sort_by_key(|(key, _)| *key);
             let sequence = state.sequence;
             state.sequence = state.sequence.wrapping_add(1);
+            let prev = state.chain(msg.flow_key, sequence, now);
             let mut packet = parallel::wrap(
                 msg,
                 plan.my_peer_id,
                 self.peer_node_id,
                 state.epoch,
                 sequence,
+                prev,
             );
             for &(_, lane) in &order {
                 match lane.conn.try_send_owned(packet) {
@@ -896,5 +931,55 @@ impl Peer {
                 && (!conn.is_manual() || conn.get_stats().latency_us > 0)
                 && conn_protocol_rank(conn, &flags).is_some_and(|rank| rank <= target_rank)
         })
+    }
+}
+
+#[cfg(test)]
+mod chain_tests {
+    use super::*;
+    use crate::packet::flow::FlowKey;
+
+    fn flow(port: u16) -> Option<FlowKey> {
+        Some(FlowKey {
+            src: std::net::SocketAddr::from(([10, 0, 0, 1], port)),
+            dst: std::net::SocketAddr::from(([10, 0, 0, 2], 80)),
+            protocol: 6,
+        })
+    }
+
+    #[test]
+    fn each_flow_points_back_to_its_own_previous_packet() {
+        let mut state = ParallelSendState::default();
+        let now = Instant::now();
+        assert_eq!(state.chain(flow(1), 0, now), 0);
+        assert_eq!(state.chain(flow(2), 1, now), 0);
+        assert_eq!(state.chain(None, 2, now), 0);
+        assert_eq!(state.chain(flow(1), 3, now), 3);
+        assert_eq!(state.chain(flow(2), 4, now), 3);
+        assert_eq!(state.chain(None, 5, now), 3);
+        assert_eq!(state.chain(flow(1), 6, now), 3);
+        // A quiet flow restarts its chain; so does one too far back to name.
+        assert_eq!(state.chain(flow(2), 7, now + FLOW_IDLE), 0);
+        assert_eq!(state.chain(flow(1), 7 + u64::from(u32::MAX), now), 0);
+    }
+
+    #[test]
+    fn the_flow_table_stays_bounded() {
+        let mut state = ParallelSendState::default();
+        let now = Instant::now();
+        for port in 0..MAX_FLOWS as u16 * 2 {
+            state.chain(
+                flow(port),
+                u64::from(port),
+                now + Duration::from_micros(u64::from(port)),
+            );
+        }
+        assert!(state.flows.len() <= MAX_FLOWS);
+        // The newest flows keep their chains.
+        let last = MAX_FLOWS as u64 * 2 - 1;
+        assert_eq!(
+            state.chain(flow(last as u16), last + 1, now + FLOW_IDLE / 2),
+            1
+        );
     }
 }

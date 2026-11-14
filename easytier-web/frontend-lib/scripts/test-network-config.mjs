@@ -123,6 +123,8 @@ function allFieldFixture() {
     hostname: 'frontend-e2e',
     parallel_connections: 5,
     disable_parallel_connections: true,
+    http3_fec_ratio: 30,
+    http3_streams: 4,
     traffic_disguise: 'video',
     network_sync_at: '1793587936027',
     advanced_sync_at: '1793587936028',
@@ -316,6 +318,8 @@ function assertFullFieldRoundTrip() {
   const backend = toBackendNetworkConfig(normalized)
   assert.equal(backend.parallel_connections, 5)
   assert.equal(backend.disable_parallel_connections, true)
+  assert.equal(backend.http3_fec_ratio, 30)
+  assert.equal(backend.http3_streams, 4)
   assert.equal(backend.traffic_disguise, 'video')
   expectNoCamelCaseKeys(backend)
 

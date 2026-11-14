@@ -583,3 +583,5 @@ async fn failed_write_closes_receive_stream_and_does_not_commit_source() {
     assert!(fec.state.lock().rx.is_none());
     assert!(sender.send(source(2, 32)).await.is_err());
 }
+
+mod custom_tests;

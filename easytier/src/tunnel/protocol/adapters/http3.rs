@@ -16,7 +16,7 @@ use easytier_core::{
 use crate::{
     common::global_ctx::ArcGlobalCtx,
     socket::tcp::RuntimeTcpSocket,
-    tunnel::http3::{Http3AcceptedSession, upgrade_connected},
+    tunnel::http3::{Http3AcceptedSession, Http3Options, upgrade_connected_with},
     tunnel::traffic_disguise::apply_default,
 };
 
@@ -25,6 +25,18 @@ use super::{ClientAdapter, ServerAdapter, apply_sni_override};
 #[derive(Default)]
 struct Http3Adapter {
     global_ctx: Option<ArcGlobalCtx>,
+}
+
+impl Http3Adapter {
+    fn options(&self) -> Http3Options {
+        self.global_ctx.as_ref().map_or(
+            Http3Options {
+                fec: crate::tunnel::http3::FecConfig::OFF,
+                streams: Http3Options::DEFAULT_STREAMS,
+            },
+            |ctx| Http3Options::from_flags(&ctx.get_flags()),
+        )
+    }
 }
 
 pub(super) fn client_adapter(global_ctx: &ArcGlobalCtx) -> ClientAdapter {
@@ -65,7 +77,7 @@ impl ClientProtocolUpgrader<RuntimeTcpSocket> for Http3Adapter {
             .map(|ctx| ctx.config.get_traffic_disguise())
             .unwrap_or_else(|| "speedtest".to_owned());
         let requested_url = apply_default(requested_url, &style);
-        Ok(upgrade_connected(session, requested_url).await?)
+        Ok(upgrade_connected_with(session, requested_url, self.options()).await?)
     }
 }
 
@@ -98,7 +110,7 @@ impl ServerProtocolUpgrader<RuntimeTcpSocket> for Http3Adapter {
             .unwrap_or_else(|| "speedtest".to_owned());
         let local_url = apply_default(local_url, &style);
         Ok(ServerProtocolUpgrade::Acceptor(Box::new(
-            Http3AcceptedSession::new(session, local_url, admission)?,
+            Http3AcceptedSession::new(session, local_url, admission, self.options())?,
         )))
     }
 

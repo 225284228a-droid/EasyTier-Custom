@@ -131,7 +131,7 @@ async fn peer_conn_handshake_over_memory_tunnel() {
         client.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            "p2p-parallel-v1:1:0:16".to_owned(),
+            "p2p-parallel-v2:1:0:16".to_owned(),
             format!("p2p-tx-v1:{}", server.parallel_tx_epoch()),
             format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", server.get_conn_id())
         ]
@@ -140,7 +140,7 @@ async fn peer_conn_handshake_over_memory_tunnel() {
         server.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            "p2p-parallel-v1:1:0:16".to_owned(),
+            "p2p-parallel-v2:1:0:16".to_owned(),
             format!("p2p-tx-v1:{}", client.parallel_tx_epoch()),
             format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", client.get_conn_id())
         ]
@@ -296,7 +296,7 @@ async fn peer_conn_noise_handshake_advertises_liveness_echo() {
         client.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            "p2p-parallel-v1:1:0:16".to_owned(),
+            "p2p-parallel-v2:1:0:16".to_owned(),
             format!("p2p-tx-v1:{}", server.parallel_tx_epoch()),
             format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", server.get_conn_id())
         ]
@@ -305,7 +305,7 @@ async fn peer_conn_noise_handshake_advertises_liveness_echo() {
         server.get_conn_info().features,
         [
             "liveness-echo-v1".to_owned(),
-            "p2p-parallel-v1:1:0:16".to_owned(),
+            "p2p-parallel-v2:1:0:16".to_owned(),
             format!("p2p-tx-v1:{}", client.parallel_tx_epoch()),
             format!("p2p-cleanup-v2:udp:0:0:0:0:manual:{}", client.get_conn_id())
         ]

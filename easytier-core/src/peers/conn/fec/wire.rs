@@ -55,6 +55,8 @@ pub(super) fn eligible_peer(peer: &[u8]) -> bool {
             PacketType::KcpDst as u8,
             PacketType::QuicSrc as u8,
             PacketType::QuicDst as u8,
+            PacketType::ParallelData as u8,
+            PacketType::ParallelLossyData as u8,
         ]
         .contains(&peer[KIND_OFFSET])
 }

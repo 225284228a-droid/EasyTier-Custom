@@ -157,7 +157,7 @@ pub struct PeerManagerHeader {
     pub len: U32<DefaultEndian>,
 }
 pub const PEER_MANAGER_HEADER_SIZE: usize = std::mem::size_of::<PeerManagerHeader>();
-pub const PARALLEL_PACKET_OVERHEAD: usize = PEER_MANAGER_HEADER_SIZE + 24;
+pub const PARALLEL_PACKET_OVERHEAD: usize = PEER_MANAGER_HEADER_SIZE + 28;
 
 impl PeerManagerHeader {
     pub fn is_encrypted(&self) -> bool {

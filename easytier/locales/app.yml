@@ -230,6 +230,12 @@ core_clap:
   enable_udp_fec_quic:
     en: "include QUIC proxy traffic in UDP forward error correction when either peer enables UDP FEC"
     zh-CN: "任一端启用 UDP 前向纠错时，将 QUIC 代理流量纳入纠错"
+  http3_streams:
+    en: "reliable streams an HTTP3 tunnel spreads flows over (1-32, default 8); a lost packet only holds back the flows on its stream; the smaller end's value is used"
+    zh-CN: "HTTP3 隧道用于分流的可靠流数量（1-32，默认 8）；丢包只会阻塞同一条流上的连接；两端取较小值"
+  http3_fec_ratio:
+    en: "redundancy of forward error correction on HTTP3 tunnels when UDP FEC is enabled, in repair packets per 100 packets (1-100); 0 adapts to the measured loss"
+    zh-CN: "启用 UDP 前向纠错时 HTTP3 隧道的冗余比例，即每 100 个数据包附加的修复包数（1-100）；0 表示按实测丢包率自适应"
   relay_all_peer_rpc:
     en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
     zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"

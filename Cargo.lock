@@ -2604,6 +2604,7 @@ dependencies = [
  "quinn-proto",
  "rand 0.8.8",
  "rcgen",
+ "reed-solomon-erasure",
  "regex",
  "rstest",
  "rust-i18n",

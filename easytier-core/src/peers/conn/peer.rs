@@ -361,6 +361,7 @@ impl Peer {
                 // epoch, so keeping the old one would silently lose all data.
                 state.epoch = conn.parallel_tx_epoch();
                 state.sequence = 0;
+                state.flows.clear();
                 if let Some(anchor) = conn.cleanup_policy().shared_connection_key()
                     && state.pool_anchor.is_none_or(|previous| anchor < previous)
                 {

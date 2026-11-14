@@ -121,6 +121,14 @@ const parallelConnections = computed({
   set: (value: number | null) => { curNetwork.value.parallel_connections = value ?? 1 },
 })
 const parallelDisabled = computed(() => curNetwork.value.disable_parallel_connections ?? false)
+const http3Streams = computed({
+  get: () => curNetwork.value.http3_streams ?? 8,
+  set: (value: number | null) => { curNetwork.value.http3_streams = value && value !== 8 ? value : undefined },
+})
+const http3FecRatio = computed({
+  get: () => curNetwork.value.http3_fec_ratio ?? 0,
+  set: (value: number | null) => { curNetwork.value.http3_fec_ratio = value || undefined },
+})
 const trafficDisguise = computed({
   get: () => curNetwork.value.traffic_disguise ?? 'speedtest',
   set: (value: string) => { curNetwork.value.traffic_disguise = value },
@@ -550,6 +558,22 @@ function removeVpnPortalClient(index: number) {
                   :max-fraction-digits="0" :use-grouping="false" show-buttons :disabled="parallelDisabled"
                   aria-describedby="parallel-connections-help" />
                 <small id="parallel-connections-help" class="text-surface-500">{{ t('parallel_connections_help') }}</small>
+              </div>
+
+              <div v-if="extensionSupported('http3_fec_ratio')" class="flex flex-col gap-2">
+                <label for="http3_fec_ratio">{{ t('http3_fec_ratio') }}</label>
+                <InputNumber id="http3_fec_ratio" v-model="http3FecRatio" :min="0" :max="100"
+                  :max-fraction-digits="0" :use-grouping="false" show-buttons
+                  aria-describedby="http3-fec-ratio-help" />
+                <small id="http3-fec-ratio-help" class="text-surface-500">{{ t('http3_fec_ratio_help') }}</small>
+              </div>
+
+              <div v-if="extensionSupported('http3_streams')" class="flex flex-col gap-2">
+                <label for="http3_streams">{{ t('http3_streams') }}</label>
+                <InputNumber id="http3_streams" v-model="http3Streams" :min="1" :max="32"
+                  :max-fraction-digits="0" :use-grouping="false" show-buttons
+                  aria-describedby="http3-streams-help" />
+                <small id="http3-streams-help" class="text-surface-500">{{ t('http3_streams_help') }}</small>
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap w-full">

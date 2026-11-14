@@ -1448,13 +1448,13 @@ impl PeerConn {
                         if !parallel_supported || parallel_receiver.is_none() {
                             continue;
                         }
-                        let Some((epoch, seq, inner)) =
+                        let Some((epoch, seq, prev, inner)) =
                             super::parallel::unwrap(zc_packet, remote_peer_id, my_peer_id)
                         else {
                             continue;
                         };
                         zc_packet = inner;
-                        Some((epoch, seq))
+                        Some((epoch, seq, prev))
                     } else {
                         None
                     };
@@ -1465,11 +1465,11 @@ impl PeerConn {
                     {
                         continue;
                     }
-                    if let Some((epoch, seq)) = parallel_sequence {
+                    if let Some((epoch, seq, prev)) = parallel_sequence {
                         parallel_receiver
                             .as_ref()
                             .unwrap()
-                            .receive(epoch, seq, zc_packet, ingress)
+                            .receive(epoch, seq, prev, zc_packet, ingress)
                             .await;
                         continue;
                     }

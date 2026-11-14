@@ -120,6 +120,15 @@ message Flags {
   // Automatic P2P disguise policy: prefer, off, disabled, or only.
   string p2p_disguise_mode = 50050 [(easytier.flag) = { default: "prefer", form: true }];
 
+  // Redundancy of the FEC below HTTP3 tunnels, in repair datagrams per 100
+  // QUIC datagrams (1..=100). Zero follows the loss the peer measures. Takes
+  // effect where enable_udp_fec is set on either end of the tunnel.
+  uint32 http3_fec_ratio = 50051 [(easytier.flag) = { default: "0", form: true }];
+
+  // Reliable streams an HTTP3 tunnel spreads flows over (1..=32). Each flow
+  // stays on one stream, so a lost packet only holds back the flows on its
+  // stream. 1 keeps everything on one stream. A tunnel uses the smaller end's.
+  uint32 http3_streams = 50052 [(easytier.flag) = { default: "8", form: true }];
 }
 
 

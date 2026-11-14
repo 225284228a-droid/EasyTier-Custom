@@ -23,6 +23,7 @@ pub mod bandwidth;
 pub mod buf;
 pub(crate) mod encrypt;
 pub mod filter;
+pub mod flow_lanes;
 pub mod framed;
 pub mod host_tunnel;
 pub mod mpsc;

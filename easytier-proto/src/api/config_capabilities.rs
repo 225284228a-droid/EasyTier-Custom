@@ -6,6 +6,7 @@ pub enum ConfigFieldSupport {
     Always,
     TcpAndUdp,
     TlsTransport,
+    Http3,
     DisguisedP2p,
 }
 
@@ -24,6 +25,7 @@ impl ConfigFieldCapability {
             ConfigFieldSupport::Always => true,
             ConfigFieldSupport::TcpAndUdp => supports("tcp") && supports("udp"),
             ConfigFieldSupport::TlsTransport => tls,
+            ConfigFieldSupport::Http3 => supports("http3"),
             ConfigFieldSupport::DisguisedP2p => disguised_p2p && tls,
         }
     }

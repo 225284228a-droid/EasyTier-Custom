@@ -46,6 +46,7 @@ pub fn write(descriptor_set: &[u8], out: &Path) -> anyhow::Result<()> {
             Some("always") => "Always",
             Some("tcp_udp") => "TcpAndUdp",
             Some("tls") => "TlsTransport",
+            Some("http3") => "Http3",
             Some("disguised_p2p") => "DisguisedP2p",
             other => bail!("invalid capability support for {name}: {other:?}"),
         };

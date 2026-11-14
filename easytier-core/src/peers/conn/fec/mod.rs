@@ -225,6 +225,13 @@ impl PeerConnFec {
                 kind if kind == PacketType::QuicSrc as u8 || kind == PacketType::QuicDst as u8 => {
                     state.encode_quic
                 }
+                // Striping across parallel connections wraps the packet. The
+                // lossy envelope only carries data; the other may carry proxy
+                // traffic whose class is no longer visible once encrypted.
+                kind if kind == PacketType::ParallelLossyData as u8 => true,
+                kind if kind == PacketType::ParallelData as u8 => {
+                    state.encode_kcp || state.encode_quic
+                }
                 _ => false,
             }
     }

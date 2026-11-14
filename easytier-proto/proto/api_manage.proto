@@ -162,6 +162,11 @@ message NetworkConfig {
   // switches and transport parameters) that a console published. Consoles
   // order competing edits by it; the runtime ignores it.
   optional uint64 advanced_sync_at = 50087;
+  // FEC redundancy on HTTP3 tunnels in percent (1..=100); 0 or unset adapts
+  // to the measured loss. Applies where enable_udp_fec is set on either end.
+  optional uint32 http3_fec_ratio = 50088;
+  // 1..=32, unset is 8. See common.Flags.http3_streams.
+  optional uint32 http3_streams = 50089;
 }
 
 // One destination subnet mapped to exactly one virtual node address.

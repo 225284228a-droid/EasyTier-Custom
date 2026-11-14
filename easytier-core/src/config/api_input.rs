@@ -111,6 +111,8 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
         .map(|mode| mode.trim().to_ascii_lowercase());
     result.p2p_prefer_protocol = flags.default_protocol;
     result.close_redundant_conns_when_disguised = flags.close_redundant_conns_when_disguised;
+    result.http3_fec_ratio = flags.http3_fec_ratio;
+    result.http3_streams = flags.http3_streams;
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
     result.data_compress_algo = flags.data_compress_algo;
     result.encryption_algorithm = flags.encryption_algorithm;
@@ -641,6 +643,23 @@ impl NetworkConfigExt for NetworkConfig {
             disable_sym_hole_punching: self.disable_sym_hole_punching,
             p2p_disguise_mode: self.p2p_disguise_mode.clone(),
             close_redundant_conns_when_disguised: self.close_redundant_conns_when_disguised,
+            http3_fec_ratio: self
+                .http3_fec_ratio
+                .map(|ratio| {
+                    anyhow::ensure!(ratio <= 100, "invalid http3_fec_ratio: expected 0..=100");
+                    Ok(ratio)
+                })
+                .transpose()?,
+            http3_streams: self
+                .http3_streams
+                .map(|streams| {
+                    anyhow::ensure!(
+                        (1..=32).contains(&streams),
+                        "invalid http3_streams: expected 1..=32"
+                    );
+                    Ok(streams)
+                })
+                .transpose()?,
             instance_recv_bps_limit: self.instance_recv_bps_limit,
             ..Default::default()
         });

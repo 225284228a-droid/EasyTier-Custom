@@ -184,6 +184,10 @@ enable_udp_fec_kcp: 纠错包含 KCP 代理流量
 enable_udp_fec_kcp_help: "UDP 前向纠错生效时，同时保护 UDP 连接上的 KCP 代理数据包。"
 enable_udp_fec_quic: 纠错包含 QUIC 代理流量
 enable_udp_fec_quic_help: "UDP 前向纠错生效时，同时保护 UDP 连接上的 QUIC 代理数据包。"
+http3_streams: HTTP3 隧道流数
+http3_streams_help: "范围 1–32，默认 8。不同连接按五元组分到一条 HTTP3 连接内的多条可靠流上，同一连接始终在同一条流上，丢包只会阻塞同一条流上的连接。两端取较小值；1 表示全部走一条流。"
+http3_fec_ratio: HTTP3 纠错冗余比例 (%)
+http3_fec_ratio_help: "纠错生效时 HTTP3 隧道每 100 个数据包附加的修复包数，范围 1–100。0（默认）按对端实测的丢包率自适应：线路干净时不发修复包，丢包越多冗余越高。"
 disable_parallel_connections: 禁用多连接并发
 disable_parallel_connections_help: "使用单连接传输，保留已填写的并行连接数；任意一端禁用即生效。"
 traffic_disguise: WSS / HTTP3 流量风格

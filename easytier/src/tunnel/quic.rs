@@ -31,10 +31,14 @@ use tokio::{
 };
 use tokio_util::task::AbortOnDropHandle;
 
+pub(crate) mod datagram_fec;
+pub(crate) mod fec_session;
 pub(crate) mod session_common;
 mod session_socket;
 #[cfg(test)]
 pub(crate) mod session_tests;
+#[cfg(test)]
+pub(crate) mod test_link;
 pub(crate) use session_common::window_source;
 pub(crate) use session_socket::QuicUdpSessionSocket;
 

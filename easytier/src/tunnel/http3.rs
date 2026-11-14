@@ -1,12 +1,16 @@
 //! HTTP/3 duplex streaming POST tunnels; control streams and QPACK use h3.
 pub(crate) use super::quic::QuicUdpSessionSocket as Http3UdpSessionSocket;
+pub(crate) use super::quic::fec_session::FecConfig;
 use super::{
     insecure_tls::{SkipServerVerification, get_insecure_tls_cert, sni_from_url},
-    quic::{session_common, window_source},
+    quic::{
+        fec_session::{FecHandle, FecUdpSession},
+        session_common, window_source,
+    },
     traffic_disguise::{PacedSink, TrafficStyle},
 };
 use crate::proto::common::TunnelInfo;
-use anyhow::Context;
+use anyhow::Context as _;
 use bytes::{Buf, Bytes};
 use easytier_core::{
     connectivity::{
@@ -16,15 +20,20 @@ use easytier_core::{
     packet::{PEER_MANAGER_HEADER_SIZE, PacketType, ZCPacket},
     socket::udp::UdpSession,
     tunnel::{
-        Tunnel, TunnelError,
+        Tunnel, TunnelError, flow_lanes,
         framed::{FramedReader, FramedWriter, TcpZCPacketToBytes, ZCPacketToBytes},
         wrapper::TunnelWrapper,
     },
 };
-use futures::StreamExt as _;
+use futures::{Sink, StreamExt as _};
 use quinn::{
     AsyncUdpSocket, ClientConfig, EndpointConfig, ServerConfig, TransportConfig,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
+};
+use std::{
+    collections::VecDeque,
+    pin::Pin,
+    task::{Context, Poll},
 };
 use std::{
     sync::{Arc, Mutex},
@@ -38,13 +47,115 @@ use tokio::{
 use tokio_util::task::AbortOnDropHandle;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const BODY_BUFFER_SIZE: usize = 64 * 1024;
-const PARALLEL_FRAME_OVERHEAD: usize = 40;
+const PARALLEL_FRAME_OVERHEAD: usize = easytier_core::packet::PARALLEL_PACKET_OVERHEAD;
 const MAX_HTTP3_FRAME_SIZE: usize = session_common::MAX_TUNNEL_BODY_SIZE + PARALLEL_FRAME_OVERHEAD;
 type H3ServerConnection = h3::server::Connection<h3_quinn::Connection, Bytes>;
 type H3ServerStream = h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 
+/// Carries the FEC key inside TLS. A request identifier that the response
+/// echoes is ordinary HTTP; here the echo also says the server took the key.
+const FEC_HEADER: &str = "x-request-id";
+/// QUIC declares a packet lost once this many later packets are acknowledged,
+/// or once it is 9/8 RTT old. Below QUIC, FEC rebuilds a lost datagram a few
+/// datagrams later; declaring it lost first would retransmit it needlessly
+/// and, worse, put BBR into recovery for a loss that never reached QUIC. A
+/// count above the widest repair span leaves detection to the time rule: a
+/// loss FEC cannot mend is found at most RTT/8 later than with the default.
+///
+/// The count is part of a connection's transport configuration, fixed before
+/// the handshake, while FEC is agreed in the request after it. Each tunnel
+/// therefore uses it when its own end asks for FEC; an end that only answers
+/// keeps QUIC's default, so its direction may still retransmit a datagram
+/// that a repair would have mended.
+const FEC_PACKET_THRESHOLD: u32 = 40;
+/// The client asks for this many request streams on the first POST; the
+/// answer carries the number both ends allow. Every further POST names its
+/// lane. All of them are ordinary concurrent uploads on one connection.
+const STREAMS_HEADER: &str = "x-upload-streams";
+const LANE_HEADER: &str = "x-upload-part";
+/// Packets queued for lanes whose stream cannot take more yet.
+const LANE_QUEUE_LIMIT: usize = 256;
+
+/// What the local configuration asks of an HTTP3 tunnel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Http3Options {
+    pub fec: FecConfig,
+    /// Reliable streams to spread flows over; see [`flow_lanes`].
+    pub streams: usize,
+}
+
+impl Http3Options {
+    pub(crate) const DEFAULT_STREAMS: usize = 8;
+
+    /// One stream and no FEC, the tunnel as it was before either existed.
+    #[cfg(test)]
+    pub(crate) const PLAIN: Self = Self {
+        fec: FecConfig::OFF,
+        streams: 1,
+    };
+
+    pub(crate) fn from_flags(flags: &crate::proto::common::Flags) -> Self {
+        Self {
+            fec: FecConfig::from_flags(flags.enable_udp_fec, flags.http3_fec_ratio),
+            streams: (flags.http3_streams as usize).clamp(1, flow_lanes::MAX_LANES),
+        }
+    }
+
+    /// `fec=` and `streams=` on a tunnel URL override the instance setting.
+    pub(crate) fn with_url_override(self, url: &url::Url) -> Self {
+        let streams = url
+            .query_pairs()
+            .find(|(key, _)| key == "streams")
+            .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+            .map_or(self.streams, |streams| {
+                streams.clamp(1, flow_lanes::MAX_LANES)
+            });
+        Self {
+            fec: self.fec.with_url_override(url),
+            streams,
+        }
+    }
+}
+
+fn parse_count(value: &http::HeaderValue) -> Option<usize> {
+    value
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|count| (1..=flow_lanes::MAX_LANES).contains(count))
+}
+
+/// A fresh key as a header value; its last bit says whether this end wants
+/// protection, since the peer may want it even when this end does not.
+fn fec_offer(wanted: bool) -> ([u8; 16], String) {
+    let mut key: [u8; 16] = rand::random();
+    key[15] = (key[15] & !1) | u8::from(wanted);
+    let text = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    (key, text)
+}
+
+fn parse_fec_offer(value: &http::HeaderValue) -> Option<([u8; 16], bool)> {
+    let text = value.to_str().ok()?;
+    if text.len() != 32 || !text.is_ascii() {
+        return None;
+    }
+    let mut key = [0; 16];
+    for (index, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some((key, key[15] & 1 == 1))
+}
+
 pub fn transport_config() -> Arc<TransportConfig> {
+    transport_config_for(false)
+}
+fn transport_config_for(fec: bool) -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
+    if fec {
+        config.packet_threshold(FEC_PACKET_THRESHOLD);
+    }
     config
         .max_concurrent_uni_streams(16u32.into())
         .max_concurrent_bidi_streams(100u32.into())
@@ -82,17 +193,23 @@ fn build_rustls_server_config() -> anyhow::Result<rustls::ServerConfig> {
     Ok(config)
 }
 pub fn server_config() -> anyhow::Result<ServerConfig> {
+    server_config_for(false)
+}
+pub(crate) fn server_config_for(fec: bool) -> anyhow::Result<ServerConfig> {
     let mut config = ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(
         build_rustls_server_config()?,
     )?));
-    config.transport_config(transport_config());
+    config.transport_config(transport_config_for(fec));
     Ok(config)
 }
 pub fn client_config() -> anyhow::Result<ClientConfig> {
+    client_config_for(false)
+}
+pub(crate) fn client_config_for(fec: bool) -> anyhow::Result<ClientConfig> {
     let mut config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(
         build_rustls_client_config()?,
     )?));
-    config.transport_config(transport_config());
+    config.transport_config(transport_config_for(fec));
     Ok(config)
 }
 pub fn endpoint_config() -> EndpointConfig {
@@ -144,7 +261,15 @@ fn request_uri(url: &url::Url, style: TrafficStyle) -> anyhow::Result<http::Uri>
         .filter(|(key, _)| {
             !matches!(
                 key.as_str(),
-                "sni" | "host" | "path" | "ua" | "accept_language" | "padding" | "traffic_disguise"
+                "sni"
+                    | "host"
+                    | "path"
+                    | "ua"
+                    | "accept_language"
+                    | "padding"
+                    | "traffic_disguise"
+                    | "fec"
+                    | "streams"
             )
         })
         .collect();
@@ -237,13 +362,99 @@ impl ZCPacketToBytes for CheckedFrameConverter {
         TcpZCPacketToBytes.zcpacket_into_bytes(packet)
     }
 }
-fn body_tunnel(
+type LaneWriter = FramedWriter<tokio::io::DuplexStream, CheckedFrameConverter>;
+type LaneReader = Pin<Box<dyn futures::Stream<Item = Result<ZCPacket, TunnelError>> + Send>>;
+
+/// Sends each packet on the lane [`flow_lanes::lane_of`] picks. A lane whose
+/// stream cannot take more holds only its own packets back, up to a shared
+/// limit; QUIC streams stall on send only when the peer's window for that
+/// stream is exhausted.
+struct LaneSink {
+    lanes: Vec<LaneWriter>,
+    queues: Vec<VecDeque<ZCPacket>>,
+    queued: usize,
+}
+
+impl LaneSink {
+    fn new(lanes: Vec<LaneWriter>) -> Self {
+        Self {
+            queues: lanes.iter().map(|_| VecDeque::new()).collect(),
+            lanes,
+            queued: 0,
+        }
+    }
+
+    /// Moves queued packets into their lanes; ready once every queue is empty.
+    fn drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), TunnelError>> {
+        let mut idle = true;
+        for (lane, queue) in self.lanes.iter_mut().zip(&mut self.queues) {
+            while !queue.is_empty() {
+                match Pin::new(&mut *lane).poll_ready(cx) {
+                    Poll::Ready(Ok(())) => {
+                        Pin::new(&mut *lane).start_send(queue.pop_front().unwrap())?;
+                        self.queued -= 1;
+                    }
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => {
+                        idle = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if idle {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl Sink<ZCPacket> for LaneSink {
+    type Error = TunnelError;
+
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if let Poll::Ready(Err(error)) = self.drain(cx) {
+            return Poll::Ready(Err(error));
+        }
+        if self.queued < LANE_QUEUE_LIMIT {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, packet: ZCPacket) -> Result<(), Self::Error> {
+        let lane = flow_lanes::lane_of(&packet, self.lanes.len());
+        self.queues[lane].push_back(packet);
+        self.queued += 1;
+        Ok(())
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        futures::ready!(self.drain(cx))?;
+        for lane in &mut self.lanes {
+            futures::ready!(Pin::new(lane).poll_flush(cx))?;
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        futures::ready!(self.drain(cx))?;
+        for lane in &mut self.lanes {
+            futures::ready!(Pin::new(lane).poll_close(cx))?;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// One request stream of a tunnel: its body carries framed packets in both
+/// directions, and each lane is ordered only within itself.
+fn body_lane(
     mut send: impl BodySend,
     mut recv: impl BodyRecv,
-    lifetime: Arc<H3Lifetime>,
-    style: TrafficStyle,
-    info: TunnelInfo,
-) -> Box<dyn Tunnel> {
+    lifetime: &Arc<H3Lifetime>,
+) -> (LaneWriter, LaneReader) {
     let (read, mut receive_writer) = tokio::io::duplex(BODY_BUFFER_SIZE);
     let (mut send_reader, write) = tokio::io::duplex(BODY_BUFFER_SIZE);
     let connection = lifetime.connection.conn.clone();
@@ -279,43 +490,88 @@ fn body_tunnel(
             connection.close(0x102u32.into(), b"");
         }
     });
+    let reader = FramedReader::new_with_associate_data(
+        read,
+        MAX_HTTP3_FRAME_SIZE,
+        Some(Box::new(lifetime.clone())),
+    )
+    .map(|result| {
+        result.and_then(|packet| {
+            validate_frame(&packet)?;
+            Ok(packet)
+        })
+    });
+    let writer = FramedWriter::new_with_converter_and_associate_data(
+        write,
+        CheckedFrameConverter,
+        Some(Box::new(lifetime.clone())),
+    );
+    (writer, Box::pin(reader))
+}
+
+fn body_tunnel<S: BodySend, R: BodyRecv>(
+    lanes: Vec<(S, R)>,
+    lifetime: Arc<H3Lifetime>,
+    style: TrafficStyle,
+    info: TunnelInfo,
+) -> Box<dyn Tunnel> {
+    let (writers, readers): (Vec<_>, Vec<_>) = lanes
+        .into_iter()
+        .map(|(send, recv)| body_lane(send, recv, &lifetime))
+        .unzip();
     let bandwidth_source = window_source(&lifetime.connection.conn);
+    // Lanes keep the connection alive through their readers and writers.
+    drop(lifetime);
     Box::new(
         TunnelWrapper::new(
-            FramedReader::new_with_associate_data(
-                read,
-                MAX_HTTP3_FRAME_SIZE,
-                Some(Box::new(lifetime.clone())),
-            )
-            .map(|result| {
-                result.and_then(|packet| {
-                    validate_frame(&packet)?;
-                    Ok(packet)
-                })
-            }),
-            PacedSink::new(
-                FramedWriter::new_with_converter_and_associate_data(
-                    write,
-                    CheckedFrameConverter,
-                    Some(Box::new(lifetime)),
-                ),
-                style,
-            ),
+            futures::stream::select_all(readers),
+            PacedSink::new(LaneSink::new(writers), style),
             Some(info),
         )
         .with_bandwidth_source(Some(bandwidth_source)),
     )
 }
+#[cfg(test)]
 pub(crate) async fn upgrade_connected(
     connected: ConnectedUdpSession,
     remote_url: url::Url,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
+    upgrade_connected_with(connected, remote_url, Http3Options::PLAIN).await
+}
+pub(crate) async fn upgrade_connected_with(
+    connected: ConnectedUdpSession,
+    remote_url: url::Url,
+    options: Http3Options,
+) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let (session, session_guard) = connected.into_parts();
+    Ok(
+        connect_tunnel(Arc::new(session), session_guard, remote_url, options)
+            .await?
+            .tunnel,
+    )
+}
+/// A connected client tunnel with what tests inspect of it.
+#[cfg_attr(not(test), allow(dead_code))]
+struct ClientTunnel {
+    tunnel: Box<dyn Tunnel>,
+    fec: FecHandle,
+    lanes: usize,
+}
+async fn connect_tunnel(
+    session: Arc<dyn easytier_core::socket::udp::UdpSessionSocket>,
+    session_guard: Box<dyn Send + Sync>,
+    remote_url: url::Url,
+    options: Http3Options,
+) -> Result<ClientTunnel, TunnelError> {
+    let options = options.with_url_override(&remote_url);
+    let fec = options.fec;
     let style = TrafficStyle::from_url(&remote_url);
-    let socket = Arc::new(Http3UdpSessionSocket::new(connected)?);
+    let (session, fec_handle) = FecUdpSession::new(session);
+    let socket = Arc::new(Http3UdpSessionSocket::from_session(session, session_guard)?);
     let local_addr = socket.local_addr()?;
     let remote_addr = socket.peer_addr();
     let mut endpoint = session_common::build_session_endpoint(socket, None, endpoint_config())?;
-    endpoint.set_default_client_config(client_config()?);
+    endpoint.set_default_client_config(client_config_for(fec.wanted)?);
     let connecting = endpoint
         .connect(remote_addr, &resolve_sni(&remote_url))
         .map_err(anyhow::Error::new)?;
@@ -344,21 +600,34 @@ pub(crate) async fn upgrade_connected(
         let _requests_keepalive = requests_keepalive;
         let _ = driver.wait_idle().await;
     });
-    let mut request = http::Request::builder()
-        .method(http::Method::POST)
-        .uri(request_uri(&remote_url, style)?)
-        .header(http::header::CONTENT_TYPE, "application/octet-stream")
-        .header(http::header::CACHE_CONTROL, "no-store")
-        .header(http::header::ACCEPT, "*/*");
-    for (key, value) in remote_url.query_pairs() {
-        if key == "ua" {
-            request = request.header(http::header::USER_AGENT, value.as_ref());
+    let uri = request_uri(&remote_url, style)?;
+    let new_request = |extra: &[(&str, String)]| {
+        let mut request = http::Request::builder()
+            .method(http::Method::POST)
+            .uri(uri.clone())
+            .header(http::header::CONTENT_TYPE, "application/octet-stream")
+            .header(http::header::CACHE_CONTROL, "no-store")
+            .header(http::header::ACCEPT, "*/*");
+        for (key, value) in remote_url.query_pairs() {
+            if key == "ua" {
+                request = request.header(http::header::USER_AGENT, value.as_ref());
+            }
+            if key == "accept_language" {
+                request = request.header(http::header::ACCEPT_LANGUAGE, value.as_ref());
+            }
         }
-        if key == "accept_language" {
-            request = request.header(http::header::ACCEPT_LANGUAGE, value.as_ref());
+        for (name, value) in extra {
+            request = request.header(*name, value.as_str());
         }
-    }
-    let request = request.body(()).map_err(anyhow::Error::new)?;
+        request.body(()).map_err(anyhow::Error::new)
+    };
+    // Understand protected datagrams before the server can send any.
+    let (fec_key, fec_offer) = fec_offer(fec.wanted);
+    fec_handle.rekey(fec_key);
+    let request = new_request(&[
+        (FEC_HEADER, fec_offer.clone()),
+        (STREAMS_HEADER, options.streams.to_string()),
+    ])?;
     let mut stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, requests.send_request(request))
         .await
         .map_err(TunnelError::Timeout)?
@@ -370,7 +639,46 @@ pub(crate) async fn upgrade_connected(
     if !response.status().is_success() {
         return Err(anyhow::anyhow!("HTTP3 POST rejected: {}", response.status()).into());
     }
-    let (send, recv) = stream.split();
+    if response
+        .headers()
+        .get(FEC_HEADER)
+        .is_some_and(|echo| echo.as_bytes() == fec_offer.as_bytes())
+    {
+        fec_handle.enable_tx(fec.mode);
+    } else {
+        fec_handle.disarm();
+    }
+    // A server that does not answer the stream count keeps one stream.
+    let lanes = response
+        .headers()
+        .get(STREAMS_HEADER)
+        .and_then(parse_count)
+        .map_or(1, |lanes| lanes.min(options.streams));
+    let extra = (1..lanes).map(|lane| {
+        let request = new_request(&[(LANE_HEADER, lane.to_string())]);
+        let mut requests = requests.clone();
+        async move {
+            let mut stream = requests
+                .send_request(request?)
+                .await
+                .context("HTTP3 POST failed")?;
+            let response = stream
+                .recv_response()
+                .await
+                .context("HTTP3 response failed")?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "HTTP3 POST rejected: {}",
+                response.status()
+            );
+            Ok::<_, anyhow::Error>(stream.split())
+        }
+    });
+    let extra = tokio::time::timeout(HANDSHAKE_TIMEOUT, futures::future::try_join_all(extra))
+        .await
+        .map_err(TunnelError::Timeout)??;
+    let mut streams = vec![stream.split()];
+    streams.extend(extra);
     let info = TunnelInfo {
         tunnel_type: "http3".to_owned(),
         local_addr: Some(
@@ -381,7 +689,11 @@ pub(crate) async fn upgrade_connected(
             super::build_url_from_socket_addr(&resolved_remote_addr.to_string(), "http3").into(),
         ),
     };
-    Ok(body_tunnel(send, recv, lifetime, style, info))
+    Ok(ClientTunnel {
+        tunnel: body_tunnel(streams, lifetime, style, info),
+        fec: fec_handle,
+        lanes,
+    })
 }
 async fn ordinary_response(
     request: &http::Request<()>,
@@ -422,8 +734,10 @@ async fn finish_http3_tunnel(
     connecting: quinn::Connecting,
     endpoint: quinn::Endpoint,
     local_url: url::Url,
+    (fec_handle, options): (FecHandle, Http3Options),
     _permit: OwnedSemaphorePermit,
 ) -> Result<Box<dyn Tunnel>, TunnelError> {
+    let fec = options.fec;
     let connection = tokio::time::timeout(HANDSHAKE_TIMEOUT, connecting)
         .await
         .map_err(TunnelError::Timeout)?
@@ -442,7 +756,7 @@ async fn finish_http3_tunnel(
     .await
     .map_err(TunnelError::Timeout)?
     .context("HTTP3 server control stream setup failed")?;
-    let mut stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+    let (request, mut stream) = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         loop {
             let resolver = driver
                 .accept()
@@ -450,25 +764,88 @@ async fn finish_http3_tunnel(
                 .ok_or_else(|| anyhow::anyhow!("HTTP3 connection closed before POST"))?;
             let (request, mut stream) = resolver.resolve_request().await?;
             if request.method() == http::Method::POST {
-                break Ok::<_, anyhow::Error>(stream);
+                break Ok::<_, anyhow::Error>((request, stream));
             }
             ordinary_response(&request, &mut stream).await?;
         }
     })
     .await
     .map_err(TunnelError::Timeout)??;
+    let mut response = http::Response::builder()
+        .status(200)
+        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+        .header(http::header::CACHE_CONTROL, "no-store");
+    // Either end asking protects both directions. The client armed itself
+    // before sending the key, so this end may protect the response already.
+    //
+    // A UDP session carries one client endpoint, and that endpoint makes one
+    // connection. A second POST on the session is therefore a client that
+    // reconnected from the same address: its key, or its lack of one, replaces
+    // the old connection's, which nothing can read any more.
+    match request
+        .headers()
+        .get(FEC_HEADER)
+        .and_then(|offer| Some((offer, parse_fec_offer(offer)?)))
+    {
+        Some((offer, (key, client_wants))) if client_wants || fec.wanted => {
+            fec_handle.rekey(key);
+            fec_handle.enable_tx(fec.mode);
+            response = response.header(FEC_HEADER, offer);
+        }
+        _ => fec_handle.disarm(),
+    }
+    // A client that asks for no stream count is answered with none.
+    let lanes = match request.headers().get(STREAMS_HEADER) {
+        Some(requested) => {
+            let lanes = parse_count(requested).unwrap_or(1).min(options.streams);
+            response = response.header(STREAMS_HEADER, lanes.to_string());
+            lanes
+        }
+        None => 1,
+    };
     stream
-        .send_response(
-            http::Response::builder()
-                .status(200)
-                .header(http::header::CONTENT_TYPE, "application/octet-stream")
-                .header(http::header::CACHE_CONTROL, "no-store")
-                .body(())
-                .map_err(anyhow::Error::new)?,
-        )
+        .send_response(response.body(()).map_err(anyhow::Error::new)?)
         .await
         .context("HTTP3 POST response failed")?;
-    let (send, recv) = stream.split();
+    let mut lane_streams: Vec<Option<H3ServerStream>> = (1..lanes).map(|_| None).collect();
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        while lane_streams.iter().any(Option::is_none) {
+            let resolver = driver
+                .accept()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("HTTP3 connection closed before its streams"))?;
+            let (request, mut lane_stream) = resolver.resolve_request().await?;
+            let slot = request
+                .headers()
+                .get(LANE_HEADER)
+                .and_then(parse_count)
+                .filter(|_| request.method() == http::Method::POST)
+                .and_then(|lane| lane_streams.get_mut(lane.checked_sub(1)?))
+                .filter(|slot| slot.is_none());
+            let Some(slot) = slot else {
+                ordinary_response(&request, &mut lane_stream).await?;
+                continue;
+            };
+            lane_stream
+                .send_response(
+                    http::Response::builder()
+                        .status(200)
+                        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+                        .header(http::header::CACHE_CONTROL, "no-store")
+                        .body(())?,
+                )
+                .await
+                .context("HTTP3 POST response failed")?;
+            *slot = Some(lane_stream);
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(TunnelError::Timeout)??;
+    let streams = std::iter::once(stream)
+        .chain(lane_streams.into_iter().flatten())
+        .map(|stream| stream.split())
+        .collect();
     lifetime.spawn(serve_remaining_requests(driver));
     let style = TrafficStyle::from_url(&local_url);
     let remote_url = super::build_url_from_socket_addr(&remote_addr.to_string(), "http3");
@@ -478,7 +855,7 @@ async fn finish_http3_tunnel(
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(remote_url.into()),
     };
-    Ok(body_tunnel(send, recv, lifetime, style, info))
+    Ok(body_tunnel(streams, lifetime, style, info))
 }
 pub(crate) struct Http3AcceptedSession {
     completed: mpsc::Receiver<Result<Box<dyn Tunnel>, TunnelError>>,
@@ -489,23 +866,30 @@ impl Http3AcceptedSession {
         session: UdpSession,
         local_url: url::Url,
         admission: ServerProtocolAdmission,
+        options: Http3Options,
     ) -> Result<Self, TunnelError> {
         let (active_session, handshakes) = admission.into_parts();
-        Self::new_with_admission_parts(session, local_url, active_session, handshakes)
+        Self::on_session(
+            Arc::new(session),
+            Box::new(active_session),
+            local_url,
+            handshakes,
+            options,
+        )
     }
-    fn new_with_admission_parts(
-        session: UdpSession,
+    fn on_session(
+        session: Arc<dyn easytier_core::socket::udp::UdpSessionSocket>,
+        session_guard: Box<dyn Send + Sync>,
         local_url: url::Url,
-        active_session: OwnedSemaphorePermit,
         handshakes: Arc<Semaphore>,
+        options: Http3Options,
     ) -> Result<Self, TunnelError> {
-        let socket = Arc::new(Http3UdpSessionSocket::from_accepted(
-            session,
-            active_session,
-        )?);
+        let options = options.with_url_override(&local_url);
+        let (session, fec_handle) = FecUdpSession::new(session);
+        let socket = Arc::new(Http3UdpSessionSocket::from_session(session, session_guard)?);
         let endpoint = session_common::build_session_endpoint(
             socket,
-            Some(server_config()?),
+            Some(server_config_for(options.fec.wanted)?),
             endpoint_config(),
         )?;
         let (completed_tx, completed) = mpsc::channel(16);
@@ -522,7 +906,7 @@ impl Http3AcceptedSession {
                     permit = handshakes.clone().acquire_owned(), if incoming.is_some() => {
                         let Ok(permit) = permit else { break; };
                         match incoming.take().unwrap().accept() {
-                            Ok(connecting) => { workers.spawn(finish_http3_tunnel(connecting, endpoint.clone(), local_url.clone(), permit)); }
+                            Ok(connecting) => { workers.spawn(finish_http3_tunnel(connecting, endpoint.clone(), local_url.clone(), (fec_handle.clone(), options), permit)); }
                             Err(error) => { tracing::debug!(?error, "HTTP3 incoming connection rejected"); }
                         }
                     }
@@ -613,6 +997,7 @@ mod tests {
                     incoming,
                     server_clone,
                     format!("http3://{address}").parse().unwrap(),
+                    (FecHandle::detached(), Http3Options::PLAIN),
                     permits.acquire_owned().await.unwrap(),
                 )
                 .await
@@ -750,7 +1135,8 @@ mod tests {
                     .try_admit()
                     .unwrap();
                 let mut accepted =
-                    Http3AcceptedSession::new(session, local_url, admission).unwrap();
+                    Http3AcceptedSession::new(session, local_url, admission, Http3Options::PLAIN)
+                        .unwrap();
                 accepted.accept().await.unwrap()
             });
             let client = upgrade_connected(connected, remote_url).await.unwrap();
@@ -790,6 +1176,341 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// Runs one tunnel with the given FEC settings, passes traffic both ways
+    /// and returns the client's view of the session's FEC.
+    async fn fec_round_trip(
+        client: FecConfig,
+        server: FecConfig,
+        query: &str,
+    ) -> super::super::quic::fec_session::FecStats {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let (mut listener, connected, _) =
+                super::super::quic::session_tests::connected_udp_session_fixture("http3").await;
+            let local_url = listener.local_url();
+            let mut remote_url = local_url.clone();
+            if !query.is_empty() {
+                remote_url.set_query(Some(query));
+            }
+            let server = tokio::spawn(async move {
+                let session = listener.accept().await.unwrap();
+                let admission = ServerProtocolAdmissionController::quic()
+                    .try_admit()
+                    .unwrap();
+                let options = Http3Options {
+                    fec: server,
+                    streams: 1,
+                };
+                let mut accepted =
+                    Http3AcceptedSession::new(session, local_url, admission, options).unwrap();
+                accepted.accept().await.unwrap()
+            });
+            let (session, guard) = connected.into_parts();
+            let options = Http3Options {
+                fec: client,
+                streams: 1,
+            };
+            let ClientTunnel {
+                tunnel: client,
+                fec: handle,
+                ..
+            } = connect_tunnel(Arc::new(session), guard, remote_url, options)
+                .await
+                .unwrap();
+            let server = server.await.unwrap();
+            let (mut client_read, mut client_write) = client.split();
+            let (mut server_read, mut server_write) = server.split();
+            for round in 0..40 {
+                let payload = vec![round as u8; 900];
+                client_write
+                    .send(ZCPacket::new_with_payload(&payload))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    server_read.next().await.unwrap().unwrap().payload(),
+                    payload
+                );
+                server_write
+                    .send(ZCPacket::new_with_payload(&payload))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    client_read.next().await.unwrap().unwrap().payload(),
+                    payload
+                );
+            }
+            handle.stats()
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn either_end_asking_protects_both_directions_of_an_http3_tunnel() {
+        use super::super::quic::datagram_fec::RatioMode;
+        let fixed = FecConfig {
+            wanted: true,
+            mode: RatioMode::Fixed(0.5),
+        };
+        for (client, server, query, active) in [
+            (FecConfig::OFF, FecConfig::OFF, "", false),
+            (fixed, FecConfig::OFF, "", true),
+            (FecConfig::OFF, fixed, "", true),
+            (fixed, fixed, "", true),
+            (fixed, FecConfig::OFF, "fec=off", false),
+            (FecConfig::OFF, FecConfig::OFF, "fec=50", true),
+        ] {
+            let stats = fec_round_trip(client, server, query).await;
+            assert_eq!(stats.active, active, "{client:?} {server:?} {query}");
+            if active {
+                // Both ends send sources. A fixed 50% end sends a repair per
+                // two sources; an end that only answered adapts, which means
+                // the 5% floor until its first measurement.
+                assert!(stats.tx_sources >= 40, "{stats:?}");
+                assert!(stats.rx_sources >= 40, "{stats:?}");
+                assert_eq!(stats.recovered, 0, "{stats:?}");
+                let client_fixed = client.wanted || !query.is_empty();
+                assert_eq!(stats.tx_repairs >= 15, client_fixed, "{stats:?}");
+                assert_eq!(stats.rx_repairs >= 15, server.wanted, "{stats:?}");
+            } else {
+                assert_eq!((stats.tx_sources, stats.rx_sources), (0, 0), "{stats:?}");
+            }
+        }
+    }
+
+    /// An unencrypted UDP data packet of flow `port` carrying `stamp`.
+    fn flow_packet(port: u16, len: usize, stamp: u64) -> ZCPacket {
+        let total = 28 + len.max(8);
+        let mut bytes = vec![0; total];
+        bytes[0] = 0x45;
+        bytes[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+        bytes[9] = 17;
+        bytes[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        bytes[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        bytes[20..22].copy_from_slice(&port.to_be_bytes());
+        bytes[22..24].copy_from_slice(&9u16.to_be_bytes());
+        bytes[28..36].copy_from_slice(&stamp.to_le_bytes());
+        let mut packet = ZCPacket::new_with_payload(&bytes);
+        packet.fill_peer_manager_hdr(1, 2, PacketType::Data as u8);
+        flow_lanes::mark_flow(&mut packet);
+        packet
+    }
+
+    fn flow_of(packet: &ZCPacket) -> (u16, u64) {
+        let payload = packet.payload();
+        (
+            u16::from_be_bytes(payload[20..22].try_into().unwrap()),
+            u64::from_le_bytes(payload[28..36].try_into().unwrap()),
+        )
+    }
+
+    fn options(streams: usize) -> Http3Options {
+        Http3Options {
+            fec: FecConfig::OFF,
+            streams,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lanes_follow_the_smaller_end_and_keep_each_flow_in_order() {
+        for (client_streams, server_streams, query, expected) in [
+            (8, 3, "", 3),
+            (1, 8, "", 1),
+            (8, 1, "", 1),
+            (8, 8, "streams=2", 2),
+            (5, 5, "", 5),
+        ] {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                let (mut listener, connected, _) =
+                    super::super::quic::session_tests::connected_udp_session_fixture("http3").await;
+                let local_url = listener.local_url();
+                let mut remote_url = local_url.clone();
+                if !query.is_empty() {
+                    remote_url.set_query(Some(query));
+                }
+                let server = tokio::spawn(async move {
+                    let session = listener.accept().await.unwrap();
+                    let admission = ServerProtocolAdmissionController::quic()
+                        .try_admit()
+                        .unwrap();
+                    let mut accepted = Http3AcceptedSession::new(
+                        session,
+                        local_url,
+                        admission,
+                        options(server_streams),
+                    )
+                    .unwrap();
+                    accepted.accept().await.unwrap()
+                });
+                let (session, guard) = connected.into_parts();
+                let client = connect_tunnel(
+                    Arc::new(session),
+                    guard,
+                    remote_url,
+                    options(client_streams),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    client.lanes, expected,
+                    "{client_streams} {server_streams} {query}"
+                );
+                let server = server.await.unwrap();
+                let (_client_read, mut client_write) = client.tunnel.split();
+                let (mut server_read, _server_write) = server.split();
+                let total = 600u64;
+                for index in 0..total {
+                    client_write
+                        .feed(flow_packet(1000 + (index % 30) as u16, 300, index))
+                        .await
+                        .unwrap();
+                }
+                client_write.flush().await.unwrap();
+                let mut last = std::collections::HashMap::new();
+                for _ in 0..total {
+                    let packet = server_read.next().await.unwrap().unwrap();
+                    let (port, index) = flow_of(&packet);
+                    if let Some(previous) = last.insert(port, index) {
+                        assert!(previous < index, "flow {port} reordered");
+                    }
+                }
+                assert_eq!(last.len(), 30);
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    struct ProbeLatency {
+        median: Duration,
+        p90: Duration,
+        max: Duration,
+    }
+
+    /// Sends bulk traffic on several flows and a sparse probe flow on another
+    /// stream over a 20 ms RTT path that loses `loss` of the client's
+    /// datagrams, and measures how long the probe's packets take.
+    async fn probe_latency(streams: usize, loss: f64) -> ProbeLatency {
+        use super::super::quic::test_link;
+        let (client_link, server_link) = test_link::pair(loss, Duration::from_millis(10));
+        let url: url::Url = format!("http3://{}", test_link::SERVER).parse().unwrap();
+        let mut accepted = Http3AcceptedSession::on_session(
+            server_link,
+            Box::new(()),
+            url.clone(),
+            Arc::new(Semaphore::new(4)),
+            options(streams),
+        )
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let tunnel = accepted.accept().await.unwrap();
+            (tunnel, accepted)
+        });
+        let client = connect_tunnel(client_link, Box::new(()), url, options(streams))
+            .await
+            .unwrap();
+        assert_eq!(client.lanes, streams);
+        let (server, _accepted) = server.await.unwrap();
+        let (_client_read, mut client_write) = client.tunnel.split();
+        let (mut server_read, _server_write) = server.split();
+
+        // The probe has a stream to itself whenever there is more than one.
+        let probe = 1000u16;
+        let probe_lane = flow_lanes::lane_of(&flow_packet(probe, 100, 0), 8);
+        let bulk: Vec<u16> = (2000..)
+            .filter(|port| flow_lanes::lane_of(&flow_packet(*port, 100, 0), 8) != probe_lane)
+            .take(6)
+            .collect();
+        let start = std::time::Instant::now();
+        let receiver = tokio::spawn(async move {
+            let mut latencies = Vec::new();
+            while let Some(Ok(packet)) = server_read.next().await {
+                let (port, stamp) = flow_of(&packet);
+                if port == probe {
+                    let sent = Duration::from_micros(stamp);
+                    latencies.push(start.elapsed().saturating_sub(sent));
+                    if latencies.len() == 300 {
+                        break;
+                    }
+                }
+            }
+            latencies
+        });
+        let mut tick = tokio::time::interval(Duration::from_millis(1));
+        for round in 0..1500u64 {
+            tick.tick().await;
+            let stamp = start.elapsed().as_micros() as u64;
+            for slot in 0..3 {
+                let port = bulk[(round as usize * 3 + slot) % bulk.len()];
+                client_write
+                    .feed(flow_packet(port, 1000, stamp))
+                    .await
+                    .unwrap();
+            }
+            if round % 5 == 0 {
+                client_write
+                    .feed(flow_packet(probe, 100, stamp))
+                    .await
+                    .unwrap();
+            }
+            client_write.flush().await.unwrap();
+        }
+        let mut latencies = tokio::time::timeout(Duration::from_secs(10), receiver)
+            .await
+            .unwrap()
+            .unwrap();
+        latencies.sort();
+        ProbeLatency {
+            median: latencies[latencies.len() / 2],
+            p90: latencies[latencies.len() * 9 / 10],
+            max: *latencies.last().unwrap(),
+        }
+    }
+
+    /// A timing comparison: run it alone, since a saturated CPU makes the
+    /// in-memory path slower than its losses. Deterministic coverage of the
+    /// same isolation is in the stripe receiver and lane selection tests.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "timing benchmark; run alone with --ignored"]
+    async fn a_loss_holds_back_only_the_flows_on_its_stream() {
+        let one = probe_latency(1, 0.03).await;
+        let many = probe_latency(8, 0.03).await;
+        for (name, latency) in [("1 stream", &one), ("8 streams", &many)] {
+            eprintln!(
+                "{name}: probe median {:?}, p90 {:?}, max {:?}",
+                latency.median, latency.p90, latency.max
+            );
+        }
+        // On one stream the probe waits behind every lost bulk packet; on its
+        // own stream mostly its own losses delay it. QUIC still packs frames
+        // of several streams into one datagram, so the separation is partial.
+        // The tail depends on scheduling under load; the median does not.
+        assert!(many.median * 3 < one.median * 2);
+    }
+
+    #[test]
+    fn fec_offers_round_trip_and_reject_anything_else() {
+        for wanted in [false, true] {
+            let (key, text) = fec_offer(wanted);
+            assert_eq!(
+                parse_fec_offer(&http::HeaderValue::from_str(&text).unwrap()),
+                Some((key, wanted))
+            );
+        }
+        for value in ["", "abc", &"g".repeat(32), &"0".repeat(31), &"0".repeat(33)] {
+            assert_eq!(
+                parse_fec_offer(&http::HeaderValue::from_str(value).unwrap()),
+                None
+            );
+        }
+        // The identifier is not a tunnel parameter the server would forward.
+        let uri = request_uri(
+            &"http3://host.example:443?fec=30&keep=1".parse().unwrap(),
+            TrafficStyle::Speedtest,
+        )
+        .unwrap();
+        assert_eq!(uri.path_and_query().unwrap().as_str(), "/api/upload?keep=1");
     }
 
     #[test]

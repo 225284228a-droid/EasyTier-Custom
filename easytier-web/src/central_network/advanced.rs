@@ -116,12 +116,17 @@ advanced_fields! {
         prefer_peer_relay,
         close_redundant_conns_when_disguised,
         disable_parallel_connections,
+        enable_udp_fec,
+        enable_udp_fec_kcp,
+        enable_udp_fec_quic,
     ],
     other: [
         data_compress_algo: int,
         mtu: int,
         traffic_disguise: text,
         parallel_connections: int,
+        http3_fec_ratio: int,
+        http3_streams: int,
         p2p_prefer_protocol: text,
         p2p_disguise_mode: text,
     ]
@@ -157,6 +162,20 @@ pub fn validate(change: &AdvancedChange) -> anyhow::Result<()> {
             continue;
         }
         set(&mut probe, field, value)?;
+        if field == "http3_fec_ratio" {
+            anyhow::ensure!(
+                probe.http3_fec_ratio.is_none_or(|ratio| ratio <= 100),
+                "http3_fec_ratio must be between 0 and 100"
+            );
+        }
+        if field == "http3_streams" {
+            anyhow::ensure!(
+                probe
+                    .http3_streams
+                    .is_none_or(|streams| (1..=32).contains(&streams)),
+                "http3_streams must be between 1 and 32"
+            );
+        }
         if let (Some(choices), Some(text)) = (choices(field), value.as_str()) {
             anyhow::ensure!(
                 choices.contains(&text),
