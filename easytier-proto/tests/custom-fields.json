@@ -116,6 +116,10 @@
     {"message":"common.ParallelConnectionStatus","field":"active_conn_ids","number":50002,"type":9,"type_name":"","label":3,"proto3_optional":false,"previous_number":50002},
     {"message":"common.ParallelConnectionStatus","field":"protocol","number":50003,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50003},
     {"message":"common.ParallelConnectionStatus","field":"fallback_reason","number":50004,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50004},
-    {"message":"peer_rpc.TcpHolePunchRequest","field":"parallel_member","number":50004,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50004}
+    {"message":"peer_rpc.TcpHolePunchRequest","field":"parallel_member","number":50004,"type":9,"type_name":"","label":1,"proto3_optional":false,"previous_number":50004},
+    {"message":"api.manage.NetworkConfig","field":"http3_fec_ratio","number":50088,"type":13,"type_name":"","label":1,"proto3_optional":true,"previous_number":50088},
+    {"message":"api.manage.NetworkConfig","field":"http3_streams","number":50089,"type":13,"type_name":"","label":1,"proto3_optional":true,"previous_number":50089},
+    {"message":"common.Flags","field":"http3_fec_ratio","number":50051,"type":13,"type_name":"","label":1,"proto3_optional":false,"previous_number":50051},
+    {"message":"common.Flags","field":"http3_streams","number":50052,"type":13,"type_name":"","label":1,"proto3_optional":false,"previous_number":50052}
   ]
 }
