@@ -29,6 +29,7 @@ const (
 	CompressionAlgoPb_Invalid CompressionAlgoPb = 0
 	CompressionAlgoPb_None    CompressionAlgoPb = 1
 	CompressionAlgoPb_Zstd    CompressionAlgoPb = 2
+	CompressionAlgoPb_Lzo     CompressionAlgoPb = 3
 )
 
 // Enum value maps for CompressionAlgoPb.
@@ -37,11 +38,13 @@ var (
 		0: "Invalid",
 		1: "None",
 		2: "Zstd",
+		3: "Lzo",
 	}
 	CompressionAlgoPb_value = map[string]int32{
 		"Invalid": 0,
 		"None":    1,
 		"Zstd":    2,
+		"Lzo":     3,
 	}
 )
 
@@ -311,6 +314,8 @@ type Flags struct {
 	// disable symmetric nat hole punching, treat symmetric as cone when enabled
 	DisableSymHolePunching bool `protobuf:"varint,30,opt,name=disable_sym_hole_punching,json=disableSymHolePunching,proto3" json:"disable_sym_hole_punching,omitempty"`
 	// tld dns zone for magic dns
+	//
+	// Deprecated: Marked as deprecated in common.proto.
 	TldDnsZone              string `protobuf:"bytes,31,opt,name=tld_dns_zone,json=tldDnsZone,proto3" json:"tld_dns_zone,omitempty"`
 	P2POnly                 bool   `protobuf:"varint,32,opt,name=p2p_only,json=p2pOnly,proto3" json:"p2p_only,omitempty"`
 	DisableTcpHolePunching  bool   `protobuf:"varint,34,opt,name=disable_tcp_hole_punching,json=disableTcpHolePunching,proto3" json:"disable_tcp_hole_punching,omitempty"`
@@ -328,7 +333,10 @@ type Flags struct {
 	SocketMark *uint32 `protobuf:"varint,43,opt,name=socket_mark,json=socketMark,proto3,oneof" json:"socket_mark,omitempty"`
 	// Prefer direct credential peers that already relay to a destination over
 	// advertising another direct edge to the same destination.
-	PreferPeerRelay bool `protobuf:"varint,44,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3" json:"prefer_peer_relay,omitempty"`
+	PreferPeerRelay  bool `protobuf:"varint,44,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3" json:"prefer_peer_relay,omitempty"`
+	EnableUdpFec     bool `protobuf:"varint,45,opt,name=enable_udp_fec,json=enableUdpFec,proto3" json:"enable_udp_fec,omitempty"`
+	EnableUdpFecKcp  bool `protobuf:"varint,46,opt,name=enable_udp_fec_kcp,json=enableUdpFecKcp,proto3" json:"enable_udp_fec_kcp,omitempty"`
+	EnableUdpFecQuic bool `protobuf:"varint,47,opt,name=enable_udp_fec_quic,json=enableUdpFecQuic,proto3" json:"enable_udp_fec_quic,omitempty"`
 	// Enabled by default in configuration. Requires both peers to negotiate cleanup support and
 	// confirm usability with a round trip. Keep one manually configured initial
 	// peer connection, chosen in a shared deterministic order, and close all other
@@ -342,8 +350,16 @@ type Flags struct {
 	CloseRedundantConnsWhenDisguised bool `protobuf:"varint,50049,opt,name=close_redundant_conns_when_disguised,json=closeRedundantConnsWhenDisguised,proto3" json:"close_redundant_conns_when_disguised,omitempty"`
 	// Automatic P2P disguise policy: prefer, off, disabled, or only.
 	P2PDisguiseMode string `protobuf:"bytes,50050,opt,name=p2p_disguise_mode,json=p2pDisguiseMode,proto3" json:"p2p_disguise_mode,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Redundancy of the FEC below HTTP3 tunnels, in repair datagrams per 100
+	// QUIC datagrams (1..=100). Zero follows the loss the peer measures. Takes
+	// effect where enable_udp_fec is set on either end of the tunnel.
+	Http3FecRatio uint32 `protobuf:"varint,50051,opt,name=http3_fec_ratio,json=http3FecRatio,proto3" json:"http3_fec_ratio,omitempty"`
+	// Reliable streams an HTTP3 tunnel spreads flows over (1..=32). Each flow
+	// stays on one stream, so a lost packet only holds back the flows on its
+	// stream. 1 keeps everything on one stream. A tunnel uses the smaller end's.
+	Http3Streams  uint32 `protobuf:"varint,50052,opt,name=http3_streams,json=http3Streams,proto3" json:"http3_streams,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Flags) Reset() {
@@ -601,6 +617,7 @@ func (x *Flags) GetDisableSymHolePunching() bool {
 	return false
 }
 
+// Deprecated: Marked as deprecated in common.proto.
 func (x *Flags) GetTldDnsZone() string {
 	if x != nil {
 		return x.TldDnsZone
@@ -678,6 +695,27 @@ func (x *Flags) GetPreferPeerRelay() bool {
 	return false
 }
 
+func (x *Flags) GetEnableUdpFec() bool {
+	if x != nil {
+		return x.EnableUdpFec
+	}
+	return false
+}
+
+func (x *Flags) GetEnableUdpFecKcp() bool {
+	if x != nil {
+		return x.EnableUdpFecKcp
+	}
+	return false
+}
+
+func (x *Flags) GetEnableUdpFecQuic() bool {
+	if x != nil {
+		return x.EnableUdpFecQuic
+	}
+	return false
+}
+
 func (x *Flags) GetCloseRedundantConnsWhenDisguised() bool {
 	if x != nil {
 		return x.CloseRedundantConnsWhenDisguised
@@ -690,6 +728,20 @@ func (x *Flags) GetP2PDisguiseMode() string {
 		return x.P2PDisguiseMode
 	}
 	return ""
+}
+
+func (x *Flags) GetHttp3FecRatio() uint32 {
+	if x != nil {
+		return x.Http3FecRatio
+	}
+	return 0
+}
+
+func (x *Flags) GetHttp3Streams() uint32 {
+	if x != nil {
+		return x.Http3Streams
+	}
+	return 0
 }
 
 type RpcDescriptor struct {
@@ -2264,6 +2316,52 @@ func (x *SecureModeConfig) GetLocalPublicKey() string {
 	return ""
 }
 
+// Collection wrappers preserve omitted versus explicitly empty input.
+// The items field number and wire type are part of the configuration contract.
+type RepeatedString struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Items         []string               `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RepeatedString) Reset() {
+	*x = RepeatedString{}
+	mi := &file_common_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RepeatedString) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RepeatedString) ProtoMessage() {}
+
+func (x *RepeatedString) ProtoReflect() protoreflect.Message {
+	mi := &file_common_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RepeatedString.ProtoReflect.Descriptor instead.
+func (*RepeatedString) Descriptor() ([]byte, []int) {
+	return file_common_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *RepeatedString) GetItems() []string {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
 var File_common_proto protoreflect.FileDescriptor
 
 const file_common_proto_rawDesc = "" +
@@ -2273,7 +2371,7 @@ const file_common_proto_rawDesc = "" +
 	"\x06target\x18ц\x03 \x01(\rR\x06target\x12(\n" +
 	"\x0factive_conn_ids\x18҆\x03 \x03(\tR\ractiveConnIds\x12\x1c\n" +
 	"\bprotocol\x18ӆ\x03 \x01(\tR\bprotocol\x12)\n" +
-	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xb9\x16\n" +
+	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xc4\x18\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2352,9 +2450,10 @@ const file_common_proto_rawDesc = "" +
 	"\x14encryption_algorithm\x18\x1d \x01(\tB\x0f\x8a\xb5\x18\v\n" +
 	"\aaes-gcm\x18\x01R\x13encryptionAlgorithm\x12F\n" +
 	"\x19disable_sym_hole_punching\x18\x1e \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x16disableSymHolePunching\x121\n" +
-	"\ftld_dns_zone\x18\x1f \x01(\tB\x0f\x8a\xb5\x18\v\n" +
-	"\aet.net.\x18\x01R\n" +
+	"\x05falseR\x16disableSymHolePunching\x12,\n" +
+	"\ftld_dns_zone\x18\x1f \x01(\tB\n" +
+	"\x8a\xb5\x18\x04\n" +
+	"\x00 \x01\x18\x01R\n" +
 	"tldDnsZone\x12&\n" +
 	"\bp2p_only\x18  \x01(\bB\v\x8a\xb5\x18\a\n" +
 	"\x05falseR\ap2pOnly\x12F\n" +
@@ -2375,13 +2474,23 @@ const file_common_proto_rawDesc = "" +
 	"\vsocket_mark\x18+ \x01(\rB\x06\x8a\xb5\x18\x02\x18\x01H\x00R\n" +
 	"socketMark\x88\x01\x01\x127\n" +
 	"\x11prefer_peer_relay\x18, \x01(\bB\v\x8a\xb5\x18\a\n" +
-	"\x05falseR\x0fpreferPeerRelay\x12\\\n" +
+	"\x05falseR\x0fpreferPeerRelay\x121\n" +
+	"\x0eenable_udp_fec\x18- \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\fenableUdpFec\x128\n" +
+	"\x12enable_udp_fec_kcp\x18. \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x0fenableUdpFecKcp\x12:\n" +
+	"\x13enable_udp_fec_quic\x18/ \x01(\bB\v\x8a\xb5\x18\a\n" +
+	"\x05falseR\x10enableUdpFecQuic\x12\\\n" +
 	"$close_redundant_conns_when_disguised\x18\x81\x87\x03 \x01(\bB\n" +
 	"\x8a\xb5\x18\x06\n" +
 	"\x04trueR closeRedundantConnsWhenDisguised\x12<\n" +
 	"\x11p2p_disguise_mode\x18\x82\x87\x03 \x01(\tB\x0e\x8a\xb5\x18\n" +
 	"\n" +
-	"\x06prefer\x18\x01R\x0fp2pDisguiseModeB\x0e\n" +
+	"\x06prefer\x18\x01R\x0fp2pDisguiseMode\x123\n" +
+	"\x0fhttp3_fec_ratio\x18\x83\x87\x03 \x01(\rB\t\x8a\xb5\x18\x05\n" +
+	"\x010\x18\x01R\rhttp3FecRatio\x120\n" +
+	"\rhttp3_streams\x18\x84\x87\x03 \x01(\rB\t\x8a\xb5\x18\x05\n" +
+	"\x018\x18\x01R\fhttp3StreamsB\x0e\n" +
 	"\f_socket_markJ\b\b\xfd\x86\x03\x10\xfe\x86\x03J\b\b\xfe\x86\x03\x10\xff\x86\x03J\b\b\xff\x86\x03\x10\x80\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +
@@ -2516,11 +2625,14 @@ const file_common_proto_rawDesc = "" +
 	"\x11local_private_key\x18\x02 \x01(\tH\x00R\x0flocalPrivateKey\x88\x01\x01\x12-\n" +
 	"\x10local_public_key\x18\x03 \x01(\tH\x01R\x0elocalPublicKey\x88\x01\x01B\x14\n" +
 	"\x12_local_private_keyB\x13\n" +
-	"\x11_local_public_key*4\n" +
+	"\x11_local_public_key\"&\n" +
+	"\x0eRepeatedString\x12\x14\n" +
+	"\x05items\x18\x01 \x03(\tR\x05items*=\n" +
 	"\x11CompressionAlgoPb\x12\v\n" +
 	"\aInvalid\x10\x00\x12\b\n" +
 	"\x04None\x10\x01\x12\b\n" +
-	"\x04Zstd\x10\x02*\xb4\x01\n" +
+	"\x04Zstd\x10\x02\x12\a\n" +
+	"\x03Lzo\x10\x03*\xb4\x01\n" +
 	"\aNatType\x12\v\n" +
 	"\aUnknown\x10\x00\x12\x10\n" +
 	"\fOpenInternet\x10\x01\x12\t\n" +
@@ -2551,7 +2663,7 @@ func file_common_proto_rawDescGZIP() []byte {
 }
 
 var file_common_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_common_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_common_proto_goTypes = []any{
 	(CompressionAlgoPb)(0),           // 0: common.CompressionAlgoPb
 	(NatType)(0),                     // 1: common.NatType
@@ -2581,14 +2693,15 @@ var file_common_proto_goTypes = []any{
 	(*PortForwardConfigPb)(nil),      // 25: common.PortForwardConfigPb
 	(*ProxyDstInfo)(nil),             // 26: common.ProxyDstInfo
 	(*SecureModeConfig)(nil),         // 27: common.SecureModeConfig
-	(*error1.Error)(nil),             // 28: error.Error
+	(*RepeatedString)(nil),           // 28: common.RepeatedString
+	(*error1.Error)(nil),             // 29: error.Error
 }
 var file_common_proto_depIdxs = []int32{
 	0,  // 0: common.Flags.data_compress_algo:type_name -> common.CompressionAlgoPb
 	5,  // 1: common.RpcRequest.descriptor:type_name -> common.RpcDescriptor
 	7,  // 2: common.HostManagementRequest.rpc:type_name -> common.DirectRpcRequest
 	13, // 3: common.HostManagementRequest.prepared_instance_id:type_name -> common.UUID
-	28, // 4: common.RpcResponse.error:type_name -> error.Error
+	29, // 4: common.RpcResponse.error:type_name -> error.Error
 	0,  // 5: common.RpcCompressionInfo.algo:type_name -> common.CompressionAlgoPb
 	0,  // 6: common.RpcCompressionInfo.accepted_algo:type_name -> common.CompressionAlgoPb
 	5,  // 7: common.RpcPacket.descriptor:type_name -> common.RpcDescriptor
@@ -2644,7 +2757,7 @@ func file_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_proto_rawDesc), len(file_common_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   25,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

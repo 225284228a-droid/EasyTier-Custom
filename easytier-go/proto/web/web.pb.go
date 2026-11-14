@@ -104,8 +104,10 @@ type HeartbeatRequest struct {
 	// Supports explicit manual mode patches and typed empty-manual readback.
 	// Older peers silently ignore unknown patch fields; missing means false.
 	SupportManualRoutesPatch bool `protobuf:"varint,12,opt,name=support_manual_routes_patch,json=supportManualRoutesPatch,proto3" json:"support_manual_routes_patch,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// True advertises DNS PatchConfig support. Offline metadata leaves it unset.
+	SupportDnsConfigPatch *bool `protobuf:"varint,13,opt,name=support_dns_config_patch,json=supportDnsConfigPatch,proto3,oneof" json:"support_dns_config_patch,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *HeartbeatRequest) Reset() {
@@ -257,6 +259,13 @@ func (x *HeartbeatRequest) GetSupportManualRoutesPatch() bool {
 	return false
 }
 
+func (x *HeartbeatRequest) GetSupportDnsConfigPatch() bool {
+	if x != nil && x.SupportDnsConfigPatch != nil {
+		return *x.SupportDnsConfigPatch
+	}
+	return false
+}
+
 type HeartbeatResponse struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	HeartbeatIntervalMs *uint32                `protobuf:"varint,1,opt,name=heartbeat_interval_ms,json=heartbeatIntervalMs,proto3,oneof" json:"heartbeat_interval_ms,omitempty"`
@@ -397,7 +406,7 @@ const file_web_proto_rawDesc = "" +
 	"\fDeviceOsInfo\x12\x17\n" +
 	"\aos_type\x18\x01 \x01(\tR\x06osType\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
-	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\x94\a\n" +
+	"\fdistribution\x18\x03 \x01(\tR\fdistribution\"\xef\a\n" +
 	"\x10HeartbeatRequest\x12+\n" +
 	"\n" +
 	"machine_id\x18\x01 \x01(\v2\f.common.UUIDR\tmachineId\x12%\n" +
@@ -419,7 +428,9 @@ const file_web_proto_rawDesc = "" +
 	"\x1alocal_config_catalog_epoch\x18ӆ\x03 \x01(\tR\x17localConfigCatalogEpoch\x12G\n" +
 	"\x1flocal_config_catalog_generation\x18Ԇ\x03 \x01(\x04R\x1clocalConfigCatalogGeneration\x123\n" +
 	"\x14runtime_capabilities\x18Ն\x03 \x03(\tR\x13runtimeCapabilities\x12=\n" +
-	"\x1bsupport_manual_routes_patch\x18\f \x01(\bR\x18supportManualRoutesPatch\"\xb6\x01\n" +
+	"\x1bsupport_manual_routes_patch\x18\f \x01(\bR\x18supportManualRoutesPatch\x12<\n" +
+	"\x18support_dns_config_patch\x18\r \x01(\bH\x00R\x15supportDnsConfigPatch\x88\x01\x01B\x1b\n" +
+	"\x19_support_dns_config_patch\"\xb6\x01\n" +
 	"\x11HeartbeatResponse\x127\n" +
 	"\x15heartbeat_interval_ms\x18\x01 \x01(\rH\x00R\x13heartbeatIntervalMs\x88\x01\x01\x125\n" +
 	"\x14heartbeat_timeout_ms\x18\x02 \x01(\rH\x01R\x12heartbeatTimeoutMs\x88\x01\x01B\x18\n" +
@@ -476,6 +487,7 @@ func file_web_proto_init() {
 	if File_web_proto != nil {
 		return
 	}
+	file_web_proto_msgTypes[1].OneofWrappers = []any{}
 	file_web_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

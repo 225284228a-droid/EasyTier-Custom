@@ -10,6 +10,7 @@ import (
 	acl "github.com/easytier/easytier/easytier-go/proto/acl"
 	instance "github.com/easytier/easytier/easytier-go/proto/api/instance"
 	common "github.com/easytier/easytier/easytier-go/proto/common"
+	core_config "github.com/easytier/easytier/easytier-go/proto/core_config"
 	peer_rpc "github.com/easytier/easytier/easytier-go/proto/peer_rpc"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -147,10 +148,11 @@ type NetworkConfig struct {
 	AdvancedSettings          *bool    `protobuf:"varint,16,opt,name=advanced_settings,json=advancedSettings,proto3,oneof" json:"advanced_settings,omitempty"`
 	ListenerUrls              []string `protobuf:"bytes,17,rep,name=listener_urls,json=listenerUrls,proto3" json:"listener_urls,omitempty"`
 	// optional int32 rpc_port = 18;
-	LatencyFirst                *bool    `protobuf:"varint,19,opt,name=latency_first,json=latencyFirst,proto3,oneof" json:"latency_first,omitempty"`
-	DevName                     *string  `protobuf:"bytes,20,opt,name=dev_name,json=devName,proto3,oneof" json:"dev_name,omitempty"`
-	UseSmoltcp                  *bool    `protobuf:"varint,21,opt,name=use_smoltcp,json=useSmoltcp,proto3,oneof" json:"use_smoltcp,omitempty"`
-	DisableIpv6                 *bool    `protobuf:"varint,47,opt,name=disable_ipv6,json=disableIpv6,proto3,oneof" json:"disable_ipv6,omitempty"`
+	LatencyFirst *bool   `protobuf:"varint,19,opt,name=latency_first,json=latencyFirst,proto3,oneof" json:"latency_first,omitempty"`
+	DevName      *string `protobuf:"bytes,20,opt,name=dev_name,json=devName,proto3,oneof" json:"dev_name,omitempty"`
+	UseSmoltcp   *bool   `protobuf:"varint,21,opt,name=use_smoltcp,json=useSmoltcp,proto3,oneof" json:"use_smoltcp,omitempty"`
+	DisableIpv6  *bool   `protobuf:"varint,47,opt,name=disable_ipv6,json=disableIpv6,proto3,oneof" json:"disable_ipv6,omitempty"`
+	// Deprecated: Marked as deprecated in api_manage.proto.
 	TldDnsZone                  *string  `protobuf:"bytes,73,opt,name=tld_dns_zone,json=tldDnsZone,proto3,oneof" json:"tld_dns_zone,omitempty"`
 	EnableKcpProxy              *bool    `protobuf:"varint,22,opt,name=enable_kcp_proxy,json=enableKcpProxy,proto3,oneof" json:"enable_kcp_proxy,omitempty"`
 	DisableKcpInput             *bool    `protobuf:"varint,23,opt,name=disable_kcp_input,json=disableKcpInput,proto3,oneof" json:"disable_kcp_input,omitempty"`
@@ -202,10 +204,14 @@ type NetworkConfig struct {
 	ManagedCredentials      []*ManagedCredentialConfig `protobuf:"bytes,71,rep,name=managed_credentials,json=managedCredentials,proto3" json:"managed_credentials,omitempty"`
 	PreferPeerRelay         *bool                      `protobuf:"varint,72,opt,name=prefer_peer_relay,json=preferPeerRelay,proto3,oneof" json:"prefer_peer_relay,omitempty"`
 	// Bootstrap subnet used when DHCP has not learned a subnet from peers.
-	DhcpIpv4Cidr *string `protobuf:"bytes,74,opt,name=dhcp_ipv4_cidr,json=dhcpIpv4Cidr,proto3,oneof" json:"dhcp_ipv4_cidr,omitempty"`
-	Dhcpv6       *bool   `protobuf:"varint,75,opt,name=dhcpv6,proto3,oneof" json:"dhcpv6,omitempty"`
-	DhcpIpv6Cidr *string `protobuf:"bytes,76,opt,name=dhcp_ipv6_cidr,json=dhcpIpv6Cidr,proto3,oneof" json:"dhcp_ipv6_cidr,omitempty"`
-	Sni          *string `protobuf:"bytes,50073,opt,name=sni,proto3,oneof" json:"sni,omitempty"`
+	DhcpIpv4Cidr     *string                   `protobuf:"bytes,74,opt,name=dhcp_ipv4_cidr,json=dhcpIpv4Cidr,proto3,oneof" json:"dhcp_ipv4_cidr,omitempty"`
+	Dhcpv6           *bool                     `protobuf:"varint,75,opt,name=dhcpv6,proto3,oneof" json:"dhcpv6,omitempty"`
+	DhcpIpv6Cidr     *string                   `protobuf:"bytes,76,opt,name=dhcp_ipv6_cidr,json=dhcpIpv6Cidr,proto3,oneof" json:"dhcp_ipv6_cidr,omitempty"`
+	Dns              *core_config.DnsConfigRaw `protobuf:"bytes,77,opt,name=dns,proto3" json:"dns,omitempty"`
+	EnableUdpFec     *bool                     `protobuf:"varint,78,opt,name=enable_udp_fec,json=enableUdpFec,proto3,oneof" json:"enable_udp_fec,omitempty"`
+	EnableUdpFecKcp  *bool                     `protobuf:"varint,79,opt,name=enable_udp_fec_kcp,json=enableUdpFecKcp,proto3,oneof" json:"enable_udp_fec_kcp,omitempty"`
+	EnableUdpFecQuic *bool                     `protobuf:"varint,80,opt,name=enable_udp_fec_quic,json=enableUdpFecQuic,proto3,oneof" json:"enable_udp_fec_quic,omitempty"`
+	Sni              *string                   `protobuf:"bytes,50073,opt,name=sni,proto3,oneof" json:"sni,omitempty"`
 	// Preferred underlay transport for automatic P2P connect attempts: "tcp" or
 	// "udp". Disguise policy separately decides whether dialing uses WSS/HTTP3;
 	// when it does, this preference also picks the disguised transport -
@@ -244,8 +250,13 @@ type NetworkConfig struct {
 	// switches and transport parameters) that a console published. Consoles
 	// order competing edits by it; the runtime ignores it.
 	AdvancedSyncAt *uint64 `protobuf:"varint,50087,opt,name=advanced_sync_at,json=advancedSyncAt,proto3,oneof" json:"advanced_sync_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// FEC redundancy on HTTP3 tunnels in percent (1..=100); 0 or unset adapts
+	// to the measured loss. Applies where enable_udp_fec is set on either end.
+	Http3FecRatio *uint32 `protobuf:"varint,50088,opt,name=http3_fec_ratio,json=http3FecRatio,proto3,oneof" json:"http3_fec_ratio,omitempty"`
+	// 1..=32, unset is 8. See common.Flags.http3_streams.
+	Http3Streams  *uint32 `protobuf:"varint,50089,opt,name=http3_streams,json=http3Streams,proto3,oneof" json:"http3_streams,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *NetworkConfig) Reset() {
@@ -429,6 +440,7 @@ func (x *NetworkConfig) GetDisableIpv6() bool {
 	return false
 }
 
+// Deprecated: Marked as deprecated in api_manage.proto.
 func (x *NetworkConfig) GetTldDnsZone() string {
 	if x != nil && x.TldDnsZone != nil {
 		return *x.TldDnsZone
@@ -794,6 +806,34 @@ func (x *NetworkConfig) GetDhcpIpv6Cidr() string {
 	return ""
 }
 
+func (x *NetworkConfig) GetDns() *core_config.DnsConfigRaw {
+	if x != nil {
+		return x.Dns
+	}
+	return nil
+}
+
+func (x *NetworkConfig) GetEnableUdpFec() bool {
+	if x != nil && x.EnableUdpFec != nil {
+		return *x.EnableUdpFec
+	}
+	return false
+}
+
+func (x *NetworkConfig) GetEnableUdpFecKcp() bool {
+	if x != nil && x.EnableUdpFecKcp != nil {
+		return *x.EnableUdpFecKcp
+	}
+	return false
+}
+
+func (x *NetworkConfig) GetEnableUdpFecQuic() bool {
+	if x != nil && x.EnableUdpFecQuic != nil {
+		return *x.EnableUdpFecQuic
+	}
+	return false
+}
+
 func (x *NetworkConfig) GetSni() string {
 	if x != nil && x.Sni != nil {
 		return *x.Sni
@@ -867,6 +907,20 @@ func (x *NetworkConfig) GetInstanceName() string {
 func (x *NetworkConfig) GetAdvancedSyncAt() uint64 {
 	if x != nil && x.AdvancedSyncAt != nil {
 		return *x.AdvancedSyncAt
+	}
+	return 0
+}
+
+func (x *NetworkConfig) GetHttp3FecRatio() uint32 {
+	if x != nil && x.Http3FecRatio != nil {
+		return *x.Http3FecRatio
+	}
+	return 0
+}
+
+func (x *NetworkConfig) GetHttp3Streams() uint32 {
+	if x != nil && x.Http3Streams != nil {
+		return *x.Http3Streams
 	}
 	return 0
 }
@@ -2915,7 +2969,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\"\x91-\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\x1a\x11core_config.proto\"\x960\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -2942,8 +2996,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\bdev_name\x18\x14 \x01(\tH\x0fR\adevName\x88\x01\x01\x12$\n" +
 	"\vuse_smoltcp\x18\x15 \x01(\bH\x10R\n" +
 	"useSmoltcp\x88\x01\x01\x12&\n" +
-	"\fdisable_ipv6\x18/ \x01(\bH\x11R\vdisableIpv6\x88\x01\x01\x12%\n" +
-	"\ftld_dns_zone\x18I \x01(\tH\x12R\n" +
+	"\fdisable_ipv6\x18/ \x01(\bH\x11R\vdisableIpv6\x88\x01\x01\x12)\n" +
+	"\ftld_dns_zone\x18I \x01(\tB\x02\x18\x01H\x12R\n" +
 	"tldDnsZone\x88\x01\x01\x12-\n" +
 	"\x10enable_kcp_proxy\x18\x16 \x01(\bH\x13R\x0eenableKcpProxy\x88\x01\x01\x12/\n" +
 	"\x11disable_kcp_input\x18\x17 \x01(\bH\x14R\x0fdisableKcpInput\x88\x01\x01\x12$\n" +
@@ -3001,18 +3055,24 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x11prefer_peer_relay\x18H \x01(\bH:R\x0fpreferPeerRelay\x88\x01\x01\x12)\n" +
 	"\x0edhcp_ipv4_cidr\x18J \x01(\tH;R\fdhcpIpv4Cidr\x88\x01\x01\x12\x1b\n" +
 	"\x06dhcpv6\x18K \x01(\bH<R\x06dhcpv6\x88\x01\x01\x12)\n" +
-	"\x0edhcp_ipv6_cidr\x18L \x01(\tH=R\fdhcpIpv6Cidr\x88\x01\x01\x12\x17\n" +
-	"\x03sni\x18\x99\x87\x03 \x01(\tH>R\x03sni\x88\x01\x01\x125\n" +
-	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tH?R\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
-	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bH@R closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
-	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigHAR\x03vpn\x88\x01\x01\x121\n" +
-	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tHBR\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
-	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rHCR\x13parallelConnections\x88\x01\x01\x12G\n" +
-	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bHDR\x1adisableParallelConnections\x88\x01\x01\x120\n" +
-	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHER\x0ftrafficDisguise\x88\x01\x01\x12-\n" +
-	"\x0fnetwork_sync_at\x18\xa5\x87\x03 \x01(\x04HFR\rnetworkSyncAt\x88\x01\x01\x12*\n" +
-	"\rinstance_name\x18\xa6\x87\x03 \x01(\tHGR\finstanceName\x88\x01\x01\x12/\n" +
-	"\x10advanced_sync_at\x18\xa7\x87\x03 \x01(\x04HHR\x0eadvancedSyncAt\x88\x01\x01B\x0e\n" +
+	"\x0edhcp_ipv6_cidr\x18L \x01(\tH=R\fdhcpIpv6Cidr\x88\x01\x01\x12+\n" +
+	"\x03dns\x18M \x01(\v2\x19.core_config.DnsConfigRawR\x03dns\x12)\n" +
+	"\x0eenable_udp_fec\x18N \x01(\bH>R\fenableUdpFec\x88\x01\x01\x120\n" +
+	"\x12enable_udp_fec_kcp\x18O \x01(\bH?R\x0fenableUdpFecKcp\x88\x01\x01\x122\n" +
+	"\x13enable_udp_fec_quic\x18P \x01(\bH@R\x10enableUdpFecQuic\x88\x01\x01\x12\x17\n" +
+	"\x03sni\x18\x99\x87\x03 \x01(\tHAR\x03sni\x88\x01\x01\x125\n" +
+	"\x13p2p_prefer_protocol\x18\x9e\x87\x03 \x01(\tHBR\x11p2pPreferProtocol\x88\x01\x01\x12U\n" +
+	"$close_redundant_conns_when_disguised\x18\x9f\x87\x03 \x01(\bHCR closeRedundantConnsWhenDisguised\x88\x01\x01\x12.\n" +
+	"\x03vpn\x18\xa0\x87\x03 \x01(\v2\x15.api.manage.VpnConfigHDR\x03vpn\x88\x01\x01\x121\n" +
+	"\x11p2p_disguise_mode\x18\xa1\x87\x03 \x01(\tHER\x0fp2pDisguiseMode\x88\x01\x01\x128\n" +
+	"\x14parallel_connections\x18\xa2\x87\x03 \x01(\rHFR\x13parallelConnections\x88\x01\x01\x12G\n" +
+	"\x1cdisable_parallel_connections\x18\xa3\x87\x03 \x01(\bHGR\x1adisableParallelConnections\x88\x01\x01\x120\n" +
+	"\x10traffic_disguise\x18\xa4\x87\x03 \x01(\tHHR\x0ftrafficDisguise\x88\x01\x01\x12-\n" +
+	"\x0fnetwork_sync_at\x18\xa5\x87\x03 \x01(\x04HIR\rnetworkSyncAt\x88\x01\x01\x12*\n" +
+	"\rinstance_name\x18\xa6\x87\x03 \x01(\tHJR\finstanceName\x88\x01\x01\x12/\n" +
+	"\x10advanced_sync_at\x18\xa7\x87\x03 \x01(\x04HKR\x0eadvancedSyncAt\x88\x01\x01\x12-\n" +
+	"\x0fhttp3_fec_ratio\x18\xa8\x87\x03 \x01(\rHLR\rhttp3FecRatio\x88\x01\x01\x12*\n" +
+	"\rhttp3_streams\x18\xa9\x87\x03 \x01(\rHMR\fhttp3Streams\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3074,7 +3134,10 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x12_prefer_peer_relayB\x11\n" +
 	"\x0f_dhcp_ipv4_cidrB\t\n" +
 	"\a_dhcpv6B\x11\n" +
-	"\x0f_dhcp_ipv6_cidrB\x06\n" +
+	"\x0f_dhcp_ipv6_cidrB\x11\n" +
+	"\x0f_enable_udp_fecB\x15\n" +
+	"\x13_enable_udp_fec_kcpB\x16\n" +
+	"\x14_enable_udp_fec_quicB\x06\n" +
 	"\x04_sniB\x16\n" +
 	"\x14_p2p_prefer_protocolB'\n" +
 	"%_close_redundant_conns_when_disguisedB\x06\n" +
@@ -3085,7 +3148,9 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x11_traffic_disguiseB\x12\n" +
 	"\x10_network_sync_atB\x10\n" +
 	"\x0e_instance_nameB\x13\n" +
-	"\x11_advanced_sync_atJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
+	"\x11_advanced_sync_atB\x12\n" +
+	"\x10_http3_fec_ratioB\x10\n" +
+	"\x0e_http3_streamsJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
 	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xc0\x01\n" +
@@ -3319,16 +3384,17 @@ var file_api_manage_proto_goTypes = []any{
 	(common.CompressionAlgoPb)(0),               // 40: common.CompressionAlgoPb
 	(*common.SecureModeConfig)(nil),             // 41: common.SecureModeConfig
 	(*acl.Acl)(nil),                             // 42: acl.Acl
-	(*common.Ipv4Inet)(nil),                     // 43: common.Ipv4Inet
-	(*peer_rpc.GetIpListResponse)(nil),          // 44: peer_rpc.GetIpListResponse
-	(*common.StunInfo)(nil),                     // 45: common.StunInfo
-	(*common.Url)(nil),                          // 46: common.Url
-	(*common.Ipv6Inet)(nil),                     // 47: common.Ipv6Inet
-	(*instance.Route)(nil),                      // 48: api.instance.Route
-	(*instance.PeerInfo)(nil),                   // 49: api.instance.PeerInfo
-	(*instance.PeerRoutePair)(nil),              // 50: api.instance.PeerRoutePair
-	(*peer_rpc.RouteForeignNetworkSummary)(nil), // 51: peer_rpc.RouteForeignNetworkSummary
-	(*common.UUID)(nil),                         // 52: common.UUID
+	(*core_config.DnsConfigRaw)(nil),            // 43: core_config.DnsConfigRaw
+	(*common.Ipv4Inet)(nil),                     // 44: common.Ipv4Inet
+	(*peer_rpc.GetIpListResponse)(nil),          // 45: peer_rpc.GetIpListResponse
+	(*common.StunInfo)(nil),                     // 46: common.StunInfo
+	(*common.Url)(nil),                          // 47: common.Url
+	(*common.Ipv6Inet)(nil),                     // 48: common.Ipv6Inet
+	(*instance.Route)(nil),                      // 49: api.instance.Route
+	(*instance.PeerInfo)(nil),                   // 50: api.instance.PeerInfo
+	(*instance.PeerRoutePair)(nil),              // 51: api.instance.PeerRoutePair
+	(*peer_rpc.RouteForeignNetworkSummary)(nil), // 52: peer_rpc.RouteForeignNetworkSummary
+	(*common.UUID)(nil),                         // 53: common.UUID
 }
 var file_api_manage_proto_depIdxs = []int32{
 	0,  // 0: api.manage.NetworkConfig.networking_method:type_name -> api.manage.NetworkingMethod
@@ -3339,78 +3405,79 @@ var file_api_manage_proto_depIdxs = []int32{
 	9,  // 5: api.manage.NetworkConfig.peers:type_name -> api.manage.NetworkPeerConfig
 	8,  // 6: api.manage.NetworkConfig.vpn_portal_config:type_name -> api.manage.VpnPortalConfig
 	5,  // 7: api.manage.NetworkConfig.managed_credentials:type_name -> api.manage.ManagedCredentialConfig
-	4,  // 8: api.manage.NetworkConfig.vpn:type_name -> api.manage.VpnConfig
-	3,  // 9: api.manage.VpnConfig.rules:type_name -> api.manage.VpnRuleConfig
-	5,  // 10: api.manage.ManagedCredentialSet.entries:type_name -> api.manage.ManagedCredentialConfig
-	7,  // 11: api.manage.VpnPortalConfig.clients:type_name -> api.manage.VpnPortalClientConfig
-	43, // 12: api.manage.MyNodeInfo.virtual_ipv4:type_name -> common.Ipv4Inet
-	44, // 13: api.manage.MyNodeInfo.ips:type_name -> peer_rpc.GetIpListResponse
-	45, // 14: api.manage.MyNodeInfo.stun_info:type_name -> common.StunInfo
-	46, // 15: api.manage.MyNodeInfo.listeners:type_name -> common.Url
-	47, // 16: api.manage.MyNodeInfo.virtual_ipv6:type_name -> common.Ipv6Inet
-	12, // 17: api.manage.PeerNodeLocation.location:type_name -> api.manage.NodeLocation
-	11, // 18: api.manage.NetworkInstanceRunningInfo.my_node_info:type_name -> api.manage.MyNodeInfo
-	48, // 19: api.manage.NetworkInstanceRunningInfo.routes:type_name -> api.instance.Route
-	49, // 20: api.manage.NetworkInstanceRunningInfo.peers:type_name -> api.instance.PeerInfo
-	50, // 21: api.manage.NetworkInstanceRunningInfo.peer_route_pairs:type_name -> api.instance.PeerRoutePair
-	51, // 22: api.manage.NetworkInstanceRunningInfo.foreign_network_summary:type_name -> peer_rpc.RouteForeignNetworkSummary
-	12, // 23: api.manage.NetworkInstanceRunningInfo.node_location:type_name -> api.manage.NodeLocation
-	13, // 24: api.manage.NetworkInstanceRunningInfo.peer_locations:type_name -> api.manage.PeerNodeLocation
-	39, // 25: api.manage.NetworkInstanceRunningInfoMap.map:type_name -> api.manage.NetworkInstanceRunningInfoMap.MapEntry
-	52, // 26: api.manage.NetworkMeta.inst_id:type_name -> common.UUID
-	1,  // 27: api.manage.NetworkMeta.source:type_name -> api.manage.ConfigSource
-	2,  // 28: api.manage.ValidateConfigRequest.config:type_name -> api.manage.NetworkConfig
-	52, // 29: api.manage.RunNetworkInstanceRequest.inst_id:type_name -> common.UUID
-	2,  // 30: api.manage.RunNetworkInstanceRequest.config:type_name -> api.manage.NetworkConfig
-	1,  // 31: api.manage.RunNetworkInstanceRequest.source:type_name -> api.manage.ConfigSource
-	52, // 32: api.manage.RunNetworkInstanceResponse.inst_id:type_name -> common.UUID
-	52, // 33: api.manage.RetainNetworkInstanceRequest.inst_ids:type_name -> common.UUID
-	52, // 34: api.manage.RetainNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
-	52, // 35: api.manage.CollectNetworkInfoRequest.inst_ids:type_name -> common.UUID
-	15, // 36: api.manage.CollectNetworkInfoResponse.info:type_name -> api.manage.NetworkInstanceRunningInfoMap
-	52, // 37: api.manage.ListNetworkInstanceResponse.inst_ids:type_name -> common.UUID
-	52, // 38: api.manage.ListNetworkInstanceResponse.disabled_inst_ids:type_name -> common.UUID
-	52, // 39: api.manage.DeleteNetworkInstanceRequest.inst_ids:type_name -> common.UUID
-	52, // 40: api.manage.DeleteNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
-	52, // 41: api.manage.GetNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
-	2,  // 42: api.manage.GetNetworkInstanceConfigResponse.config:type_name -> api.manage.NetworkConfig
-	1,  // 43: api.manage.GetNetworkInstanceConfigResponse.source:type_name -> api.manage.ConfigSource
-	52, // 44: api.manage.ListNetworkInstanceMetaRequest.inst_ids:type_name -> common.UUID
-	16, // 45: api.manage.ListNetworkInstanceMetaResponse.metas:type_name -> api.manage.NetworkMeta
-	52, // 46: api.manage.SaveNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
-	2,  // 47: api.manage.SaveNetworkInstanceConfigRequest.config:type_name -> api.manage.NetworkConfig
-	1,  // 48: api.manage.SaveNetworkInstanceConfigRequest.source:type_name -> api.manage.ConfigSource
-	52, // 49: api.manage.SetNetworkInstanceEnabledRequest.inst_id:type_name -> common.UUID
-	52, // 50: api.manage.RemoveNetworkInstanceConfigRequest.inst_ids:type_name -> common.UUID
-	52, // 51: api.manage.RemoveNetworkInstanceConfigResponse.remain_inst_ids:type_name -> common.UUID
-	14, // 52: api.manage.NetworkInstanceRunningInfoMap.MapEntry.value:type_name -> api.manage.NetworkInstanceRunningInfo
-	17, // 53: api.manage.WebClientService.ValidateConfig:input_type -> api.manage.ValidateConfigRequest
-	19, // 54: api.manage.WebClientService.RunNetworkInstance:input_type -> api.manage.RunNetworkInstanceRequest
-	21, // 55: api.manage.WebClientService.RetainNetworkInstance:input_type -> api.manage.RetainNetworkInstanceRequest
-	23, // 56: api.manage.WebClientService.CollectNetworkInfo:input_type -> api.manage.CollectNetworkInfoRequest
-	25, // 57: api.manage.WebClientService.ListNetworkInstance:input_type -> api.manage.ListNetworkInstanceRequest
-	27, // 58: api.manage.WebClientService.DeleteNetworkInstance:input_type -> api.manage.DeleteNetworkInstanceRequest
-	29, // 59: api.manage.WebClientService.GetNetworkInstanceConfig:input_type -> api.manage.GetNetworkInstanceConfigRequest
-	31, // 60: api.manage.WebClientService.ListNetworkInstanceMeta:input_type -> api.manage.ListNetworkInstanceMetaRequest
-	33, // 61: api.manage.WebClientService.SaveNetworkInstanceConfig:input_type -> api.manage.SaveNetworkInstanceConfigRequest
-	35, // 62: api.manage.WebClientService.SetNetworkInstanceEnabled:input_type -> api.manage.SetNetworkInstanceEnabledRequest
-	37, // 63: api.manage.WebClientService.RemoveNetworkInstanceConfig:input_type -> api.manage.RemoveNetworkInstanceConfigRequest
-	18, // 64: api.manage.WebClientService.ValidateConfig:output_type -> api.manage.ValidateConfigResponse
-	20, // 65: api.manage.WebClientService.RunNetworkInstance:output_type -> api.manage.RunNetworkInstanceResponse
-	22, // 66: api.manage.WebClientService.RetainNetworkInstance:output_type -> api.manage.RetainNetworkInstanceResponse
-	24, // 67: api.manage.WebClientService.CollectNetworkInfo:output_type -> api.manage.CollectNetworkInfoResponse
-	26, // 68: api.manage.WebClientService.ListNetworkInstance:output_type -> api.manage.ListNetworkInstanceResponse
-	28, // 69: api.manage.WebClientService.DeleteNetworkInstance:output_type -> api.manage.DeleteNetworkInstanceResponse
-	30, // 70: api.manage.WebClientService.GetNetworkInstanceConfig:output_type -> api.manage.GetNetworkInstanceConfigResponse
-	32, // 71: api.manage.WebClientService.ListNetworkInstanceMeta:output_type -> api.manage.ListNetworkInstanceMetaResponse
-	34, // 72: api.manage.WebClientService.SaveNetworkInstanceConfig:output_type -> api.manage.SaveNetworkInstanceConfigResponse
-	36, // 73: api.manage.WebClientService.SetNetworkInstanceEnabled:output_type -> api.manage.SetNetworkInstanceEnabledResponse
-	38, // 74: api.manage.WebClientService.RemoveNetworkInstanceConfig:output_type -> api.manage.RemoveNetworkInstanceConfigResponse
-	64, // [64:75] is the sub-list for method output_type
-	53, // [53:64] is the sub-list for method input_type
-	53, // [53:53] is the sub-list for extension type_name
-	53, // [53:53] is the sub-list for extension extendee
-	0,  // [0:53] is the sub-list for field type_name
+	43, // 8: api.manage.NetworkConfig.dns:type_name -> core_config.DnsConfigRaw
+	4,  // 9: api.manage.NetworkConfig.vpn:type_name -> api.manage.VpnConfig
+	3,  // 10: api.manage.VpnConfig.rules:type_name -> api.manage.VpnRuleConfig
+	5,  // 11: api.manage.ManagedCredentialSet.entries:type_name -> api.manage.ManagedCredentialConfig
+	7,  // 12: api.manage.VpnPortalConfig.clients:type_name -> api.manage.VpnPortalClientConfig
+	44, // 13: api.manage.MyNodeInfo.virtual_ipv4:type_name -> common.Ipv4Inet
+	45, // 14: api.manage.MyNodeInfo.ips:type_name -> peer_rpc.GetIpListResponse
+	46, // 15: api.manage.MyNodeInfo.stun_info:type_name -> common.StunInfo
+	47, // 16: api.manage.MyNodeInfo.listeners:type_name -> common.Url
+	48, // 17: api.manage.MyNodeInfo.virtual_ipv6:type_name -> common.Ipv6Inet
+	12, // 18: api.manage.PeerNodeLocation.location:type_name -> api.manage.NodeLocation
+	11, // 19: api.manage.NetworkInstanceRunningInfo.my_node_info:type_name -> api.manage.MyNodeInfo
+	49, // 20: api.manage.NetworkInstanceRunningInfo.routes:type_name -> api.instance.Route
+	50, // 21: api.manage.NetworkInstanceRunningInfo.peers:type_name -> api.instance.PeerInfo
+	51, // 22: api.manage.NetworkInstanceRunningInfo.peer_route_pairs:type_name -> api.instance.PeerRoutePair
+	52, // 23: api.manage.NetworkInstanceRunningInfo.foreign_network_summary:type_name -> peer_rpc.RouteForeignNetworkSummary
+	12, // 24: api.manage.NetworkInstanceRunningInfo.node_location:type_name -> api.manage.NodeLocation
+	13, // 25: api.manage.NetworkInstanceRunningInfo.peer_locations:type_name -> api.manage.PeerNodeLocation
+	39, // 26: api.manage.NetworkInstanceRunningInfoMap.map:type_name -> api.manage.NetworkInstanceRunningInfoMap.MapEntry
+	53, // 27: api.manage.NetworkMeta.inst_id:type_name -> common.UUID
+	1,  // 28: api.manage.NetworkMeta.source:type_name -> api.manage.ConfigSource
+	2,  // 29: api.manage.ValidateConfigRequest.config:type_name -> api.manage.NetworkConfig
+	53, // 30: api.manage.RunNetworkInstanceRequest.inst_id:type_name -> common.UUID
+	2,  // 31: api.manage.RunNetworkInstanceRequest.config:type_name -> api.manage.NetworkConfig
+	1,  // 32: api.manage.RunNetworkInstanceRequest.source:type_name -> api.manage.ConfigSource
+	53, // 33: api.manage.RunNetworkInstanceResponse.inst_id:type_name -> common.UUID
+	53, // 34: api.manage.RetainNetworkInstanceRequest.inst_ids:type_name -> common.UUID
+	53, // 35: api.manage.RetainNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
+	53, // 36: api.manage.CollectNetworkInfoRequest.inst_ids:type_name -> common.UUID
+	15, // 37: api.manage.CollectNetworkInfoResponse.info:type_name -> api.manage.NetworkInstanceRunningInfoMap
+	53, // 38: api.manage.ListNetworkInstanceResponse.inst_ids:type_name -> common.UUID
+	53, // 39: api.manage.ListNetworkInstanceResponse.disabled_inst_ids:type_name -> common.UUID
+	53, // 40: api.manage.DeleteNetworkInstanceRequest.inst_ids:type_name -> common.UUID
+	53, // 41: api.manage.DeleteNetworkInstanceResponse.remain_inst_ids:type_name -> common.UUID
+	53, // 42: api.manage.GetNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
+	2,  // 43: api.manage.GetNetworkInstanceConfigResponse.config:type_name -> api.manage.NetworkConfig
+	1,  // 44: api.manage.GetNetworkInstanceConfigResponse.source:type_name -> api.manage.ConfigSource
+	53, // 45: api.manage.ListNetworkInstanceMetaRequest.inst_ids:type_name -> common.UUID
+	16, // 46: api.manage.ListNetworkInstanceMetaResponse.metas:type_name -> api.manage.NetworkMeta
+	53, // 47: api.manage.SaveNetworkInstanceConfigRequest.inst_id:type_name -> common.UUID
+	2,  // 48: api.manage.SaveNetworkInstanceConfigRequest.config:type_name -> api.manage.NetworkConfig
+	1,  // 49: api.manage.SaveNetworkInstanceConfigRequest.source:type_name -> api.manage.ConfigSource
+	53, // 50: api.manage.SetNetworkInstanceEnabledRequest.inst_id:type_name -> common.UUID
+	53, // 51: api.manage.RemoveNetworkInstanceConfigRequest.inst_ids:type_name -> common.UUID
+	53, // 52: api.manage.RemoveNetworkInstanceConfigResponse.remain_inst_ids:type_name -> common.UUID
+	14, // 53: api.manage.NetworkInstanceRunningInfoMap.MapEntry.value:type_name -> api.manage.NetworkInstanceRunningInfo
+	17, // 54: api.manage.WebClientService.ValidateConfig:input_type -> api.manage.ValidateConfigRequest
+	19, // 55: api.manage.WebClientService.RunNetworkInstance:input_type -> api.manage.RunNetworkInstanceRequest
+	21, // 56: api.manage.WebClientService.RetainNetworkInstance:input_type -> api.manage.RetainNetworkInstanceRequest
+	23, // 57: api.manage.WebClientService.CollectNetworkInfo:input_type -> api.manage.CollectNetworkInfoRequest
+	25, // 58: api.manage.WebClientService.ListNetworkInstance:input_type -> api.manage.ListNetworkInstanceRequest
+	27, // 59: api.manage.WebClientService.DeleteNetworkInstance:input_type -> api.manage.DeleteNetworkInstanceRequest
+	29, // 60: api.manage.WebClientService.GetNetworkInstanceConfig:input_type -> api.manage.GetNetworkInstanceConfigRequest
+	31, // 61: api.manage.WebClientService.ListNetworkInstanceMeta:input_type -> api.manage.ListNetworkInstanceMetaRequest
+	33, // 62: api.manage.WebClientService.SaveNetworkInstanceConfig:input_type -> api.manage.SaveNetworkInstanceConfigRequest
+	35, // 63: api.manage.WebClientService.SetNetworkInstanceEnabled:input_type -> api.manage.SetNetworkInstanceEnabledRequest
+	37, // 64: api.manage.WebClientService.RemoveNetworkInstanceConfig:input_type -> api.manage.RemoveNetworkInstanceConfigRequest
+	18, // 65: api.manage.WebClientService.ValidateConfig:output_type -> api.manage.ValidateConfigResponse
+	20, // 66: api.manage.WebClientService.RunNetworkInstance:output_type -> api.manage.RunNetworkInstanceResponse
+	22, // 67: api.manage.WebClientService.RetainNetworkInstance:output_type -> api.manage.RetainNetworkInstanceResponse
+	24, // 68: api.manage.WebClientService.CollectNetworkInfo:output_type -> api.manage.CollectNetworkInfoResponse
+	26, // 69: api.manage.WebClientService.ListNetworkInstance:output_type -> api.manage.ListNetworkInstanceResponse
+	28, // 70: api.manage.WebClientService.DeleteNetworkInstance:output_type -> api.manage.DeleteNetworkInstanceResponse
+	30, // 71: api.manage.WebClientService.GetNetworkInstanceConfig:output_type -> api.manage.GetNetworkInstanceConfigResponse
+	32, // 72: api.manage.WebClientService.ListNetworkInstanceMeta:output_type -> api.manage.ListNetworkInstanceMetaResponse
+	34, // 73: api.manage.WebClientService.SaveNetworkInstanceConfig:output_type -> api.manage.SaveNetworkInstanceConfigResponse
+	36, // 74: api.manage.WebClientService.SetNetworkInstanceEnabled:output_type -> api.manage.SetNetworkInstanceEnabledResponse
+	38, // 75: api.manage.WebClientService.RemoveNetworkInstanceConfig:output_type -> api.manage.RemoveNetworkInstanceConfigResponse
+	65, // [65:76] is the sub-list for method output_type
+	54, // [54:65] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_api_manage_proto_init() }

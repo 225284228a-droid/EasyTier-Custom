@@ -11,6 +11,7 @@ import (
 	instance "github.com/easytier/easytier/easytier-go/proto/api/instance"
 	manage "github.com/easytier/easytier/easytier-go/proto/api/manage"
 	common "github.com/easytier/easytier/easytier-go/proto/common"
+	core_config "github.com/easytier/easytier/easytier-go/proto/core_config"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -99,8 +100,11 @@ type InstanceConfigPatch struct {
 	// Applies with routes: true preserves an empty manual list; false restores
 	// automatic routes. Omission preserves legacy RoutePatch behavior.
 	EnableManualRoutes *bool `protobuf:"varint,18,opt,name=enable_manual_routes,json=enableManualRoutes,proto3,oneof" json:"enable_manual_routes,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Omitted members are unchanged; a present zone list replaces all zones.
+	// Saves configuration only; existing DNS authorities are not republished.
+	Dns           *core_config.DnsConfigRaw `protobuf:"bytes,19,opt,name=dns,proto3" json:"dns,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InstanceConfigPatch) Reset() {
@@ -264,6 +268,13 @@ func (x *InstanceConfigPatch) GetEnableManualRoutes() bool {
 		return *x.EnableManualRoutes
 	}
 	return false
+}
+
+func (x *InstanceConfigPatch) GetDns() *core_config.DnsConfigRaw {
+	if x != nil {
+		return x.Dns
+	}
+	return nil
 }
 
 type VpnPortalClientPatch struct {
@@ -887,7 +898,7 @@ var File_api_config_proto protoreflect.FileDescriptor
 const file_api_config_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_config.proto\x12\n" +
-	"api.config\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\x8e\n" +
+	"api.config\x1a\x11core_config.proto\x1a\fcommon.proto\x1a\tacl.proto\x1a\x12api_instance.proto\x1a\x10api_manage.proto\"\xbb\n" +
 	"\n" +
 	"\x13InstanceConfigPatch\x12\x1f\n" +
 	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01\x12)\n" +
@@ -913,7 +924,8 @@ const file_api_config_proto_rawDesc = "" +
 	"\x11prefer_peer_relay\x18\x11 \x01(\bH\bR\x0fpreferPeerRelay\x88\x01\x01\x12.\n" +
 	"\x03vpn\x18\xe4\x86\x03 \x01(\v2\x15.api.manage.VpnConfigH\tR\x03vpn\x88\x01\x01\x125\n" +
 	"\x14enable_manual_routes\x18\x12 \x01(\bH\n" +
-	"R\x12enableManualRoutes\x88\x01\x01B\v\n" +
+	"R\x12enableManualRoutes\x88\x01\x01\x12+\n" +
+	"\x03dns\x18\x13 \x01(\v2\x19.core_config.DnsConfigRawR\x03dnsB\v\n" +
 	"\t_hostnameB\a\n" +
 	"\x05_ipv4B\a\n" +
 	"\x05_ipv6B\x06\n" +
@@ -1007,13 +1019,14 @@ var file_api_config_proto_goTypes = []any{
 	(*common.Ipv6Inet)(nil),              // 15: common.Ipv6Inet
 	(*manage.ManagedCredentialSet)(nil),  // 16: api.manage.ManagedCredentialSet
 	(*manage.VpnConfig)(nil),             // 17: api.manage.VpnConfig
-	(*manage.VpnPortalClientConfig)(nil), // 18: api.manage.VpnPortalClientConfig
-	(*common.PortForwardConfigPb)(nil),   // 19: common.PortForwardConfigPb
-	(*common.Url)(nil),                   // 20: common.Url
-	(*acl.Acl)(nil),                      // 21: acl.Acl
-	(*common.IpAddr)(nil),                // 22: common.IpAddr
-	(*instance.InstanceIdentifier)(nil),  // 23: api.instance.InstanceIdentifier
-	(*manage.NetworkConfig)(nil),         // 24: api.manage.NetworkConfig
+	(*core_config.DnsConfigRaw)(nil),     // 18: core_config.DnsConfigRaw
+	(*manage.VpnPortalClientConfig)(nil), // 19: api.manage.VpnPortalClientConfig
+	(*common.PortForwardConfigPb)(nil),   // 20: common.PortForwardConfigPb
+	(*common.Url)(nil),                   // 21: common.Url
+	(*acl.Acl)(nil),                      // 22: acl.Acl
+	(*common.IpAddr)(nil),                // 23: common.IpAddr
+	(*instance.InstanceIdentifier)(nil),  // 24: api.instance.InstanceIdentifier
+	(*manage.NetworkConfig)(nil),         // 25: api.manage.NetworkConfig
 }
 var file_api_config_proto_depIdxs = []int32{
 	14, // 0: api.config.InstanceConfigPatch.ipv4:type_name -> common.Ipv4Inet
@@ -1028,36 +1041,37 @@ var file_api_config_proto_depIdxs = []int32{
 	2,  // 9: api.config.InstanceConfigPatch.vpn_portal_clients:type_name -> api.config.VpnPortalClientPatch
 	16, // 10: api.config.InstanceConfigPatch.managed_credentials:type_name -> api.manage.ManagedCredentialSet
 	17, // 11: api.config.InstanceConfigPatch.vpn:type_name -> api.manage.VpnConfig
-	0,  // 12: api.config.VpnPortalClientPatch.action:type_name -> api.config.ConfigPatchAction
-	18, // 13: api.config.VpnPortalClientPatch.client:type_name -> api.manage.VpnPortalClientConfig
-	0,  // 14: api.config.PortForwardPatch.action:type_name -> api.config.ConfigPatchAction
-	19, // 15: api.config.PortForwardPatch.cfg:type_name -> common.PortForwardConfigPb
-	0,  // 16: api.config.StringPatch.action:type_name -> api.config.ConfigPatchAction
-	0,  // 17: api.config.UrlPatch.action:type_name -> api.config.ConfigPatchAction
-	20, // 18: api.config.UrlPatch.url:type_name -> common.Url
-	21, // 19: api.config.AclPatch.acl:type_name -> acl.Acl
-	4,  // 20: api.config.AclPatch.tcp_whitelist:type_name -> api.config.StringPatch
-	4,  // 21: api.config.AclPatch.udp_whitelist:type_name -> api.config.StringPatch
-	0,  // 22: api.config.ProxyNetworkPatch.action:type_name -> api.config.ConfigPatchAction
-	14, // 23: api.config.ProxyNetworkPatch.cidr:type_name -> common.Ipv4Inet
-	14, // 24: api.config.ProxyNetworkPatch.mapped_cidr:type_name -> common.Ipv4Inet
-	0,  // 25: api.config.RoutePatch.action:type_name -> api.config.ConfigPatchAction
-	14, // 26: api.config.RoutePatch.cidr:type_name -> common.Ipv4Inet
-	0,  // 27: api.config.ExitNodePatch.action:type_name -> api.config.ConfigPatchAction
-	22, // 28: api.config.ExitNodePatch.node:type_name -> common.IpAddr
-	1,  // 29: api.config.PatchConfigRequest.patch:type_name -> api.config.InstanceConfigPatch
-	23, // 30: api.config.PatchConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
-	23, // 31: api.config.GetConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
-	24, // 32: api.config.GetConfigResponse.config:type_name -> api.manage.NetworkConfig
-	10, // 33: api.config.ConfigRpc.PatchConfig:input_type -> api.config.PatchConfigRequest
-	12, // 34: api.config.ConfigRpc.GetConfig:input_type -> api.config.GetConfigRequest
-	11, // 35: api.config.ConfigRpc.PatchConfig:output_type -> api.config.PatchConfigResponse
-	13, // 36: api.config.ConfigRpc.GetConfig:output_type -> api.config.GetConfigResponse
-	35, // [35:37] is the sub-list for method output_type
-	33, // [33:35] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	18, // 12: api.config.InstanceConfigPatch.dns:type_name -> core_config.DnsConfigRaw
+	0,  // 13: api.config.VpnPortalClientPatch.action:type_name -> api.config.ConfigPatchAction
+	19, // 14: api.config.VpnPortalClientPatch.client:type_name -> api.manage.VpnPortalClientConfig
+	0,  // 15: api.config.PortForwardPatch.action:type_name -> api.config.ConfigPatchAction
+	20, // 16: api.config.PortForwardPatch.cfg:type_name -> common.PortForwardConfigPb
+	0,  // 17: api.config.StringPatch.action:type_name -> api.config.ConfigPatchAction
+	0,  // 18: api.config.UrlPatch.action:type_name -> api.config.ConfigPatchAction
+	21, // 19: api.config.UrlPatch.url:type_name -> common.Url
+	22, // 20: api.config.AclPatch.acl:type_name -> acl.Acl
+	4,  // 21: api.config.AclPatch.tcp_whitelist:type_name -> api.config.StringPatch
+	4,  // 22: api.config.AclPatch.udp_whitelist:type_name -> api.config.StringPatch
+	0,  // 23: api.config.ProxyNetworkPatch.action:type_name -> api.config.ConfigPatchAction
+	14, // 24: api.config.ProxyNetworkPatch.cidr:type_name -> common.Ipv4Inet
+	14, // 25: api.config.ProxyNetworkPatch.mapped_cidr:type_name -> common.Ipv4Inet
+	0,  // 26: api.config.RoutePatch.action:type_name -> api.config.ConfigPatchAction
+	14, // 27: api.config.RoutePatch.cidr:type_name -> common.Ipv4Inet
+	0,  // 28: api.config.ExitNodePatch.action:type_name -> api.config.ConfigPatchAction
+	23, // 29: api.config.ExitNodePatch.node:type_name -> common.IpAddr
+	1,  // 30: api.config.PatchConfigRequest.patch:type_name -> api.config.InstanceConfigPatch
+	24, // 31: api.config.PatchConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
+	24, // 32: api.config.GetConfigRequest.instance:type_name -> api.instance.InstanceIdentifier
+	25, // 33: api.config.GetConfigResponse.config:type_name -> api.manage.NetworkConfig
+	10, // 34: api.config.ConfigRpc.PatchConfig:input_type -> api.config.PatchConfigRequest
+	12, // 35: api.config.ConfigRpc.GetConfig:input_type -> api.config.GetConfigRequest
+	11, // 36: api.config.ConfigRpc.PatchConfig:output_type -> api.config.PatchConfigResponse
+	13, // 37: api.config.ConfigRpc.GetConfig:output_type -> api.config.GetConfigResponse
+	36, // [36:38] is the sub-list for method output_type
+	34, // [34:36] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_api_config_proto_init() }
