@@ -352,14 +352,18 @@ type Flags struct {
 	P2PDisguiseMode string `protobuf:"bytes,50050,opt,name=p2p_disguise_mode,json=p2pDisguiseMode,proto3" json:"p2p_disguise_mode,omitempty"`
 	// Redundancy of the FEC below HTTP3 tunnels, in repair datagrams per 100
 	// QUIC datagrams (1..=100). Zero follows the loss the peer measures. Takes
-	// effect where enable_udp_fec is set on either end of the tunnel.
+	// effect where enable_http3_fec is set on either end of the tunnel.
 	Http3FecRatio uint32 `protobuf:"varint,50051,opt,name=http3_fec_ratio,json=http3FecRatio,proto3" json:"http3_fec_ratio,omitempty"`
 	// Reliable streams an HTTP3 tunnel spreads flows over (1..=32). Each flow
 	// stays on one stream, so a lost packet only holds back the flows on its
 	// stream. 1 keeps everything on one stream. A tunnel uses the smaller end's.
-	Http3Streams  uint32 `protobuf:"varint,50052,opt,name=http3_streams,json=http3Streams,proto3" json:"http3_streams,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Http3Streams uint32 `protobuf:"varint,50052,opt,name=http3_streams,json=http3Streams,proto3" json:"http3_streams,omitempty"`
+	// FEC below HTTP3 tunnels, independent of enable_udp_fec. Either end asking
+	// protects both directions. In adaptive mode a clean path sends no repairs,
+	// so the cost is a trailer per datagram and a report every 50 ms.
+	EnableHttp3Fec bool `protobuf:"varint,50053,opt,name=enable_http3_fec,json=enableHttp3Fec,proto3" json:"enable_http3_fec,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Flags) Reset() {
@@ -742,6 +746,13 @@ func (x *Flags) GetHttp3Streams() uint32 {
 		return x.Http3Streams
 	}
 	return 0
+}
+
+func (x *Flags) GetEnableHttp3Fec() bool {
+	if x != nil {
+		return x.EnableHttp3Fec
+	}
+	return false
 }
 
 type RpcDescriptor struct {
@@ -2371,7 +2382,7 @@ const file_common_proto_rawDesc = "" +
 	"\x06target\x18ц\x03 \x01(\rR\x06target\x12(\n" +
 	"\x0factive_conn_ids\x18҆\x03 \x03(\tR\ractiveConnIds\x12\x1c\n" +
 	"\bprotocol\x18ӆ\x03 \x01(\tR\bprotocol\x12)\n" +
-	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\xc4\x18\n" +
+	"\x0ffallback_reason\x18Ԇ\x03 \x01(\tR\x0efallbackReason\"\x93\x19\n" +
 	"\x05Flags\x12M\n" +
 	"\x10default_protocol\x18\x01 \x01(\tB\"\x8a\xb5\x18\x1e\n" +
 	"\x03udp\x12\x15\n" +
@@ -2490,7 +2501,10 @@ const file_common_proto_rawDesc = "" +
 	"\x0fhttp3_fec_ratio\x18\x83\x87\x03 \x01(\rB\t\x8a\xb5\x18\x05\n" +
 	"\x010\x18\x01R\rhttp3FecRatio\x120\n" +
 	"\rhttp3_streams\x18\x84\x87\x03 \x01(\rB\t\x8a\xb5\x18\x05\n" +
-	"\x018\x18\x01R\fhttp3StreamsB\x0e\n" +
+	"\x018\x18\x01R\fhttp3Streams\x12M\n" +
+	"\x10enable_http3_fec\x18\x85\x87\x03 \x01(\bB!\x8a\xb5\x18\x1d\n" +
+	"\x04true\x12\x15\n" +
+	"\x11disable_http3_fec\x10\x01R\x0eenableHttp3FecB\x0e\n" +
 	"\f_socket_markJ\b\b\xfd\x86\x03\x10\xfe\x86\x03J\b\b\xfe\x86\x03\x10\xff\x86\x03J\b\b\xff\x86\x03\x10\x80\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x95\x01\n" +
 	"\rRpcDescriptor\x12\x1f\n" +
 	"\vdomain_name\x18\x01 \x01(\tR\n" +

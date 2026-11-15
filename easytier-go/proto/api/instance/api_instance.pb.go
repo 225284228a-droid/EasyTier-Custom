@@ -440,8 +440,12 @@ type PeerConnStats struct {
 	EstimatedTxBps uint64 `protobuf:"varint,50007,opt,name=estimated_tx_bps,json=estimatedTxBps,proto3" json:"estimated_tx_bps,omitempty"`
 	// 1 = transmission-window formula. Missing/0 is the retired traffic estimator.
 	BandwidthEstimateVersion uint32 `protobuf:"varint,50008,opt,name=bandwidth_estimate_version,json=bandwidthEstimateVersion,proto3" json:"bandwidth_estimate_version,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// Traffic rate of the latest sample (about 0.5-5 s), in bit/s. Present
+	// whenever the core samples, so zero means idle and absence an older core.
+	CurrentRxBps  *uint64 `protobuf:"varint,50009,opt,name=current_rx_bps,json=currentRxBps,proto3,oneof" json:"current_rx_bps,omitempty"`
+	CurrentTxBps  *uint64 `protobuf:"varint,50010,opt,name=current_tx_bps,json=currentTxBps,proto3,oneof" json:"current_tx_bps,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PeerConnStats) Reset() {
@@ -530,6 +534,20 @@ func (x *PeerConnStats) GetBandwidthEstimateVersion() uint32 {
 	return 0
 }
 
+func (x *PeerConnStats) GetCurrentRxBps() uint64 {
+	if x != nil && x.CurrentRxBps != nil {
+		return *x.CurrentRxBps
+	}
+	return 0
+}
+
+func (x *PeerConnStats) GetCurrentTxBps() uint64 {
+	if x != nil && x.CurrentTxBps != nil {
+		return *x.CurrentTxBps
+	}
+	return 0
+}
+
 type PeerConnInfo struct {
 	state                   protoimpl.MessageState    `protogen:"open.v1"`
 	ConnId                  string                    `protobuf:"bytes,1,opt,name=conn_id,json=connId,proto3" json:"conn_id,omitempty"`
@@ -547,8 +565,12 @@ type PeerConnInfo struct {
 	SecureAuthLevel         peer_rpc.SecureAuthLevel  `protobuf:"varint,13,opt,name=secure_auth_level,json=secureAuthLevel,proto3,enum=peer_rpc.SecureAuthLevel" json:"secure_auth_level,omitempty"`
 	PeerIdentityType        peer_rpc.PeerIdentityType `protobuf:"varint,14,opt,name=peer_identity_type,json=peerIdentityType,proto3,enum=peer_rpc.PeerIdentityType" json:"peer_identity_type,omitempty"`
 	Fec                     *PeerConnFecStats         `protobuf:"bytes,15,opt,name=fec,proto3" json:"fec,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Loss of the datagrams carrying the tunnel before FEC repairs any, where
+	// the tunnel measures it (HTTP3 with FEC). loss_rate stays the loss of the
+	// tunnel's own traffic.
+	LinkLossRate  *float32 `protobuf:"fixed32,50001,opt,name=link_loss_rate,json=linkLossRate,proto3,oneof" json:"link_loss_rate,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PeerConnInfo) Reset() {
@@ -684,6 +706,13 @@ func (x *PeerConnInfo) GetFec() *PeerConnFecStats {
 		return x.Fec
 	}
 	return nil
+}
+
+func (x *PeerConnInfo) GetLinkLossRate() float32 {
+	if x != nil && x.LinkLossRate != nil {
+		return *x.LinkLossRate
+	}
+	return 0
 }
 
 type PeerInfo struct {
@@ -4358,7 +4387,7 @@ const file_api_instance_proto_rawDesc = "" +
 	"\bselector\"6\n" +
 	"\x06Status\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\x05R\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\xba\x02\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xba\x03\n" +
 	"\rPeerConnStats\x12\x19\n" +
 	"\brx_bytes\x18\x01 \x01(\x04R\arxBytes\x12\x19\n" +
 	"\btx_bytes\x18\x02 \x01(\x04R\atxBytes\x12\x1d\n" +
@@ -4370,7 +4399,11 @@ const file_api_instance_proto_rawDesc = "" +
 	"latency_us\x18\x05 \x01(\x04R\tlatencyUs\x12*\n" +
 	"\x10estimated_rx_bps\x18ֆ\x03 \x01(\x04R\x0eestimatedRxBps\x12*\n" +
 	"\x10estimated_tx_bps\x18׆\x03 \x01(\x04R\x0eestimatedTxBps\x12>\n" +
-	"\x1abandwidth_estimate_version\x18؆\x03 \x01(\rR\x18bandwidthEstimateVersion\"\x8e\x05\n" +
+	"\x1abandwidth_estimate_version\x18؆\x03 \x01(\rR\x18bandwidthEstimateVersion\x12+\n" +
+	"\x0ecurrent_rx_bps\x18ن\x03 \x01(\x04H\x00R\fcurrentRxBps\x88\x01\x01\x12+\n" +
+	"\x0ecurrent_tx_bps\x18چ\x03 \x01(\x04H\x01R\fcurrentTxBps\x88\x01\x01B\x11\n" +
+	"\x0f_current_rx_bpsB\x11\n" +
+	"\x0f_current_tx_bps\"\xce\x05\n" +
 	"\fPeerConnInfo\x12\x17\n" +
 	"\aconn_id\x18\x01 \x01(\tR\x06connId\x12\x1c\n" +
 	"\n" +
@@ -4388,7 +4421,9 @@ const file_api_instance_proto_rawDesc = "" +
 	"\x1anoise_remote_static_pubkey\x18\f \x01(\fR\x17noiseRemoteStaticPubkey\x12E\n" +
 	"\x11secure_auth_level\x18\r \x01(\x0e2\x19.peer_rpc.SecureAuthLevelR\x0fsecureAuthLevel\x12H\n" +
 	"\x12peer_identity_type\x18\x0e \x01(\x0e2\x1a.peer_rpc.PeerIdentityTypeR\x10peerIdentityType\x120\n" +
-	"\x03fec\x18\x0f \x01(\v2\x1e.api.instance.PeerConnFecStatsR\x03fec\"\xaa\x02\n" +
+	"\x03fec\x18\x0f \x01(\v2\x1e.api.instance.PeerConnFecStatsR\x03fec\x12+\n" +
+	"\x0elink_loss_rate\x18ц\x03 \x01(\x02H\x00R\flinkLossRate\x88\x01\x01B\x11\n" +
+	"\x0f_link_loss_rate\"\xaa\x02\n" +
 	"\bPeerInfo\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\rR\x06peerId\x120\n" +
 	"\x05conns\x18\x02 \x03(\v2\x1a.api.instance.PeerConnInfoR\x05conns\x124\n" +
@@ -4983,6 +5018,8 @@ func file_api_instance_proto_init() {
 		(*InstanceIdentifier_Id)(nil),
 		(*InstanceIdentifier_InstanceSelector_)(nil),
 	}
+	file_api_instance_proto_msgTypes[2].OneofWrappers = []any{}
+	file_api_instance_proto_msgTypes[3].OneofWrappers = []any{}
 	file_api_instance_proto_msgTypes[7].OneofWrappers = []any{}
 	file_api_instance_proto_msgTypes[20].OneofWrappers = []any{}
 	file_api_instance_proto_msgTypes[33].OneofWrappers = []any{}

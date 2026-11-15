@@ -254,9 +254,11 @@ type NetworkConfig struct {
 	// to the measured loss. Applies where enable_udp_fec is set on either end.
 	Http3FecRatio *uint32 `protobuf:"varint,50088,opt,name=http3_fec_ratio,json=http3FecRatio,proto3,oneof" json:"http3_fec_ratio,omitempty"`
 	// 1..=32, unset is 8. See common.Flags.http3_streams.
-	Http3Streams  *uint32 `protobuf:"varint,50089,opt,name=http3_streams,json=http3Streams,proto3,oneof" json:"http3_streams,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Http3Streams *uint32 `protobuf:"varint,50089,opt,name=http3_streams,json=http3Streams,proto3,oneof" json:"http3_streams,omitempty"`
+	// See common.Flags.enable_http3_fec; unset keeps HTTP3 FEC on.
+	DisableHttp3Fec *bool `protobuf:"varint,50090,opt,name=disable_http3_fec,json=disableHttp3Fec,proto3,oneof" json:"disable_http3_fec,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *NetworkConfig) Reset() {
@@ -923,6 +925,13 @@ func (x *NetworkConfig) GetHttp3Streams() uint32 {
 		return *x.Http3Streams
 	}
 	return 0
+}
+
+func (x *NetworkConfig) GetDisableHttp3Fec() bool {
+	if x != nil && x.DisableHttp3Fec != nil {
+		return *x.DisableHttp3Fec
+	}
+	return false
 }
 
 // One destination subnet mapped to exactly one virtual node address.
@@ -2969,7 +2978,7 @@ var File_api_manage_proto protoreflect.FileDescriptor
 const file_api_manage_proto_rawDesc = "" +
 	"\n" +
 	"\x10api_manage.proto\x12\n" +
-	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\x1a\x11core_config.proto\"\x960\n" +
+	"api.manage\x1a\fcommon.proto\x1a\x0epeer_rpc.proto\x1a\x12api_instance.proto\x1a\tacl.proto\x1a\x11core_config.proto\"\xdf0\n" +
 	"\rNetworkConfig\x12$\n" +
 	"\vinstance_id\x18\x01 \x01(\tH\x00R\n" +
 	"instanceId\x88\x01\x01\x12\x17\n" +
@@ -3072,7 +3081,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\rinstance_name\x18\xa6\x87\x03 \x01(\tHJR\finstanceName\x88\x01\x01\x12/\n" +
 	"\x10advanced_sync_at\x18\xa7\x87\x03 \x01(\x04HKR\x0eadvancedSyncAt\x88\x01\x01\x12-\n" +
 	"\x0fhttp3_fec_ratio\x18\xa8\x87\x03 \x01(\rHLR\rhttp3FecRatio\x88\x01\x01\x12*\n" +
-	"\rhttp3_streams\x18\xa9\x87\x03 \x01(\rHMR\fhttp3Streams\x88\x01\x01B\x0e\n" +
+	"\rhttp3_streams\x18\xa9\x87\x03 \x01(\rHMR\fhttp3Streams\x88\x01\x01\x121\n" +
+	"\x11disable_http3_fec\x18\xaa\x87\x03 \x01(\bHNR\x0fdisableHttp3Fec\x88\x01\x01B\x0e\n" +
 	"\f_instance_idB\a\n" +
 	"\x05_dhcpB\x0f\n" +
 	"\r_virtual_ipv4B\x11\n" +
@@ -3150,7 +3160,8 @@ const file_api_manage_proto_rawDesc = "" +
 	"\x0e_instance_nameB\x13\n" +
 	"\x11_advanced_sync_atB\x12\n" +
 	"\x10_http3_fec_ratioB\x10\n" +
-	"\x0e_http3_streamsJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
+	"\x0e_http3_streamsB\x14\n" +
+	"\x12_disable_http3_fecJ\b\b\x9a\x87\x03\x10\x9b\x87\x03J\b\b\x9b\x87\x03\x10\x9c\x87\x03J\b\b\x9c\x87\x03\x10\x9d\x87\x03R$only_use_wss_http3_for_hole_punchingR\x18prefer_wss_http3_for_p2pR\x19disable_wss_http3_for_p2p\"\x91\x01\n" +
 	"\rVpnRuleConfig\x12\x14\n" +
 	"\x04cidr\x18ц\x03 \x01(\tR\x04cidr\x12\x1d\n" +
 	"\texit_addr\x18׆\x03 \x01(\tR\bexitAddrJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06actionR\x04exitR\x0efallback_exitsR\bpriorityR\x05exits\"\xc0\x01\n" +
