@@ -619,6 +619,9 @@ export interface PeerConnInfo {
   tunnel?: TunnelInfo
   stats?: PeerConnStats
   loss_rate?: number | string
+  /// Loss of the datagrams carrying the tunnel before FEC repairs any. Only
+  /// tunnels that measure it (HTTP3 with FEC) report it.
+  link_loss_rate?: number | string
 }
 
 export interface PeerRoutePair {
@@ -645,6 +648,9 @@ export interface PeerConnStats {
   estimated_rx_bps?: number | string
   estimated_tx_bps?: number | string
   bandwidth_estimate_version?: number | string
+  /// Traffic rate of the latest sample, in bit/s. Absent from older cores.
+  current_rx_bps?: number | string
+  current_tx_bps?: number | string
 }
 
 export interface CommonUuid {

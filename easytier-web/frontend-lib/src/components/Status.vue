@@ -5,7 +5,7 @@ import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref, useId, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { estimatedBandwidth, latencyMs, lossRate, numericValue, peerConns, tunnelProtocols, udpNatTypeName } from '../modules/statusDisplay';
+import { currentBandwidth, estimatedBandwidth, latencyMs, lossRate, numericValue, peerConns, tunnelProtocols, udpNatTypeName } from '../modules/statusDisplay';
 import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, Message } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 import VpnPortalDialog from './VpnPortalDialog.vue';
@@ -528,15 +528,19 @@ function showEventLogs() {
                 </div>
               </template>
             </Column>
-            <Column :header="t('estimated_bandwidth')">
+            <Column :header="t('bandwidth_reference_current')">
               <template #body="slotProps">
-                <div v-tooltip="t('estimated_bandwidth_help')" class="whitespace-nowrap">
-                  <div>{{ t('upload') }}: {{ estimatedBandwidth(slotProps.data).upload }}</div>
-                  <div>{{ t('download') }}: {{ estimatedBandwidth(slotProps.data).download }}</div>
+                <div v-tooltip="t('bandwidth_reference_current_help')" class="whitespace-nowrap">
+                  <div>{{ t('upload') }}: {{ estimatedBandwidth(slotProps.data).upload }} / {{ currentBandwidth(slotProps.data).upload }}</div>
+                  <div>{{ t('download') }}: {{ estimatedBandwidth(slotProps.data).download }} / {{ currentBandwidth(slotProps.data).download }}</div>
                 </div>
               </template>
             </Column>
-            <Column :field="lossRate" :header="t('loss_rate')" />
+            <Column :header="t('loss_rate')">
+              <template #body="slotProps">
+                <span v-tooltip="t('loss_rate_split_help')" class="whitespace-nowrap">{{ lossRate(slotProps.data) }}</span>
+              </template>
+            </Column>
             <Column :field="natType" :header="t('nat_type')" />
             <Column :header="t('status.version')">
               <template #body="slotProps">

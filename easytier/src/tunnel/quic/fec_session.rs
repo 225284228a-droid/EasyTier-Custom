@@ -83,6 +83,23 @@ pub(crate) struct FecStats {
     pub loss: Option<f32>,
     /// Loss the repairs did not mend.
     pub residual: Option<f32>,
+    /// Loss of the receiving direction, from this end's own counts.
+    pub rx_loss: Option<f32>,
+}
+
+impl FecStats {
+    /// Round-trip loss of the datagrams carrying the tunnel, before FEC
+    /// repairs any, comparable to the Ping loss inside it. One direction
+    /// stands for both until the other has a sample.
+    pub(crate) fn link_loss(&self) -> Option<f32> {
+        if !self.active {
+            return None;
+        }
+        match (self.loss, self.rx_loss) {
+            (Some(tx), Some(rx)) => Some(1.0 - (1.0 - tx) * (1.0 - rx)),
+            (one, other) => one.or(other),
+        }
+    }
 }
 
 struct Active {
@@ -90,6 +107,9 @@ struct Active {
     decoder: Decoder,
     /// Present once the peer is known to understand protected datagrams.
     tx: Option<(Encoder, RatioController)>,
+    /// Measures the receiving direction the way the peer measures ours: from
+    /// the counts each report carries.
+    rx_meter: RatioController,
 }
 
 #[derive(Default)]
@@ -108,6 +128,12 @@ struct Shared {
 /// The tunnel's control over the session's FEC.
 #[derive(Clone)]
 pub(crate) struct FecHandle(Arc<Shared>);
+
+impl std::fmt::Debug for FecHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("FecHandle").field(&self.stats()).finish()
+    }
+}
 
 impl FecHandle {
     /// A handle on no session, for tunnels built on a bare QUIC endpoint.
@@ -133,6 +159,7 @@ impl FecHandle {
             key,
             decoder: Decoder::new(key),
             tx: None,
+            rx_meter: RatioController::new(RatioMode::Adaptive),
         });
         state.recovered.clear();
         state.stats.active = false;
@@ -165,10 +192,13 @@ impl FecHandle {
     pub(crate) fn stats(&self) -> FecStats {
         let state = self.0.state.lock().unwrap();
         let mut stats = state.stats;
-        if let Some((_, controller)) = state.active.as_ref().and_then(|active| active.tx.as_ref()) {
-            stats.ratio = controller.ratio();
-            stats.loss = controller.loss();
-            stats.residual = controller.residual();
+        if let Some(active) = state.active.as_ref() {
+            stats.rx_loss = active.rx_meter.loss();
+            if let Some((_, controller)) = active.tx.as_ref() {
+                stats.ratio = controller.ratio();
+                stats.loss = controller.loss();
+                stats.residual = controller.residual();
+            }
         }
         stats
     }
@@ -213,7 +243,12 @@ async fn run_timer(inner: Arc<dyn UdpSessionSocket>, shared: Arc<Shared>) {
                     deadline = encoder.deadline();
                     // The peer only learns the key's use from this end's
                     // datagrams, so reports wait for the send side as well.
-                    due.extend(active.decoder.take_report(now));
+                    if let Some(report) = active.decoder.take_report(now) {
+                        due.push(report);
+                        if let Some(counts) = active.decoder.report() {
+                            active.rx_meter.on_report(counts, now);
+                        }
+                    }
                     deadline = [deadline, active.decoder.report_deadline(now)]
                         .into_iter()
                         .flatten()
@@ -589,6 +624,8 @@ mod tests {
         // Only the floor before the first measurement.
         assert!(clean.tx_repairs * 50 < clean.tx_sources, "{clean:?}");
         assert!(clean.loss.unwrap() < 0.001, "{clean:?}");
+        let clean_rx = right_handle.stats();
+        assert!(clean_rx.rx_loss.unwrap() < 0.001, "{clean_rx:?}");
 
         lossy.store(true, Ordering::Relaxed);
         send(6000).await;
@@ -598,8 +635,39 @@ mod tests {
         assert!((0.1..0.5).contains(&engaged.ratio), "{engaged:?}");
         assert!(engaged.tx_repairs > 300, "{engaged:?}");
         assert!(right_handle.stats().recovered > 200);
+        // The receiver measures the same direction from its own counts, and
+        // both ends report it as the link's loss.
+        let receiver = right_handle.stats();
+        assert!(
+            (0.06..0.11).contains(&receiver.rx_loss.unwrap()),
+            "{receiver:?}"
+        );
+        assert!(
+            (0.06..0.11).contains(&receiver.link_loss().unwrap()),
+            "{receiver:?}"
+        );
+        assert!(
+            (0.06..0.11).contains(&engaged.link_loss().unwrap()),
+            "{engaged:?}"
+        );
         drain.abort();
         reports.abort();
+    }
+
+    #[test]
+    fn link_loss_combines_both_directions_into_a_round_trip() {
+        let stats = |active, loss, rx_loss| FecStats {
+            active,
+            loss,
+            rx_loss,
+            ..Default::default()
+        };
+        assert_eq!(stats(false, Some(0.1), Some(0.1)).link_loss(), None);
+        assert_eq!(stats(true, None, None).link_loss(), None);
+        assert_eq!(stats(true, Some(0.1), None).link_loss(), Some(0.1));
+        assert_eq!(stats(true, None, Some(0.2)).link_loss(), Some(0.2));
+        let both = stats(true, Some(0.1), Some(0.2)).link_loss().unwrap();
+        assert!((both - 0.28).abs() < 1e-6, "{both}");
     }
 
     #[test]

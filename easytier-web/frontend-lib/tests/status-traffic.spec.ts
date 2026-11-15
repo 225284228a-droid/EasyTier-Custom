@@ -35,6 +35,8 @@ function runningInstance(): NetworkInstance {
               bandwidth_estimate_version: 2,
               estimated_tx_bps: 1_000_000,
               estimated_rx_bps: 2_000_000,
+              current_tx_bps: 512_000,
+              current_rx_bps: 0,
             },
           }],
         },
@@ -63,7 +65,7 @@ describe('Status traffic columns', () => {
       expect(headers).toContain('total_traffic')
       expect(headers).not.toContain('upload_bytes')
       expect(headers).not.toContain('download_bytes')
-      expect(headers.indexOf('estimated_bandwidth')).toBe(headers.indexOf('total_traffic') + 1)
+      expect(headers.indexOf('bandwidth_reference_current')).toBe(headers.indexOf('total_traffic') + 1)
 
       const peerRow = wrapper.findAll('tbody tr')[1]
       const cells = peerRow.findAll('td')
@@ -75,8 +77,8 @@ describe('Status traffic columns', () => {
       expect(wrapper.findAll('tbody tr')[0].text()).toContain('upload: --')
 
       await vi.advanceTimersByTimeAsync(10_000)
-      expect(peerRow.text()).toContain('upload: 1.00 Mbit/s')
-      expect(peerRow.text()).toContain('download: 2.00 Mbit/s')
+      expect(peerRow.text()).toContain('upload: 1.00 Mbit/s / 512 kbit/s')
+      expect(peerRow.text()).toContain('download: 2.00 Mbit/s / 0 bit/s')
 
       const refreshed = runningInstance()
       refreshed.detail!.peer_route_pairs![0].peer!.conns[0].stats!.estimated_tx_bps = 3_000_000

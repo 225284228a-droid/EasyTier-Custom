@@ -11,5 +11,6 @@
   "close_redundant_conns_when_disguised": { "capability": "config:close_redundant_conns_when_disguised", "support": "disguised_p2p" },
   "vpn": { "capability": "config:vpn-subnet-exit-v1", "support": "always" },
   "http3_fec_ratio": { "capability": "config:http3-fec-v1", "support": "http3" },
-  "http3_streams": { "capability": "config:http3-streams-v1", "support": "http3" }
+  "http3_streams": { "capability": "config:http3-streams-v1", "support": "http3" },
+  "disable_http3_fec": { "capability": "config:http3-fec-switch-v1", "support": "http3" }
 }

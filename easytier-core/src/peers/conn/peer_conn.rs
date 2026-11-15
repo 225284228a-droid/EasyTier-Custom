@@ -1632,6 +1632,7 @@ impl PeerConn {
     }
 
     pub fn get_stats(&self) -> PeerConnStats {
+        let (current_tx_bps, current_rx_bps) = self.throughput.current_bps();
         PeerConnStats {
             latency_us: self.latency_stats.get_latency_us(),
 
@@ -1643,6 +1644,8 @@ impl PeerConn {
             estimated_rx_bps: self.throughput.estimated_rx_bps(),
             estimated_tx_bps: self.throughput.estimated_tx_bps(),
             bandwidth_estimate_version: BANDWIDTH_ESTIMATE_VERSION,
+            current_rx_bps: Some(current_rx_bps),
+            current_tx_bps: Some(current_tx_bps),
         }
     }
 
@@ -1657,6 +1660,7 @@ impl PeerConn {
             stats: Some(self.get_stats()),
             fec: self.fec.as_ref().map(|fec| fec.stats()),
             loss_rate: (f64::from(self.loss_rate_stats.load(Ordering::Relaxed)) / 100.0) as f32,
+            link_loss_rate: self.throughput.link_loss_rate(),
             is_client: self.is_client.unwrap_or_default(),
             network_name: info.network_name.clone(),
             is_closed: self.close_event_notifier.is_closed(),

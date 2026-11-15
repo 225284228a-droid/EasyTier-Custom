@@ -35,6 +35,7 @@ export const ADVANCED_SWITCHES: readonly string[] = [
   'enable_udp_fec',
   'enable_udp_fec_kcp',
   'enable_udp_fec_quic',
+  'disable_http3_fec',
 ]
 
 export type AdvancedValue = boolean | number | string
@@ -133,7 +134,7 @@ export const ADVANCED_CATEGORIES: readonly { key: string; fields: readonly strin
     key: 'transport',
     fields: [
       'data_compress_algo', 'mtu', 'multi_thread', 'parallel_connections', 'disable_parallel_connections',
-      'enable_udp_fec', 'enable_udp_fec_kcp', 'enable_udp_fec_quic', 'http3_fec_ratio', 'http3_streams',
+      'enable_udp_fec', 'enable_udp_fec_kcp', 'enable_udp_fec_quic', 'disable_http3_fec', 'http3_fec_ratio', 'http3_streams',
     ],
   },
   { key: 'disguise', fields: ['traffic_disguise', 'p2p_disguise_mode', 'close_redundant_conns_when_disguised'] },

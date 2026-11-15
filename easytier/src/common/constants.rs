@@ -14,6 +14,8 @@ pub const WIN_SERVICE_WORK_DIR_REG_KEY: &str = "SOFTWARE\\EasyTier\\Service\\Wor
 pub const EASYTIER_VERSION: &str = git_version::git_version!(
     args = ["--abbrev=8", "--always", "--dirty=~"],
     prefix = concat!(env!("CARGO_PKG_VERSION"), "-custom-"),
-    suffix = env!("EASYTIER_COMMIT_DATE"),
+    // Custom keeps the commit hash alone; the upstream build script still
+    // provides EASYTIER_COMMIT_DATE for an easy merge.
+    suffix = "",
     fallback = concat!(env!("CARGO_PKG_VERSION"), "-custom")
 );

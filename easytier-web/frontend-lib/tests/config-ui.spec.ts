@@ -550,12 +550,13 @@ describe('Config.vue network config projection', () => {
     const { curNetwork, wrapper } = mountConfig(config, [])
     await nextTick()
 
-    for (const field of ['close_redundant_conns_when_disguised', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
+    for (const field of ['close_redundant_conns_when_disguised', 'disable_http3_fec', 'p2p_prefer_protocol', 'p2p_disguise_mode', 'sni']) {
       expect(wrapper.find(`#${field}`).exists(), `${field} should be absent for official runtimes`).toBe(false)
       expect(wrapper.find(`label[for="${field}"]`).exists()).toBe(false)
       expect(wrapper.find(`[data-tooltip="${field}_help"]`).exists()).toBe(false)
     }
-    for (const field of CONFIG_FLAG_FIELDS.filter(field => field !== 'close_redundant_conns_when_disguised')) {
+    const customFlags: readonly string[] = ['close_redundant_conns_when_disguised', 'disable_http3_fec']
+    for (const field of CONFIG_FLAG_FIELDS.filter(field => !customFlags.includes(field))) {
       expect(input(wrapper, `#${field}`).disabled, `${field} should remain editable`).toBe(false)
     }
     for (const urls of wrapper.findAllComponents(UrlListInputStub)) {

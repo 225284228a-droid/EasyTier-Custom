@@ -552,33 +552,33 @@ function removeVpnPortalClient(index: number) {
                 </div>
               </div>
 
-              <div v-if="extensionSupported('parallel_connections')" class="flex flex-col gap-2">
-                <label for="parallel_connections">{{ t('parallel_connections') }}</label>
-                <InputNumber id="parallel_connections" v-model="parallelConnections" :min="1" :max="16"
-                  :max-fraction-digits="0" :use-grouping="false" show-buttons :disabled="parallelDisabled"
-                  aria-describedby="parallel-connections-help" />
-                <small id="parallel-connections-help" class="text-surface-500">{{ t('parallel_connections_help') }}</small>
-              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-x-9 gap-y-2" data-testid="transport-grid">
+                <div v-if="extensionSupported('parallel_connections')" class="flex flex-col gap-2 min-w-0">
+                  <label for="parallel_connections">{{ t('parallel_connections') }}</label>
+                  <InputNumber id="parallel_connections" v-model="parallelConnections" :min="1" :max="16"
+                    :max-fraction-digits="0" :use-grouping="false" show-buttons :disabled="parallelDisabled"
+                    aria-describedby="parallel-connections-help" fluid />
+                  <small id="parallel-connections-help" class="text-surface-500">{{ t('parallel_connections_help') }}</small>
+                </div>
 
-              <div v-if="extensionSupported('http3_fec_ratio')" class="flex flex-col gap-2">
-                <label for="http3_fec_ratio">{{ t('http3_fec_ratio') }}</label>
-                <InputNumber id="http3_fec_ratio" v-model="http3FecRatio" :min="0" :max="100"
-                  :max-fraction-digits="0" :use-grouping="false" show-buttons
-                  aria-describedby="http3-fec-ratio-help" />
-                <small id="http3-fec-ratio-help" class="text-surface-500">{{ t('http3_fec_ratio_help') }}</small>
-              </div>
+                <div v-if="extensionSupported('http3_fec_ratio')" class="flex flex-col gap-2 min-w-0">
+                  <label for="http3_fec_ratio">{{ t('http3_fec_ratio') }}</label>
+                  <InputNumber id="http3_fec_ratio" v-model="http3FecRatio" :min="0" :max="100"
+                    :max-fraction-digits="0" :use-grouping="false" show-buttons
+                    aria-describedby="http3-fec-ratio-help" fluid />
+                  <small id="http3-fec-ratio-help" class="text-surface-500">{{ t('http3_fec_ratio_help') }}</small>
+                </div>
 
-              <div v-if="extensionSupported('http3_streams')" class="flex flex-col gap-2">
-                <label for="http3_streams">{{ t('http3_streams') }}</label>
-                <InputNumber id="http3_streams" v-model="http3Streams" :min="1" :max="32"
-                  :max-fraction-digits="0" :use-grouping="false" show-buttons
-                  aria-describedby="http3-streams-help" />
-                <small id="http3-streams-help" class="text-surface-500">{{ t('http3_streams_help') }}</small>
-              </div>
+                <div v-if="extensionSupported('http3_streams')" class="flex flex-col gap-2 min-w-0">
+                  <label for="http3_streams">{{ t('http3_streams') }}</label>
+                  <InputNumber id="http3_streams" v-model="http3Streams" :min="1" :max="32"
+                    :max-fraction-digits="0" :use-grouping="false" show-buttons
+                    aria-describedby="http3-streams-help" fluid />
+                  <small id="http3-streams-help" class="text-surface-500">{{ t('http3_streams_help') }}</small>
+                </div>
 
-              <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
-                  <label for="username">{{ t('proxy_cidrs') }}</label>
+                <div class="flex flex-col gap-2 min-w-0 p-fluid">
+                  <label for="subnet-proxy">{{ t('proxy_cidrs') }}</label>
                   <AutoComplete id="subnet-proxy" v-model="curNetwork.proxy_cidrs"
                     :placeholder="t('chips_placeholder', ['10.0.0.0/24'])" class="w-full" multiple fluid
                     :suggestions="inetSuggestions" @complete="searchInetSuggestions" />

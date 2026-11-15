@@ -113,6 +113,7 @@ pub(crate) fn set_network_flags(result: &mut NetworkConfig, flags: FlagsPatch) {
     result.close_redundant_conns_when_disguised = flags.close_redundant_conns_when_disguised;
     result.http3_fec_ratio = flags.http3_fec_ratio;
     result.http3_streams = flags.http3_streams;
+    result.disable_http3_fec = flags.enable_http3_fec.map(|enabled| !enabled);
     result.mtu = flags.mtu.map(|mtu| mtu as i32);
     result.data_compress_algo = flags.data_compress_algo;
     result.encryption_algorithm = flags.encryption_algorithm;
@@ -650,6 +651,7 @@ impl NetworkConfigExt for NetworkConfig {
                     Ok(ratio)
                 })
                 .transpose()?,
+            enable_http3_fec: self.disable_http3_fec.map(|disabled| !disabled),
             http3_streams: self
                 .http3_streams
                 .map(|streams| {

@@ -265,7 +265,11 @@ impl Peer {
                 ticks = ticks.wrapping_add(1);
                 if ticks.is_multiple_of(20) {
                     let active = data_active_copy.swap(false, Ordering::Relaxed);
-                    let fast_ping = conns_copy.len() > 1 && active;
+                    // Custom: single connections ping fast too while data
+                    // flows. The bandwidth reference needs the peer's delivery
+                    // report every few seconds; at the idle backoff (up to
+                    // 32 s) it would fall back to the window formula.
+                    let fast_ping = active;
                     for conn in conns_copy.iter() {
                         conn.fast_ping.store(fast_ping, Ordering::Relaxed);
                     }

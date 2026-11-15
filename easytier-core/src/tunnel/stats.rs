@@ -76,6 +76,8 @@ pub struct Throughput {
     peer_window_report: Mutex<Option<(u64, Instant)>>,
     rate_state: Mutex<RateState>,
     delivery: Mutex<DeliveryState>,
+    /// Sampled by whoever reads the current rate, apart from the Ping reports.
+    current_rate: Mutex<RateState>,
 }
 
 impl Clone for Throughput {
@@ -131,6 +133,48 @@ mod tests {
     };
     use super::*;
     use crate::foundation::bandwidth::{CongestionControl, TrafficRateReport, TransmissionWindow};
+
+    #[test]
+    fn current_rate_follows_its_readers_not_the_ping_cadence() {
+        let throughput = Throughput::new();
+        let start = Instant::now();
+        throughput.record_tx_bytes(250_000);
+        throughput.record_rx_bytes(25_000);
+        let (tx, rx) = throughput.current_bps_at(start + Duration::from_secs(2));
+        assert!((990_000..=1_000_000).contains(&tx), "{tx}");
+        assert!((99_000..=100_000).contains(&rx), "{rx}");
+        // A second reader within the interval shares the sample.
+        throughput.record_tx_bytes(1_000_000);
+        assert_eq!(
+            throughput.current_bps_at(start + Duration::from_millis(2_500)),
+            (tx, rx)
+        );
+        // The next sample covers what moved since, and an idle link reads zero.
+        let (tx, _) = throughput.current_bps_at(start + Duration::from_secs(4));
+        assert_eq!(tx, 4_000_000);
+        assert_eq!(
+            throughput.current_bps_at(start + Duration::from_secs(6)),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn link_loss_comes_from_the_window_source() {
+        #[derive(Debug)]
+        struct Lossy;
+        impl TransmissionWindowSource for Lossy {
+            fn transmission_window(&self) -> Option<TransmissionWindow> {
+                None
+            }
+            fn link_loss_rate(&self) -> Option<f32> {
+                Some(0.03)
+            }
+        }
+        let throughput = Throughput::new();
+        assert_eq!(throughput.link_loss_rate(), None);
+        throughput.set_window_source(Some(Arc::new(Lossy)));
+        assert_eq!(throughput.link_loss_rate(), Some(0.03));
+    }
 
     #[derive(Debug)]
     struct TestWindowSource(Mutex<Option<TransmissionWindow>>);

@@ -20,7 +20,9 @@ use easytier_core::{
     packet::{PEER_MANAGER_HEADER_SIZE, PacketType, ZCPacket},
     socket::udp::UdpSession,
     tunnel::{
-        Tunnel, TunnelError, flow_lanes,
+        Tunnel, TunnelError,
+        bandwidth::{TransmissionWindow, TransmissionWindowSource},
+        flow_lanes,
         framed::{FramedReader, FramedWriter, TcpZCPacketToBytes, ZCPacketToBytes},
         wrapper::TunnelWrapper,
     },
@@ -96,7 +98,7 @@ impl Http3Options {
 
     pub(crate) fn from_flags(flags: &crate::proto::common::Flags) -> Self {
         Self {
-            fec: FecConfig::from_flags(flags.enable_udp_fec, flags.http3_fec_ratio),
+            fec: FecConfig::from_flags(flags.enable_http3_fec, flags.http3_fec_ratio),
             streams: (flags.http3_streams as usize).clamp(1, flow_lanes::MAX_LANES),
         }
     }
@@ -509,17 +511,38 @@ fn body_lane(
     (writer, Box::pin(reader))
 }
 
+/// The QUIC window, plus what the FEC below it measured of the link.
+#[derive(Debug)]
+struct Http3WindowSource {
+    quic: Arc<dyn TransmissionWindowSource>,
+    fec: FecHandle,
+}
+
+impl TransmissionWindowSource for Http3WindowSource {
+    fn transmission_window(&self) -> Option<TransmissionWindow> {
+        self.quic.transmission_window()
+    }
+
+    fn link_loss_rate(&self) -> Option<f32> {
+        self.fec.stats().link_loss()
+    }
+}
+
 fn body_tunnel<S: BodySend, R: BodyRecv>(
     lanes: Vec<(S, R)>,
     lifetime: Arc<H3Lifetime>,
     style: TrafficStyle,
     info: TunnelInfo,
+    fec: FecHandle,
 ) -> Box<dyn Tunnel> {
     let (writers, readers): (Vec<_>, Vec<_>) = lanes
         .into_iter()
         .map(|(send, recv)| body_lane(send, recv, &lifetime))
         .unzip();
-    let bandwidth_source = window_source(&lifetime.connection.conn);
+    let bandwidth_source: Arc<dyn TransmissionWindowSource> = Arc::new(Http3WindowSource {
+        quic: window_source(&lifetime.connection.conn),
+        fec,
+    });
     // Lanes keep the connection alive through their readers and writers.
     drop(lifetime);
     Box::new(
@@ -690,7 +713,7 @@ async fn connect_tunnel(
         ),
     };
     Ok(ClientTunnel {
-        tunnel: body_tunnel(streams, lifetime, style, info),
+        tunnel: body_tunnel(streams, lifetime, style, info, fec_handle.clone()),
         fec: fec_handle,
         lanes,
     })
@@ -855,7 +878,7 @@ async fn finish_http3_tunnel(
         remote_addr: Some(remote_url.clone().into()),
         resolved_remote_addr: Some(remote_url.into()),
     };
-    Ok(body_tunnel(streams, lifetime, style, info))
+    Ok(body_tunnel(streams, lifetime, style, info, fec_handle))
 }
 pub(crate) struct Http3AcceptedSession {
     completed: mpsc::Receiver<Result<Box<dyn Tunnel>, TunnelError>>,

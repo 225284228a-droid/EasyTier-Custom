@@ -90,6 +90,8 @@ pub mod instance {
                 estimated_rx_bps: value.estimated_rx_bps,
                 estimated_tx_bps: value.estimated_tx_bps,
                 bandwidth_estimate_version: value.bandwidth_estimate_version,
+                current_rx_bps: value.current_rx_bps,
+                current_tx_bps: value.current_tx_bps,
             }
         }
     }
@@ -122,6 +124,7 @@ pub mod instance {
                 stats: value.stats.map(Into::into),
                 fec: value.fec.map(Into::into),
                 loss_rate: value.loss_rate,
+                link_loss_rate: value.link_loss_rate,
                 is_client: value.is_client,
                 network_name: value.network_name,
                 is_closed: value.is_closed,

@@ -20,6 +20,8 @@ const RATE_SAMPLE_TTL: Duration = Duration::from_secs(5);
 const RATE_SAMPLE_MIN_BYTES: u64 = 4 * 1024;
 
 pub(super) const DELIVERY_SAMPLE_TTL: Duration = Duration::from_secs(10);
+/// Readers closer together than this share one sample.
+pub(super) const CURRENT_RATE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const DELIVERY_SAMPLE_LIMIT: usize = 20;
 pub(super) const DELIVERY_MIN_BPS: u64 = 64_000;
 
@@ -173,6 +175,56 @@ impl Throughput {
         } else {
             self.peer_estimate_at(now)
         }
+    }
+
+    /// What moved since the previous reading at least a second ago, in bit/s
+    /// as (tx, rx). Readers drive the samples, so the result does not depend on
+    /// how often the connection pings; a reader that polls rarely gets the
+    /// average since its last poll.
+    pub fn current_bps(&self) -> (u64, u64) {
+        self.current_bps_at(Instant::now())
+    }
+
+    pub(super) fn current_bps_at(&self, now: Instant) -> (u64, u64) {
+        let mut state = self.current_rate.lock().unwrap();
+        let elapsed = now.saturating_duration_since(state.baseline_at);
+        if elapsed < CURRENT_RATE_MIN_INTERVAL
+            && let Some(last) = state.last
+        {
+            return (last.report.tx_bps, last.report.rx_bps);
+        }
+        let (tx_bytes, rx_bytes) = (self.tx_bytes(), self.rx_bytes());
+        let rate = |bytes: u64| {
+            if elapsed.is_zero() {
+                return 0;
+            }
+            (u128::from(bytes) * 8 * 1_000_000_000 / elapsed.as_nanos())
+                .try_into()
+                .unwrap_or(u64::MAX)
+        };
+        let report = TrafficRateReport {
+            tx_bps: rate(tx_bytes.saturating_sub(state.tx_bytes)),
+            rx_bps: rate(rx_bytes.saturating_sub(state.rx_bytes)),
+            sample_window: elapsed,
+            ..Default::default()
+        };
+        state.baseline_at = now;
+        state.tx_bytes = tx_bytes;
+        state.rx_bytes = rx_bytes;
+        state.last = Some(RateSnapshot {
+            observed_at: now,
+            report,
+        });
+        (report.tx_bps, report.rx_bps)
+    }
+
+    /// See [`TransmissionWindowSource::link_loss_rate`].
+    pub fn link_loss_rate(&self) -> Option<f32> {
+        self.window_source
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|source| source.link_loss_rate())
     }
 
     pub(super) fn peer_estimate_at(&self, now: Instant) -> u64 {

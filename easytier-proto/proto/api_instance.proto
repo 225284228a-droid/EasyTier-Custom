@@ -35,6 +35,10 @@ message PeerConnStats {
   uint64 estimated_tx_bps = 50007;
   // 1 = transmission-window formula. Missing/0 is the retired traffic estimator.
   uint32 bandwidth_estimate_version = 50008;
+  // Traffic rate of the latest sample (about 0.5-5 s), in bit/s. Present
+  // whenever the core samples, so zero means idle and absence an older core.
+  optional uint64 current_rx_bps = 50009;
+  optional uint64 current_tx_bps = 50010;
 }
 
 message PeerConnInfo {
@@ -53,6 +57,10 @@ message PeerConnInfo {
   peer_rpc.SecureAuthLevel secure_auth_level = 13;
   peer_rpc.PeerIdentityType peer_identity_type = 14;
   PeerConnFecStats fec = 15;
+  // Loss of the datagrams carrying the tunnel before FEC repairs any, where
+  // the tunnel measures it (HTTP3 with FEC). loss_rate stays the loss of the
+  // tunnel's own traffic.
+  optional float link_loss_rate = 50001;
 }
 
 

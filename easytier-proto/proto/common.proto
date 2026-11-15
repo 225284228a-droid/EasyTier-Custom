@@ -122,13 +122,18 @@ message Flags {
 
   // Redundancy of the FEC below HTTP3 tunnels, in repair datagrams per 100
   // QUIC datagrams (1..=100). Zero follows the loss the peer measures. Takes
-  // effect where enable_udp_fec is set on either end of the tunnel.
+  // effect where enable_http3_fec is set on either end of the tunnel.
   uint32 http3_fec_ratio = 50051 [(easytier.flag) = { default: "0", form: true }];
 
   // Reliable streams an HTTP3 tunnel spreads flows over (1..=32). Each flow
   // stays on one stream, so a lost packet only holds back the flows on its
   // stream. 1 keeps everything on one stream. A tunnel uses the smaller end's.
   uint32 http3_streams = 50052 [(easytier.flag) = { default: "8", form: true }];
+
+  // FEC below HTTP3 tunnels, independent of enable_udp_fec. Either end asking
+  // protects both directions. In adaptive mode a clean path sends no repairs,
+  // so the cost is a trailer per datagram and a report every 50 ms.
+  bool enable_http3_fec = 50053 [(easytier.flag) = { default: "true", api: { field: "disable_http3_fec", negate: true } }];
 }
 
 

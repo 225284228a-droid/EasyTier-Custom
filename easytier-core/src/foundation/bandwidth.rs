@@ -66,6 +66,12 @@ impl TransmissionWindow {
 
 pub trait TransmissionWindowSource: Debug + Send + Sync {
     fn transmission_window(&self) -> Option<TransmissionWindow>;
+
+    /// Loss of the datagrams carrying the transport, before any repair below
+    /// it, where the transport measures it (HTTP3 with FEC).
+    fn link_loss_rate(&self) -> Option<f32> {
+        None
+    }
 }
 
 #[cfg(test)]

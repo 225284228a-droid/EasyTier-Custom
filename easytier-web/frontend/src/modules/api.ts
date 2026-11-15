@@ -134,8 +134,10 @@ export interface NodePeerConn {
     conn_id: string;
     tunnel?: { tunnel_type?: string, local_addr?: any, remote_addr?: any } | null;
     stats?: { latency_us?: number | string, rx_bytes?: number | string, tx_bytes?: number | string,
-        estimated_rx_bps?: number | string, estimated_tx_bps?: number | string, bandwidth_estimate_version?: number | string } | null;
+        estimated_rx_bps?: number | string, estimated_tx_bps?: number | string, bandwidth_estimate_version?: number | string,
+        current_rx_bps?: number | string, current_tx_bps?: number | string } | null;
     loss_rate?: number;
+    link_loss_rate?: number | string;
     is_closed?: boolean;
 }
 

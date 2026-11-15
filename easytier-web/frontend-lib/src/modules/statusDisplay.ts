@@ -126,13 +126,29 @@ export function latencyMs(info: PeerRoutePair) {
   return `${Math.ceil(minLatencyUs / 1000)}ms`
 }
 
+/// Loss as a percentage, with a decimal while it is small enough for one to
+/// matter.
+function lossPercent(loss: number) {
+  const percent = Math.round(loss * 1000) / 10
+  return percent >= 10 || Number.isInteger(percent) ? `${Math.round(percent)}%` : `${percent.toFixed(1)}%`
+}
+
+/// A connection's loss. Where the tunnel measures the datagrams carrying it
+/// (HTTP3 with FEC), this reads "inside/outside": what the tunnel's own traffic
+/// lost, then what the link lost before FEC repaired it.
+export function connectionLossRate(conn: ReturnType<typeof peerConns>[number]) {
+  const loss = numericValue(conn.loss_rate ?? 0)
+  if (loss === undefined)
+    return undefined
+  const link = numericValue(conn.link_loss_rate)
+  return link === undefined ? `${Math.round(loss * 100)}%` : `${lossPercent(loss)}/${lossPercent(link)}`
+}
+
 export function lossRate(info: PeerRoutePair) {
   for (const conn of telemetryConns(info)) {
-    const loss = numericValue(conn.loss_rate ?? 0)
-    if (loss === undefined)
-      continue
-
-    return `${Math.round(loss * 100)}%`
+    const loss = connectionLossRate(conn)
+    if (loss !== undefined)
+      return loss
   }
 
   return ''
@@ -177,6 +193,32 @@ export function estimatedConnectionBandwidth(conn: ReturnType<typeof peerConns>[
     upload: upload === undefined ? '--' : formatBitRate(upload),
     download: download === undefined ? '--' : formatBitRate(download),
   }
+}
+
+function currentRate(conn: ReturnType<typeof peerConns>[number], direction: 'tx' | 'rx') {
+  if (conn.is_closed)
+    return undefined
+  const value = numericValue(direction === 'tx' ? conn.stats?.current_tx_bps : conn.stats?.current_rx_bps)
+  return value !== undefined && value >= 0 ? value : undefined
+}
+
+function formatCurrent(conns: ReturnType<typeof peerConns>, direction: 'tx' | 'rx') {
+  const rates = conns.map(conn => currentRate(conn, direction)).filter((rate): rate is number => rate !== undefined)
+  if (!rates.length)
+    return '--'
+  const total = rates.reduce((sum, rate) => sum + rate, 0)
+  return total === 0 ? '0 bit/s' : formatBitRate(total)
+}
+
+/// What is moving to and from the peer right now. Unlike the reference, the
+/// rates of parallel connections add up: each carries its own share.
+export function currentBandwidth(info: PeerRoutePair): { upload: string, download: string } {
+  const conns = peerConns(info)
+  return { upload: formatCurrent(conns, 'tx'), download: formatCurrent(conns, 'rx') }
+}
+
+export function currentConnectionBandwidth(conn: ReturnType<typeof peerConns>[number]) {
+  return { upload: formatCurrent([conn], 'tx'), download: formatCurrent([conn], 'rx') }
 }
 
 export function trafficBytes(value: unknown): string {

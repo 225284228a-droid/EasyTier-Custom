@@ -104,9 +104,25 @@ RTT error. An idle sender's small congestion window is not evidence that a
 1 Gbit/s Ethernet connection negotiated a lower speed. No adapter speed is
 substituted for an unmeasured end-to-end capacity.
 
+Delivery samples need a Ping/Pong exchange at most 5 seconds apart. The ping
+backoff reaches 32 seconds on an idle connection, so every connection with data
+in the last five seconds pings once a second, not only members of a parallel
+pool. Without that, a long-lived single connection fell back to the window
+formula while busy, which on a low-RTT QUIC path reads far above the real rate.
+
 The shared status table combines cumulative upload/download into one Total
-Traffic column, with upload and download on separate lines. Bandwidth Reference
-follows it in the same two-line format, before Loss Rate.
+Traffic column, with upload and download on separate lines. "Bandwidth
+Reference / Current" follows it in the same two-line format, before Loss Rate:
+the reference above, then `current_tx_bps`/`current_rx_bps`, the traffic that
+moved between two readings at least a second apart. Readers drive that sample,
+so it does not depend on the ping cadence; it is summed over parallel
+connections, since each carries its own share.
+
+Loss Rate reads "inside/outside" on HTTP3 tunnels with FEC. Inside is the Ping
+loss of the tunnel's own traffic; outside is `link_loss_rate`, the round-trip
+loss of the UDP datagrams carrying the tunnel before FEC repairs any, combined
+from the loss the peer reports for this end's datagrams and the loss this end
+counts of the peer's. Other connections show the inside loss alone.
 
 Parallel pools do not add per-connection window estimates together: their
 windows can share the same physical bottleneck, so the sum is not a link-capacity

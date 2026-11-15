@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { estimatedBandwidth, estimatedConnectionBandwidth, totalTraffic, latencyMs, lossRate, tunnelProtocols, udpNatTypeName } from '../src/modules/statusDisplay'
+import { connectionLossRate, currentBandwidth, estimatedBandwidth, estimatedConnectionBandwidth, totalTraffic, latencyMs, lossRate, tunnelProtocols, udpNatTypeName } from '../src/modules/statusDisplay'
 import { ipv4ToString, ipv6ToString } from '../src/modules/utils'
 
 function peerRoutePair(conns: any[]) {
@@ -296,5 +296,24 @@ describe('status display helpers', () => {
     expect(udpNatTypeName({})).toBe('Unknown')
     expect(udpNatTypeName({ udp_nat_type: 100 })).toBe('Unknown')
     expect(udpNatTypeName({ udp_nat_type: 'FutureNatType' })).toBe('Unknown')
+  })
+})
+
+describe('split loss and current rate', () => {
+  it('shows inside/outside loss only where the tunnel measures the link', () => {
+    expect(connectionLossRate({ conn_id: 'plain', loss_rate: 0.05 } as any)).toBe('5%')
+    expect(connectionLossRate({ conn_id: 'fec', loss_rate: 0, link_loss_rate: 0.034 } as any)).toBe('0%/3.4%')
+    expect(connectionLossRate({ conn_id: 'fec', loss_rate: '0.01', link_loss_rate: '0.125' } as any)).toBe('1%/13%')
+    expect(lossRate(peerRoutePair([{ conn_id: 'fec', loss_rate: 0, link_loss_rate: 0.002 }]))).toBe('0%/0.2%')
+  })
+
+  it('adds up the current rate of every open connection and tells idle from unknown', () => {
+    expect(currentBandwidth(peerRoutePair([
+      { conn_id: 'a', stats: { current_tx_bps: 1_500_000, current_rx_bps: '0' } },
+      { conn_id: 'b', stats: { current_tx_bps: '500000', current_rx_bps: 0 } },
+      { conn_id: 'closed', is_closed: true, stats: { current_tx_bps: 9_000_000 } },
+    ]))).toEqual({ upload: '2.00 Mbit/s', download: '0 bit/s' })
+    expect(currentBandwidth(peerRoutePair([{ conn_id: 'old-core', stats: { tx_bytes: '1' } }])))
+      .toEqual({ upload: '--', download: '--' })
   })
 })

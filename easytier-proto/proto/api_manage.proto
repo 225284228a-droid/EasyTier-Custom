@@ -167,6 +167,8 @@ message NetworkConfig {
   optional uint32 http3_fec_ratio = 50088;
   // 1..=32, unset is 8. See common.Flags.http3_streams.
   optional uint32 http3_streams = 50089;
+  // See common.Flags.enable_http3_fec; unset keeps HTTP3 FEC on.
+  optional bool disable_http3_fec = 50090;
 }
 
 // One destination subnet mapped to exactly one virtual node address.

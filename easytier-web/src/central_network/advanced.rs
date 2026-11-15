@@ -119,6 +119,7 @@ advanced_fields! {
         enable_udp_fec,
         enable_udp_fec_kcp,
         enable_udp_fec_quic,
+        disable_http3_fec,
     ],
     other: [
         data_compress_algo: int,

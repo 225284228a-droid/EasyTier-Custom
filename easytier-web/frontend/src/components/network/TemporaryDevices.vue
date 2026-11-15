@@ -630,10 +630,18 @@ const latencyLabel = (latencyMs: number | undefined) =>
     latencyMs == null ? '—' : `${Math.round(latencyMs)} ms`;
 const peerTelemetry = (peer: NodePeerInfo) => {
     const info = { peer } as unknown as NetworkTypes.PeerRoutePair;
-    return { bandwidth: StatusDisplay.estimatedBandwidth(info), traffic: StatusDisplay.totalTraffic(info) };
+    return {
+        bandwidth: StatusDisplay.estimatedBandwidth(info),
+        current: StatusDisplay.currentBandwidth(info),
+        traffic: StatusDisplay.totalTraffic(info),
+    };
 };
 const connectionBandwidth = (conn: NodePeerInfo['conns'][number]) =>
     StatusDisplay.estimatedConnectionBandwidth(conn as unknown as NetworkTypes.PeerConnInfo);
+const connectionCurrent = (conn: NodePeerInfo['conns'][number]) =>
+    StatusDisplay.currentConnectionBandwidth(conn as unknown as NetworkTypes.PeerConnInfo);
+const connectionLoss = (conn: NodePeerInfo['conns'][number]) =>
+    StatusDisplay.connectionLossRate(conn as unknown as NetworkTypes.PeerConnInfo) ?? '—';
 const connectionLatency = (conn: NodePeerInfo['conns'][number]) => {
     const microseconds = StatusDisplay.numericValue(conn.stats?.latency_us);
     return microseconds === undefined ? undefined : microseconds / 1000;
@@ -645,7 +653,7 @@ const connectionLatency = (conn: NodePeerInfo['conns'][number]) => {
 const nodePeerRows = computed(() => {
     const connsByPeer = new Map<number, NodePeerInfo>();
     (nodePeers.value ?? []).forEach(peer => connsByPeer.set(peer.peer_id, peer));
-    const rows = new Map<number, { key: string; peer_id: number; hostname: string; ipv4: string; cost: number; protocols: string[]; latencyMs?: number; bandwidth: { upload: string; download: string }; traffic: { upload: string; download: string } }>();
+    const rows = new Map<number, { key: string; peer_id: number; hostname: string; ipv4: string; cost: number; protocols: string[]; latencyMs?: number; bandwidth: { upload: string; download: string }; current: { upload: string; download: string }; traffic: { upload: string; download: string } }>();
     (nodeRoutes.value ?? []).forEach(route => {
         const addr = route.ipv4_addr;
         const ip = ipv4ToString(addr);
@@ -658,6 +666,7 @@ const nodePeerRows = computed(() => {
             protocols: [],
             latencyMs: route.path_latency,
             bandwidth: { upload: '--', download: '--' },
+            current: { upload: '--', download: '--' },
             traffic: { upload: '--', download: '--' },
         });
     });
@@ -678,6 +687,7 @@ const nodePeerRows = computed(() => {
             protocols: [],
             latencyMs: undefined,
             bandwidth: { upload: '--', download: '--' },
+            current: { upload: '--', download: '--' },
             traffic: { upload: '--', download: '--' },
         };
         Object.assign(row, peerTelemetry(peer));
@@ -1441,10 +1451,10 @@ const switchTab = async (tab: string) => {
                                 <div class="whitespace-nowrap">{{ t('upload') }}: {{ data.traffic.upload }}</div>
                                 <div class="whitespace-nowrap">{{ t('download') }}: {{ data.traffic.download }}</div>
                             </template></Column>
-                            <Column :header="t('estimated_bandwidth')"><template #body="{ data }">
-                                <div v-tooltip="t('estimated_bandwidth_help')" class="whitespace-nowrap">
-                                    <div>{{ t('upload') }}: {{ data.bandwidth.upload }}</div>
-                                    <div>{{ t('download') }}: {{ data.bandwidth.download }}</div>
+                            <Column :header="t('bandwidth_reference_current')"><template #body="{ data }">
+                                <div v-tooltip="t('bandwidth_reference_current_help')" class="whitespace-nowrap">
+                                    <div>{{ t('upload') }}: {{ data.bandwidth.upload }} / {{ data.current.upload }}</div>
+                                    <div>{{ t('download') }}: {{ data.bandwidth.download }} / {{ data.current.download }}</div>
                                 </div>
                             </template></Column>
                             </DataTable>
@@ -1461,6 +1471,7 @@ const switchTab = async (tab: string) => {
                                     </div>
                                     <div class="mt-2">{{ t('total_traffic') }}: {{ t('upload') }} {{ peer.traffic.upload }} / {{ t('download') }} {{ peer.traffic.download }}</div>
                                     <div>{{ t('estimated_bandwidth') }}: {{ t('upload') }} {{ peer.bandwidth.upload }} / {{ t('download') }} {{ peer.bandwidth.download }}</div>
+                                    <div>{{ t('current_bandwidth') }}: {{ t('upload') }} {{ peer.current.upload }} / {{ t('download') }} {{ peer.current.download }}</div>
                                 </div>
                             </div>
                             </template>
@@ -1504,15 +1515,15 @@ const switchTab = async (tab: string) => {
                                 {{ latencyLabel(connectionLatency(data.conn)) }}
                             </template></Column>
                             <Column :header="t('web.network_detail.loss_rate')"><template #body="{ data }">
-                                {{ ((data.conn.loss_rate ?? 0) * 100).toFixed(1) + '%' }}
+                                <span v-tooltip="t('loss_rate_split_help')" class="whitespace-nowrap">{{ connectionLoss(data.conn) }}</span>
                             </template></Column>
                             <Column :header="t('web.network_detail.traffic')"><template #body="{ data }">
                                 <div class="whitespace-nowrap">{{ t('upload') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.tx_bytes) }}</div>
                                 <div class="whitespace-nowrap">{{ t('download') }}: {{ StatusDisplay.trafficBytes(data.conn.stats?.rx_bytes) }}</div>
                             </template></Column>
-                            <Column :header="t('estimated_bandwidth')"><template #body="{ data }">
-                                <div class="whitespace-nowrap">{{ t('upload') }}: {{ connectionBandwidth(data.conn).upload }}</div>
-                                <div class="whitespace-nowrap">{{ t('download') }}: {{ connectionBandwidth(data.conn).download }}</div>
+                            <Column :header="t('bandwidth_reference_current')"><template #body="{ data }">
+                                <div class="whitespace-nowrap">{{ t('upload') }}: {{ connectionBandwidth(data.conn).upload }} / {{ connectionCurrent(data.conn).upload }}</div>
+                                <div class="whitespace-nowrap">{{ t('download') }}: {{ connectionBandwidth(data.conn).download }} / {{ connectionCurrent(data.conn).download }}</div>
                             </template></Column>
                         </DataTable>
                         </details>

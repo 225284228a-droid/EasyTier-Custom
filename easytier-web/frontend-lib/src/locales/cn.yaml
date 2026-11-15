@@ -179,7 +179,7 @@ sni_placeholder: 例如：www.cloudflare.com
 parallel_connections: 并行连接数
 parallel_connections_help: "范围 1–16，默认 1。双方取平均数四舍五入；任意一端禁用或对端不支持时使用单连接。"
 enable_udp_fec: UDP 前向纠错
-enable_udp_fec_help: "在 UDP 与 HTTP3 连接上直接恢复丢失的数据包，无需等待重传。任一端开启即双向生效，会额外占用带宽。"
+enable_udp_fec_help: "在 UDP 连接上直接恢复丢失的数据包，无需等待重传。任一端开启即双向生效，按固定比例发送修复包，会额外占用带宽。HTTP3 隧道的纠错由“禁用 HTTP3 前向纠错”单独控制。"
 enable_udp_fec_kcp: 纠错包含 KCP 代理流量
 enable_udp_fec_kcp_help: "UDP 前向纠错生效时，同时保护 UDP 连接上的 KCP 代理数据包。"
 enable_udp_fec_quic: 纠错包含 QUIC 代理流量
@@ -187,6 +187,8 @@ enable_udp_fec_quic_help: "UDP 前向纠错生效时，同时保护 UDP 连接�
 http3_streams: HTTP3 隧道流数
 http3_streams_help: "范围 1–32，默认 8。不同连接按五元组分到一条 HTTP3 连接内的多条可靠流上，同一连接始终在同一条流上，丢包只会阻塞同一条流上的连接。两端取较小值；1 表示全部走一条流。"
 http3_fec_ratio: HTTP3 纠错冗余比例 (%)
+disable_http3_fec: 禁用 HTTP3 前向纠错
+disable_http3_fec_help: "HTTP3 隧道底层的前向纠错默认开启，与 UDP 前向纠错开关无关，任一端开启即双向生效。自适应模式下线路干净时不发修复包，只多出每个数据报 8 字节的校验尾和每 50 毫秒一次的接收报告。"
 http3_fec_ratio_help: "纠错生效时 HTTP3 隧道每 100 个数据包附加的修复包数，范围 1–100。0（默认）按对端实测的丢包率自适应：线路干净时不发修复包，丢包越多冗余越高。"
 disable_parallel_connections: 禁用多连接并发
 disable_parallel_connections_help: "使用单连接传输，保留已填写的并行连接数；任意一端禁用即生效。"
@@ -201,6 +203,10 @@ total_traffic: 总流量
 estimated_bandwidth: 带宽参考
 estimated_bandwidth_help: "根据最近业务流量和传输窗口得到的参考值，并非测速结果，也不会发送测试流量。多连接不累加；UDP 等无窗口传输在空闲、轻载或缺少饱和样本时显示未知。"
 loss_rate: 丢包率
+bandwidth_reference_current: 带宽参考/实时带宽
+bandwidth_reference_current_help: "斜杠前是带宽参考：根据最近业务流量和传输窗口得到的参考值，并非测速结果，也不会发送测试流量，多连接不累加；UDP 等无窗口传输在空闲、轻载或缺少饱和样本时显示未知。斜杠后是实时带宽：最近一次采样（约 0.5–5 秒）里实际收发的速率，多连接时累加。"
+current_bandwidth: 实时带宽
+loss_rate_split_help: "启用 FEC 的 HTTP3 隧道显示为“隧道内/隧道外”：隧道内是隧道自身流量的丢包，隧道外是承载隧道的 UDP 数据报在 FEC 修复前的丢包。其他连接只显示隧道内丢包。"
 nat_type: NAT 类型
 
 flags_switch: 功能开关
