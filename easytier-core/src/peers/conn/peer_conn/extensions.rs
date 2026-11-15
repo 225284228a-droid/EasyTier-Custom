@@ -142,17 +142,21 @@ impl PeerConn {
         self.throughput.delivered_tx_bps()
     }
 
-    pub(crate) fn try_send_owned(
-        &self,
-        msg: ZCPacket,
-    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<ZCPacket>> {
-        self.sink.try_send_owned(msg)
-    }
-
     pub(crate) async fn reserve_send(
         &self,
     ) -> Result<tokio::sync::mpsc::OwnedPermit<ZCPacket>, TunnelError> {
         self.sink.reserve_owned().await
+    }
+
+    /// A slot in the send queue if one is free now; full and closed alike
+    /// yield none.
+    pub(crate) fn try_reserve_send(&self) -> Option<tokio::sync::mpsc::Permit<'_, ZCPacket>> {
+        self.sink.try_reserve()
+    }
+
+    /// Free send-queue slots right now, for diagnostics.
+    pub(crate) fn tx_queue_free(&self) -> usize {
+        self.sink.free_capacity()
     }
 }
 

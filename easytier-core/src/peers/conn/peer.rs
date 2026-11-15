@@ -217,6 +217,7 @@ impl Peer {
         let parallel_send_maintenance = parallel_send.clone();
         let send_plan_copy = send_plan.clone();
         let data_active_copy = data_active.clone();
+        let parallel_receiver_diag = parallel_receiver.clone();
         let conn_maintenance_task = AbortOnDropHandle::new(tokio::spawn(async move {
             // Fast ping follows data activity over five-second windows.
             let mut ticks = 0u32;
@@ -273,6 +274,31 @@ impl Peer {
                     for conn in conns_copy.iter() {
                         conn.fast_ping.store(fast_ping, Ordering::Relaxed);
                     }
+                }
+                if super::parallel::diag_enabled() && ticks.is_multiple_of(4) {
+                    let conns: Vec<String> = conns_copy
+                        .iter()
+                        .map(|entry| {
+                            let conn = entry.value();
+                            let stats = conn.get_stats();
+                            format!(
+                                "{{{} lat {}us tx {} rx {} qfree {}}}",
+                                conn.get_conn_id(),
+                                stats.latency_us,
+                                stats.tx_bytes,
+                                stats.rx_bytes,
+                                conn.tx_queue_free()
+                            )
+                        })
+                        .collect();
+                    let send_seq = parallel_send_maintenance.lock().sequence;
+                    tracing::warn!(
+                        peer = %peer_node_id,
+                        conns = %conns.join(" "),
+                        send_seq,
+                        recv = %parallel_receiver_diag.diag_summary(),
+                        "parallel diag"
+                    );
                 }
             }
         }));

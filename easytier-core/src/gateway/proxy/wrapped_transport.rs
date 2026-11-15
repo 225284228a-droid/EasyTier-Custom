@@ -529,7 +529,7 @@ mod tests {
                 destination: Some(Arc::new(TestWrappedTransportDestination::default())),
             };
             #[cfg(not(feature = "proxy-packet"))]
-            let packet_plane = WrappedTransportPacketPlane::default();
+            let packet_plane = WrappedTransportPacketPlane;
 
             Some(Arc::new(Self {
                 peer_manager,

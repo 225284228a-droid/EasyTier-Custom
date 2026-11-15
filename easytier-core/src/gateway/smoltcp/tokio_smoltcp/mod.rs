@@ -216,6 +216,20 @@ impl Net {
             iface.lock();
         iface.set_any_ip(any_ip);
     }
+
+    /// A cheap handle for out-of-band diagnostics, for ET_PARALLEL_DIAG.
+    pub fn diag_handle(&self) -> NetDiagHandle {
+        NetDiagHandle(self.reactor.clone())
+    }
+}
+
+/// Clonable diagnostics handle to a [`Net`]'s reactor.
+pub struct NetDiagHandle(Arc<Reactor>);
+
+impl NetDiagHandle {
+    pub fn diag_tcp_sockets(&self) -> String {
+        self.0.diag_tcp_sockets()
+    }
 }
 
 fn socket_addr_to_endpoint(addr: SocketAddr) -> smoltcp::wire::IpEndpoint {

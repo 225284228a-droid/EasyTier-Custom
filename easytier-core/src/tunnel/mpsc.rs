@@ -39,6 +39,13 @@ impl MpscTunnelSender {
     pub fn try_send_owned(&self, item: ZCPacket) -> Result<(), TrySendError<ZCPacket>> {
         self.0.try_send(item)
     }
+    pub fn try_reserve(&self) -> Option<tokio::sync::mpsc::Permit<'_, ZCPacket>> {
+        self.0.try_reserve().ok()
+    }
+    /// Free send slots right now, for diagnostics.
+    pub fn free_capacity(&self) -> usize {
+        self.0.capacity()
+    }
     pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
         match self.0.try_send(item) {
             Ok(()) => Ok(()),

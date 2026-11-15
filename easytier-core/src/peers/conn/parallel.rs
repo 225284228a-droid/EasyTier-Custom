@@ -43,6 +43,57 @@ fn reserve_budget(budget: &AtomicUsize, bytes: usize, limit: usize) -> bool {
         .is_ok()
 }
 
+/// Periodic receiver/queue state logging, on when ET_PARALLEL_DIAG is set.
+pub(crate) fn diag_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("ET_PARALLEL_DIAG").is_ok_and(|v| v != "0"))
+}
+
+/// Silent-drop counters, for ET_PARALLEL_DIAG logging: striped envelopes are
+/// dropped without a trace on several paths, and a wedge only shows them.
+#[derive(Default)]
+pub(crate) struct DropCounters(pub(crate) [AtomicUsize; 8]);
+pub(crate) mod drops {
+    use std::sync::atomic::Ordering;
+
+    pub(crate) const EPOCH: usize = 0;
+    pub(crate) const BAD: usize = 1;
+    pub(crate) const DUP: usize = 2;
+    pub(crate) const LATE: usize = 3;
+    pub(crate) const BUDGET: usize = 4;
+    pub(crate) const UNWRAP: usize = 5;
+    pub(crate) const LIMITER: usize = 6;
+    pub(crate) const PROXY: usize = 7;
+    /// Process-global so every path can count without plumbing a handle.
+    pub(crate) static COUNTERS: super::DropCounters = super::DropCounters([
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+    ]);
+    pub(crate) fn bump(slot: usize) {
+        COUNTERS.0[slot].fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn summary() -> String {
+        let c = &COUNTERS.0;
+        format!(
+            "epoch {} bad {} dup {} late {} budget {} unwrap {} limiter {} proxy {}",
+            c[EPOCH].load(Ordering::Relaxed),
+            c[BAD].load(Ordering::Relaxed),
+            c[DUP].load(Ordering::Relaxed),
+            c[LATE].load(Ordering::Relaxed),
+            c[BUDGET].load(Ordering::Relaxed),
+            c[UNWRAP].load(Ordering::Relaxed),
+            c[LIMITER].load(Ordering::Relaxed),
+            c[PROXY].load(Ordering::Relaxed),
+        )
+    }
+}
+
 pub(crate) fn tx_epoch(features: &[String]) -> Option<uuid::Uuid> {
     let mut offers = features.iter().filter(|f| f.starts_with("p2p-tx-"));
     let epoch = offers
@@ -579,6 +630,9 @@ struct ReorderState {
     lanes: HashMap<uuid::Uuid, Lane>,
     /// Delivery tickets issued so far; batches are delivered in ticket order.
     issued: u64,
+    /// Why waiting packets were handed on early, for tests.
+    #[cfg(test)]
+    released: BTreeMap<&'static str, u64>,
 }
 impl ReorderState {
     fn clear(&mut self) {
@@ -615,6 +669,10 @@ impl ReorderState {
         let Some(waiting) = self.packets.remove(&seq) else {
             return;
         };
+        #[cfg(test)]
+        {
+            *self.released.entry(RELEASE_REASON.get()).or_default() += 1;
+        }
         self.waiting_on.remove(&waiting.prev);
         self.bytes -= waiting.buffered.bytes;
         self.window.mark_given_up(waiting.prev);
@@ -633,6 +691,7 @@ impl ReorderState {
             .filter(|(seq, waiting)| **seq < low || waiting.prev < low)
             .map(|(seq, _)| *seq)
             .collect();
+        release_reason("window");
         for seq in stale {
             self.release(seq, out);
         }
@@ -676,6 +735,7 @@ impl ReorderState {
             .filter(|(prev, _)| !self.window.received(**prev))
             .map(|(_, seq)| *seq)
             .collect();
+        release_reason("frontier");
         for seq in lost {
             self.release(seq, &mut out);
         }
@@ -693,10 +753,27 @@ struct DeliveryTurns {
     served: u64,
     /// Tickets whose holder was cancelled before its turn.
     abandoned: BTreeSet<u64>,
-    /// When the latest batch finished. A lane blocked behind delivery cannot
-    /// read its next packet, so that time does not count towards a gap.
-    last_done: Option<Instant>,
+    /// When the latest batch that had to wait for the upper layer finished.
+    /// A lane blocked behind such a delivery could not read its next packet,
+    /// so that time does not count towards a gap. Batches that went straight
+    /// through do not count: on a busy pool one finishes every moment, and a
+    /// packet waiting for a lost predecessor would never expire.
+    last_blocked: Option<Instant>,
 }
+
+#[cfg(test)]
+thread_local! {
+    static RELEASE_REASON: std::cell::Cell<&'static str> = const { std::cell::Cell::new("?") };
+}
+#[cfg(test)]
+fn release_reason(reason: &'static str) {
+    RELEASE_REASON.set(reason);
+}
+#[cfg(not(test))]
+fn release_reason(_: &'static str) {}
+
+/// A batch slower than this waited for the upper layer to make room.
+const BLOCKED_DELIVERY: Duration = Duration::from_millis(2);
 
 /// Completes a delivery ticket when dropped, including when the receiving
 /// task is cancelled, so a closed connection cannot stall later batches.
@@ -708,7 +785,6 @@ impl Drop for Turn<'_> {
     fn drop(&mut self) {
         {
             let mut turns = self.receiver.turns.lock();
-            turns.last_done = Some(Instant::now());
             if turns.served == self.ticket {
                 turns.served += 1;
                 loop {
@@ -751,14 +827,37 @@ impl ParallelReceiver {
     pub(crate) fn state_summary(&self) -> String {
         let s = self.state.lock();
         format!(
-            "epoch {:?}, low {}, waiting {:?}, lanes {}",
+            "epoch {:?}, low {}, waiting {:?}, lanes {}, released {:?}",
             s.epoch,
             s.window.low,
             s.packets
                 .iter()
                 .map(|(seq, w)| (*seq, w.prev))
                 .collect::<Vec<_>>(),
-            s.lanes.len()
+            s.lanes.len(),
+            s.released
+        )
+    }
+    /// One line of live reorder state, for ET_PARALLEL_DIAG logging.
+    pub(crate) fn diag_summary(&self) -> String {
+        let mut out = self.diag_state();
+        out.push_str(" drops ");
+        out.push_str(&drops::summary());
+        out
+    }
+    fn diag_state(&self) -> String {
+        let s = self.state.lock();
+        let turns = self.turns.lock();
+        format!(
+            "epoch {} low {} waiting {} ({} B) lanes {} issued {} served {} gap_ms {}",
+            s.epoch.map_or("-".to_owned(), |e| e.to_string()),
+            s.window.low,
+            s.packets.len(),
+            s.bytes,
+            s.lanes.len(),
+            s.issued,
+            turns.served,
+            self.gap_ms.load(Ordering::Relaxed)
         )
     }
     pub(crate) fn set_max_rtt_us(&self, rtt: u64) {
@@ -814,6 +913,7 @@ impl ParallelReceiver {
             }
             notified.await;
         }
+        let started = Instant::now();
         for mut p in packets {
             if send_peer_packet_to_chan(&self.sender, p.packet.take().unwrap(), p.ingress)
                 .await
@@ -821,6 +921,9 @@ impl ParallelReceiver {
             {
                 break;
             }
+        }
+        if started.elapsed() >= BLOCKED_DELIVERY {
+            self.turns.lock().last_blocked = Some(Instant::now());
         }
     }
     /// Waits until packets are buffered behind a gap.
@@ -854,6 +957,11 @@ impl ParallelReceiver {
             if s.epoch != Some(epoch) {
                 let Some(position) = s.authorized.iter().position(|allowed| *allowed == epoch)
                 else {
+                    drops::bump(drops::EPOCH);
+                    #[cfg(test)]
+                    {
+                        *s.released.entry("drop-epoch").or_default() += 1;
+                    }
                     return;
                 };
                 s.authorized.remove(position);
@@ -864,6 +972,11 @@ impl ParallelReceiver {
                 || seq.saturating_sub(s.window.low) > MAX_SEQUENCE_GAP
                 || prev.is_some_and(|prev| prev >= seq)
             {
+                drops::bump(drops::BAD);
+                #[cfg(test)]
+                {
+                    *s.released.entry("drop-bad").or_default() += 1;
+                }
                 return;
             }
             let was_empty = s.packets.is_empty();
@@ -879,10 +992,32 @@ impl ParallelReceiver {
                 lane.last = now;
             }
             let mut ready = Vec::new();
+            if s.window.received(seq) {
+                drops::bump(drops::DUP);
+            } else if s.window.settled(seq) {
+                drops::bump(drops::LATE);
+            }
+            #[cfg(test)]
+            {
+                let key = if s.window.received(seq) {
+                    Some("drop-dup")
+                } else if s.window.settled(seq) {
+                    Some("late")
+                } else {
+                    None
+                };
+                if let Some(key) = key {
+                    *s.released.entry(key).or_default() += 1;
+                }
+            }
             // Duplicates and packets older than the window are dropped, but
-            // they still advance their lane's frontier.
+            // they still advance their lane's frontier. The window must make
+            // room for the sequence before the duplicate check: a sequence at
+            // or past the far edge aliases to a stale bit of the first lap,
+            // and testing that bit first would drop every packet of the new
+            // lap as a duplicate and never advance the window again.
+            s.make_room(seq, &mut ready);
             if !s.window.received(seq) {
-                s.make_room(seq, &mut ready);
                 s.window.mark_received(seq);
                 let bytes = packet.buf_len();
                 if !s.satisfied(prev) && bytes <= MAX_BYTES {
@@ -892,6 +1027,7 @@ impl ParallelReceiver {
                         let Some(&oldest) = s.packets.keys().next() else {
                             break;
                         };
+                        release_reason("capacity");
                         s.release(oldest, &mut ready);
                     }
                 }
@@ -918,7 +1054,13 @@ impl ParallelReceiver {
                             },
                         );
                     }
-                    _ => {}
+                    _ => {
+                        drops::bump(drops::BUDGET);
+                        #[cfg(test)]
+                        {
+                            *s.released.entry("drop-budget").or_default() += 1;
+                        }
+                    }
                 }
             }
             ready.extend(s.skip_lost(now));
@@ -948,20 +1090,22 @@ impl ParallelReceiver {
             };
             let delivering = {
                 let turns = self.turns.lock();
-                turns.served != s.issued || turns.last_done.is_some_and(|t| t.elapsed() < gap)
+                turns.served != s.issued || turns.last_blocked.is_some_and(|t| t.elapsed() < gap)
             };
-            if !delivering {
-                let expired: Vec<u64> = s
-                    .packets
-                    .iter()
-                    .filter(|(_, waiting)| {
-                        now.saturating_duration_since(waiting.buffered.arrived) >= gap
-                    })
-                    .map(|(seq, _)| *seq)
-                    .collect();
-                for seq in expired {
-                    s.release(seq, &mut ready);
-                }
+            // Delivery may postpone a gap, never hold it forever: past this
+            // a waiting packet goes on even while batches keep flowing.
+            let limit = if delivering { gap + LANE_IDLE } else { gap };
+            let expired: Vec<u64> = s
+                .packets
+                .iter()
+                .filter(|(_, waiting)| {
+                    now.saturating_duration_since(waiting.buffered.arrived) >= limit
+                })
+                .map(|(seq, _)| *seq)
+                .collect();
+            release_reason(if delivering { "timer-cap" } else { "timer" });
+            for seq in expired {
+                s.release(seq, &mut ready);
             }
             Self::issue(&mut s, ready)
         };
@@ -1448,6 +1592,68 @@ mod tests {
         send(3, Some(1), b"b1 again").await;
         quiet(&mut rx).await;
         assert!(receiver.state.lock().packets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn other_flows_delivering_do_not_hold_back_a_lost_predecessor_forever() {
+        let (tx, mut rx) = crate::peers::create_packet_recv_chan();
+        let receiver = ParallelReceiver::new(tx);
+        let epoch = uuid::Uuid::new_v4();
+        receiver.authorize_epoch(epoch);
+        let ingress = lane_ingress(uuid::Uuid::new_v4());
+        // Flow A's packet 1 never arrives; its packet 2 waits for it.
+        receiver
+            .receive(epoch, 2, Some(1), ZCPacket::new_with_payload(b"a"), ingress)
+            .await;
+        // Flow B keeps delivering, as a busy transfer on other flows does,
+        // while the flush task runs as the peer's maintenance loop runs it.
+        let started = Instant::now();
+        let mut seq = 3;
+        let mut prev = None;
+        let mut released = None;
+        while started.elapsed() < Duration::from_millis(600) {
+            receiver
+                .receive(epoch, seq, prev, ZCPacket::new_with_payload(b"b"), ingress)
+                .await;
+            prev = Some(seq);
+            seq += 1;
+            receiver.flush_expired().await;
+            while let Ok(envelope) = rx.0.try_recv() {
+                if envelope.packet.payload() == b"a" && released.is_none() {
+                    released = Some(started.elapsed());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let released = released.expect("flow A stayed held while flow B delivered");
+        assert!(released < Duration::from_millis(200), "{released:?}");
+    }
+
+    #[tokio::test]
+    async fn a_receiver_survives_the_first_sequence_window_wrap() {
+        let (tx, mut rx) = crate::peers::create_packet_recv_chan();
+        let receiver = ParallelReceiver::new(tx);
+        let epoch = uuid::Uuid::new_v4();
+        receiver.authorize_epoch(epoch);
+        let ingress = lane_ingress(uuid::Uuid::new_v4());
+        let total = WINDOW + 4096;
+        let mut delivered = 0;
+        for seq in 0..total {
+            receiver
+                .receive_in_order(epoch, seq, data(b"x"), ingress)
+                .await;
+            while rx.0.try_recv().is_ok() {
+                delivered += 1;
+            }
+        }
+        assert_eq!(
+            delivered, total,
+            "every packet across the first window wrap must be delivered"
+        );
+        assert!(
+            receiver.state.lock().window.low > 0,
+            "the window must advance past the first lap"
+        );
     }
 
     #[tokio::test]

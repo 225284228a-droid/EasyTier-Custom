@@ -322,6 +322,7 @@ mod tests {
     use super::*;
     use crate::packet::{StandardAeadTail, ZCPacket};
 
+    #[allow(dead_code)]
     fn assert_interoperable(left: &dyn Encryptor, right: &dyn Encryptor) {
         let plaintext = b"cross-backend compatibility";
         let nonce = [9; StandardAeadTail::NONCE_SIZE];

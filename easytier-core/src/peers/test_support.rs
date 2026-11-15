@@ -109,3 +109,101 @@ impl PeerContext for NoopPeerContext {
 }
 
 impl PeerContextTestExt for NoopPeerContext {}
+
+/// A bounded, lossless, in-order tunnel pair for tests: a send waits for
+/// capacity, as a stream transport does, instead of dropping like the ring
+/// tunnel. Shared by the peer and peer-manager test suites.
+#[cfg(test)]
+pub(crate) mod bounded_tunnel {
+    use std::pin::Pin;
+    use std::sync::Mutex as StdMutex;
+    use std::task::{Context as TaskContext, Poll};
+
+    use futures::Sink;
+    use tokio::sync::mpsc;
+
+    use crate::packet::ZCPacket;
+    use crate::proto::common::TunnelInfo;
+    use crate::tunnel::{SplitTunnel, Tunnel, TunnelError};
+
+    pub(crate) struct BoundedTunnel {
+        rx: StdMutex<Option<mpsc::Receiver<ZCPacket>>>,
+        tx: mpsc::Sender<ZCPacket>,
+        info: Option<TunnelInfo>,
+    }
+
+    pub(crate) fn bounded_tunnel_pair(
+        cap: usize,
+        info: Option<TunnelInfo>,
+    ) -> (BoundedTunnel, BoundedTunnel) {
+        let (a_tx, b_rx) = mpsc::channel(cap);
+        let (b_tx, a_rx) = mpsc::channel(cap);
+        (
+            BoundedTunnel {
+                rx: StdMutex::new(Some(a_rx)),
+                tx: a_tx,
+                info: info.clone(),
+            },
+            BoundedTunnel {
+                rx: StdMutex::new(Some(b_rx)),
+                tx: b_tx,
+                info,
+            },
+        )
+    }
+
+    struct BoundedSink {
+        inner: tokio_util::sync::PollSender<ZCPacket>,
+    }
+
+    impl Sink<ZCPacket> for BoundedSink {
+        type Error = TunnelError;
+        fn poll_ready(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.inner)
+                .poll_ready(cx)
+                .map_err(|_| TunnelError::Shutdown)
+        }
+        fn start_send(mut self: Pin<&mut Self>, item: ZCPacket) -> Result<(), Self::Error> {
+            Pin::new(&mut self.inner)
+                .start_send(item)
+                .map_err(|_| TunnelError::Shutdown)
+        }
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.inner)
+                .poll_flush(cx)
+                .map_err(|_| TunnelError::Shutdown)
+        }
+        fn poll_close(
+            mut self: Pin<&mut Self>,
+            cx: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.inner)
+                .poll_close(cx)
+                .map_err(|_| TunnelError::Shutdown)
+        }
+    }
+
+    impl Tunnel for BoundedTunnel {
+        fn split(&self) -> SplitTunnel {
+            let rx = self.rx.lock().unwrap().take().unwrap();
+            let stream = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|packet| (Ok(packet), rx))
+            });
+            (
+                Box::pin(stream),
+                Box::pin(BoundedSink {
+                    inner: tokio_util::sync::PollSender::new(self.tx.clone()),
+                }),
+            )
+        }
+        fn info(&self) -> Option<TunnelInfo> {
+            self.info.clone()
+        }
+    }
+}

@@ -46,8 +46,17 @@ impl SmoltcpPlane {
             let mut packet_recv = packet_recv.lock().await;
             while let Some(packet) = packet_recv.recv().await {
                 tracing::trace!(?packet, "deliver peer packet to smoltcp");
+                let started = std::time::Instant::now();
                 if let Err(error) = stack_sink.send(Ok(packet.payload().to_vec())).await {
                     tracing::error!(?error, "deliver peer packet to smoltcp failed");
+                }
+                if crate::peers::conn::parallel::diag_enabled()
+                    && started.elapsed() >= std::time::Duration::from_secs(1)
+                {
+                    tracing::warn!(
+                        elapsed = ?started.elapsed(),
+                        "peer-to-smoltcp bridge blocked delivering a packet"
+                    );
                 }
             }
             tracing::debug!("peer-to-smoltcp bridge stopped");
@@ -70,10 +79,27 @@ impl SmoltcpPlane {
                     tracing::debug!("smoltcp-to-peer bridge lost PeerManager");
                     return;
                 };
-                if let Err(error) = peer_manager
-                    .send_msg_by_ip(ZCPacket::new_with_payload(&data), destination, false)
-                    .await
-                {
+                let send = peer_manager.send_msg_by_ip(
+                    ZCPacket::new_with_payload(&data),
+                    destination,
+                    false,
+                );
+                tokio::pin!(send);
+                let sent = if crate::peers::conn::parallel::diag_enabled() {
+                    tokio::select! {
+                        sent = &mut send => sent,
+                        _ = crate::foundation::time::sleep(std::time::Duration::from_secs(1)) => {
+                            tracing::warn!(
+                                ?destination,
+                                "smoltcp-to-peer bridge blocked sending a frame for over a second"
+                            );
+                            (&mut send).await
+                        }
+                    }
+                } else {
+                    (&mut send).await
+                };
+                if let Err(error) = sent {
                     tracing::error!(?error, "deliver smoltcp packet to peer failed");
                 }
             }
@@ -110,6 +136,16 @@ impl SmoltcpPlane {
             net_config.gateway.push(v6.address().into());
         }
         let net = Net::new(device, net_config);
+
+        if crate::peers::conn::parallel::diag_enabled() {
+            let net = net.diag_handle();
+            forward_tasks.spawn(async move {
+                loop {
+                    crate::foundation::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tracing::warn!(sockets = %net.diag_tcp_sockets(), "dataplane smoltcp diag");
+                }
+            });
+        }
 
         let forward_tasks = Arc::new(std::sync::Mutex::new(forward_tasks));
         forward_tasks.lock().unwrap().spawn(reap_joinset_background(

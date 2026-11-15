@@ -238,7 +238,21 @@ async fn run(
     loop {
         let packets = device.take_send_queue();
 
-        async_iface.send_all(&mut iter(packets).map(Ok)).await?;
+        if crate::peers::conn::parallel::diag_enabled() && !packets.is_empty() {
+            let mut emit_items = iter(packets).map(Ok);
+            let emit = async_iface.send_all(&mut emit_items);
+            pin!(emit);
+            let sent = tokio::select! {
+                sent = &mut emit => sent,
+                _ = crate::foundation::time::sleep(std::time::Duration::from_secs(1)) => {
+                    tracing::warn!("smoltcp reactor blocked emitting frames for over a second");
+                    (&mut emit).await
+                }
+            };
+            sent?;
+        } else {
+            async_iface.send_all(&mut iter(packets).map(Ok)).await?;
+        }
         // Keep routing and stack leases until the last protocol output has
         // left the device queue. Drop handles outside the socket-set lock.
         closed.clear();
@@ -550,6 +564,29 @@ impl Reactor {
     }
     pub fn iface(&self) -> &BufferInterface {
         &self.iface
+    }
+    /// One line of per-TCP-socket state, for ET_PARALLEL_DIAG logging.
+    pub fn diag_tcp_sockets(&self) -> String {
+        let sockets = self.socket_allocator.sockets().lock();
+        let mut out = Vec::new();
+        for (_, socket) in sockets.iter() {
+            let Socket::Tcp(tcp) = socket else {
+                continue;
+            };
+            out.push(format!(
+                "{{{} {} rcv {}/{} snd {}/{} can_recv {} can_send {}}}",
+                tcp.state(),
+                tcp.remote_endpoint()
+                    .map_or("-".to_owned(), |e| e.to_string()),
+                tcp.recv_queue(),
+                tcp.recv_capacity(),
+                tcp.send_queue(),
+                tcp.send_capacity(),
+                tcp.can_recv(),
+                tcp.can_send()
+            ));
+        }
+        out.join(" ")
     }
 }
 

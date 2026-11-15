@@ -1451,6 +1451,7 @@ impl PeerConn {
                         let Some((epoch, seq, prev, inner)) =
                             super::parallel::unwrap(zc_packet, remote_peer_id, my_peer_id)
                         else {
+                            super::parallel::drops::bump(super::parallel::drops::UNWRAP);
                             continue;
                         };
                         zc_packet = inner;
@@ -1463,6 +1464,7 @@ impl PeerConn {
                         && let Some(limiter) = recv_limiter.as_ref()
                         && !limiter.try_consume(payload_len)
                     {
+                        super::parallel::drops::bump(super::parallel::drops::LIMITER);
                         continue;
                     }
                     if let Some((epoch, seq, prev)) = parallel_sequence {

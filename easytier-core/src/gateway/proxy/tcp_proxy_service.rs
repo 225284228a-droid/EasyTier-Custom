@@ -528,37 +528,50 @@ impl<R: TcpProxyRuntime + 'static, F: VirtualTcpListenerFactory, C: TcpProxyDest
         );
         match action {
             TcpProxyPacketAction::Handled { new_syn: _ } => {}
-            TcpProxyPacketAction::Drop => return None,
+            TcpProxyPacketAction::Drop => {
+                crate::peers::conn::parallel::drops::bump(
+                    crate::peers::conn::parallel::drops::PROXY,
+                );
+                return None;
+            }
             TcpProxyPacketAction::Pass => return Some(packet),
         }
 
         if snapshot.smoltcp_enabled {
             #[cfg(feature = "proxy-smoltcp-stack")]
-            self.handle_smoltcp_packet(packet).await;
+            self.handle_smoltcp_packet(packet);
 
             #[cfg(not(feature = "proxy-smoltcp-stack"))]
             tracing::error!("smoltcp packet received but proxy-smoltcp-stack is disabled");
-        } else if let Err(err) = self
-            .peer_manager
-            .get_nic_channel()
-            .send(crate::host::packet::HostPacket::from_core_packet(packet))
-            .await
-        {
-            tracing::error!(?err, "send to nic failed");
+        } else {
+            // This runs in the peer-packet pipeline on the shared router task:
+            // waiting for room would tie every connection's ingress to this
+            // stack's consumption. Drop instead; the inner transport recovers.
+            match self
+                .peer_manager
+                .get_nic_channel()
+                .try_send(crate::host::packet::HostPacket::from_core_packet(packet))
+            {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    tracing::debug!("nic channel full, dropping proxied packet");
+                }
+                Err(_) => tracing::error!("send to nic failed"),
+            }
         }
 
         None
     }
 
     #[cfg(feature = "proxy-smoltcp-stack")]
-    async fn handle_smoltcp_packet(&self, packet: ZCPacket) {
+    fn handle_smoltcp_packet(&self, packet: ZCPacket) {
         let stack = self.smoltcp_stack.lock().clone();
         let Some(stack) = stack else {
             tracing::error!("smoltcp stack is not started");
             return;
         };
-        if let Err(err) = stack.send_ingress(packet).await {
-            tracing::error!(?err, "send to smoltcp stack failed");
+        if !stack.try_send_ingress(packet) {
+            tracing::debug!("smoltcp ingress queue full, dropping proxied packet");
         }
     }
 

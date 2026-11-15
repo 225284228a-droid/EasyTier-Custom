@@ -34,11 +34,21 @@ impl SmolTcpStack {
                     ?packet,
                     "receive from peer send to smoltcp packet"
                 );
+                let started = std::time::Instant::now();
                 if let Err(err) = stack_sink.send(Ok(packet.payload().to_vec())).await {
                     tracing::error!(
                         target: "easytier_core::gateway::stack",
                         ?err,
                         "send to smoltcp stack failed"
+                    );
+                }
+                if crate::peers::conn::parallel::diag_enabled()
+                    && started.elapsed() >= std::time::Duration::from_secs(1)
+                {
+                    tracing::warn!(
+                        target: "easytier_core::gateway::stack",
+                        elapsed = ?started.elapsed(),
+                        "tcp-proxy smoltcp ingress bridge blocked"
                     );
                 }
             }
@@ -63,6 +73,19 @@ impl SmolTcpStack {
             ),
         );
         net.set_any_ip(true);
+        if crate::peers::conn::parallel::diag_enabled() {
+            let net = net.diag_handle();
+            tasks.lock().unwrap().spawn(async move {
+                loop {
+                    crate::foundation::time::sleep(std::time::Duration::from_secs(1)).await;
+                    tracing::warn!(
+                        target: "easytier_core::gateway::stack",
+                        sockets = %net.diag_tcp_sockets(),
+                        "tcp-proxy smoltcp diag"
+                    );
+                }
+            });
+        }
         let listener = net
             .tcp_bind(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), local_port))
             .await
@@ -82,11 +105,34 @@ impl SmolTcpStack {
         self.local_port
     }
 
+    #[cfg(test)]
     pub async fn send_ingress(&self, packet: ZCPacket) -> anyhow::Result<()> {
         self.ingress_tx
             .send(packet)
             .await
             .map_err(|err| anyhow::anyhow!("send to smoltcp ingress failed: {:?}", err))
+    }
+
+    /// Ingress without waiting: used from the shared peer-packet pipeline,
+    /// where blocking would stall the router that drains every connection.
+    /// A full queue drops the packet; the inner transport retransmits.
+    pub fn try_send_ingress(&self, packet: ZCPacket) -> bool {
+        static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        match self.ingress_tx.try_send(packet) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                let dropped = DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if dropped.is_multiple_of(1000) {
+                    tracing::warn!(
+                        target: "easytier_core::gateway::stack",
+                        dropped,
+                        "smoltcp ingress queue full, dropping proxied packets"
+                    );
+                }
+                false
+            }
+            Err(_) => false,
+        }
     }
 
     pub async fn take_output_rx(&self) -> anyhow::Result<mpsc::Receiver<Vec<u8>>> {

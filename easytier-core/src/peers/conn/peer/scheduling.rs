@@ -660,6 +660,24 @@ impl Peer {
     /// traffic its rate is measured from. A member that cannot take the
     /// packet now yields to the next.
     pub(super) async fn send_striped(&self, msg: ZCPacket, plan: &SendPlan) -> Result<(), Error> {
+        let send = self.send_striped_inner(msg, plan);
+        tokio::pin!(send);
+        if !parallel::diag_enabled() {
+            return (&mut send).await;
+        }
+        tokio::select! {
+            result = &mut send => result,
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                tracing::warn!(
+                    peer = %self.peer_node_id,
+                    "striped send blocked over a second waiting for a member queue"
+                );
+                (&mut send).await
+            }
+        }
+    }
+
+    async fn send_striped_inner(&self, msg: ZCPacket, plan: &SendPlan) -> Result<(), Error> {
         let bytes = msg.buf_len() + crate::packet::PARALLEL_PACKET_OVERHEAD;
         let now = Instant::now();
         let record_sent = |state: &mut ParallelSendState, lane: &Lane| {
@@ -673,7 +691,20 @@ impl Peer {
         // Assigning the sequence and queueing it under one lock keeps each
         // member's queue in sequence order, which lets the receiver treat a
         // gap behind an ordered member as loss.
-        let (order, packet) = {
+        let stamp = |state: &mut ParallelSendState, msg: ZCPacket| {
+            let sequence = state.sequence;
+            state.sequence = state.sequence.wrapping_add(1);
+            let prev = state.chain(msg.flow_key, sequence, now);
+            parallel::wrap(
+                msg,
+                plan.my_peer_id,
+                self.peer_node_id,
+                state.epoch,
+                sequence,
+                prev,
+            )
+        };
+        let (order, msg) = {
             let mut state = self.parallel_send.lock();
             let mut order: Vec<_> = plan
                 .members
@@ -688,35 +719,19 @@ impl Peer {
                 })
                 .collect();
             order.sort_by_key(|(key, _)| *key);
-            let sequence = state.sequence;
-            state.sequence = state.sequence.wrapping_add(1);
-            let prev = state.chain(msg.flow_key, sequence, now);
-            let mut packet = parallel::wrap(
-                msg,
-                plan.my_peer_id,
-                self.peer_node_id,
-                state.epoch,
-                sequence,
-                prev,
-            );
             for &(_, lane) in &order {
-                match lane.conn.try_send_owned(packet) {
-                    Ok(()) => {
-                        record_sent(&mut state, lane);
-                        return Ok(());
-                    }
-                    Err(
-                        tokio::sync::mpsc::error::TrySendError::Full(p)
-                        | tokio::sync::mpsc::error::TrySendError::Closed(p),
-                    ) => {
-                        packet = p;
-                    }
+                if let Some(permit) = lane.conn.try_reserve_send() {
+                    permit.send(stamp(&mut state, msg));
+                    record_sent(&mut state, lane);
+                    return Ok(());
                 }
             }
-            (order, packet)
+            (order, msg)
         };
         // Backpressure waits for any member to become writable; a stalled
-        // first member cannot block the other paths.
+        // first member cannot block the other paths. The packet is numbered
+        // only once it has a slot: numbered while waiting, it could reach a
+        // member after later packets and look lost to the receiver.
         use futures::StreamExt;
         let mut ready = futures::stream::FuturesUnordered::new();
         for (_, lane) in order {
@@ -727,8 +742,9 @@ impl Peer {
         }
         while let Some((lane, permit)) = ready.next().await {
             if let Ok(permit) = permit {
-                permit.send(packet);
-                record_sent(&mut self.parallel_send.lock(), lane);
+                let mut state = self.parallel_send.lock();
+                permit.send(stamp(&mut state, msg));
+                record_sent(&mut state, lane);
                 return Ok(());
             }
         }

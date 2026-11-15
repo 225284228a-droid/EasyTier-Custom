@@ -292,9 +292,7 @@ mod portable_runtime {
     use crate::{
         config::peers::{HostRoutingPolicy, PeerRuntimeConfig},
         config::runtime::CoreInstanceRuntimeConfig,
-        config::{
-            CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig, gateway::PortForwardConfig,
-        },
+        config::{CoreConfig, IpPrefix, NetworkIdentity, ProxyNetworkConfig},
         connectivity::manual::{ManualConnectorHost, ManualInterfaceAddrs},
         gateway::proxy::wrapped_transport::{
             WrappedTransportEngine, WrappedTransportEngineStart, WrappedTransportEngines,
@@ -306,6 +304,9 @@ mod portable_runtime {
         proto::{common::StunInfo, peer_rpc::GetIpListResponse},
         socket::{SocketContext, udp::PreferredIpv6Source},
     };
+
+    #[cfg(feature = "proxy-smoltcp-stack")]
+    use crate::config::gateway::PortForwardConfig;
 
     #[cfg(feature = "proxy-packet")]
     use crate::gateway::proxy::wrapped_transport::WrappedTransportKind;

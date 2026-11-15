@@ -1,5 +1,6 @@
 use super::super::{parallel::ParallelMemberToken, peer_session::PeerSessionStore};
 use super::*;
+use crate::peers::test_support::bounded_tunnel::bounded_tunnel_pair;
 use crate::{
     packet::PacketType,
     peers::{
@@ -92,8 +93,22 @@ async fn add_connection(
     token: Option<ParallelMemberToken>,
     cap: Duration,
 ) -> (PeerConnId, PeerConnId) {
+    add_connection_sized(a, b, context, remote_context, token, cap, 64).await
+}
+
+/// A ring drops what does not fit, as a UDP socket would; a ring that never
+/// fills stands in for a stream transport, which waits instead.
+async fn add_connection_sized(
+    a: &Peer,
+    b: &Peer,
+    context: ArcPeerContext,
+    remote_context: ArcPeerContext,
+    token: Option<ParallelMemberToken>,
+    cap: Duration,
+    ring: usize,
+) -> (PeerConnId, PeerConnId) {
     let work = async {
-        let (first, second) = create_ring_socket_pair(64);
+        let (first, second) = create_ring_socket_pair(ring);
         let info = Some(TunnelInfo {
             tunnel_type: "tcp".into(),
             ..Default::default()
@@ -682,5 +697,171 @@ async fn a_stalled_packet_holds_back_only_its_own_flow_across_the_pool() {
     let b: Vec<_> = order.iter().filter(|tag| tag[0] == b'B').collect();
     for pair in b.windows(2) {
         assert!(pair[0][1] < pair[1][1], "flow B must stay in order");
+    }
+}
+
+/// A UDP packet of flow `port` from `from` to `to`, numbered `seq`, padded
+/// to `len` bytes.
+fn numbered_flow_packet(from: PeerId, to: PeerId, port: u16, seq: u32, len: usize) -> ZCPacket {
+    let mut bytes = vec![0; len.max(32)];
+    bytes[0] = 0x45;
+    let total = bytes.len() as u16;
+    bytes[2..4].copy_from_slice(&total.to_be_bytes());
+    bytes[9] = 17;
+    bytes[12..16].copy_from_slice(&[10, 0, 0, from as u8]);
+    bytes[16..20].copy_from_slice(&[10, 0, 0, to as u8]);
+    bytes[20..22].copy_from_slice(&port.to_be_bytes());
+    bytes[22..24].copy_from_slice(&5201u16.to_be_bytes());
+    bytes[28..32].copy_from_slice(&seq.to_be_bytes());
+    let mut packet = ZCPacket::new_with_payload(&bytes);
+    packet.fill_peer_manager_hdr(from, to, PacketType::Data as u8);
+    packet.flow_key = crate::packet::flow::parse_flow_key(&packet);
+    packet
+}
+
+async fn add_connection_bounded(
+    a: &Peer,
+    b: &Peer,
+    context: ArcPeerContext,
+    remote_context: ArcPeerContext,
+    token: Option<ParallelMemberToken>,
+    cap: usize,
+) -> (PeerConnId, PeerConnId) {
+    let work = async {
+        let (first, second) = bounded_tunnel_pair(
+            cap,
+            Some(TunnelInfo {
+                tunnel_type: "tcp".into(),
+                ..Default::default()
+            }),
+        );
+        let mut local = PeerConn::new_with_peer_id_hint_and_origin(
+            1,
+            context,
+            Box::new(first),
+            Some(2),
+            Arc::new(PeerSessionStore::new()),
+            PeerConnectionOrigin::Direct,
+        );
+        let mut remote = PeerConn::new_with_peer_id_hint_and_origin(
+            2,
+            remote_context,
+            Box::new(second),
+            Some(1),
+            Arc::new(PeerSessionStore::new()),
+            PeerConnectionOrigin::Listener,
+        );
+        let (left, right) = tokio::join!(
+            local.do_handshake_as_client(),
+            remote.do_handshake_as_server_ext(|_, _| Ok(()))
+        );
+        left.unwrap();
+        right.unwrap();
+        let ids = (local.get_conn_id(), remote.get_conn_id());
+        a.add_peer_conn(local).await.unwrap();
+        b.add_peer_conn(remote).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if a.conns.get(&ids.0).unwrap().get_stats().latency_us > 0
+                    && b.conns.get(&ids.1).unwrap().get_stats().latency_us > 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        ids
+    };
+    super::super::parallel::scope_optional(token, work).await
+}
+
+/// Every flow arrives complete and in order while several flows stream both
+/// ways at full speed over the pool, as an iperf3 run with its ACKs does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_pool_delivers_every_flow_both_ways() {
+    const FLOWS: u16 = 8;
+    // More than one sequence window (65536): striping must survive the first
+    // lap of the receiver's duplicate-bit window.
+    const PACKETS: u32 = 10000;
+    let context: ArcPeerContext = Arc::new(ParallelContext::new(4));
+    let (left_tx, mut left_rx) = create_packet_recv_chan();
+    let (right_tx, mut right_rx) = create_packet_recv_chan();
+    let left = Arc::new(Peer::new(2, left_tx, context.clone()));
+    let right = Arc::new(Peer::new(1, right_tx, context.clone()));
+    for slot in 0..4 {
+        let reservation = (slot > 0).then(|| left.reserve_parallel_slot().unwrap());
+        add_connection_bounded(
+            &left,
+            &right,
+            context.clone(),
+            context.clone(),
+            reservation.as_ref().map(|r| r.token()),
+            32,
+        )
+        .await;
+    }
+    let send = |peer: Arc<Peer>, from: PeerId, to: PeerId, len: usize| {
+        (0..FLOWS)
+            .map(move |flow| {
+                let peer = peer.clone();
+                tokio::spawn(async move {
+                    for seq in 0..PACKETS {
+                        peer.send_msg(numbered_flow_packet(from, to, 40000 + flow, seq, len))
+                            .await
+                            .unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    async fn receive(rx: &mut PacketRecvChanReceiver, side: &str) -> Result<(), String> {
+        let mut next = HashMap::new();
+        let mut done = 0;
+        while done < FLOWS {
+            let Some(packet) = rx.recv().await else {
+                return Err("channel closed".into());
+            };
+            let payload = packet.payload();
+            let port = u16::from_be_bytes(payload[20..22].try_into().unwrap());
+            let seq = u32::from_be_bytes(payload[28..32].try_into().unwrap());
+            let expected = next.entry(port).or_insert(0u32);
+            if seq != *expected {
+                return Err(format!(
+                    "{side} flow {port}: got {seq}, expected {expected}"
+                ));
+            }
+            *expected += 1;
+            if *expected == PACKETS {
+                done += 1;
+            }
+        }
+        Ok(())
+    }
+    let forward = send(left.clone(), 1, 2, 1200);
+    let backward = send(right.clone(), 2, 1, 80);
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::try_join!(
+            receive(&mut right_rx, "forward"),
+            receive(&mut left_rx, "backward")
+        )
+    })
+    .await;
+    for task in forward.into_iter().chain(backward) {
+        task.abort();
+    }
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => panic!(
+            "{error}; left {}, right {}",
+            left.parallel_receiver.state_summary(),
+            right.parallel_receiver.state_summary()
+        ),
+        Err(_) => panic!(
+            "stalled; left {}, right {}",
+            left.parallel_receiver.state_summary(),
+            right.parallel_receiver.state_summary()
+        ),
     }
 }

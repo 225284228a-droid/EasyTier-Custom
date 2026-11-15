@@ -3253,6 +3253,9 @@ pub(crate) struct PeerPacketRouter {
     acl_filter: Arc<AclFilter>,
     context: ArcPeerContext,
     secure_mode_enabled: bool,
+    /// Forwards wait here for the pump task instead of blocking this loop.
+    forward_tx: mpsc::Sender<ForwardedPacket>,
+    forward_rx: Option<mpsc::Receiver<ForwardedPacket>>,
     route: ArcRoute,
     is_credential_node: bool,
     traffic_metrics: Arc<TrafficMetricRecorder>,
@@ -3286,6 +3289,7 @@ impl PeerPacketRouter {
         compress_tx_bytes_after: CounterHandle,
     ) -> Self {
         let label_set = LabelSet::new().with_label_type(LabelType::NetworkName(network_name));
+        let (forward_tx, forward_rx) = mpsc::channel(Self::FORWARD_QUEUE);
         Self {
             packet_recv,
             my_peer_id,
@@ -3302,6 +3306,8 @@ impl PeerPacketRouter {
             route,
             is_credential_node,
             traffic_metrics,
+            forward_tx,
+            forward_rx: Some(forward_rx),
             stats_mgr: stats_mgr.clone(),
             counters: PeerPacketRouterCounters {
                 self_tx_packets,
@@ -3332,6 +3338,8 @@ impl PeerPacketRouter {
 
     pub async fn run(mut self) {
         tracing::trace!("start_peer_recv");
+        let forward_rx = self.forward_rx.take().unwrap();
+        self.spawn_forward_pump(forward_rx);
         while let Ok(envelope) = recv_packet_envelope_from_chan(&mut self.packet_recv).await {
             let (ret, ingress) = envelope.into_parts();
             let disable_relay_data = self.context.disable_relay_data();
@@ -3355,9 +3363,72 @@ impl PeerPacketRouter {
                 continue;
             };
 
-            self.handle_packet(ret, disable_relay_data, ingress).await;
+            let process = self.handle_packet(ret, disable_relay_data, ingress);
+            tokio::pin!(process);
+            if !crate::peers::conn::parallel::diag_enabled() {
+                (&mut process).await;
+            } else {
+                tokio::select! {
+                    () = &mut process => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                        tracing::warn!(
+                            "peer router stuck processing a packet for over a second"
+                        );
+                        (&mut process).await;
+                    }
+                }
+            }
         }
         panic!("done_peer_recv");
+    }
+}
+
+/// One packet the router hands to the forward pump instead of sending inline.
+struct ForwardedPacket {
+    msg: ZCPacket,
+    to_peer_id: PeerId,
+    from_peer_id: PeerId,
+    /// Self-originated forwards record their tx metrics.
+    from_self: bool,
+}
+
+impl PeerPacketRouter {
+    /// Depth of the forward queue. Forwarding must never block the ingress
+    /// pump: it is the single reader every connection of every peer depends
+    /// on. On a striped pool, a router waiting for a stalled remote member
+    /// queue stops draining its own ingress, the remote's sends back up, and
+    /// the two peers can wedge each other permanently. Overflow drops: relay
+    /// traffic rides inner transports that retransmit.
+    const FORWARD_QUEUE: usize = 1024;
+
+    fn spawn_forward_pump(&self, mut forward_rx: mpsc::Receiver<ForwardedPacket>) {
+        let peers = self.peers.clone();
+        let foreign_client = self.foreign_client.clone();
+        let relay_peer_map = self.relay_peer_map.clone();
+        let traffic_metrics = self.traffic_metrics.clone();
+        tokio::spawn(async move {
+            while let Some(forwarded) = forward_rx.recv().await {
+                let tx_metrics = forwarded.from_self.then_some(&traffic_metrics);
+                let ret = send_msg_internal(
+                    peers.as_ref(),
+                    &foreign_client,
+                    &relay_peer_map,
+                    tx_metrics,
+                    forwarded.msg,
+                    forwarded.to_peer_id,
+                    false,
+                )
+                .await;
+                if ret.is_err() {
+                    tracing::error!(
+                        ?ret,
+                        to_peer_id = ?forwarded.to_peer_id,
+                        from_peer_id = ?forwarded.from_peer_id,
+                        "forward packet error"
+                    );
+                }
+            }
+        });
     }
 
     async fn handle_packet(
@@ -3458,23 +3529,26 @@ impl PeerPacketRouter {
             }
 
             tracing::trace!(?to_peer_id, my_peer_id = ?self.my_peer_id, "need forward");
-            let tx_metrics = if from_peer_id == self.my_peer_id {
-                Some(&self.traffic_metrics)
-            } else {
-                None
-            };
-            let ret = send_msg_internal(
-                self.peers.as_ref(),
-                &self.foreign_client,
-                &self.relay_peer_map,
-                tx_metrics,
-                ret,
-                to_peer_id,
-                false,
-            )
-            .await;
-            if ret.is_err() {
-                tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
+            // The pump task sends in FIFO order. Awaiting the send here would
+            // tie this single ingress loop to one destination's egress: when
+            // every member queue toward it is full, both peers' routers can
+            // end up waiting on each other forever.
+            let from_self = from_peer_id == self.my_peer_id;
+            if self
+                .forward_tx
+                .try_send(ForwardedPacket {
+                    msg: ret,
+                    to_peer_id,
+                    from_peer_id,
+                    from_self,
+                })
+                .is_err()
+            {
+                tracing::debug!(
+                    ?to_peer_id,
+                    ?from_peer_id,
+                    "forward queue full, dropping packet"
+                );
             }
         } else {
             if packet_type == PacketType::RelayHandshake as u8
@@ -3918,6 +3992,152 @@ mod tests {
                 Arc::new(()),
             )
         }
+    }
+
+    /// Regression for the parallel-connection wedge: the router must never
+    /// stop draining ingress because one forward's destination is wedged.
+    /// Awaiting the forward send inline tied this single loop to one remote
+    /// member queue; once both peers did that at once, every connection of
+    /// both peers locked up permanently while their pings kept answering.
+    #[tokio::test]
+    async fn router_keeps_draining_ingress_while_a_forward_destination_is_wedged() {
+        use crate::peers::test_support::bounded_tunnel::bounded_tunnel_pair;
+
+        const NETWORK: &str = "router-forward-wedge";
+        let identity = NetworkIdentity {
+            network_name: NETWORK.to_owned(),
+            network_secret: Some("wedge-secret".to_owned()),
+            network_secret_digest: None,
+        };
+        let mut runtime = crate::config::peers::PeerRuntimeSnapshot::default().runtime;
+        runtime.core.node.network_name = NETWORK.to_owned();
+        runtime.network_identity = identity.clone();
+        let (nic_tx, mut nic_rx) = host_packet_channel();
+        let manager =
+            PeerManagerCore::new_portable_for_test(PortablePeerManagerConfig::new(runtime), nic_tx)
+                .unwrap();
+        init_packet_process_pipeline(
+            &manager.peer_packet_process_pipeline,
+            manager.nic_channel.clone(),
+            manager.peer_rpc_tspt.packet_sender(),
+        )
+        .await;
+        manager.start_peer_recv().await;
+        let my_peer_id = manager.my_peer_id();
+        let wedged_peer_id = my_peer_id.wrapping_add(1);
+        let injector_peer_id = my_peer_id.wrapping_add(2);
+
+        let context: ArcPeerContext =
+            Arc::new(crate::peers::test_support::NoopPeerContext::new(identity));
+        let sessions = Arc::new(crate::peers::conn::peer_session::PeerSessionStore::new());
+        let tunnel_info = || {
+            Some(crate::proto::common::TunnelInfo {
+                tunnel_type: "tcp".to_owned(),
+                ..Default::default()
+            })
+        };
+
+        // The wedged destination: its receiving side delivers into a channel
+        // nobody reads, so every send queue toward it fills and stays full.
+        let (stale_tx, _keep_open) = crate::peers::create_packet_recv_chan();
+        let (a_side, b_side) = bounded_tunnel_pair(2, tunnel_info());
+        let mut wedged_client = PeerConn::new(
+            my_peer_id,
+            context.clone(),
+            Box::new(a_side),
+            sessions.clone(),
+        );
+        let mut wedged_server = PeerConn::new(
+            wedged_peer_id,
+            context.clone(),
+            Box::new(b_side),
+            sessions.clone(),
+        );
+        let (left, right) = tokio::join!(
+            wedged_client.do_handshake_as_client(),
+            wedged_server.do_handshake_as_server_ext(|_, _| Ok(())),
+        );
+        left.unwrap();
+        right.unwrap();
+        wedged_server.start_recv_loop(stale_tx).await;
+        manager
+            .peers
+            .add_new_peer_conn(wedged_client)
+            .await
+            .unwrap();
+
+        // Fill every queue toward the wedged peer and keep them full.
+        let filler_peers = manager.peers.clone();
+        let filler = tokio::spawn(async move {
+            loop {
+                let Some(peer) = filler_peers.get_peer_by_id(wedged_peer_id) else {
+                    break;
+                };
+                let mut packet = ZCPacket::new_with_payload(b"wedge-fill");
+                packet.fill_peer_manager_hdr(
+                    my_peer_id,
+                    wedged_peer_id,
+                    crate::packet::PacketType::Data as u8,
+                );
+                if peer.send_msg(packet).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // The injector: a healthy connection whose packets this test controls.
+        let (c_side, a_side) = bounded_tunnel_pair(32, tunnel_info());
+        let mut injector_client = PeerConn::new(
+            injector_peer_id,
+            context.clone(),
+            Box::new(c_side),
+            sessions.clone(),
+        );
+        let mut injector_server = PeerConn::new(my_peer_id, context, Box::new(a_side), sessions);
+        let (left, right) = tokio::join!(
+            injector_client.do_handshake_as_client(),
+            injector_server.do_handshake_as_server_ext(|_, _| Ok(())),
+        );
+        left.unwrap();
+        right.unwrap();
+        manager
+            .peers
+            .add_new_peer_conn(injector_server)
+            .await
+            .unwrap();
+
+        // Give the filler time to fill every queue toward the wedged peer.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // A packet to forward into the wedged destination, then a packet for
+        // this node itself: the router must still deliver the second one.
+        let mut forward = ZCPacket::new_with_payload(b"wedge-forward");
+        forward.fill_peer_manager_hdr(
+            injector_peer_id,
+            wedged_peer_id,
+            crate::packet::PacketType::Data as u8,
+        );
+        injector_client.send_msg(forward).await.unwrap();
+        let mut own = ZCPacket::new_with_payload(b"wedge-own-marker");
+        own.fill_peer_manager_hdr(
+            injector_peer_id,
+            my_peer_id,
+            crate::packet::PacketType::Data as u8,
+        );
+        injector_client.send_msg(own).await.unwrap();
+
+        let delivered = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let packet = nic_rx.recv().await.unwrap();
+                if packet.payload() == b"wedge-own-marker" {
+                    return;
+                }
+            }
+        })
+        .await;
+        filler.abort();
+        delivered
+            .expect("the router kept draining ingress while the forward destination stayed wedged");
     }
 
     #[tokio::test]
