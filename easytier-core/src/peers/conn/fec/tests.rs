@@ -162,6 +162,7 @@ async fn udp_fec_metrics_accumulate_across_connections() {
         snapshot.runtime.network_identity.network_name = network_name.to_owned();
         CorePeerContext::new(
             CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot)),
+            Arc::new(()),
             CorePeerContextAdapters {
                 stun_info_source: None,
                 events: Arc::new(()),

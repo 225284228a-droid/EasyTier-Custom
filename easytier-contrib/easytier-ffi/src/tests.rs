@@ -46,15 +46,7 @@ fn test_run_network_instance() {
 fn run_network_instance_rejects_invalid_config_before_starting() {
     for (input, expected) in [
         ("[", "FFI instance config"),
-        ("[vpn]\ndns_protect = true", "dns_protect"),
-        (
-            "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.2'\n[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.3'",
-            "duplicate VPN rule CIDR",
-        ),
-        (
-            "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '127.0.0.1'",
-            "invalid exit address",
-        ),
+        ("dhcp = 'yes'", "invalid DHCP CIDR"),
     ] {
         let name = CString::new(format!("rejected-{}", Uuid::new_v4())).unwrap();
         // Keep a regressed implementation from touching a native interface or

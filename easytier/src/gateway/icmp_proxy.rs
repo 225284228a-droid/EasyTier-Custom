@@ -12,47 +12,30 @@ use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::netns::NetNS;
-use crate::socket_protector::{ProtectedSocket, SocketRegistration};
 
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeIcmpProxyHost;
 
 impl RuntimeIcmpProxyHost {
-    // Mirrors tunnel::common::bind: create and mark the socket inside the
-    // namespace guard, then register with the native protection system outside
-    // it so the guard never crosses an await.
-    async fn create_raw_socket(
-        context: &SocketContext,
-    ) -> std::io::Result<(Socket, Option<Arc<SocketRegistration>>)> {
-        let socket = {
-            let _guard = NetNS::from_socket_context(context).guard();
-            let socket = Socket::new(
-                socket2::Domain::IPV4,
-                socket2::Type::RAW,
-                Some(socket2::Protocol::ICMPV4),
-            )?;
-            // Apply the configured mark first; a platform protector or an
-            // active lease ORs its bypass bit on top of it afterwards.
-            crate::tunnel::common::apply_socket_mark(&socket, context.socket_mark)
-                .map_err(std::io::Error::other)?;
-            socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
-                Ipv4Addr::UNSPECIFIED,
-                0,
-            )))?;
-            socket.set_nonblocking(true)?;
-            socket
-        };
-        let registration = crate::socket_protector::protect_native_socket(&socket, true).await?;
-        Ok((socket, registration))
+    fn create_raw_socket(context: &SocketContext) -> Result<Socket, std::io::Error> {
+        let _guard = NetNS::from_socket_context(context).guard();
+        let socket = Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::RAW,
+            Some(socket2::Protocol::ICMPV4),
+        )?;
+        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            0,
+        )))?;
+        socket.set_nonblocking(true)?;
+        Ok(socket)
     }
 }
 
 #[derive(Debug)]
 struct RuntimeIcmpSocket {
-    // The registration lives as long as the socket. Sends are scoped through
-    // it so an active VPN lease steers them out a physical interface instead
-    // of the captured route; Linux is a passthrough with its persistent mark.
-    socket: ProtectedSocket<UdpSocket>,
+    socket: UdpSocket,
     cancel: CancellationToken,
 }
 
@@ -62,7 +45,7 @@ impl IcmpProxySocket for RuntimeIcmpSocket {
         tokio::select! {
             biased;
             _ = self.cancel.cancelled() => return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into()),
-            result = self.socket.send_to(packet, SocketAddrV4::new(destination, 0).into()) => { result?; }
+            result = self.socket.send_to(packet, SocketAddrV4::new(destination, 0)) => { result?; }
         }
         Ok(())
     }
@@ -91,16 +74,13 @@ impl IcmpProxyHost for RuntimeIcmpProxyHost {
         &self,
         context: SocketContext,
     ) -> Result<Arc<dyn IcmpProxySocket>, ProxyRuntimeError> {
-        let (socket, registration) =
-            Self::create_raw_socket(&context)
-                .await
-                .inspect_err(|error| {
-                    tracing::warn!(?error, "create ICMP socket failed");
-                })?;
+        let socket = Self::create_raw_socket(&context).inspect_err(|error| {
+            tracing::warn!(?error, "create ICMP socket failed");
+        })?;
         // Tokio only supplies readiness and recvfrom/sendto here; the underlying
         // socket remains raw ICMP, including the IPv4 header on received packets.
         Ok(Arc::new(RuntimeIcmpSocket {
-            socket: ProtectedSocket::new(UdpSocket::from_std(socket.into())?, registration),
+            socket: UdpSocket::from_std(socket.into())?,
             cancel: CancellationToken::new(),
         }))
     }
@@ -115,10 +95,7 @@ mod tests {
     #[tokio::test]
     async fn close_ends_receivers_and_rejects_further_sends() {
         let socket = RuntimeIcmpSocket {
-            socket: ProtectedSocket::new(
-                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
-                None,
-            ),
+            socket: UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
             cancel: CancellationToken::new(),
         };
         let mut first = Box::pin(socket.recv());
@@ -141,10 +118,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_receive_does_not_consume_the_next_packet() {
         let socket = RuntimeIcmpSocket {
-            socket: ProtectedSocket::new(
-                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
-                None,
-            ),
+            socket: UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap(),
             cancel: CancellationToken::new(),
         };
         let mut receive = Box::pin(socket.recv());
@@ -162,23 +136,6 @@ mod tests {
             .unwrap();
         assert_eq!(peer, IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_eq!(packet, b"after cancellation");
-    }
-
-    #[tokio::test]
-    async fn create_raw_socket_registers_with_native_protection() {
-        let (socket, registration) =
-            match RuntimeIcmpProxyHost::create_raw_socket(&SocketContext::default()).await {
-                Ok(created) => created,
-                // Raw ICMP sockets require privileges on most platforms.
-                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-                    return;
-                }
-                Err(error) => panic!("unexpected ICMP socket creation failure: {error}"),
-            };
-        if crate::socket_protector::native_socket_protection_available() {
-            assert!(registration.is_some(), "ICMP socket must be registered");
-        }
-        drop(socket);
     }
 
     // Raw ICMP requires CAP_NET_RAW; run this test in the privileged test container.

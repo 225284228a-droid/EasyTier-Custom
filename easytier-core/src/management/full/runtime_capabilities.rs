@@ -51,8 +51,7 @@ mod tests {
                 "config:network-sync-v1",
                 "config:p2p_prefer_protocol",
                 "config:parallel-connections-v1",
-                "config:private-mode-default-true-v1",
-                "config:vpn-subnet-exit-v1"
+                "config:private-mode-default-true-v1"
             ]
         );
     }
@@ -98,7 +97,6 @@ mod tests {
                 ("sni", sni),
                 ("p2p_disguise_mode", mode),
                 ("close_redundant_conns_when_disguised", mode),
-                ("vpn", true),
             ] {
                 let required = NetworkConfig::required_capability(field).unwrap();
                 assert_eq!(

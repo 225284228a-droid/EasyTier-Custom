@@ -223,7 +223,7 @@ pub async fn bind<B: Bindable>(
     /// untouched; `Some(mark)` applies that exact value, including `Some(0)`.
     socket_mark: Option<u32>,
     #[builder(default)] need_protect: bool,
-) -> Result<crate::socket_protector::ProtectedSocket<B>, TunnelError> {
+) -> Result<B, TunnelError> {
     let (socket, dev) = {
         let _g = net_ns.as_ref().map(|n| n.guard());
         let dev = match dev {
@@ -238,15 +238,11 @@ pub async fn bind<B: Bindable>(
         apply_socket_mark(&socket, socket_mark)?;
         (socket, dev)
     };
-    let registration =
-        crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
+    crate::socket_protector::protect_native_socket(&socket, need_protect).await?;
     // Restore the requested namespace for synchronous bind/device lookup only.
     let _g = net_ns.as_ref().map(|n| n.guard());
     setup_socket2_ext(&socket, &addr, dev, only_v6, reuse_addr, reuse_port)?;
-    Ok(crate::socket_protector::ProtectedSocket::new(
-        B::finalize(socket)?,
-        registration,
-    ))
+    B::finalize(socket)
 }
 
 // endregion
@@ -259,7 +255,7 @@ pub(crate) mod tests {
     use std::{sync::Arc, time::Instant};
 
     use anyhow::Context as _;
-    use futures::{SinkExt, StreamExt};
+    use futures::{Future, SinkExt, StreamExt};
     use tokio::net::{TcpListener, TcpSocket, UdpSocket};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
     use tokio_util::task::AbortOnDropHandle;
@@ -730,17 +726,15 @@ pub(crate) mod tests {
         (bps as usize, metered)
     }
 
-    #[cfg(target_os = "linux")]
     pub async fn wait_for_condition<F, FRet>(condition: F, timeout: std::time::Duration)
     where
         F: FnMut() -> FRet + Send,
-        FRet: std::future::Future<Output = bool>,
+        FRet: Future<Output = bool>,
     {
         wait_for_condition_named(condition, timeout, "condition").await
     }
 
     /// Like [`wait_for_condition`], but the panic names the gate that timed out.
-    #[cfg(target_os = "linux")]
     pub async fn wait_for_condition_named<F, FRet>(
         mut condition: F,
         timeout: std::time::Duration,

@@ -27,7 +27,6 @@ use crate::{
         conn::peer_conn::PeerConnId,
         peer_manager::{PeerManagerCore, PortablePeerManagerConfig, RouteAlgoType},
         public_ipv6::CorePublicIpv6Runtime,
-        vpn_policy::VpnPolicyEngine,
     },
     tunnel::ring::create_ring_tunnel_pair,
 };
@@ -199,17 +198,12 @@ impl AttachedPeerRuntime {
         let (packet_sender, packet_receiver) = host_packet_channel();
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(runtime_config.clone(), Arc::new(()), Arc::new(()));
-        let source_vpn = network_peer_manager.vpn_engine();
-        let vpn_changes = source_vpn.subscribe_config_changes();
-        let vpn = source_vpn.config();
-        let vpn_engine = Arc::new(VpnPolicyEngine::new(vpn.clone())?);
         let flags = peer_snapshot.flags.clone();
         let mut peer_manager = PeerManagerCore::new(
             PortablePeerManagerConfig {
                 snapshot: peer_snapshot,
                 route_algo: RouteAlgoType::Ospf,
                 exit_nodes: Vec::new(),
-                vpn,
                 foreign_context_default_flags: flags,
             },
             Vec::new(),
@@ -217,14 +211,12 @@ impl AttachedPeerRuntime {
             Arc::new(()),
             packet_sender,
             public_ipv6_runtime,
-            vpn_engine,
             Arc::new(()),
             None,
             Arc::new(()),
         )?;
         peer_manager.inherit_exit_nodes(&network_peer_manager);
         let peer_manager = Arc::new(peer_manager);
-        peer_manager.follow_network_vpn_policy(vpn_changes).await;
         if let Err(error) = peer_manager
             .follow_network_policy(network_runtime_config, config.groups)
             .await
@@ -610,8 +602,6 @@ mod tests {
         let (packet_sender, _packet_receiver) = host_packet_channel();
         let public_ipv6_runtime =
             CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
-        let vpn_engine =
-            Arc::new(VpnPolicyEngine::new(crate::config::vpn::VpnConfig::default()).unwrap());
         let peer_manager = Arc::new(
             PeerManagerCore::new(
                 portable,
@@ -620,7 +610,6 @@ mod tests {
                 Arc::new(()),
                 packet_sender,
                 public_ipv6_runtime,
-                vpn_engine,
                 Arc::new(()),
                 None,
                 Arc::new(()),
@@ -654,24 +643,20 @@ mod tests {
         let store =
             CoreRuntimeConfigStore::new(CoreRuntimeConfig::default(), Arc::new(snapshot.clone()));
         let (sender, receiver) = host_packet_channel();
-        let public_ipv6_runtime =
-            CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
-        let vpn_engine = Arc::new(VpnPolicyEngine::new(Default::default()).unwrap());
+        let public_ipv6 = CorePublicIpv6Runtime::new(store.clone(), Arc::new(()), Arc::new(()));
         let peer = Arc::new(
             PeerManagerCore::new(
                 PortablePeerManagerConfig {
                     snapshot,
                     route_algo: RouteAlgoType::Ospf,
                     exit_nodes: Vec::new(),
-                    vpn: Default::default(),
                     foreign_context_default_flags: flags,
                 },
                 Vec::new(),
                 store,
                 Arc::new(()),
                 sender,
-                public_ipv6_runtime,
-                vpn_engine,
+                public_ipv6,
                 Arc::new(()),
                 None,
                 Arc::new(()),
@@ -806,196 +791,6 @@ mod tests {
     #[tokio::test]
     async fn secure_attached_peer_inherits_exit_nodes_and_updates() {
         check_attached_peer_exit_nodes(true).await;
-    }
-
-    fn vpn_rules(rules: &[(&str, Ipv4Addr)]) -> crate::config::vpn::VpnConfig {
-        crate::config::vpn::VpnConfig {
-            rules: rules
-                .iter()
-                .map(|(cidr, exit)| crate::config::vpn::VpnRuleConfig {
-                    cidr: cidr.parse().unwrap(),
-                    exit: Some((*exit).into()),
-                })
-                .collect(),
-        }
-    }
-
-    async fn wait_for_vpn_destination(
-        attached: &AttachedPeerRuntime,
-        destination: Ipv4Addr,
-        expected: (Vec<PeerId>, bool),
-    ) {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if attached
-                    .peer_manager
-                    .get_msg_dst_peer(&destination.into())
-                    .await
-                    == expected
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("attached VPN policy did not converge");
-    }
-
-    async fn check_attached_peer_vpn_policy(secure: bool) {
-        let (network, store) = peer_manager_with_acl_and_secure(Vec::new(), secure);
-        network.run().await.unwrap();
-        let first_ip = Ipv4Addr::new(10, 82, 0, 10);
-        let second_ip = Ipv4Addr::new(10, 82, 0, 11);
-        let (first, mut first_packets) = connect_exit_peer(&network, &store, first_ip).await;
-        let (second, mut second_packets) = connect_exit_peer(&network, &store, second_ip).await;
-        let initial = vpn_rules(&[("203.0.113.0/24", first_ip), ("198.51.100.0/24", second_ip)]);
-        network.update_vpn_config(initial.clone()).unwrap();
-        let client_ip = Ipv4Addr::new(10, 82, 0, 2);
-        let attached = AttachedPeerRuntime::connect(
-            network.clone(),
-            store.clone(),
-            AttachedPeerConfig {
-                name: "subnet-exit-client".to_owned(),
-                virtual_ip: attached_ipv4(client_ip),
-                groups: vec!["ops".to_owned()],
-                identity_private_key: [2; 32],
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(attached.peer_manager.vpn_engine().config(), initial);
-        let other = AttachedPeerRuntime::connect(
-            network.clone(),
-            store.clone(),
-            AttachedPeerConfig {
-                name: "other-subnet-exit-client".to_owned(),
-                virtual_ip: attached_ipv4(Ipv4Addr::new(10, 90, 0, 2)),
-                groups: vec!["ops".to_owned()],
-                identity_private_key: [3; 32],
-            },
-        )
-        .await
-        .unwrap();
-        let source = network.vpn_engine();
-        let engine = attached.peer_manager.vpn_engine();
-        let other_engine = other.peer_manager.vpn_engine();
-        assert!(!Arc::ptr_eq(&source, &engine));
-        assert!(!Arc::ptr_eq(&other_engine, &engine));
-        assert_eq!(source.config_subscriber_count(), 2);
-        for (exit, address) in [(&first, first_ip), (&second, second_ip)] {
-            wait_for_route(&attached.peer_manager, exit.my_peer_id(), address, true).await;
-            wait_for_route(exit, attached.peer_id(), client_ip, true).await;
-        }
-
-        let mut request = vec![0u8; 28];
-        request[0] = 0x45;
-        request[2..4].copy_from_slice(&28u16.to_be_bytes());
-        request[8] = 64;
-        request[9] = 1;
-        request[12..16].copy_from_slice(&client_ip.octets());
-        request[20] = 8;
-        for (exit, destination, packets) in [
-            (&first, Ipv4Addr::new(203, 0, 113, 7), &mut first_packets),
-            (&second, Ipv4Addr::new(198, 51, 100, 7), &mut second_packets),
-        ] {
-            wait_for_vpn_destination(&attached, destination, (vec![exit.my_peer_id()], true)).await;
-            request[16..20].copy_from_slice(&destination.octets());
-            attached.send_packet(&request).await.unwrap();
-            let packet = tokio::time::timeout(Duration::from_secs(5), packets.recv())
-                .await
-                .expect("exit did not receive client packet")
-                .unwrap()
-                .into_core_packet();
-            assert_eq!(packet.payload(), request.as_slice());
-            let header = packet.peer_manager_header().unwrap();
-            assert!(header.is_exit_node());
-            assert_eq!(header.from_peer_id.get(), attached.peer_id());
-            assert_eq!(header.to_peer_id.get(), exit.my_peer_id());
-            let mut reply = request.clone();
-            reply[12..16].copy_from_slice(&destination.octets());
-            reply[16..20].copy_from_slice(&client_ip.octets());
-            reply[20] = 0;
-            exit.send_msg_by_ip(ZCPacket::new_with_payload(&reply), client_ip.into(), false)
-                .await
-                .unwrap();
-            let received = tokio::time::timeout(Duration::from_secs(5), attached.recv_packet())
-                .await
-                .expect("exit reply did not reach client")
-                .unwrap();
-            assert_eq!(received.payload(), reply.as_slice());
-        }
-        let public_ip = Ipv4Addr::new(203, 0, 113, 7);
-        network
-            .update_vpn_config(vpn_rules(&[
-                ("0.0.0.0/0", first_ip),
-                ("203.0.113.0/24", second_ip),
-            ]))
-            .unwrap();
-        wait_for_vpn_destination(&attached, public_ip, (vec![second.my_peer_id()], true)).await;
-        wait_for_vpn_destination(&other, public_ip, (vec![second.my_peer_id()], true)).await;
-        // Per-client exclusions and liveness cannot modify another client or its network.
-        let mut excluded = attached.peer_manager.vpn_route_exclusions().await;
-        excluded.physical.push("203.0.113.0/24".parse().unwrap());
-        engine.update_exclusions(excluded);
-        assert_eq!(
-            engine.resolve(&public_ip.into()),
-            crate::peers::vpn_policy::VpnDecision::Passthrough
-        );
-        assert_eq!(
-            other_engine.resolve(&public_ip.into()),
-            crate::peers::vpn_policy::VpnDecision::Exit(second.my_peer_id())
-        );
-        engine.update_exclusions(attached.peer_manager.vpn_route_exclusions().await);
-        // Remove the live exit, wait for route/liveness convergence, then reconnect it.
-        second.clear_resources().await;
-        wait_for_route(
-            &attached.peer_manager,
-            second.my_peer_id(),
-            second_ip,
-            false,
-        )
-        .await;
-        wait_for_vpn_destination(&attached, public_ip, (Vec::new(), false)).await;
-        assert_eq!(
-            engine.resolve(&public_ip.into()),
-            crate::peers::vpn_policy::VpnDecision::Drop
-        );
-        let (replacement, _replacement_packets) =
-            connect_exit_peer(&network, &store, second_ip).await;
-        wait_for_vpn_destination(&attached, public_ip, (vec![replacement.my_peer_id()], true))
-            .await;
-        // Mesh routes retain priority even under a default VPN rule.
-        assert_eq!(
-            attached
-                .peer_manager
-                .get_msg_dst_peer(&first_ip.into())
-                .await,
-            (vec![first.my_peer_id()], false)
-        );
-        network.update_vpn_config(Default::default()).unwrap();
-        wait_for_vpn_destination(&attached, public_ip, (Vec::new(), false)).await;
-        wait_for_vpn_destination(&other, public_ip, (Vec::new(), false)).await;
-        assert_eq!(
-            engine.resolve(&public_ip.into()),
-            crate::peers::vpn_policy::VpnDecision::Passthrough
-        );
-        attached.close().await;
-        other.close().await;
-        assert_eq!(source.config_subscriber_count(), 0);
-        replacement.clear_resources().await;
-        first.clear_resources().await;
-        network.clear_resources().await;
-    }
-
-    #[tokio::test]
-    async fn attached_peer_inherits_vpn_rules_and_updates() {
-        check_attached_peer_vpn_policy(false).await;
-    }
-
-    #[tokio::test]
-    async fn secure_attached_peer_inherits_vpn_rules_and_updates() {
-        check_attached_peer_vpn_policy(true).await;
     }
 
     async fn wait_for_route(

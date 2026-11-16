@@ -67,10 +67,6 @@ pub enum GlobalCtxEvent {
 
     ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
 
-    /// Per-exit liveness view of the multi-exit VPN (exit name -> reachable);
-    /// emitted only when the view changes.
-    VpnExitLivenessUpdated(Vec<(String, bool)>),
-
     UdpBroadcastRelayStartResult {
         capture_backend: Option<String>,
         error: Option<String>,
@@ -99,8 +95,6 @@ pub struct GlobalCtx {
 
     flags: ArcSwap<Flags>,
     runtime_endpoint_protocols: Option<HashSet<String>>,
-
-    vpn_route_status: crate::instance::vpn_routes::VpnRouteStatusCell,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -215,14 +209,7 @@ impl GlobalCtx {
 
             flags: ArcSwap::new(Arc::new(flags)),
             runtime_endpoint_protocols,
-            vpn_route_status: Default::default(),
         }
-    }
-
-    /// Shared cell holding the VPN route-manager state, read by the VPN
-    /// status RPC.
-    pub fn vpn_route_status(&self) -> crate::instance::vpn_routes::VpnRouteStatusCell {
-        self.vpn_route_status.clone()
     }
 
     pub(crate) fn runtime_ipv4(peer: &PeerRuntimeSnapshot) -> Option<cidr::Ipv4Inet> {

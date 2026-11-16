@@ -72,7 +72,7 @@ fn parse_default_gateway(routes: &str) -> Option<Ipv4Addr> {
 
 async fn new_protected_natpmp(
     gateway: Option<Ipv4Addr>,
-) -> anyhow::Result<natpmp::NatpmpAsync<crate::socket_protector::ProtectedSocket<UdpSocket>>> {
+) -> anyhow::Result<natpmp::NatpmpAsync<UdpSocket>> {
     let gateway = gateway.map(Ok).unwrap_or_else(default_gateway)?;
     let gateway_addr = SocketAddr::V4(SocketAddrV4::new(gateway, natpmp::NATPMP_PORT));
     let socket = crate::socket::udp::create_udp_socket(

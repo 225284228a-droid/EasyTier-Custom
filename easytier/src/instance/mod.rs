@@ -30,8 +30,6 @@ pub mod shared_virtual_nic;
 
 #[cfg(feature = "tun")]
 pub mod virtual_nic;
-pub mod vpn_exit_forwarding;
-pub mod vpn_routes;
 
 #[cfg(any(all(windows, feature = "tun"), test))]
 pub(crate) mod windows_udp_broadcast;

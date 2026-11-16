@@ -10,33 +10,6 @@ use crate::instance::shared_virtual_nic::{
 #[cfg(mobile)]
 use easytier_core::instance::CoreInstanceState;
 
-// Android exposes one capture fd for the process. Serialize the entire member
-// transaction, including rollback, so separate instances cannot race to replace
-// that fd with candidates from different generations.
-#[cfg(mobile)]
-static MOBILE_TUN_TRANSACTION: std::sync::LazyLock<tokio::sync::Mutex<MobileTunGenerationGate>> =
-    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(MobileTunGenerationGate::default()));
-
-#[cfg(any(mobile, test))]
-#[derive(Default)]
-struct MobileTunGenerationGate {
-    latest: u64,
-}
-
-#[cfg(any(mobile, test))]
-impl MobileTunGenerationGate {
-    fn admit(&mut self, generation: Option<u64>) -> bool {
-        match generation {
-            Some(generation) if generation < self.latest => false,
-            Some(generation) => {
-                self.latest = generation;
-                true
-            }
-            None => true,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct MobileTunConfig {
     pub instance_ids: Vec<uuid::Uuid>,
@@ -218,20 +191,6 @@ pub async fn attach_mobile_tun_fd(
     fd: i32,
     instance_ids: Option<&[uuid::Uuid]>,
 ) -> anyhow::Result<MobileTunConfig> {
-    attach_mobile_tun_fd_with_generation(manager, fd, instance_ids, None).await
-}
-
-#[cfg(mobile)]
-pub async fn attach_mobile_tun_fd_with_generation(
-    manager: &NativeInstanceManager,
-    fd: i32,
-    instance_ids: Option<&[uuid::Uuid]>,
-    generation: Option<u64>,
-) -> anyhow::Result<MobileTunConfig> {
-    let mut transaction = MOBILE_TUN_TRANSACTION.lock().await;
-    if !transaction.admit(generation) {
-        return Err(super::super::runtime_host::StaleMobileTunGeneration(generation).into());
-    }
     let all_ids = manager
         .instances()
         .into_iter()
@@ -248,7 +207,7 @@ pub async fn attach_mobile_tun_fd_with_generation(
     if fd <= 0 {
         let mut errors = Vec::new();
         for id in all_ids {
-            if let Err(error) = attach_member(manager, id, 0, false, None, generation).await {
+            if let Err(error) = attach_member(manager, id, 0, false, None).await {
                 errors.push(error.to_string());
             }
         }
@@ -261,15 +220,6 @@ pub async fn attach_mobile_tun_fd_with_generation(
     }
     let (members, rejected) = collect_members(manager, instance_ids.unwrap_or(&all_ids)).await;
     let (members, mut rejected) = select_members(members, rejected);
-    let selected = members
-        .iter()
-        .map(|member| member.instance_id)
-        .collect::<BTreeSet<_>>();
-    for id in all_ids.iter().filter(|id| !selected.contains(id)) {
-        // The OS candidate contains only selected claims. Remove prior members
-        // omitted from that candidate before changing the shared capture fd.
-        attach_member(manager, *id, 0, false, None, generation).await?;
-    }
     let mut attached = Vec::new();
     // Open once; a rejected member never replaces or tears down this shared fd.
     for member in members {
@@ -279,30 +229,20 @@ pub async fn attach_mobile_tun_fd_with_generation(
             fd,
             attached.is_empty(),
             Some(member.claims.clone()),
-            generation,
         )
         .await
         {
             Ok(()) => attached.push(member),
             Err(error) if is_claim_conflict(&error) => {
-                attach_member(manager, member.instance_id, 0, false, None, generation).await?;
+                attach_member(manager, member.instance_id, 0, false, None).await?;
                 rejected.push(MobileTunMemberError {
                     instance_id: member.instance_id,
                     error: error.to_string(),
                 });
             }
-            Err(error)
-                if error.chain().any(|error| {
-                    error.is::<super::super::runtime_host::StaleMobileTunGeneration>()
-                }) =>
-            {
-                // A newer candidate owns the shared TUN now. Rolling back this
-                // superseded transaction must never detach that newer member.
-                return Err(error);
-            }
             Err(error) => {
                 for id in &all_ids {
-                    let _ = attach_member(manager, *id, 0, false, None, generation).await;
+                    let _ = attach_member(manager, *id, 0, false, None).await;
                 }
                 return Err(error.context("failed to attach mobile TUN fd"));
             }
@@ -318,7 +258,6 @@ async fn attach_member(
     fd: i32,
     replace_tun_fd: bool,
     claims: Option<SharedIfConfigClaims>,
-    generation: Option<u64>,
 ) -> anyhow::Result<()> {
     let instance = manager
         .instance(instance_id)
@@ -327,7 +266,7 @@ async fn attach_member(
         .runtime_host::<NativeInstanceRuntimeHost>()
         .ok_or_else(|| anyhow::anyhow!("native runtime host is unavailable"))?;
     runtime
-        .attach_mobile_tun_fd_with_generation(fd, replace_tun_fd, claims, generation)
+        .attach_mobile_tun_fd(fd, replace_tun_fd, claims)
         .await
 }
 
@@ -335,18 +274,6 @@ async fn attach_member(
 mod tests {
     use super::*;
     use crate::instance::shared_virtual_nic::SharedIpv6Route;
-
-    #[test]
-    fn superseded_transaction_cannot_attach_or_roll_back_a_newer_capture() {
-        let mut gate = MobileTunGenerationGate::default();
-        assert!(gate.admit(Some(19)));
-        assert!(gate.admit(Some(20)));
-        // Both attachment and failure rollback pass through the same admission.
-        assert!(!gate.admit(Some(19)));
-        assert!(gate.admit(Some(20)), "the current candidate can retry");
-        assert!(gate.admit(None), "legacy callers remain compatible");
-        assert!(!gate.admit(Some(19)));
-    }
 
     fn member(id: u128, address: &str) -> MobileTunMember {
         MobileTunMember {

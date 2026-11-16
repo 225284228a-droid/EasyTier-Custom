@@ -207,7 +207,6 @@ test('embedded console creates a default network and Core restores it as disable
             assert.equal(response.status(), 200, await response.text());
             const config = response.request().postDataJSON().config;
             assert.equal(config.network_name, 'easytier');
-            assert.equal(config.vpn, undefined);
             assert.equal(config.close_redundant_conns_when_disguised, undefined);
             // Official Web owns this saved configuration in its database; the
             // local TOML catalog / SaveNetworkInstanceConfig RPC is fork-only.

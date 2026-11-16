@@ -6,8 +6,7 @@
       "config:sni",
       "config:p2p_prefer_protocol",
       "config:p2p_disguise_mode",
-      "config:close_redundant_conns_when_disguised",
-      "config:vpn-subnet-exit-v1"
+      "config:close_redundant_conns_when_disguised"
     ],
     "overrides": {
       "instance_id": "00000000-0000-0000-0000-000000000064"
@@ -139,7 +138,6 @@
         "sni",
         "p2p_prefer_protocol",
         "close_redundant_conns_when_disguised",
-        "vpn",
         "p2p_disguise_mode"
       ]
     }

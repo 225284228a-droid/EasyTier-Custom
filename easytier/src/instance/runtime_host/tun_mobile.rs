@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     MagicDnsRuntime,
-    tun_common::{NativeDhcpHost, TunGenerationStatus, TunNicState},
+    tun_common::{NativeDhcpHost, TunNicState},
 };
 use crate::{
     common::global_ctx::ArcGlobalCtx,
@@ -18,7 +18,6 @@ use crate::{
 
 struct MobileTunAttachment {
     fd: i32,
-    generation: Option<u64>,
     replace_tun_fd: bool,
     completion: Option<oneshot::Sender<anyhow::Result<()>>>,
     claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
@@ -64,13 +63,12 @@ impl NativeTunRuntime {
         global_ctx: ArcGlobalCtx,
         packet_plane: Arc<CorePacketPlane>,
         fd: i32,
-        generation: Option<u64>,
         replace_tun_fd: bool,
         shared_virtual_nic_registry: ArcSharedVirtualNicRegistry,
         claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
     ) -> anyhow::Result<()> {
+        nic_state.drain().await;
         if fd <= 0 {
-            nic_state.drain_for_generation(generation).await?;
             return Ok(());
         }
         let closed = Arc::new(Notify::new());
@@ -86,23 +84,17 @@ impl NativeTunRuntime {
             Some(claims) => claims,
             None => NicCtx::mobile_tun_claims(&global_ctx, &packet_plane).await,
         };
-        if let Err(error) = nic.run_for_mobile(fd, replace_tun_fd, claims).await {
-            nic.shutdown().await;
-            return Err(error).context("attach mobile TUN failed");
-        }
+        nic.run_for_mobile(fd, replace_tun_fd, claims)
+            .await
+            .context("attach mobile TUN failed")?;
         let magic_dns = if let Some(ip) = global_ctx.get_ipv4() {
             let shared_route_backend = nic.shared_route_backend_for_dns();
-            MagicDnsRuntime::start(
-                global_ctx.clone(),
-                packet_plane.clone(),
-                None,
-                ip,
-                shared_route_backend,
-            )
+            MagicDnsRuntime::start(global_ctx, packet_plane, None, ip, shared_route_backend)
         } else {
             MagicDnsRuntime::default()
         };
-        nic_state.install(generation, nic, magic_dns).await
+        nic_state.install(nic, magic_dns).await;
+        Ok(())
     }
 
     pub(super) async fn prepare(&self, packet_plane: Arc<CorePacketPlane>) -> anyhow::Result<()> {
@@ -123,25 +115,16 @@ impl NativeTunRuntime {
                         None => return,
                     },
                 };
-                let result = match nic_state.generation_status(attachment.generation).await {
-                    TunGenerationStatus::AlreadyCommitted if attachment.fd > 0 => Ok(()),
-                    TunGenerationStatus::Stale => {
-                        Err(super::StaleMobileTunGeneration(attachment.generation).into())
-                    }
-                    TunGenerationStatus::Install | TunGenerationStatus::AlreadyCommitted => {
-                        Self::install_mobile_tun(
-                            nic_state.clone(),
-                            global_ctx.clone(),
-                            packet_plane.clone(),
-                            attachment.fd,
-                            attachment.generation,
-                            attachment.replace_tun_fd,
-                            shared_virtual_nic_registry.clone(),
-                            attachment.claims,
-                        )
-                        .await
-                    }
-                };
+                let result = Self::install_mobile_tun(
+                    nic_state.clone(),
+                    global_ctx.clone(),
+                    packet_plane.clone(),
+                    attachment.fd,
+                    attachment.replace_tun_fd,
+                    shared_virtual_nic_registry.clone(),
+                    attachment.claims,
+                )
+                .await;
                 if let Err(error) = &result {
                     tracing::error!(?error, "failed to attach mobile TUN fd");
                 }
@@ -165,21 +148,11 @@ impl NativeTunRuntime {
         self.tun_fd
             .try_send(MobileTunAttachment {
                 fd,
-                generation: None,
                 replace_tun_fd: true,
                 completion: None,
                 claims: None,
             })
             .map_err(|error| anyhow::anyhow!("failed to send TUN fd: {error}"))
-    }
-
-    pub(super) async fn attach_fd_and_wait(
-        &self,
-        fd: i32,
-        generation: Option<u64>,
-    ) -> anyhow::Result<()> {
-        self.attach_mobile_fd_with_generation(fd, true, None, generation)
-            .await
     }
 
     pub(super) async fn attach_mobile_fd(
@@ -188,30 +161,15 @@ impl NativeTunRuntime {
         replace_tun_fd: bool,
         claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
     ) -> anyhow::Result<()> {
-        self.attach_mobile_fd_with_generation(fd, replace_tun_fd, claims, None)
-            .await
-    }
-
-    pub(super) async fn attach_mobile_fd_with_generation(
-        &self,
-        fd: i32,
-        replace_tun_fd: bool,
-        claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
-        generation: Option<u64>,
-    ) -> anyhow::Result<()> {
         if self.task.lock().await.is_none() {
             anyhow::bail!("mobile TUN runtime is not running");
         }
 
-        if !self.nic.announce_generation(generation).await? && fd > 0 {
-            return Ok(());
-        }
         let (completion, result) = oneshot::channel();
         tokio::select! {
             _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; TUN attachment cancelled"),
             send_result = self.tun_fd.send(MobileTunAttachment {
                 fd,
-                generation,
                 replace_tun_fd,
                 completion: Some(completion),
                 claims,

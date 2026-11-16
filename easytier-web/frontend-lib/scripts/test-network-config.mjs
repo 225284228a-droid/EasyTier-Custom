@@ -171,12 +171,6 @@ function allFieldFixture() {
     enable_manual_routes: true,
     routes: ['10.20.0.0/16', 'fd00:20::/64'],
     exit_nodes: ['10.9.8.1', 'fd00::1'],
-    vpn: {
-      rules: [{
-        cidr: '0.0.0.0/0',
-        exitAddr: '10.144.144.2',
-      }],
-    },
     proxy_forward_by_system: true,
     disable_encryption: true,
     enable_socks5: true,
@@ -351,8 +345,6 @@ function assertFullFieldRoundTrip() {
   assert.equal(backend.port_forwards[1].proto, 'udp')
   assert.equal(backend.socket_mark, 1234)
   assert.equal(backend.prefer_peer_relay, true)
-  assert.equal(backend.vpn.rules[0].cidr, '0.0.0.0/0')
-  assert.equal(backend.vpn.rules[0].exit_addr, '10.144.144.2')
   assert.equal(backend.managed_credentials[0].credential_id, input.managed_credentials[0].credential_id)
   assert.equal(backend.managed_credentials[0].expiry_unix, input.managed_credentials[0].expiry_unix)
   assert.deepEqual(backend.managed_credentials[0].allowed_proxy_cidrs, input.managed_credentials[0].allowed_proxy_cidrs)

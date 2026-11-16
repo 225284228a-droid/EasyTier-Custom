@@ -52,7 +52,6 @@ fn event_kind(event: &CoreEvent) -> &'static str {
         CoreEvent::ProxyCidrsUpdated { .. } => "proxy_cidrs_updated",
         CoreEvent::PublicIpv6LeaseChanged { .. } => "public_ipv6_lease_changed",
         CoreEvent::PublicIpv6RoutesChanged { .. } => "public_ipv6_routes_changed",
-        CoreEvent::VpnExitLivenessUpdated(_) => "vpn_exit_liveness_updated",
         CoreEvent::VpnPortalStarted(_) => "vpn_portal_started",
         CoreEvent::VpnPortalClientConnected { .. } => "vpn_portal_client_connected",
         CoreEvent::VpnPortalClientDisconnected { .. } => "vpn_portal_client_disconnected",

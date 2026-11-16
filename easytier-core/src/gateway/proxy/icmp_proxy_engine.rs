@@ -21,9 +21,6 @@ pub struct IcmpProxyContext {
 #[derive(Debug)]
 pub enum IcmpProxyAction {
     Pass,
-    /// Consume the packet without answering: used for traffic this engine
-    /// cannot relay and must not leak out un-NATed.
-    Drop,
     SendToSocket {
         destination: Ipv4Addr,
         packet: Vec<u8>,
@@ -65,18 +62,6 @@ impl IcmpProxyEngine {
         }
     }
 
-    /// ICMPv6 exit traffic has no userspace relay (raw ICMPv6 sockets are
-    /// restricted on Windows and the echo proxy is v4-only). Platforms with
-    /// kernel NAT66 (Linux) forward it there, so only those without are
-    /// dropped here to keep exit traffic from leaking un-NATed.
-    /// TODO: relay ICMPv6 echo requests through a platform ICMPv6 socket.
-    fn handle_peer_packet_v6(context: IcmpProxyContext, is_exit_node: bool) -> IcmpProxyAction {
-        if cfg!(any(windows, target_os = "macos")) && context.enable_exit_node && is_exit_node {
-            return IcmpProxyAction::Drop;
-        }
-        IcmpProxyAction::Pass
-    }
-
     pub fn handle_peer_packet(
         &self,
         packet: &ZCPacket,
@@ -93,9 +78,6 @@ impl IcmpProxyEngine {
         };
         if header.packet_type != PacketType::Data as u8 || header.is_no_proxy() {
             return IcmpProxyAction::Pass;
-        }
-        if packet.payload().first().is_some_and(|byte| byte >> 4 == 6) {
-            return Self::handle_peer_packet_v6(context, header.is_exit_node());
         }
         let Ok(ipv4) = Ipv4Packet::new_checked(packet.payload()) else {
             return IcmpProxyAction::Pass;

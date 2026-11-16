@@ -212,8 +212,6 @@ pub struct PortablePeerManagerConfig {
     pub snapshot: PeerRuntimeSnapshot,
     pub route_algo: RouteAlgoType,
     pub exit_nodes: Vec<IpAddr>,
-    /// Subnet exit rules, consulted before `exit_nodes`.
-    pub vpn: crate::config::vpn::VpnConfig,
     /// Defaults inherited by peer contexts created for foreign networks.
     ///
     /// This is explicit because those contexts participate in the same
@@ -247,7 +245,6 @@ impl PortablePeerManagerConfig {
             snapshot: PeerRuntimeSnapshot::new(runtime, flags),
             route_algo: RouteAlgoType::Ospf,
             exit_nodes: Vec::new(),
-            vpn: crate::config::vpn::VpnConfig::default(),
             foreign_context_default_flags,
         }
     }
@@ -780,8 +777,6 @@ pub struct PeerManagerCore {
     encryptor: Arc<dyn Encryptor + 'static>,
     data_compress_algo: CompressorAlgo,
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
-    vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
-    events: Arc<dyn CoreEventSink>,
     acl_filter: Arc<AclFilter>,
     context: Arc<CorePeerContext>,
     runtime_config: CoreRuntimeConfigStore,
@@ -791,85 +786,6 @@ pub struct PeerManagerCore {
     traffic_metrics: Arc<TrafficMetricRecorder>,
     network_name: String,
     counters: PeerManagerTrafficCounters,
-}
-
-async fn collect_vpn_route_exclusions(
-    context: &CorePeerContext,
-    runtime_config: &CoreRuntimeConfigStore,
-    route: &ArcRoute,
-) -> crate::config::vpn::routes::VpnRouteExclusions {
-    use crate::config::vpn::{
-        VpnCidr,
-        routes::{VpnRouteExclusions, normalize_cidrs, subtract_cidrs},
-    };
-    let runtime = runtime_config.snapshot();
-    let mut mesh = Vec::new();
-    if let Some(v4) = context.ipv4() {
-        mesh.push(VpnCidr::V4(v4.network()));
-    }
-    if let Some(v6) = context.ipv6() {
-        mesh.push(VpnCidr::V6(v6.network()));
-    }
-    let mut remote_subnets = Vec::new();
-    for info in route.list_known_peer_infos().await {
-        if let Some(addr) = info.ipv4_addr
-            && let Ok(prefix) = u8::try_from(info.network_length)
-            && let Ok(inet) = cidr::Ipv4Inet::new(addr.into(), prefix)
-        {
-            mesh.push(VpnCidr::V4(inet.network()));
-        }
-        if let Some(inet) = info.ipv6_addr
-            && let Some(addr) = inet.address
-            && let Ok(prefix) = u8::try_from(inet.network_length)
-            && let Ok(inet) = cidr::Ipv6Inet::new(addr.into(), prefix)
-        {
-            mesh.push(VpnCidr::V6(inet.network()));
-        }
-        for subnet in info.proxy_cidrs {
-            if let Ok(cidr) = subnet.parse::<VpnCidr>() {
-                remote_subnets.push(cidr);
-            } else if let Ok(addr) = subnet.parse::<IpAddr>() {
-                remote_subnets.push(VpnCidr::host(addr));
-            }
-        }
-    }
-    // Hosts that do not expose full advertisements still protect their active routes.
-    remote_subnets.extend(route.list_proxy_cidrs().await.into_iter().map(VpnCidr::V4));
-    remote_subnets.extend(
-        route
-            .list_proxy_cidrs_v6()
-            .await
-            .into_iter()
-            .map(VpnCidr::V6),
-    );
-    if let Some(manual) = &runtime.services.manual_routes {
-        remote_subnets.extend(manual.iter().copied().map(VpnCidr::V4));
-    }
-    let mut local_subnets = Vec::new();
-    for proxy in &runtime.peer.runtime.core.routes.proxy_networks {
-        for prefix in std::iter::once(&proxy.real).chain(proxy.mapped.iter()) {
-            match prefix.address {
-                IpAddr::V4(a) => {
-                    if let Ok(c) = cidr::Ipv4Inet::new(a, prefix.prefix_len) {
-                        local_subnets.push(VpnCidr::V4(c.network()));
-                    }
-                }
-                IpAddr::V6(a) => {
-                    if let Ok(c) = cidr::Ipv6Inet::new(a, prefix.prefix_len) {
-                        local_subnets.push(VpnCidr::V6(c.network()));
-                    }
-                }
-            }
-        }
-    }
-    // A broad physical subnet must not erase an actual virtual network.
-    let physical = normalize_cidrs(
-        local_subnets
-            .into_iter()
-            .flat_map(|c| subtract_cidrs(c, &mesh)),
-    );
-    let overlay = normalize_cidrs(mesh.into_iter().chain(remote_subnets));
-    VpnRouteExclusions { overlay, physical }
 }
 
 fn check_resolved_remote_addr_not_from_virtual_network(
@@ -909,7 +825,6 @@ impl PeerManagerCore {
         stun_info_source: Arc<dyn PeerStunInfoSource>,
         nic_channel: HostPacketSender,
         public_ipv6_runtime: Arc<CorePublicIpv6Runtime>,
-        vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
         events: Arc<dyn CoreEventSink>,
         credential_storage: Option<Arc<dyn CredentialStorage>>,
         foreign_rpc_registrar: Arc<dyn ForeignNetworkRpcRegistrar>,
@@ -1009,12 +924,12 @@ impl PeerManagerCore {
         runtime_config.update_peer(Arc::new(config.snapshot.clone()));
         let public_ipv6_state = public_ipv6_runtime.clone();
         let public_ipv6_runtime: Arc<dyn PublicIpv6Runtime> = public_ipv6_runtime;
-        let context = Arc::new(CorePeerContext::new_with_public_ipv6_state(
+        let context = Arc::new(CorePeerContext::new(
             runtime_config,
             public_ipv6_state,
             CorePeerContextAdapters {
                 stun_info_source: Some(stun_info_source),
-                events: events.clone(),
+                events,
                 credential_storage,
             },
         ));
@@ -1027,8 +942,6 @@ impl PeerManagerCore {
             my_peer_id,
             context,
             public_ipv6_runtime,
-            vpn_engine,
-            events,
             nic_channel,
             encryptor,
             is_secure_mode_enabled,
@@ -1047,8 +960,6 @@ impl PeerManagerCore {
         my_peer_id: PeerId,
         core_context: Arc<CorePeerContext>,
         public_ipv6_runtime: Arc<dyn PublicIpv6Runtime>,
-        vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
-        events: Arc<dyn CoreEventSink>,
         nic_channel: HostPacketSender,
         encryptor: Arc<dyn Encryptor + 'static>,
         is_secure_mode_enabled: bool,
@@ -1209,7 +1120,6 @@ impl PeerManagerCore {
             encryptor.clone(),
             data_compress_algo,
             exit_nodes.clone(),
-            vpn_engine.clone(),
             recent_traffic.clone(),
             traffic_metrics.clone(),
             acl_filter.clone(),
@@ -1241,8 +1151,6 @@ impl PeerManagerCore {
             encryptor,
             data_compress_algo,
             exit_nodes,
-            vpn_engine,
-            events,
             acl_filter,
             runtime_config: core_context.runtime_config_store(),
             runtime_config_update: Mutex::new(()),
@@ -1888,6 +1796,10 @@ impl PeerManagerCore {
             .await
     }
 
+    pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
+        self.outbound_packet_router.get_msg_dst_peer(addr).await
+    }
+
     pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         self.outbound_packet_router
             .get_msg_dst_peer_ipv4(ipv4_addr)
@@ -1898,11 +1810,6 @@ impl PeerManagerCore {
         self.outbound_packet_router
             .get_msg_dst_peer_ipv6(ipv6_addr)
             .await
-    }
-
-    /// Address-family dispatch for flow setup without a packet at hand.
-    pub async fn get_msg_dst_peer(&self, addr: &IpAddr) -> (Vec<PeerId>, bool) {
-        self.outbound_packet_router.get_msg_dst_peer(addr).await
     }
 
     pub async fn send_msg_by_ip(
@@ -1937,40 +1844,6 @@ impl PeerManagerCore {
     pub(super) fn inherit_exit_nodes(&mut self, network: &Self) {
         self.exit_nodes = network.exit_nodes.clone();
         self.outbound_packet_router.exit_nodes = self.exit_nodes.clone();
-    }
-
-    /// Hot-apply new subnet exit rules.
-    pub fn update_vpn_config(&self, config: crate::config::vpn::VpnConfig) -> anyhow::Result<()> {
-        self.vpn_engine.install(config)
-    }
-
-    pub fn vpn_engine(&self) -> Arc<super::vpn_policy::VpnPolicyEngine> {
-        self.vpn_engine.clone()
-    }
-
-    pub async fn vpn_route_exclusions(&self) -> crate::config::vpn::routes::VpnRouteExclusions {
-        collect_vpn_route_exclusions(&self.context, &self.runtime_config, &self.route).await
-    }
-
-    pub fn virtual_ipv6(&self) -> Option<cidr::Ipv6Inet> {
-        self.context.ipv6()
-    }
-
-    /// Follow only configuration; each peer resolves exits and exclusions using
-    /// its own routing view. The subscription stops with this manager's tasks.
-    pub(super) async fn follow_network_vpn_policy(
-        &self,
-        mut changes: tokio::sync::watch::Receiver<crate::config::vpn::VpnConfig>,
-    ) {
-        let engine = self.vpn_engine.clone();
-        self.tasks.lock().await.spawn(async move {
-            while changes.changed().await.is_ok() {
-                let config = changes.borrow_and_update().clone();
-                if let Err(error) = engine.install(config) {
-                    tracing::error!(?error, "failed to apply attached peer VPN policy");
-                }
-            }
-        });
     }
 
     fn reload_acl(&self, acl: Option<&crate::proto::acl::Acl>) {
@@ -2057,73 +1930,6 @@ impl PeerManagerCore {
         );
 
         self.tasks.lock().await.spawn(router.run());
-
-        // Exit reachability changes packet selection, never route ownership.
-        // Keep known overlay advertisements excluded even while paths are down.
-        let vpn_engine = self.vpn_engine.clone();
-        let route = self.route.clone();
-        let events = self.events.clone();
-        let vpn_context = self.context.clone();
-        let vpn_runtime = self.runtime_config.clone();
-        let exit_nodes = self.exit_nodes.clone();
-        self.tasks.lock().await.spawn(async move {
-            let mut last_liveness: Option<Vec<(String, bool)>> = None;
-            loop {
-                vpn_engine.update_exclusions(
-                    collect_vpn_route_exclusions(&vpn_context, &vpn_runtime, &route).await,
-                );
-                let config = vpn_engine.config();
-                let addresses = config.exit_addresses();
-                if !addresses.is_empty() || config.follows_exit_nodes() {
-                    let routes = route.list_routes().await;
-                    // Exit addresses identify nodes, never an address merely
-                    // covered by a node's advertised subnet.
-                    let node_at = |address: IpAddr| {
-                        routes
-                            .iter()
-                            .find(|route| match address {
-                                IpAddr::V4(v4) => {
-                                    route
-                                        .ipv4_addr
-                                        .as_ref()
-                                        .and_then(|inet| inet.address)
-                                        .map(Ipv4Addr::from)
-                                        == Some(v4)
-                                }
-                                IpAddr::V6(v6) => {
-                                    route
-                                        .ipv6_addr
-                                        .as_ref()
-                                        .and_then(|inet| inet.address)
-                                        .map(Ipv6Addr::from)
-                                        == Some(v6)
-                                }
-                            })
-                            .map(|route| route.peer_id)
-                    };
-                    vpn_engine.update_exit_nodes_state(
-                        exit_nodes
-                            .read()
-                            .await
-                            .iter()
-                            .any(|address| node_at(*address).is_some()),
-                    );
-                    let mut updates = Vec::with_capacity(addresses.len());
-                    let mut liveness = Vec::with_capacity(addresses.len());
-                    for address in addresses {
-                        let reachable = node_at(address);
-                        updates.push((address, reachable));
-                        liveness.push((address.to_string(), reachable.is_some()));
-                    }
-                    vpn_engine.update_exit_states(updates);
-                    if last_liveness.as_ref() != Some(&liveness) {
-                        last_liveness = Some(liveness.clone());
-                        events.emit(crate::events::CoreEvent::VpnExitLivenessUpdated(liveness));
-                    }
-                }
-                crate::foundation::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-        });
     }
 
     pub(crate) async fn run(&self) -> Result<(), Error> {
@@ -2728,7 +2534,6 @@ pub(crate) struct PeerOutboundPacketRouter {
     encryptor: Arc<dyn Encryptor>,
     data_compress_algo: CompressorAlgo,
     exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
-    vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
     recent_traffic: RecentTrafficTracker,
     traffic_metrics: Arc<TrafficMetricRecorder>,
     acl_filter: Arc<AclFilter>,
@@ -2749,7 +2554,6 @@ impl PeerOutboundPacketRouter {
         encryptor: Arc<dyn Encryptor>,
         data_compress_algo: CompressorAlgo,
         exit_nodes: Arc<RwLock<Vec<IpAddr>>>,
-        vpn_engine: Arc<super::vpn_policy::VpnPolicyEngine>,
         recent_traffic: RecentTrafficTracker,
         traffic_metrics: Arc<TrafficMetricRecorder>,
         acl_filter: Arc<AclFilter>,
@@ -2772,7 +2576,6 @@ impl PeerOutboundPacketRouter {
             encryptor,
             data_compress_algo,
             exit_nodes,
-            vpn_engine,
             recent_traffic,
             traffic_metrics,
             acl_filter,
@@ -2986,17 +2789,6 @@ impl PeerOutboundPacketRouter {
             .collect()
     }
 
-    /// A matching subnet rule takes precedence over `exit_nodes`: `Some(None)`
-    /// means its exit is unreachable and the packet is dropped. `None` leaves
-    /// the destination to `exit_nodes`.
-    fn vpn_rule_exit(&self, destination: &IpAddr) -> Option<Option<PeerId>> {
-        match self.vpn_engine.resolve(destination) {
-            super::vpn_policy::VpnDecision::Passthrough => None,
-            super::vpn_policy::VpnDecision::Drop => Some(None),
-            super::vpn_policy::VpnDecision::Exit(peer_id) => Some(Some(peer_id)),
-        }
-    }
-
     pub async fn get_msg_dst_peer_ipv4(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         let mut is_exit_node = false;
         let mut dst_peers = vec![];
@@ -3007,16 +2799,6 @@ impl PeerOutboundPacketRouter {
             ));
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
             dst_peers.push(peer_id);
-        } else if !self
-            .context
-            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
-            && let Some(rule) = self.vpn_rule_exit(&IpAddr::V4(*ipv4_addr))
-        {
-            let Some(peer_id) = rule else {
-                return (dst_peers, false);
-            };
-            dst_peers.push(peer_id);
-            is_exit_node = true;
         } else if !self
             .context
             .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
@@ -3059,14 +2841,6 @@ impl PeerOutboundPacketRouter {
             && let Some(peer_id) = self.route.get_public_ipv6_gateway_peer_id().await
         {
             dst_peers.push(peer_id);
-        } else if !ipv6_addr.is_unicast_link_local()
-            && let Some(rule) = self.vpn_rule_exit(&IpAddr::V6(*ipv6_addr))
-        {
-            let Some(peer_id) = rule else {
-                return (dst_peers, false);
-            };
-            dst_peers.push(peer_id);
-            is_exit_node = true;
         } else if !ipv6_addr.is_unicast_link_local() {
             // NOTE: never route link local address to exit node.
             for exit_node in self.exit_nodes.read().await.iter() {
@@ -3981,12 +3755,6 @@ mod tests {
                 stun_info_source,
                 nic_channel,
                 public_ipv6_runtime,
-                Arc::new(
-                    super::super::vpn_policy::VpnPolicyEngine::new(
-                        crate::config::vpn::VpnConfig::default(),
-                    )
-                    .unwrap(),
-                ),
                 Arc::new(()),
                 None,
                 Arc::new(()),
@@ -4757,12 +4525,6 @@ mod tests {
             Arc::new(()),
             packet_tx,
             public_ipv6_runtime,
-            Arc::new(
-                super::super::vpn_policy::VpnPolicyEngine::new(
-                    crate::config::vpn::VpnConfig::default(),
-                )
-                .unwrap(),
-            ),
             events.clone(),
             None,
             Arc::new(()),
@@ -5006,36 +4768,6 @@ mod tests {
         assert_eq!(
             fallback_core.get_msg_dst_peer_ipv4(&external_ipv4).await,
             (vec![fallback_core.my_peer_id()], true)
-        );
-    }
-
-    #[tokio::test]
-    async fn unreachable_rule_exit_drops_instead_of_falling_back() {
-        let external_ipv4 = Ipv4Addr::new(203, 0, 113, 10);
-        let other_ipv4 = Ipv4Addr::new(198, 51, 100, 10);
-        let mut runtime = portable_runtime_config("portable-net");
-        runtime.host_routing.local_exit_node_fallback = true;
-        let core = build_portable_for_test(runtime).unwrap();
-        let mut vpn = crate::config::vpn::VpnConfig::default();
-        vpn.rules.push(crate::config::vpn::VpnRuleConfig {
-            cidr: "203.0.113.0/24".parse().unwrap(),
-            exit: Some("10.20.0.50".parse().unwrap()),
-        });
-        // A rule without an exit leaves its subnet to exit_nodes and fallback.
-        vpn.rules.push(crate::config::vpn::VpnRuleConfig {
-            cidr: "198.51.100.0/24".parse().unwrap(),
-            exit: None,
-        });
-        core.update_vpn_config(vpn).unwrap();
-        // The rule's exit is unknown: drop, neither exit_nodes nor the local
-        // fallback may carry it. Unmatched destinations keep upstream routing.
-        assert_eq!(
-            core.get_msg_dst_peer_ipv4(&external_ipv4).await,
-            (Vec::new(), false)
-        );
-        assert_eq!(
-            core.get_msg_dst_peer_ipv4(&other_ipv4).await,
-            (vec![core.my_peer_id()], true)
         );
     }
 

@@ -1,8 +1,5 @@
 use std::sync::{Arc, OnceLock};
 
-use crate::common::global_ctx::ArcGlobalCtx;
-#[cfg(not(mobile))]
-use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
 #[cfg(not(mobile))]
 use easytier_core::instance::CorePacketPlane;
 use easytier_core::{gateway::dhcp::DhcpAddresses, host::packet::HostPacketReceiver};
@@ -14,127 +11,41 @@ use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use super::MagicDnsRuntime;
-use crate::instance::virtual_nic::NicCtx;
+#[cfg(not(mobile))]
+use crate::instance::shared_virtual_nic::ArcSharedVirtualNicRegistry;
+use crate::{common::global_ctx::ArcGlobalCtx, instance::virtual_nic::NicCtx};
 
-struct NicCtxContainer {
-    nic_ctx: NicOwner,
-    magic_dns: MagicDnsRuntime,
-}
-
-enum NicOwner {
-    Interface(NicCtx),
-    Drain(JoinSet<()>),
+enum NicCtxContainer {
+    Active {
+        nic_ctx: Box<NicCtx>,
+        magic_dns: MagicDnsRuntime,
+    },
+    PacketDrain(JoinSet<()>),
 }
 
 impl NicCtxContainer {
     fn new(nic_ctx: NicCtx, magic_dns: MagicDnsRuntime) -> Self {
-        Self {
-            nic_ctx: NicOwner::Interface(nic_ctx),
+        Self::Active {
+            nic_ctx: Box::new(nic_ctx),
             magic_dns,
         }
     }
 
     fn packet_drain(tasks: JoinSet<()>) -> Self {
-        Self {
-            nic_ctx: NicOwner::Drain(tasks),
-            magic_dns: MagicDnsRuntime::default(),
-        }
-    }
-
-    async fn shutdown(&mut self) {
-        self.magic_dns.stop().await;
-        match &mut self.nic_ctx {
-            NicOwner::Interface(nic) => nic.shutdown().await,
-            NicOwner::Drain(tasks) => tasks.shutdown().await,
-        }
+        Self::PacketDrain(tasks)
     }
 }
 
 #[derive(Clone)]
 pub(super) struct TunNicState {
-    nic_ctx: Arc<Mutex<TunNicStateInner>>,
-    generations: Arc<Mutex<TunGenerationGate>>,
+    nic_ctx: Arc<Mutex<Option<NicCtxContainer>>>,
     receiver: Arc<OnceLock<Arc<Mutex<HostPacketReceiver>>>>,
-}
-
-#[derive(Default)]
-struct TunNicStateInner {
-    active: Option<NicCtxContainer>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum TunGenerationStatus {
-    Install,
-    AlreadyCommitted,
-    Stale,
-}
-
-#[derive(Default)]
-struct TunGenerationGate {
-    latest_requested: u64,
-    committed: u64,
-}
-
-impl TunGenerationGate {
-    #[cfg(any(mobile, test))]
-    fn announce(&mut self, generation: Option<u64>) -> TunGenerationStatus {
-        match generation {
-            None => TunGenerationStatus::Install,
-            Some(generation) if generation < self.latest_requested => TunGenerationStatus::Stale,
-            Some(generation) if generation == self.committed && generation > 0 => {
-                TunGenerationStatus::AlreadyCommitted
-            }
-            Some(generation) if generation < self.committed => TunGenerationStatus::Stale,
-            Some(generation) => {
-                self.latest_requested = self.latest_requested.max(generation);
-                TunGenerationStatus::Install
-            }
-        }
-    }
-
-    fn status(&self, generation: Option<u64>) -> TunGenerationStatus {
-        match generation {
-            None => TunGenerationStatus::Install,
-            Some(generation) if generation < self.latest_requested => TunGenerationStatus::Stale,
-            Some(generation) if generation == self.committed && generation > 0 => {
-                TunGenerationStatus::AlreadyCommitted
-            }
-            Some(generation)
-                if generation == self.latest_requested && generation > self.committed =>
-            {
-                TunGenerationStatus::Install
-            }
-            Some(_) => TunGenerationStatus::Stale,
-        }
-    }
-
-    fn commit(&mut self, generation: Option<u64>) -> TunGenerationStatus {
-        let status = self.status(generation);
-        if status == TunGenerationStatus::Install
-            && let Some(generation) = generation
-        {
-            self.committed = generation;
-        }
-        status
-    }
-
-    #[cfg(any(mobile, test))]
-    fn detach(&mut self, generation: Option<u64>) -> TunGenerationStatus {
-        let status = self.status(generation);
-        if status != TunGenerationStatus::Stale {
-            // A rollback may retry the same generation after replacing its fd.
-            // Retain the high-water mark while clearing only attachment state.
-            self.committed = 0;
-        }
-        status
-    }
 }
 
 impl TunNicState {
     pub(super) fn empty() -> Self {
         Self {
-            nic_ctx: Arc::new(Mutex::new(TunNicStateInner::default())),
-            generations: Arc::new(Mutex::new(TunGenerationGate::default())),
+            nic_ctx: Arc::new(Mutex::new(None)),
             receiver: Arc::new(OnceLock::new()),
         }
     }
@@ -153,30 +64,33 @@ impl TunNicState {
     }
 
     pub(super) async fn stop(&self) {
-        let mut old = self.nic_ctx.lock().await.active.take();
-        if let Some(nic) = old.as_mut() {
-            nic.shutdown().await;
+        let old = self.nic_ctx.lock().await.take();
+        match old {
+            Some(NicCtxContainer::Active {
+                mut nic_ctx,
+                mut magic_dns,
+            }) => {
+                magic_dns.stop().await;
+                nic_ctx.shutdown().await;
+            }
+            Some(NicCtxContainer::PacketDrain(mut tasks)) => tasks.shutdown().await,
+            None => {}
         }
-        drop(old);
     }
 
     #[cfg(mobile)]
     pub(super) async fn mobile_tun_claims(
         &self,
     ) -> Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims> {
-        let state = self.nic_ctx.lock().await;
-        match &state.active.as_ref()?.nic_ctx {
-            NicOwner::Interface(nic) => nic.current_mobile_tun_claims().await,
-            NicOwner::Drain(_) => None,
+        let nic = self.nic_ctx.lock().await;
+        match nic.as_ref()? {
+            NicCtxContainer::Active { nic_ctx, .. } => nic_ctx.current_mobile_tun_claims().await,
+            NicCtxContainer::PacketDrain(_) => None,
         }
     }
 
     pub(super) async fn drain(&self) {
         self.stop().await;
-        self.nic_ctx.lock().await.active = Some(self.new_drain());
-    }
-
-    fn new_drain(&self) -> NicCtxContainer {
         let receiver = self.receiver();
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -185,158 +99,18 @@ impl TunNicState {
                 tracing::trace!(?packet, "discarded packet without a native interface");
             }
         });
-        NicCtxContainer::packet_drain(tasks)
+        self.nic_ctx
+            .lock()
+            .await
+            .replace(NicCtxContainer::packet_drain(tasks));
     }
 
-    #[cfg(any(mobile, test))]
-    pub(super) async fn drain_for_generation(&self, generation: Option<u64>) -> anyhow::Result<()> {
-        let mut state = self.nic_ctx.lock().await;
-        let mut generations = self.generations.lock().await;
-        if generations.detach(generation) == TunGenerationStatus::Stale {
-            return Err(super::StaleMobileTunGeneration(generation).into());
-        }
-        // Check and remove atomically with installation. A superseded rollback
-        // can never take a NIC installed by a newer candidate.
-        let mut old = state.active.replace(self.new_drain());
-        drop(generations);
-        drop(state);
-        if let Some(nic) = old.as_mut() {
-            nic.shutdown().await;
-        }
-        Ok(())
-    }
-
-    #[cfg(mobile)]
-    pub(super) async fn announce_generation(
-        &self,
-        generation: Option<u64>,
-    ) -> anyhow::Result<bool> {
-        let status = self.generations.lock().await.announce(generation);
-        match status {
-            TunGenerationStatus::Install => Ok(true),
-            TunGenerationStatus::AlreadyCommitted => Ok(false),
-            TunGenerationStatus::Stale => {
-                return Err(super::StaleMobileTunGeneration(generation).into());
-            }
-        }
-    }
-
-    #[cfg(mobile)]
-    pub(super) async fn generation_status(&self, generation: Option<u64>) -> TunGenerationStatus {
-        self.generations.lock().await.status(generation)
-    }
-
-    pub(super) async fn install(
-        &self,
-        generation: Option<u64>,
-        nic: NicCtx,
-        magic_dns: MagicDnsRuntime,
-    ) -> anyhow::Result<()> {
-        let mut state = self.nic_ctx.lock().await;
-        let mut generations = self.generations.lock().await;
-        let status = generations.status(generation);
-        if status != TunGenerationStatus::Install {
-            drop(generations);
-            drop(state);
-            let mut stale = NicCtxContainer::new(nic, magic_dns);
-            stale.shutdown().await;
-            return match status {
-                TunGenerationStatus::AlreadyCommitted => Ok(()),
-                TunGenerationStatus::Stale => {
-                    return Err(super::StaleMobileTunGeneration(generation).into());
-                }
-                TunGenerationStatus::Install => unreachable!(),
-            };
-        }
-        let status = generations.commit(generation);
-        debug_assert_eq!(status, TunGenerationStatus::Install);
-        let replacement = NicCtxContainer::new(nic, magic_dns);
-        let mut old = state.active.replace(replacement);
-        drop(generations);
-        drop(state);
-        if let Some(nic) = old.as_mut() {
-            nic.shutdown().await;
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{NicCtxContainer, TunGenerationGate, TunGenerationStatus, TunNicState};
-
-    #[tokio::test]
-    async fn stale_detach_preserves_the_newer_nic_owner() {
-        let state = TunNicState::empty();
-        let (held, mut released) = tokio::sync::oneshot::channel::<()>();
-        let mut tasks = tokio::task::JoinSet::new();
-        tasks.spawn(async move {
-            let _held = held;
-            std::future::pending::<()>().await;
-        });
-        state.nic_ctx.lock().await.active = Some(NicCtxContainer::packet_drain(tasks));
-        {
-            let mut gate = state.generations.lock().await;
-            assert_eq!(gate.announce(Some(20)), TunGenerationStatus::Install);
-            assert_eq!(gate.commit(Some(20)), TunGenerationStatus::Install);
-        }
-
-        let error = state.drain_for_generation(Some(19)).await.unwrap_err();
-        assert!(error.is::<super::super::StaleMobileTunGeneration>());
-        assert_eq!(
-            released.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty),
-            "a stale rollback must retain the current owner's resources"
-        );
-        state.stop().await;
-        assert!(released.await.is_err());
-    }
-
-    #[test]
-    fn delayed_older_completion_is_rejected_after_newer_commit() {
-        let mut gate = TunGenerationGate::default();
-
-        assert_eq!(gate.announce(Some(19)), TunGenerationStatus::Install);
-        assert_eq!(gate.announce(Some(20)), TunGenerationStatus::Install);
-        assert_eq!(gate.commit(Some(19)), TunGenerationStatus::Stale);
-        assert_eq!(gate.commit(Some(20)), TunGenerationStatus::Install);
-        assert_eq!(gate.announce(Some(19)), TunGenerationStatus::Stale);
-        assert_eq!(gate.committed, 20);
-    }
-
-    #[test]
-    fn failed_candidate_does_not_advance_generation_until_commit() {
-        let mut gate = TunGenerationGate::default();
-
-        assert_eq!(gate.announce(Some(7)), TunGenerationStatus::Install);
-        assert_eq!(gate.status(Some(7)), TunGenerationStatus::Install);
-        assert_eq!(gate.announce(Some(7)), TunGenerationStatus::Install);
-        assert_eq!(gate.commit(Some(7)), TunGenerationStatus::Install);
-        assert_eq!(gate.committed, 7);
-    }
-
-    #[test]
-    fn detached_candidate_can_retry_without_admitting_older_generations() {
-        let mut gate = TunGenerationGate::default();
-        assert_eq!(gate.announce(Some(20)), TunGenerationStatus::Install);
-        assert_eq!(gate.commit(Some(20)), TunGenerationStatus::Install);
-        assert_eq!(gate.detach(Some(19)), TunGenerationStatus::Stale);
-        assert_eq!(gate.status(Some(20)), TunGenerationStatus::AlreadyCommitted);
-        assert_eq!(gate.detach(Some(20)), TunGenerationStatus::AlreadyCommitted);
-        assert_eq!(gate.announce(Some(20)), TunGenerationStatus::Install);
-        assert_eq!(gate.commit(Some(20)), TunGenerationStatus::Install);
-        assert_eq!(gate.announce(Some(19)), TunGenerationStatus::Stale);
-    }
-
-    #[test]
-    fn legacy_untagged_attach_keeps_working_without_advancing_high_water() {
-        let mut gate = TunGenerationGate::default();
-
-        assert_eq!(gate.announce(None), TunGenerationStatus::Install);
-        assert_eq!(gate.announce(Some(1)), TunGenerationStatus::Install);
-        assert_eq!(gate.commit(Some(1)), TunGenerationStatus::Install);
-        assert_eq!(gate.announce(None), TunGenerationStatus::Install);
-        assert_eq!(gate.committed, 1);
+    pub(super) async fn install(&self, nic: NicCtx, magic_dns: MagicDnsRuntime) {
+        self.stop().await;
+        self.nic_ctx
+            .lock()
+            .await
+            .replace(NicCtxContainer::new(nic, magic_dns));
     }
 }
 
@@ -396,10 +170,7 @@ impl NativeDhcpHost {
                 )
                 .await;
                 tokio::select! {
-                    _ = self.cancel.cancelled() => {
-                        nic.shutdown().await;
-                        anyhow::bail!("instance is closing; DHCP update cancelled");
-                    },
+                    _ = self.cancel.cancelled() => anyhow::bail!("instance is closing; DHCP update cancelled"),
                     result = nic.run(addresses.ipv4, addresses.ipv6) => result?,
                 }
                 let magic_dns = if let Some(ip) = addresses.ipv4 {
@@ -414,7 +185,7 @@ impl NativeDhcpHost {
                 } else {
                     MagicDnsRuntime::default()
                 };
-                self.nic.install(None, nic, magic_dns).await?;
+                self.nic.install(nic, magic_dns).await;
             }
         }
         self.set_addresses(next);
@@ -423,7 +194,7 @@ impl NativeDhcpHost {
 }
 
 #[cfg(test)]
-mod dhcp_tests {
+mod tests {
     use easytier_core::{config::toml::TomlConfig, process_runtime::CoreProcessRuntime};
 
     use super::*;

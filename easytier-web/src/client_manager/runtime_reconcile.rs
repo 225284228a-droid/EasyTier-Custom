@@ -1381,13 +1381,6 @@ mod tests {
             ) -> easytier::proto::rpc_types::error::Result<ListPeerResponse> {
                 unreachable!("route configuration readback only uses ShowNodeInfo")
             }
-            async fn get_vpn_status(
-                &self,
-                _: BaseController,
-                _: GetVpnStatusRequest,
-            ) -> easytier::proto::rpc_types::error::Result<GetVpnStatusResponse> {
-                unreachable!("route configuration readback only uses ShowNodeInfo")
-            }
             async fn list_public_ipv6_info(
                 &self,
                 _: BaseController,

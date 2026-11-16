@@ -6,9 +6,6 @@ Default permissions for the plugin
 
 - `allow-ping`
 - `allow-start-vpn`
-- `allow-reconfigure-vpn`
-- `allow-complete-vpn-reconfigure`
-- `allow-get-underlying-dns-servers`
 
 ## Permission Table
 
@@ -18,32 +15,6 @@ Default permissions for the plugin
 <th>Description</th>
 </tr>
 
-
-<tr>
-<td>
-
-`vpnservice:allow-complete-vpn-reconfigure`
-
-</td>
-<td>
-
-Enables the complete_vpn_reconfigure command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:deny-complete-vpn-reconfigure`
-
-</td>
-<td>
-
-Denies the complete_vpn_reconfigure command without any pre-configured scope.
-
-</td>
-</tr>
 
 <tr>
 <td>
@@ -67,32 +38,6 @@ Enables the consume_vpn_tile_action command without any pre-configured scope.
 <td>
 
 Denies the consume_vpn_tile_action command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:allow-get-underlying-dns-servers`
-
-</td>
-<td>
-
-Enables the get_underlying_dns_servers command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:deny-get-underlying-dns-servers`
-
-</td>
-<td>
-
-Denies the get_underlying_dns_servers command without any pre-configured scope.
 
 </td>
 </tr>
@@ -171,32 +116,6 @@ Enables the prepare_vpn command without any pre-configured scope.
 <td>
 
 Denies the prepare_vpn command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:allow-reconfigure-vpn`
-
-</td>
-<td>
-
-Enables the reconfigure_vpn command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:deny-reconfigure-vpn`
-
-</td>
-<td>
-
-Denies the reconfigure_vpn command without any pre-configured scope.
 
 </td>
 </tr>

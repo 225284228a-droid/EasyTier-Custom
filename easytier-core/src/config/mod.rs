@@ -17,7 +17,6 @@ pub mod gateway;
 pub mod peers;
 pub mod runtime;
 pub mod toml;
-pub mod vpn;
 
 pub use crate::proto::common::P2pDisguiseMode;
 pub use dhcp::DhcpConfig;

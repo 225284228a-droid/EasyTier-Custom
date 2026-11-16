@@ -69,21 +69,9 @@ fn runtime_snapshot(
         .ipv4
         .as_ref()
         .and_then(ipv4_inet);
-    let local_ipv6 = config
-        .peer
-        .runtime
-        .core
-        .routes
-        .ipv6
-        .as_ref()
-        .and_then(|prefix| match prefix.address {
-            IpAddr::V6(address) => Some(address),
-            IpAddr::V4(_) => None,
-        });
     ProxyRuntimeSnapshot {
         local_inet: smoltcp_enabled.then(smoltcp_proxy_inet).or(virtual_inet),
         virtual_ipv4: virtual_inet.map(|inet| inet.address()),
-        local_ipv6,
         no_tun: config.services.proxy.no_tun,
         enable_exit_node: config.services.proxy.enable_exit_node,
         smoltcp_enabled,

@@ -212,21 +212,3 @@ fn blank_protocol_resolves_to_udp_without_losing_patch_presence() {
         assert_eq!(config.get_flags().default_protocol, "udp");
     }
 }
-
-#[cfg(feature = "config-write")]
-#[test]
-fn test_vpn_config_roundtrip() {
-    let config = TomlConfigLoader::default();
-    let mut vpn = crate::config::vpn::VpnConfig::default();
-    vpn.rules.push(crate::config::vpn::VpnRuleConfig {
-        cidr: "0.0.0.0/0".parse().unwrap(),
-        exit: Some("10.144.144.2".parse().unwrap()),
-    });
-
-    config.set_vpn(vpn.clone());
-    assert_eq!(config.get_vpn(), vpn);
-
-    let dumped = config.dump();
-    let loaded = TomlConfigLoader::new_from_str(&dumped).unwrap();
-    assert_eq!(loaded.get_vpn(), vpn);
-}

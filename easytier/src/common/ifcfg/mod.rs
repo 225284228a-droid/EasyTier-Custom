@@ -29,25 +29,8 @@ use tokio::process::Command;
 
 use super::error::Error;
 
-/// The system's current default route for one address family, captured
-/// before a VPN takes over routing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DefaultRouteInfo {
-    pub gateway: std::net::IpAddr,
-    pub interface_name: String,
-}
-
 #[async_trait]
 pub trait IfConfiguerTrait: Send + Sync {
-    /// Discovers the current default route. `None` when no default route of
-    /// that family exists.
-    async fn default_route(
-        &self,
-        _ipv6: bool,
-        _exclude_interface: Option<&str>,
-    ) -> Result<Option<DefaultRouteInfo>, Error> {
-        Ok(None)
-    }
     async fn add_ipv4_route(
         &self,
         _name: &str,

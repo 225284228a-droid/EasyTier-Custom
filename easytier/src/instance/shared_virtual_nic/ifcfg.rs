@@ -4,7 +4,6 @@ use std::{
 };
 
 use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Cidr, Ipv6Inet};
-use easytier_core::config::vpn::VpnCidr;
 
 use super::SharedVirtualNicMemberId;
 
@@ -48,9 +47,6 @@ pub struct SharedIfConfigClaims {
     pub ipv6_addresses: BTreeSet<Ipv6Inet>,
     pub ipv4_routes: BTreeSet<SharedIpv4Route>,
     pub ipv6_routes: BTreeSet<SharedIpv6Route>,
-    // The VPN route manager owns these OS routes. They still participate in
-    // destination isolation and dispatcher selection on a shared interface.
-    pub vpn_capture_routes: BTreeSet<VpnCidr>,
     pub mtu: Option<u32>,
 }
 
@@ -65,34 +61,15 @@ impl SharedIfConfigClaims {
                     .filter_map(|route| Ipv4Inet::new(route.address, route.prefix).ok())
                     .map(|route| (route.network(), true)),
             )
-            .chain(
-                self.vpn_capture_routes
-                    .iter()
-                    .filter_map(|route| match route {
-                        VpnCidr::V4(route) => Some((*route, true)),
-                        VpnCidr::V6(_) => None,
-                    }),
-            )
     }
 
     fn ipv6_destinations(&self) -> impl Iterator<Item = Ipv6Cidr> + '_ {
-        self.ipv6_addresses
-            .iter()
-            .map(Ipv6Inet::network)
-            .chain(
-                self.ipv6_routes
-                    .iter()
-                    .filter_map(|route| Ipv6Inet::new(route.address, route.prefix).ok())
-                    .map(|route| route.network()),
-            )
-            .chain(
-                self.vpn_capture_routes
-                    .iter()
-                    .filter_map(|route| match route {
-                        VpnCidr::V4(_) => None,
-                        VpnCidr::V6(route) => Some(*route),
-                    }),
-            )
+        self.ipv6_addresses.iter().map(Ipv6Inet::network).chain(
+            self.ipv6_routes
+                .iter()
+                .filter_map(|route| Ipv6Inet::new(route.address, route.prefix).ok())
+                .map(|route| route.network()),
+        )
     }
 }
 
@@ -237,11 +214,6 @@ impl SharedIfConfig {
                 .member_claims
                 .values()
                 .flat_map(|claims| claims.ipv6_routes.iter().cloned())
-                .collect(),
-            vpn_capture_routes: self
-                .member_claims
-                .values()
-                .flat_map(|claims| claims.vpn_capture_routes.iter().copied())
                 .collect(),
             mtu: self.effective_mtu(),
         }

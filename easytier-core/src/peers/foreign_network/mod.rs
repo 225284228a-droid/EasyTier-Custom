@@ -1648,6 +1648,7 @@ mod tests {
                 CoreRuntimeConfig::default(),
                 Arc::new(PeerRuntimeSnapshot::default()),
             ),
+            Arc::new(()),
             CorePeerContextAdapters {
                 stun_info_source: None,
                 events: Arc::new(()),
@@ -1946,6 +1947,7 @@ mod tests {
             no_relay_quic: false,
             need_p2p: true,
             disable_p2p: true,
+            ipv6_public_addr_provider: true,
             ..Default::default()
         };
         let parent_config = CoreRuntimeConfigStore::new(
@@ -1954,6 +1956,7 @@ mod tests {
         );
         let parent = Arc::new(CorePeerContext::new(
             parent_config.clone(),
+            Arc::new(()),
             CorePeerContextAdapters {
                 stun_info_source: None,
                 events: Arc::new(()),
@@ -1999,6 +2002,7 @@ mod tests {
         assert!(!foreign.feature_flags().no_relay_quic);
         assert!(foreign.feature_flags().need_p2p);
         assert!(foreign.feature_flags().disable_p2p);
+        assert!(foreign.feature_flags().ipv6_public_addr_provider);
         assert_eq!(foreign.stun_info().public_ip, vec!["198.51.100.1"]);
         assert!(foreign.host_routing_policy().local_exit_node_fallback);
         assert!(foreign.hmac_secret_digest());

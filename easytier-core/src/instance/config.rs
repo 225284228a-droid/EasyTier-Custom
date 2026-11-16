@@ -6,7 +6,7 @@ use crate::{
     config::{
         EncryptionAlgorithm, IpPrefix, NodeConfig, ProxyNetworkConfig, RouteConfig,
         gateway::{GatewayRuntimeConfig, ProxyRuntimeConfig},
-        peers::{AclRuleConfig, HostRoutingPolicy},
+        peers::{AclRuleConfig, HostRoutingPolicy, PublicIpv6ProviderConfig},
         runtime::CoreRuntimeConfig,
         toml::{ConfigLoader as _, Flags, TomlConfig},
     },
@@ -301,11 +301,6 @@ impl CoreInstanceConfig {
             } else {
                 config.get_exit_nodes()
             },
-            vpn: if host.ignore_unsupported_config && !host.proxy_enabled {
-                Default::default()
-            } else {
-                config.get_vpn()
-            },
             foreign_context_default_flags: host.runtime_flags(TomlConfig::default().get_flags()),
         };
 
@@ -371,7 +366,7 @@ impl CoreInstanceConfig {
             },
             public_ipv6_auto: config.get_ipv6_public_addr_auto()
                 && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
-            public_ipv6_provider: crate::config::peers::PublicIpv6ProviderConfig {
+            public_ipv6_provider: PublicIpv6ProviderConfig {
                 provider_enabled: config.get_ipv6_public_addr_provider()
                     && (!host.ignore_unsupported_config || host.public_ipv6_provider_supported),
                 configured_prefix: (!host.ignore_unsupported_config
@@ -782,6 +777,13 @@ disable_p2p = true
         assert!(normalized.connectivity.runtime.proxy.enable_exit_node);
         assert!(normalized.connectivity.runtime.proxy.force_smoltcp);
         assert!(normalized.connectivity.runtime.proxy.icmp_failure_is_fatal);
+        assert!(
+            normalized
+                .connectivity
+                .runtime
+                .public_ipv6_provider
+                .provider_supported
+        );
         assert!(!normalized.connectivity.startup_plan.gateway);
         assert!(!normalized.connectivity.manual.allow_interface_bind);
         assert!(!normalized.connectivity.direct.allow_interface_bind);
@@ -815,6 +817,7 @@ data_compress_algo = "Zstd"
         )
         .unwrap();
         config.set_exit_nodes(vec!["10.144.144.2".parse().unwrap()]);
+        config.set_ipv6_public_addr_provider(true);
         config.get_id();
         let before = config.dump();
 
@@ -858,6 +861,13 @@ data_compress_algo = "Zstd"
         );
         assert!(normalized.peer.exit_nodes.is_empty());
         assert!(!normalized.connectivity.runtime.proxy.enable_exit_node);
+        assert!(
+            !normalized
+                .connectivity
+                .runtime
+                .public_ipv6_provider
+                .provider_enabled
+        );
         let flags = &normalized.peer.snapshot.flags;
         assert!(!flags.enable_kcp_proxy);
         assert!(!flags.enable_quic_proxy);

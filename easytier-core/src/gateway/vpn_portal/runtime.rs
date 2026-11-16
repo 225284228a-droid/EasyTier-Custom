@@ -1265,13 +1265,6 @@ mod tests {
             Arc::new(()),
             Arc::new(()),
         );
-        let vpn_engine =
-            Arc::new(
-                crate::peers::vpn_policy::VpnPolicyEngine::new(
-                    crate::config::vpn::VpnConfig::default(),
-                )
-                .unwrap(),
-            );
         let peer = Arc::new(
             PeerManagerCore::new(
                 portable,
@@ -1280,7 +1273,6 @@ mod tests {
                 Arc::new(()),
                 packet_sender,
                 public_ipv6_runtime,
-                vpn_engine,
                 Arc::new(()),
                 None,
                 Arc::new(()),

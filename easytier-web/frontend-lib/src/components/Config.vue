@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { v4 as uuidv4 } from 'uuid'
 import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputSwitch, InputText, MultiSelect, Panel, Password, Select, SelectButton, ToggleButton } from 'primevue'
-import VpnConfig from './VpnConfig.vue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import {
@@ -752,16 +751,6 @@ function removeVpnPortalClient(index: number) {
                   <AutoComplete id="exit_nodes" v-model="curNetwork.exit_nodes"
                     :placeholder="t('chips_placeholder', ['192.168.8.8'])" class="w-full" multiple fluid
                     :suggestions="exitNodesSuggestions" @complete="searchExitNodesSuggestions" />
-                </div>
-              </div>
-
-              <div v-if="extensionSupported('vpn')" class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
-                  <div class="flex">
-                    <label>{{ t('vpn_section') }}</label>
-                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('vpn_section_help')"></span>
-                  </div>
-                  <VpnConfig :network="curNetwork" />
                 </div>
               </div>
 

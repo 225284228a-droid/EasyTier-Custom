@@ -47,10 +47,9 @@ use easytier::{
                 ConnectorManageRpcClientFactory, CredentialInfo, CredentialManageRpc,
                 CredentialManageRpcClientFactory, DumpRouteRequest, ForeignNetworkEntryPb,
                 GenerateCredentialRequest, GetAclStatsRequest, GetPrometheusStatsRequest,
-                GetStatsRequest, GetVpnPortalInfoRequest, GetVpnStatusRequest,
-                GetVpnStatusResponse, GetWhitelistRequest, GetWhitelistResponse,
-                InstanceIdentifier, ListConnectorRequest, ListCredentialsRequest,
-                ListCredentialsResponse, ListForeignNetworkRequest,
+                GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest,
+                GetWhitelistResponse, InstanceIdentifier, ListConnectorRequest,
+                ListCredentialsRequest, ListCredentialsResponse, ListForeignNetworkRequest,
                 ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
                 ListPeerResponse, ListPortForwardRequest, ListPortForwardResponse,
                 ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest,
@@ -205,8 +204,6 @@ enum PeerSubCommand {
     List,
     /// Show public IPv6 address information
     Ipv6,
-    /// Show subnet exit VPN status
-    Vpn,
     /// List foreign networks discovered by this instance
     ListForeign {
         #[arg(
@@ -1681,19 +1678,6 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
-    async fn fetch_vpn_status(&self) -> Result<GetVpnStatusResponse, Error> {
-        Ok(self
-            .get_peer_manager_client()
-            .await?
-            .get_vpn_status(
-                BaseController::default(),
-                GetVpnStatusRequest {
-                    instance: Some(self.instance_selector.clone()),
-                },
-            )
-            .await?)
-    }
-
     async fn fetch_connector_list(&self) -> Result<Vec<Connector>, Error> {
         Ok(self
             .get_connector_manager_client()
@@ -2254,51 +2238,6 @@ impl<'a> CommandHandler<'a> {
                 }
             }
 
-            Ok(())
-        })
-    }
-
-    async fn handle_peer_vpn(&self) -> Result<(), Error> {
-        #[derive(tabled::Tabled, serde::Serialize)]
-        struct VpnRuleRow {
-            cidr: String,
-            exit: String,
-            state: String,
-        }
-        let results = self
-            .collect_instance_results(|handler| Box::pin(handler.fetch_vpn_status()))
-            .await?;
-        if self.verbose || *self.output_format == OutputFormat::Json {
-            return self.print_json_results(results);
-        }
-        self.print_results(&results, |status| {
-            println!(
-                "vpn enabled: {}  exit_enabled: {}",
-                status.enabled, status.exit_enabled
-            );
-            println!(
-                "routes: active={} installed={}",
-                status.routes_active, status.routes_installed
-            );
-            if !status.activation_error.is_empty() {
-                println!("VPN activation failed: {}", status.activation_error);
-            }
-            let rules = status
-                .rules
-                .iter()
-                .map(|r| VpnRuleRow {
-                    cidr: r.cidr.clone(),
-                    exit: if r.exit_addr.is_empty() {
-                        "exit_nodes".to_owned()
-                    } else {
-                        r.exit_addr.clone()
-                    },
-                    state: r.state.clone(),
-                })
-                .collect::<Vec<_>>();
-            if !rules.is_empty() {
-                print_output(&rules, self.output_format, &[], &[], self.no_trunc)?;
-            }
             Ok(())
         })
     }
@@ -3964,9 +3903,6 @@ async fn main() -> Result<(), Error> {
             }
             Some(PeerSubCommand::Ipv6) => {
                 handler.handle_peer_ipv6().await?;
-            }
-            Some(PeerSubCommand::Vpn) => {
-                handler.handle_peer_vpn().await?;
             }
             Some(PeerSubCommand::ListForeign { trusted_keys }) => {
                 handler.handle_foreign_network_list(*trusted_keys).await?;

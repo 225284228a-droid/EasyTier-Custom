@@ -113,7 +113,6 @@ fn document_paths(field: &str) -> Option<Vec<&'static str>> {
         "listener_urls" => vec!["listeners"],
         "enable_manual_routes" | "routes" => vec!["routes"],
         "exit_nodes" => vec!["exit_nodes"],
-        "vpn" => vec!["vpn"],
         "enable_socks5" | "socks5_port" => vec!["socks5_proxy"],
         "mapped_listeners" => vec!["mapped_listeners"],
         "port_forwards" => vec!["port_forward"],
@@ -506,7 +505,6 @@ pub(super) fn merge_legacy_form_changes(
         "dhcp",
         "dhcpv6",
         "exit_nodes",
-        "vpn",
         "secure_mode",
         "mapped_listeners",
     ] {
@@ -741,14 +739,13 @@ mod tests {
     #[test]
     fn full_form_save_removes_explicit_defaults_and_keeps_unmanaged_values() {
         let original = format!(
-            "{ORIGINAL}private_mode = true\nlatency_first = false\nmulti_thread_count = 7\n[vpn]\nrules = []\n"
+            "{ORIGINAL}private_mode = true\nlatency_first = false\nmulti_thread_count = 7\n"
         );
         let loaded = TomlConfig::new_from_str(&original).unwrap();
         let form = network_config_from_toml(&loaded);
         let merged = merge_legacy_form_changes(&original, &form.gen_config().unwrap()).unwrap();
         assert!(merged.starts_with("# retained comment"));
         let document: toml::Table = toml::from_str(&merged).unwrap();
-        assert!(!document.contains_key("vpn"));
         let flags = document["flags"].as_table().unwrap();
         assert!(!flags.contains_key("default_protocol"));
         assert!(!flags.contains_key("private_mode"));

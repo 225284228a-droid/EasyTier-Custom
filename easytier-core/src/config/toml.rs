@@ -157,9 +157,6 @@ pub trait ConfigLoader: Send + Sync {
     fn get_exit_nodes(&self) -> Vec<IpAddr>;
     fn set_exit_nodes(&self, nodes: Vec<IpAddr>);
 
-    fn get_vpn(&self) -> crate::config::vpn::VpnConfig;
-    fn set_vpn(&self, vpn: crate::config::vpn::VpnConfig);
-
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>>;
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>);
 
@@ -502,7 +499,6 @@ struct Config {
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
     exit_nodes: Option<Vec<IpAddr>>,
-    vpn: Option<crate::config::vpn::VpnConfig>,
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
@@ -642,13 +638,6 @@ impl TomlConfig {
         if config.port_forward.as_ref().is_some_and(Vec::is_empty) {
             config.port_forward = None;
         }
-        if config
-            .vpn
-            .as_ref()
-            .is_some_and(|vpn| *vpn == crate::config::vpn::VpnConfig::default())
-        {
-            config.vpn = None;
-        }
         if config.secure_mode.as_ref().is_some_and(|secure| {
             !secure.enabled
                 && secure.local_private_key.is_none()
@@ -679,13 +668,6 @@ impl TomlConfig {
         }
         if config.traffic_disguise.as_deref() == Some("speedtest") {
             config.traffic_disguise = None;
-        }
-        if config
-            .vpn
-            .as_ref()
-            .is_some_and(|vpn| *vpn == crate::config::vpn::VpnConfig::default())
-        {
-            config.vpn = None;
         }
         let secure_mode_enabled = config.secure_mode.as_ref().is_some_and(|mode| mode.enabled);
         if let Some(identity) = config.network_identity.as_mut() {
@@ -775,10 +757,6 @@ impl TomlConfig {
             config.parallel_connections,
             config.traffic_disguise.as_deref(),
         )?;
-        if let Some(vpn) = &config.vpn {
-            vpn.validate()
-                .map_err(|error| anyhow::anyhow!("invalid [vpn] config: {error}"))?;
-        }
         config.flags.validate_p2p_disguise()?;
         config.secure_mode = config
             .secure_mode
@@ -1218,14 +1196,6 @@ impl ConfigLoader for TomlConfig {
 
     fn set_exit_nodes(&self, nodes: Vec<IpAddr>) {
         self.config.lock().unwrap().exit_nodes = Some(nodes);
-    }
-
-    fn get_vpn(&self) -> crate::config::vpn::VpnConfig {
-        self.config.lock().unwrap().vpn.clone().unwrap_or_default()
-    }
-
-    fn set_vpn(&self, vpn: crate::config::vpn::VpnConfig) {
-        self.config.lock().unwrap().vpn = Some(vpn);
     }
 
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>> {

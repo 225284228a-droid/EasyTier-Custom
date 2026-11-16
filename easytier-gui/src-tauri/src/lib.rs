@@ -20,15 +20,14 @@ use easytier::instance::factory::MobileTunConfig;
 use easytier::instance::factory::subscribe_native_instance_event;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use easytier::instance::factory::{
-    attach_mobile_tun_fd_with_generation, get_mobile_tun_config as native_mobile_tun_config,
+    attach_mobile_tun_fd, get_mobile_tun_config as native_mobile_tun_config,
 };
 use easytier::proto::api::config::{
     ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch, PatchConfigRequest,
     VpnPortalClientPatch,
 };
 use easytier::proto::api::instance::{
-    GetVpnPortalInfoRequest, GetVpnStatusRequest, GetVpnStatusResponse, InstanceIdentifier,
-    PeerManageRpc, PeerManageRpcClientFactory, VpnPortalInfo, VpnPortalRpc,
+    GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
     VpnPortalRpcClientFactory, instance_identifier,
 };
 use easytier::proto::api::manage::{
@@ -176,30 +175,6 @@ async fn collect_network_info(instance_id: String) -> Result<CollectNetworkInfoR
 }
 
 #[tauri::command]
-async fn get_vpn_status(instance_id: String) -> Result<Option<GetVpnStatusResponse>, String> {
-    let instance_id = instance_id
-        .parse::<uuid::Uuid>()
-        .map_err(|e| e.to_string())?;
-    let client_manager = get_client_manager!()?;
-    let client = client_manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<PeerManageRpcClientFactory<BaseController>>(1, 1, "".to_string());
-    let response = client
-        .get_vpn_status(
-            BaseController::default(),
-            GetVpnStatusRequest {
-                instance: Some(InstanceIdentifier {
-                    selector: Some(instance_identifier::Selector::Id(instance_id.into())),
-                }),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(Some(response))
-}
-
-#[tauri::command]
 async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo>, String> {
     let instance_id = instance_id
         .parse::<uuid::Uuid>()
@@ -285,34 +260,19 @@ async fn set_logging_level(level: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn set_tun_fd(
-    fd: i32,
-    instance_ids: Option<Vec<Uuid>>,
-    generation: Option<String>,
-) -> Result<MobileTunConfig, String> {
+async fn set_tun_fd(fd: i32, instance_ids: Option<Vec<Uuid>>) -> Result<MobileTunConfig, String> {
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    let generation = generation
-        .map(|value| {
-            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err("TUN generation must be an unsigned decimal integer".to_string());
-            }
-            value.parse::<u64>().map_err(|e| e.to_string())
-        })
-        .transpose()?;
+
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    return attach_mobile_tun_fd_with_generation(
-        instance_manager.as_ref(),
-        fd,
-        instance_ids.as_deref(),
-        generation,
-    )
-    .await
-    .map_err(|error| error.to_string());
+    return attach_mobile_tun_fd(instance_manager.as_ref(), fd, instance_ids.as_deref())
+        .await
+        .map_err(|error| error.to_string());
+
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (instance_manager, fd, instance_ids, generation);
+        let _ = (instance_manager, fd, instance_ids);
         Err("mobile TUN attachment is unavailable on this platform".to_owned())
     }
 }
@@ -1062,7 +1022,6 @@ pub fn run_gui() -> std::process::ExitCode {
             parse_network_config,
             generate_network_config,
             collect_network_info,
-            get_vpn_status,
             get_vpn_portal_info,
             patch_vpn_portal_clients,
             set_logging_level,

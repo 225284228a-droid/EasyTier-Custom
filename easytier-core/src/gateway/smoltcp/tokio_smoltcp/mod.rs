@@ -42,7 +42,6 @@ pub struct NetConfig {
     pub ip_addr: IpCidr,
     pub gateway: Vec<IpAddress>,
     pub buffer_size: BufferSize,
-    additional_ips: Vec<IpCidr>,
 }
 
 impl NetConfig {
@@ -57,13 +56,7 @@ impl NetConfig {
             ip_addr,
             gateway,
             buffer_size: buffer_size.unwrap_or_default(),
-            additional_ips: Vec::new(),
         }
-    }
-
-    pub fn with_additional_ip(mut self, address: IpCidr) -> Self {
-        self.additional_ips.push(address);
-        self
     }
 }
 
@@ -103,9 +96,6 @@ impl Net {
         let ip_addr = config.ip_addr;
         iface.update_ip_addrs(|ip_addrs| {
             ip_addrs.push(ip_addr).unwrap();
-            for address in config.additional_ips {
-                ip_addrs.push(address).unwrap();
-            }
         });
         for gateway in config.gateway {
             match gateway {
@@ -175,15 +165,12 @@ impl Net {
         let addr = self.set_address(addr);
         TcpListener::new(self.reactor.clone(), socket_addr_to_endpoint(addr)).await
     }
-    pub async fn tcp_connect_from(
-        &self,
-        remote: SocketAddr,
-        local: SocketAddr,
-    ) -> io::Result<TcpStream> {
+    /// Opens a TCP connection to a remote host.
+    pub async fn tcp_connect(&self, addr: SocketAddr, local_port: u16) -> io::Result<TcpStream> {
         TcpStream::connect(
             self.reactor.clone(),
-            socket_addr_to_endpoint(local),
-            socket_addr_to_endpoint(remote),
+            (self.ip_addr.address(), local_port).into(),
+            socket_addr_to_endpoint(addr),
         )
         .await
     }

@@ -14,9 +14,6 @@ pub use super::icmp_host::{IcmpProxyHost, IcmpProxySocket, ProxyRuntimeError};
 pub(crate) struct ProxyRuntimeSnapshot {
     pub local_inet: Option<Ipv4Inet>,
     pub virtual_ipv4: Option<Ipv4Addr>,
-    /// This node's own mesh IPv6 address; v6 exit traffic re-enters the
-    /// userspace NAT through it.
-    pub local_ipv6: Option<std::net::Ipv6Addr>,
     pub no_tun: bool,
     pub enable_exit_node: bool,
     pub smoltcp_enabled: bool,

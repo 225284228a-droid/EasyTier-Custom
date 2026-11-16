@@ -433,10 +433,6 @@ fn dispatcher_claims_for_ifcfg_transition(
         ipv6_addresses: merged_items(&old_claims.ipv6_addresses, &next_claims.ipv6_addresses),
         ipv4_routes: merged_items(&old_claims.ipv4_routes, &next_claims.ipv4_routes),
         ipv6_routes: merged_items(&old_claims.ipv6_routes, &next_claims.ipv6_routes),
-        vpn_capture_routes: merged_items(
-            &old_claims.vpn_capture_routes,
-            &next_claims.vpn_capture_routes,
-        ),
         mtu: None,
     }
 }
@@ -570,33 +566,12 @@ impl SharedVirtualNicMember {
         }
     }
 
-    pub(crate) async fn shutdown(&self) -> Result<(), Error> {
-        self.registration
-            .member_tunnel_table
-            .unregister(self.member_id, self.registration.registration_id);
-        let member = self.clone();
-        SHARED_VIRTUAL_NIC_RUNTIME
-            .spawn(async move {
-                member
-                    .shared_nic
-                    .lock()
-                    .await
-                    .remove_member_registration_claims(
-                        member.member_id,
-                        member.registration.registration_id,
-                    )
-                    .await
-            })
-            .await
-            .map_err(anyhow::Error::from)?
-    }
-
     #[cfg(mobile)]
     pub(crate) async fn claims(&self) -> SharedIfConfigClaims {
         self.shared_nic.lock().await.ifcfg.claims_of(self.member_id)
     }
 
-    #[cfg(mobile)]
+    #[cfg(any(mobile, test))]
     pub(crate) async fn replace_claims(
         &self,
         mut claims: SharedIfConfigClaims,
@@ -780,14 +755,6 @@ impl SharedVirtualNicMember {
         .await
     }
 
-    pub(crate) async fn replace_vpn_capture_routes(
-        &self,
-        routes: BTreeSet<easytier_core::config::vpn::VpnCidr>,
-    ) -> Result<(), Error> {
-        self.update_claims(move |claims| claims.vpn_capture_routes = routes)
-            .await
-    }
-
     async fn update_claims<F>(&self, update: F) -> Result<(), Error>
     where
         F: FnOnce(&mut SharedIfConfigClaims) + Send + 'static,
@@ -810,33 +777,6 @@ impl SharedVirtualNicMember {
             })
             .await
             .map_err(anyhow::Error::from)?
-    }
-}
-
-#[async_trait::async_trait]
-impl super::vpn_routes::VpnCaptureClaims for SharedVirtualNicMember {
-    async fn replace_routes(
-        &self,
-        routes: BTreeSet<easytier_core::config::vpn::VpnCidr>,
-    ) -> anyhow::Result<()> {
-        self.replace_vpn_capture_routes(routes)
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn quarantine(&self) -> anyhow::Result<()> {
-        let member = self.clone();
-        SHARED_VIRTUAL_NIC_RUNTIME
-            .spawn(async move {
-                member
-                    .shared_nic
-                    .lock()
-                    .await
-                    .invalidate_and_shutdown_dispatcher()
-                    .await;
-            })
-            .await?;
-        Ok(())
     }
 }
 

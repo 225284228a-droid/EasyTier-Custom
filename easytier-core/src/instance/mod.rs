@@ -268,18 +268,6 @@ pub trait InstanceRuntimeHost: std::any::Any + Send + Sync + 'static {
     fn attach_tun_fd(&self, _fd: i32) -> anyhow::Result<()> {
         anyhow::bail!("external TUN attachment is not supported by this Host")
     }
-
-    async fn attach_tun_fd_and_wait(&self, fd: i32) -> anyhow::Result<()> {
-        self.attach_tun_fd(fd)
-    }
-
-    async fn attach_tun_fd_and_wait_with_generation(
-        &self,
-        fd: i32,
-        _generation: Option<u64>,
-    ) -> anyhow::Result<()> {
-        self.attach_tun_fd_and_wait(fd).await
-    }
 }
 
 #[async_trait::async_trait]
@@ -338,8 +326,6 @@ where
     pub public_ipv6_provider: Option<Arc<dyn PublicIpv6ProviderPlatform>>,
     #[cfg(feature = "vpn-portal")]
     pub vpn_portal: Option<Arc<dyn PortalHost>>,
-    /// Optional host adapter exposing VPN route-manager state for status.
-    pub vpn_route_state: Option<Arc<dyn crate::peers::vpn_policy::VpnRouteStateHost>>,
 }
 
 impl<H> CoreHostAdapters<H>
@@ -399,7 +385,6 @@ where
             public_ipv6_provider: None,
             #[cfg(feature = "vpn-portal")]
             vpn_portal: None,
-            vpn_route_state: None,
         }
     }
 }
@@ -429,10 +414,6 @@ where
     pub(super) operation: Mutex<()>,
     pub(super) cancel: CancellationToken,
     pub(super) peer_manager: Arc<PeerManagerCore>,
-    #[cfg(feature = "management-rpc")]
-    vpn_engine: Arc<crate::peers::vpn_policy::VpnPolicyEngine>,
-    #[cfg(feature = "management-rpc")]
-    vpn_route_state: Option<Arc<dyn crate::peers::vpn_policy::VpnRouteStateHost>>,
     packet_plane: Arc<CorePacketPlane>,
     pub(super) manual: Option<ManualConnectorManager<H>>,
     pub(super) direct: Option<DirectConnectorManager<H>>,
@@ -570,9 +551,6 @@ where
             public_ipv6_host,
             public_ipv6_events,
         );
-        let vpn_engine = Arc::new(crate::peers::vpn_policy::VpnPolicyEngine::new(
-            config.peer.vpn.clone(),
-        )?);
         let running_listeners = Arc::new(RunningListenerRegistry::default());
         let stun = (connectivity_mode == CoreConnectivityMode::Full)
             .then(|| Self::prepare_stun(&adapters, &config.connectivity));
@@ -597,7 +575,6 @@ where
             peer_stun,
             packet_tx,
             public_ipv6_runtime.clone(),
-            vpn_engine.clone(),
             events.clone(),
             adapters.credential_storage.take(),
             foreign_rpc_registrar,
@@ -641,10 +618,6 @@ where
             public_ipv6_provider,
             #[cfg(feature = "vpn-portal")]
             vpn_portal,
-            #[cfg(feature = "management-rpc")]
-            vpn_route_state,
-            #[cfg(not(feature = "management-rpc"))]
-                vpn_route_state: _,
         } = adapters;
         let host_listener_registrations = if connectivity_mode == CoreConnectivityMode::OutboundOnly
         {
@@ -924,10 +897,6 @@ where
         Ok(Arc::new(Self {
             instance_name,
             management: ManagementState::new(toml_config, host_config),
-            #[cfg(feature = "management-rpc")]
-            vpn_engine: vpn_engine.clone(),
-            #[cfg(feature = "management-rpc")]
-            vpn_route_state,
             instance_runtime,
             state: AtomicU8::new(CoreInstanceState::Created as u8),
             latest_error: RwLock::new(None),

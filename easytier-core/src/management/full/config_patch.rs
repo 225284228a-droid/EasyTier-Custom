@@ -108,15 +108,6 @@ where
             .update_exit_nodes(normalized.peer.exit_nodes.clone())
             .await;
 
-        if let Some(vpn_pb) = patch.vpn {
-            let vpn = crate::config::vpn::pb::from_pb(vpn_pb).map_err(anyhow::Error::msg)?;
-            vpn.validate()?;
-            candidate.set_vpn(vpn.clone());
-            validate_persist_and_commit_candidate(instance, &config, &candidate, persistence)
-                .await?;
-            instance.update_vpn_config(vpn).await?;
-        }
-
         let result = patch_mapped_listeners(&candidate, patch.mapped_listeners);
         validate_persist_and_commit_candidate(instance, &config, &candidate, persistence).await?;
         result?;

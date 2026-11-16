@@ -104,19 +104,6 @@ mod tests {
         for (input, expected) in [
             ("[", "WASI create config"),
             ("dhcp = 'yes'", "invalid DHCP CIDR"),
-            ("[vpn]\ndns_protect = true", "dns_protect"),
-            (
-                "[[vpn.rules]]\ncidr = '203.0.113.0/24'\naction = 'exit'\nexits = ['10.144.0.2']",
-                "unknown field",
-            ),
-            (
-                "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.2'\n[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '10.144.0.3'",
-                "duplicate VPN rule CIDR",
-            ),
-            (
-                "[[vpn.rules]]\ncidr = '203.0.113.0/24'\nexit = '127.0.0.1'",
-                "invalid exit address",
-            ),
         ] {
             let error = create_config(input).parse_config().unwrap_err();
             assert!(error.to_string().contains(expected), "{input}: {error}");

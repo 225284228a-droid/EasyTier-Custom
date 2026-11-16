@@ -30,7 +30,6 @@ use crate::{
 };
 
 use super::udp_src;
-use crate::socket_protector::ProtectedSocket;
 
 #[cfg(any(feature = "wireguard", test))]
 pub(crate) type RuntimeUdpSessionSocketListener = UdpSessionSocketListener<NativeHostRuntime>;
@@ -48,30 +47,17 @@ pub(crate) fn new_runtime_udp_session_listener(
 }
 
 pub struct RuntimeUdpSocket {
-    socket: Arc<ProtectedSocket<UdpSocket>>,
+    socket: Arc<UdpSocket>,
     context: SocketContext,
 }
 
 impl RuntimeUdpSocket {
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     fn new(socket: Arc<UdpSocket>) -> Self {
-        let clone: std::net::UdpSocket = socket2::SockRef::from(socket.as_ref())
-            .try_clone()
-            .unwrap()
-            .into();
-        Self::new_with_context(
-            Arc::new(ProtectedSocket::new(
-                UdpSocket::from_std(clone).unwrap(),
-                None,
-            )),
-            SocketContext::default(),
-        )
+        Self::new_with_context(socket, SocketContext::default())
     }
 
-    pub(crate) fn new_with_context(
-        socket: Arc<ProtectedSocket<UdpSocket>>,
-        context: SocketContext,
-    ) -> Self {
+    pub(crate) fn new_with_context(socket: Arc<UdpSocket>, context: SocketContext) -> Self {
         if let Err(err) = udp_src::enable_recv_pktinfo(&socket) {
             tracing::debug!(?err, "enable udp pktinfo failed");
         }
@@ -79,7 +65,7 @@ impl RuntimeUdpSocket {
     }
 
     #[cfg(target_os = "windows")]
-    pub(crate) fn socket(&self) -> Arc<ProtectedSocket<UdpSocket>> {
+    pub(crate) fn socket(&self) -> Arc<UdpSocket> {
         self.socket.clone()
     }
 }
@@ -111,10 +97,10 @@ impl VirtualUdpSocket for RuntimeUdpSocket {
         if let (Some(IpAddr::V6(src)), Some(ifindex), SocketAddr::V6(dst)) =
             (meta.src_ip, meta.src_ifindex, addr)
         {
-            return self.socket.send_to_with_src_ipv6(src, ifindex, dst, data);
+            return udp_src::send_to_with_src_ipv6(&self.socket, src, ifindex, dst, data);
         }
         if let Some(src_ip) = meta.src_ip {
-            return self.socket.send_to_with_src_ip(src_ip, addr, data).await;
+            return udp_src::send_to_with_src_ip(&self.socket, src_ip, addr, data).await;
         }
         self.socket.try_send_to(data, addr)
     }
@@ -178,9 +164,7 @@ impl RuntimeUdpSocketFactory {
 
 /// Creates a host-owned UDP socket, including any required protection, before
 /// it can be used by DNS, a route probe, or a virtual socket adapter.
-pub(crate) async fn create_udp_socket(
-    options: &UdpBindOptions,
-) -> anyhow::Result<ProtectedSocket<UdpSocket>> {
+pub(crate) async fn create_udp_socket(options: &UdpBindOptions) -> anyhow::Result<UdpSocket> {
     let factory = RuntimeUdpSocketFactory::new();
     let bind_addr = options
         .local_addr

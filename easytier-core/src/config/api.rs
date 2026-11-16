@@ -54,10 +54,15 @@ pub fn network_config_from_toml(config: &TomlConfig) -> NetworkConfig {
         result.network_length = Some(ipv4.network_length() as i32);
     }
 
-    let vpn = config.get_vpn();
-    if vpn != default_config.get_vpn() {
-        result.vpn = Some(crate::config::vpn::pb::to_pb(&vpn));
+    if config.get_ipv6_public_addr_provider() != default_config.get_ipv6_public_addr_provider() {
+        result.ipv6_public_addr_provider = Some(config.get_ipv6_public_addr_provider());
     }
+    if config.get_ipv6_public_addr_auto() != default_config.get_ipv6_public_addr_auto() {
+        result.ipv6_public_addr_auto = Some(config.get_ipv6_public_addr_auto());
+    }
+    result.ipv6_public_addr_prefix = config
+        .get_ipv6_public_addr_prefix()
+        .map(|prefix| prefix.to_string());
 
     let peers = config.get_peers();
     result.networking_method = Some(NetworkingMethod::Manual as i32);

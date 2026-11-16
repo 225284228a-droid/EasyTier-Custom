@@ -1,13 +1,11 @@
 use super::FromUrl;
 use super::insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config};
 use super::traffic_disguise::{PacedSink, TrafficStyle};
-use crate::proto::common::TunnelInfo;
-#[cfg(test)]
-use crate::socket::tcp::RuntimeTcpSocket;
+use crate::tunnel::common::bind;
+use crate::{proto::common::TunnelInfo, socket::tcp::RuntimeTcpSocket};
 use anyhow::Context as _;
 use bytes::BytesMut;
 use cidr::IpCidr;
-use easytier_core::socket::tcp::VirtualTcpListener;
 use easytier_core::{
     packet::{ZCPacket, ZCPacketType},
     socket::tcp::VirtualTcpSocket,
@@ -23,9 +21,7 @@ use std::{
     task::{Context, Poll, ready},
     time::Duration,
 };
-#[cfg(test)]
-use tokio::net::TcpListener;
-use tokio::time::timeout;
+use tokio::{net::TcpListener, time::timeout};
 use tokio_rustls::TlsAcceptor;
 use tokio_util::either::Either;
 use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message, ServerBuilder};
@@ -373,7 +369,7 @@ fn socket_url(scheme: &str, addr: SocketAddr) -> url::Url {
 #[derive(Debug)]
 pub struct WsTunnelListener {
     addr: url::Url,
-    listener: Option<crate::socket::tcp::RuntimeTcpListener>,
+    listener: Option<TcpListener>,
     socket_mark: Option<u32>,
 }
 
@@ -394,10 +390,12 @@ impl WsTunnelListener {
         self.listener = None;
 
         let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
-        let mut options = easytier_core::socket::tcp::TcpListenOptions::direct_connect(addr);
-        options.bind.only_v6 = true;
-        options.bind.context.socket_mark = self.socket_mark;
-        let listener = crate::socket::tcp::bind_tcp_listener(options).await?;
+        let listener = bind::<TcpListener>()
+            .addr(addr)
+            .only_v6(true)
+            .maybe_socket_mark(self.socket_mark)
+            .call()
+            .await?;
 
         self.addr
             .set_port(Some(listener.local_addr()?.port()))
@@ -414,7 +412,7 @@ impl WsTunnelListener {
             let (stream, _) = listener.accept().await?;
             match timeout(
                 SERVER_HANDSHAKE_TIMEOUT,
-                upgrade_accepted(stream, self.addr.clone()),
+                upgrade_accepted(RuntimeTcpSocket::new(stream), self.addr.clone()),
             )
             .await
             {

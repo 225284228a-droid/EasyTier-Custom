@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-#[cfg(any(feature = "web-client", test))]
+#[cfg(feature = "web-client")]
 use easytier_core::config::runtime::CoreInstanceRuntimeConfig;
 use easytier_core::{
     gateway::dhcp::DhcpHost, host::packet::HostPacketReceiver, instance::CorePacketPlane,
@@ -34,11 +34,6 @@ use event_journal::EventJournal;
 #[cfg(feature = "tun")]
 use magic_dns::MagicDnsRuntime;
 use tun_runtime::NativeTunRuntime;
-
-#[cfg(feature = "tun")]
-#[derive(Debug, thiserror::Error)]
-#[error("stale mobile TUN generation {0:?}")]
-pub(crate) struct StaleMobileTunGeneration(pub Option<u64>);
 
 pub(crate) struct NativeInstanceRuntimeHost {
     global_ctx: ArcGlobalCtx,
@@ -168,19 +163,6 @@ impl NativeInstanceRuntimeHost {
         claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
     ) -> anyhow::Result<()> {
         self.tun.attach_mobile_fd(fd, replace_tun_fd, claims).await
-    }
-
-    #[cfg(all(feature = "tun", mobile))]
-    pub(crate) async fn attach_mobile_tun_fd_with_generation(
-        &self,
-        fd: i32,
-        replace_tun_fd: bool,
-        claims: Option<crate::instance::shared_virtual_nic::SharedIfConfigClaims>,
-        generation: Option<u64>,
-    ) -> anyhow::Result<()> {
-        self.tun
-            .attach_mobile_fd_with_generation(fd, replace_tun_fd, claims, generation)
-            .await
     }
 
     #[cfg(all(feature = "tun", mobile))]

@@ -82,10 +82,7 @@ pub enum CoreEvent {
         added: Vec<Ipv6Inet>,
         removed: Vec<Ipv6Inet>,
     },
-    /// Per-exit liveness view of the multi-exit VPN (virtual IP -> reachable).
-    /// Emitted only when the view changes. Reachability selects the exit;
-    /// capture routes remain installed while every exit of a rule is down.
-    VpnExitLivenessUpdated(Vec<(String, bool)>),
+
     VpnPortalStarted(String),
     VpnPortalClientConnected {
         portal: String,

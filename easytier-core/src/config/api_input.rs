@@ -155,7 +155,6 @@ const FORM_MANAGED_TOML_FIELDS: &[&str] = &[
     "ipv6_public_addr_provider",
     "ipv6_public_addr_auto",
     "ipv6_public_addr_prefix",
-    "vpn",
     "dhcp",
     "dhcpv6",
     "network_identity",
@@ -510,30 +509,6 @@ impl NetworkConfigExt for NetworkConfig {
             cfg.set_exit_nodes(exit_nodes);
         }
 
-        if let Some(vpn) = self.vpn.as_ref() {
-            let vpn = crate::config::vpn::pb::from_pb(vpn.clone())
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            cfg.set_vpn(vpn);
-        }
-
-        if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {
-            cfg.set_ipv6_public_addr_provider(ipv6_public_addr_provider);
-        }
-
-        if let Some(ipv6_public_addr_auto) = self.ipv6_public_addr_auto {
-            cfg.set_ipv6_public_addr_auto(ipv6_public_addr_auto);
-        }
-
-        if let Some(ipv6_public_addr_prefix) = self
-            .ipv6_public_addr_prefix
-            .as_ref()
-            .filter(|prefix| !prefix.is_empty())
-        {
-            cfg.set_ipv6_public_addr_prefix(Some(ipv6_public_addr_prefix.parse().with_context(
-                || format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}"),
-            )?));
-        }
-
         if self.enable_socks5.unwrap_or_default()
             && let Some(socks5_port) = self.socks5_port
         {
@@ -577,6 +552,24 @@ impl NetworkConfigExt for NetworkConfig {
                     .map(normalize_secure_mode_config)
                     .transpose()?,
             );
+        }
+
+        if let Some(ipv6_public_addr_provider) = self.ipv6_public_addr_provider {
+            cfg.set_ipv6_public_addr_provider(ipv6_public_addr_provider);
+        }
+
+        if let Some(ipv6_public_addr_auto) = self.ipv6_public_addr_auto {
+            cfg.set_ipv6_public_addr_auto(ipv6_public_addr_auto);
+        }
+
+        if let Some(ipv6_public_addr_prefix) = self
+            .ipv6_public_addr_prefix
+            .as_ref()
+            .filter(|prefix| !prefix.is_empty())
+        {
+            cfg.set_ipv6_public_addr_prefix(Some(ipv6_public_addr_prefix.parse().with_context(
+                || format!("failed to parse ipv6 public address prefix: {ipv6_public_addr_prefix}"),
+            )?));
         }
 
         if let Some(acl) = self.acl.as_ref()
@@ -725,11 +718,6 @@ impl NetworkConfigExt for NetworkConfig {
         result.ipv6_public_addr_prefix = config
             .get_ipv6_public_addr_prefix()
             .map(|prefix| prefix.to_string());
-
-        let vpn = config.get_vpn();
-        if vpn != default_config.get_vpn() {
-            result.vpn = Some(crate::config::vpn::pb::to_pb(&vpn));
-        }
 
         let peers = config.get_peers();
         result.networking_method = Some(NetworkingMethod::Manual as i32);

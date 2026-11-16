@@ -4,8 +4,8 @@ use easytier_proto::{
     api::instance::{
         Connector, ConnectorManageRpc, ConnectorStatus, DumpRouteRequest, DumpRouteResponse,
         ForeignNetworkEntryPb, GetForeignNetworkSummaryRequest, GetForeignNetworkSummaryResponse,
-        GetVpnStatusRequest, GetVpnStatusResponse, ListConnectorRequest, ListConnectorResponse,
-        ListForeignNetworkRequest, ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
+        ListConnectorRequest, ListConnectorResponse, ListForeignNetworkRequest,
+        ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
         ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse,
         ListPublicIpv6InfoRequest, ListPublicIpv6InfoResponse, ListRouteRequest, ListRouteResponse,
         NodeInfo, PeerInfo, PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
@@ -595,14 +595,6 @@ where
             .local_public_ipv6_info()
             .await
             .into())
-    }
-
-    async fn get_vpn_status(
-        &self,
-        _: BaseController,
-        request: GetVpnStatusRequest,
-    ) -> rpc_types::error::Result<GetVpnStatusResponse> {
-        Ok(self.instance(request.instance.as_ref())?.vpn_status().await)
     }
 
     async fn list_route(

@@ -49,62 +49,6 @@ use super::shared_virtual_nic::{ArcSharedVirtualNicRegistry, SharedVirtualNicMem
 
 const NIC_PACKET_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Netlink sockets and their runtime stay on one thread while a namespace is
-/// selected. A setns guard must never migrate between Tokio worker threads.
-async fn configure_interface<F, Fut>(
-    net_ns: crate::common::netns::NetNS,
-    ifname: String,
-    ifcfg: Arc<dyn IfConfiguerTrait + Send + Sync>,
-    operation: F,
-) -> Result<(), Error>
-where
-    F: FnOnce(Arc<dyn IfConfiguerTrait + Send + Sync>, String) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
-{
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            net_ns.run(|| runtime.block_on(operation(ifcfg, ifname)))
-        })
-        .await
-        .map_err(|error| Error::AnyhowError(anyhow::Error::from(error)))?
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = net_ns;
-        operation(ifcfg, ifname).await
-    }
-}
-
-async fn shutdown_nic_tasks(
-    cancellation: &tokio_util::sync::CancellationToken,
-    packet_tasks: &mut JoinSet<()>,
-    control_tasks: &mut JoinSet<()>,
-) {
-    cancellation.cancel();
-    packet_tasks.shutdown().await;
-    while let Some(result) = control_tasks.join_next().await {
-        if let Err(error) = result {
-            tracing::error!(?error, "NIC control task failed during shutdown");
-        }
-    }
-}
-
-fn overlay_routes(
-    exclusions: easytier_core::config::vpn::routes::VpnRouteExclusions,
-) -> BTreeSet<easytier_core::config::vpn::VpnCidr> {
-    exclusions
-        .overlay
-        .into_iter()
-        .flat_map(|cidr| {
-            easytier_core::config::vpn::routes::subtract_cidrs(cidr, &exclusions.physical)
-        })
-        .collect()
-}
-
 pin_project! {
     pub struct TunStream {
         #[pin]
@@ -330,7 +274,7 @@ pub struct VirtualNic {
     config: VirtualNicConfig,
 
     ifname: Option<String>,
-    ifcfg: Arc<dyn IfConfiguerTrait + Send + Sync + 'static>,
+    ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 
     // Keep the name reserved through firewall cleanup. The device
     // itself may already have disappeared when its forwarding tasks stop.
@@ -365,7 +309,7 @@ impl VirtualNic {
         Self {
             config,
             ifname: None,
-            ifcfg: Arc::new(IfConfiger::default()),
+            ifcfg: Box::new(IfConfiger::default()),
             #[cfg(target_os = "windows")]
             name_reservation: None,
         }
@@ -751,14 +695,8 @@ impl VirtualNic {
 
         {
             // set mtu by ourselves, rust-tun does not handle it correctly on windows
-            let mtu = self.config.mtu;
-            configure_interface(
-                self.config.net_ns.clone(),
-                ifname.clone(),
-                self.ifcfg.clone(),
-                move |ifcfg, ifname| async move { ifcfg.set_mtu(&ifname, mtu).await },
-            )
-            .await?;
+            let _g = self.config.net_ns.guard();
+            self.ifcfg.set_mtu(ifname.as_str(), self.config.mtu).await?;
         }
 
         #[cfg(any(
@@ -817,13 +755,9 @@ impl VirtualNic {
     }
 
     pub async fn link_up(&self) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move { ifcfg.set_link_status(&ifname, true).await },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg.set_link_status(self.ifname(), true).await?;
+        Ok(())
     }
 
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
@@ -847,26 +781,19 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move {
-                ifcfg
-                    .add_ipv4_route_with_source_hint(&ifname, address, cidr, cost, source_hint)
-                    .await
-            },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .add_ipv4_route_with_source_hint(self.ifname(), address, cidr, cost, source_hint)
+            .await?;
+        Ok(())
     }
 
     pub async fn remove_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
-        configure_interface(self.config.net_ns.clone(), self.ifname().to_owned(), self.ifcfg.clone(),
-            move |ifcfg, ifname| async move {
-        ifcfg
-            .remove_ipv4_route(&ifname, address, cidr)
-            .await
-            }).await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .remove_ipv4_route(self.ifname(), address, cidr)
+            .await?;
+        Ok(())
     }
 
     pub async fn remove_route_with_cost_and_source_hint(
@@ -876,23 +803,17 @@ impl VirtualNic {
         cost: Option<i32>,
         source_hint: Option<Ipv4Addr>,
     ) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move {
-                ifcfg
-                    .remove_ipv4_route_with_cost_and_source_hint(
-                        &ifname,
-                        address,
-                        cidr,
-                        cost,
-                        source_hint,
-                    )
-                    .await
-            },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .remove_ipv4_route_with_cost_and_source_hint(
+                self.ifname(),
+                address,
+                cidr,
+                cost,
+                source_hint,
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
@@ -905,71 +826,53 @@ impl VirtualNic {
         cidr: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        configure_interface(self.config.net_ns.clone(), self.ifname().to_owned(), self.ifcfg.clone(),
-            move |ifcfg, ifname| async move {
-        ifcfg
-            .add_ipv6_route(&ifname, address, cidr, cost)
-            .await
-            }).await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .add_ipv6_route(self.ifname(), address, cidr, cost)
+            .await?;
+        Ok(())
     }
 
     pub async fn remove_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
-        configure_interface(self.config.net_ns.clone(), self.ifname().to_owned(), self.ifcfg.clone(),
-            move |ifcfg, ifname| async move {
-        ifcfg
-            .remove_ipv6_route(&ifname, address, cidr)
-            .await
-            }).await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .remove_ipv6_route(self.ifname(), address, cidr)
+            .await?;
+        Ok(())
     }
 
     pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move { ifcfg.remove_ip(&ifname, ip).await },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg.remove_ip(self.ifname(), ip).await?;
+        Ok(())
     }
 
     pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move { ifcfg.remove_ipv6(&ifname, ip).await },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
+        Ok(())
     }
 
     pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move { ifcfg.add_ipv4_ip(&ifname, ip, cidr as u8).await },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .add_ipv4_ip(self.ifname(), ip, cidr as u8)
+            .await?;
+        Ok(())
     }
 
     pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move { ifcfg.add_ipv6_ip(&ifname, ip, cidr as u8).await },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg
+            .add_ipv6_ip(self.ifname(), ip, cidr as u8)
+            .await?;
+        Ok(())
     }
 
     pub async fn set_mtu(&self, mtu: u32) -> Result<(), Error> {
-        configure_interface(
-            self.config.net_ns.clone(),
-            self.ifname().to_owned(),
-            self.ifcfg.clone(),
-            move |ifcfg, ifname| async move { ifcfg.set_mtu(&ifname, mtu).await },
-        )
-        .await
+        let _g = self.config.net_ns.guard();
+        self.ifcfg.set_mtu(self.ifname(), mtu).await?;
+        Ok(())
     }
 
     pub fn configured_mtu(&self) -> u32 {
@@ -986,7 +889,7 @@ impl VirtualNic {
         &mut self,
         ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
     ) {
-        self.ifcfg = ifcfg.into();
+        self.ifcfg = ifcfg;
     }
 
     pub fn get_ifcfg(&self) -> IfConfiger {
@@ -1165,22 +1068,9 @@ pub struct NicCtx {
 
     backend: NicBackend,
     tasks: JoinSet<()>,
-    control_tasks: JoinSet<()>,
-    cancellation: tokio_util::sync::CancellationToken,
-    vpn_exit_active: Arc<Mutex<super::vpn_exit_forwarding::VpnExitForwardingLease>>,
 
     #[cfg(target_os = "windows")]
     windows_udp_broadcast_relay: Option<AbortOnDropHandle<()>>,
-}
-
-impl Drop for NicCtx {
-    fn drop(&mut self) {
-        if !self.cancellation.is_cancelled() {
-            tracing::error!(
-                "NicCtx dropped without awaited shutdown; native route cleanup cannot be guaranteed"
-            );
-        }
-    }
 }
 
 impl NicCtx {
@@ -1201,6 +1091,13 @@ impl NicCtx {
         VirtualNicConfig::new(dev_name, mtu, global_ctx.net_ns.clone())
     }
 
+    pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
+        match self.backend {
+            NicBackend::Dedicated(_) => None,
+            NicBackend::Shared(_) => Some(self.backend.clone()),
+        }
+    }
+
     fn new_with_backend(
         global_ctx: ArcGlobalCtx,
         packet_plane: Arc<CorePacketPlane>,
@@ -1217,11 +1114,6 @@ impl NicCtx {
 
             backend,
             tasks: JoinSet::new(),
-            control_tasks: JoinSet::new(),
-            cancellation: tokio_util::sync::CancellationToken::new(),
-            vpn_exit_active: Arc::new(Mutex::new(
-                super::vpn_exit_forwarding::VpnExitForwardingLease::new(global_ctx.net_ns.clone()),
-            )),
 
             #[cfg(target_os = "windows")]
             windows_udp_broadcast_relay: None,
@@ -1267,29 +1159,10 @@ impl NicCtx {
         self.backend.ifname().await
     }
 
-    pub(crate) fn shared_route_backend_for_dns(&self) -> Option<NicBackend> {
-        match self.backend {
-            NicBackend::Dedicated(_) => None,
-            NicBackend::Shared(_) => Some(self.backend.clone()),
-        }
-    }
-
-    /// Stop packet I/O, then await every route owner and forwarding lease
-    /// before the virtual interface is dropped. No cleanup is detached.
     pub(crate) async fn shutdown(&mut self) {
-        shutdown_nic_tasks(&self.cancellation, &mut self.tasks, &mut self.control_tasks).await;
-        if let Err(error) = self.vpn_exit_active.lock().await.release().await {
-            tracing::error!(?error, "failed to release VPN exit forwarding lease");
-        }
-        #[cfg(target_os = "windows")]
-        {
-            self.windows_udp_broadcast_relay.take();
-        }
-        if let NicBackend::Shared(member) = &self.backend
-            && let Err(error) = member.shutdown().await
-        {
-            tracing::error!(?error, "failed to release shared NIC member");
-        }
+        // The forwarding tasks own the TUN stream and sink. Wait until both
+        // release the device before another NIC with the same name is created.
+        self.tasks.shutdown().await;
     }
 
     async fn tun_ifname(&self) -> Result<String, Error> {
@@ -1441,9 +1314,9 @@ impl NicCtx {
 
     async fn apply_route_changes(
         backend: &NicBackend,
-        cur_proxy_cidrs: &mut BTreeSet<easytier_core::config::vpn::VpnCidr>,
-        added: Vec<easytier_core::config::vpn::VpnCidr>,
-        removed: Vec<easytier_core::config::vpn::VpnCidr>,
+        cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
+        added: Vec<cidr::Ipv4Cidr>,
+        removed: Vec<cidr::Ipv4Cidr>,
     ) -> Result<(), Error> {
         tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
 
@@ -1452,18 +1325,9 @@ impl NicCtx {
             if !cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let ret = match cidr {
-                easytier_core::config::vpn::VpnCidr::V4(cidr) => {
-                    backend
-                        .remove_route(cidr.first_address(), cidr.network_length())
-                        .await
-                }
-                easytier_core::config::vpn::VpnCidr::V6(cidr) => {
-                    backend
-                        .remove_ipv6_route(cidr.first_address(), cidr.network_length())
-                        .await
-                }
-            };
+            let ret = backend
+                .remove_route(cidr.first_address(), cidr.network_length())
+                .await;
 
             if ret.is_err() {
                 tracing::trace!(
@@ -1472,108 +1336,31 @@ impl NicCtx {
                     "remove route failed.",
                 );
             }
-            if ret.is_ok() {
-                cur_proxy_cidrs.remove(&cidr);
-            }
+            cur_proxy_cidrs.remove(&cidr);
         }
 
         // Add routes
+        let mut first_error = None;
         for cidr in added {
             if cur_proxy_cidrs.contains(&cidr) {
                 continue;
             }
-            let ret = match cidr {
-                easytier_core::config::vpn::VpnCidr::V4(cidr) => {
-                    backend
-                        .add_route(cidr.first_address(), cidr.network_length())
-                        .await
+            match backend
+                .add_route(cidr.first_address(), cidr.network_length())
+                .await
+            {
+                Ok(()) => {
+                    cur_proxy_cidrs.insert(cidr);
                 }
-                easytier_core::config::vpn::VpnCidr::V6(cidr) => {
-                    backend
-                        .add_ipv6_route(cidr.first_address(), cidr.network_length())
-                        .await
+                Err(err) => {
+                    tracing::error!(?cidr, ?err, "add route failed");
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
                 }
-            };
-
-            if ret.is_err() {
-                tracing::trace!(
-                    cidr = ?cidr,
-                    err = ?ret,
-                    "add route failed.",
-                );
-            }
-            // A connected or separately owned overlay route may already
-            // exist. Only successful creates belong to this route owner.
-            if ret.is_ok() {
-                cur_proxy_cidrs.insert(cidr);
-            } else if matches!(backend, NicBackend::Shared(_)) {
-                // A shared member must reject overlap conflicts as an attachment
-                // failure. Dedicated interfaces may already own a connected route.
-                return ret;
             }
         }
-        Ok(())
-    }
-
-    async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
-        let packet_plane = self.packet_plane.clone();
-        let global_ctx = self.global_ctx.clone();
-        let backend = self.backend.clone();
-        let mut event_receiver = global_ctx.subscribe();
-        let cancellation = self.cancellation.clone();
-
-        let mut cur_proxy_cidrs = BTreeSet::new();
-
-        // Keep known overlay regions captured even when a remote peer
-        // becomes unreachable. Public advertised subnets must not fall
-        // through to the host's physical default in that state.
-        let initial = overlay_routes(packet_plane.vpn_route_exclusions().await);
-        Self::apply_route_changes(
-            &backend,
-            &mut cur_proxy_cidrs,
-            initial.iter().copied().collect(),
-            Vec::new(),
-        )
-        .await?;
-
-        self.control_tasks.spawn(async move {
-            loop {
-                let event = match tokio::select! {
-                    _ = cancellation.cancelled() => break,
-                    event = event_receiver.recv() => Some(event),
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => None,
-                } {
-                    Some(Ok(event)) => Some(event),
-                    Some(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-                        tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
-                        break;
-                    }
-                    Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
-                        tracing::warn!(
-                            "event bus lagged in proxy_cidrs route updater, doing full sync"
-                        );
-                        event_receiver = event_receiver.resubscribe();
-                        None
-                    }
-                    None => None,
-                };
-                let _ = event;
-                let desired = overlay_routes(packet_plane.vpn_route_exclusions().await);
-                let added = desired.difference(&cur_proxy_cidrs).copied().collect();
-                let removed = cur_proxy_cidrs.difference(&desired).copied().collect();
-
-                if let Err(error) =
-                    Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, added, removed).await
-                {
-                    tracing::error!(?error, "overlay route update failed");
-                }
-            }
-            let removed = cur_proxy_cidrs.iter().copied().collect();
-            let _ = Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, Vec::new(), removed)
-                .await;
-        });
-
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     async fn apply_public_ipv6_route_changes(
@@ -1610,12 +1397,75 @@ impl NicCtx {
         }
     }
 
+    async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
+        let packet_plane = self.packet_plane.clone();
+        let global_ctx = self.global_ctx.clone();
+        let backend = self.backend.clone();
+        let mut event_receiver = global_ctx.subscribe();
+
+        let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
+
+        // Initial sync: get current proxy_cidrs state and apply routes
+        let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await else {
+            tracing::error!("proxy CIDR monitor host is unavailable");
+            return Ok(());
+        };
+        if let Err(err) =
+            Self::apply_route_changes(&backend, &mut cur_proxy_cidrs, diff.added, diff.removed)
+                .await
+            && matches!(&backend, NicBackend::Shared(_))
+        {
+            return Err(err);
+        }
+
+        self.tasks.spawn(async move {
+            loop {
+                let should_sync = match event_receiver.recv().await {
+                    Ok(GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => true,
+                    Ok(_) => false,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
+                        break;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        tracing::warn!(
+                            "event bus lagged in proxy_cidrs route updater, doing full sync"
+                        );
+                        event_receiver = event_receiver.resubscribe();
+                        true
+                    }
+                };
+                if !should_sync {
+                    continue;
+                }
+
+                // Full sync also retries routes that previously failed to apply.
+                let Some(diff) = packet_plane.proxy_cidr_diff(&cur_proxy_cidrs).await else {
+                    tracing::error!("proxy CIDR monitor host is unavailable");
+                    return;
+                };
+
+                if let Err(err) = Self::apply_route_changes(
+                    &backend,
+                    &mut cur_proxy_cidrs,
+                    diff.added,
+                    diff.removed,
+                )
+                .await
+                {
+                    tracing::error!(?err, "failed to update proxy CIDR routes");
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     async fn run_public_ipv6_route_updater(&mut self) -> Result<(), Error> {
         let packet_plane = self.packet_plane.clone();
         let global_ctx = self.global_ctx.clone();
         let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
-        let cancellation = self.cancellation.clone();
 
         let mut cur_routes = BTreeSet::<cidr::Ipv6Inet>::new();
         let initial_routes = packet_plane.public_ipv6_routes().await;
@@ -1623,12 +1473,9 @@ impl NicCtx {
         Self::apply_public_ipv6_route_changes(&backend, &mut cur_routes, initial_added, Vec::new())
             .await;
 
-        self.control_tasks.spawn(async move {
+        self.tasks.spawn(async move {
             loop {
-                let event = match tokio::select! {
-                    _ = cancellation.cancelled() => break,
-                    event = event_receiver.recv() => event,
-                } {
+                let event = match event_receiver.recv().await {
                     Ok(event) => event,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -1658,7 +1505,6 @@ impl NicCtx {
         let global_ctx = self.global_ctx.clone();
         let backend = self.backend.clone();
         let mut event_receiver = global_ctx.subscribe();
-        let cancellation = self.cancellation.clone();
 
         let mut current_addr = packet_plane.public_ipv6_addr().await;
         if let Some(addr) = current_addr {
@@ -1679,12 +1525,9 @@ impl NicCtx {
             }
         }
 
-        self.control_tasks.spawn(async move {
+        self.tasks.spawn(async move {
             loop {
-                let event = match tokio::select! {
-                    _ = cancellation.cancelled() => break,
-                    event = event_receiver.recv() => event,
-                } {
+                let event = match event_receiver.recv().await {
                     Ok(event) => event,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -1734,122 +1577,7 @@ impl NicCtx {
         Ok(())
     }
 
-    /// Configures exit-side platform state (IPv6 forwarding + NAT66 on
-    /// Linux) to match the current config, tracking what was installed so it
-    /// can be removed again on disable and on shutdown.
-    async fn sync_vpn_exit_forwarding(&self) {
-        let enabled = self.global_ctx.enable_exit_node();
-        let Some(ifname) = self.backend.ifname().await else {
-            return;
-        };
-        let prefix = self
-            .global_ctx
-            .get_ipv6()
-            .map(|inet| inet.network().to_string());
-        if let Err(error) = self
-            .vpn_exit_active
-            .lock()
-            .await
-            .reconcile(&ifname, prefix, enabled)
-            .await
-        {
-            tracing::error!(?error, "VPN exit forwarding activation failed");
-        }
-    }
-
-    /// Re-syncs exit forwarding when the VPN config is hot-patched.
-    #[cfg(feature = "management")]
-    async fn run_vpn_exit_forwarding_updater(&mut self) -> Result<(), Error> {
-        let global_ctx = self.global_ctx.clone();
-        let state = self.vpn_exit_active.clone();
-        let ifname = self.tun_ifname().await?;
-        let mut event_receiver = global_ctx.subscribe();
-        let cancellation = self.cancellation.clone();
-        self.control_tasks.spawn(async move {
-            loop {
-                let event = match tokio::select! {
-                    _ = cancellation.cancelled() => break,
-                    event = event_receiver.recv() => event,
-                } {
-                    Ok(event) => event,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        event_receiver = event_receiver.resubscribe();
-                        continue;
-                    }
-                };
-                if !matches!(
-                    event,
-                    GlobalCtxEvent::ConfigPatched(_)
-                        | GlobalCtxEvent::DhcpIpv4Changed(_, _)
-                        | GlobalCtxEvent::DhcpIpv6Changed(_, _)
-                        | GlobalCtxEvent::TunDeviceReady(_)
-                ) {
-                    continue;
-                }
-                let enabled = global_ctx.enable_exit_node();
-                let prefix = global_ctx.get_ipv6().map(|inet| inet.network().to_string());
-                if let Err(error) = state.lock().await.reconcile(&ifname, prefix, enabled).await {
-                    tracing::error!(?error, "VPN exit forwarding update failed");
-                }
-            }
-        });
-        Ok(())
-    }
-
-    /// Runs the client-side VPN route manager for the lifetime of the NIC.
-    async fn run_vpn_route_updater(&mut self) -> Result<(), Error> {
-        let global_ctx = self.global_ctx.clone();
-        let net_ns = self.global_ctx.net_ns.clone();
-        let status = global_ctx.vpn_route_status();
-        let packet_plane = self.packet_plane.clone();
-        let cancellation = self.cancellation.clone();
-        let ifcfg: std::sync::Arc<dyn crate::common::ifcfg::IfConfiguerTrait> =
-            std::sync::Arc::new(crate::common::ifcfg::IfConfiger::default());
-        let ifname = self.tun_ifname().await?;
-        let (ready, completion) = tokio::sync::oneshot::channel();
-        let shared_member: Option<Arc<dyn super::vpn_routes::VpnCaptureClaims>> =
-            match &self.backend {
-                NicBackend::Shared(member) => Some(Arc::new(member.clone())),
-                NicBackend::Dedicated(_) => None,
-            };
-
-        self.control_tasks.spawn(async move {
-            super::vpn_routes::run_vpn_route_manager(
-                super::vpn_routes::VpnRouteManagerContext {
-                    global_ctx,
-                    packet_plane,
-                    ifcfg,
-                    ifname,
-                    net_ns,
-                    status,
-                    cancellation,
-                    shared_member,
-                },
-                ready,
-            )
-            .await;
-        });
-        completion
-            .await
-            .map_err(|error| Error::AnyhowError(anyhow::Error::from(error)))?
-            .map_err(|error| Error::AnyhowError(anyhow::Error::msg(error)))
-    }
-
     pub async fn run(
-        &mut self,
-        ipv4_addr: Option<cidr::Ipv4Inet>,
-        ipv6_addr: Option<cidr::Ipv6Inet>,
-    ) -> Result<(), Error> {
-        let result = self.run_inner(ipv4_addr, ipv6_addr).await;
-        if let Err(error) = &result {
-            self.global_ctx.set_tun_device_error(error.to_string());
-            self.shutdown().await;
-        }
-        result
-    }
-
-    async fn run_inner(
         &mut self,
         ipv4_addr: Option<cidr::Ipv4Inet>,
         ipv6_addr: Option<cidr::Ipv6Inet>,
@@ -1891,15 +1619,11 @@ impl NicCtx {
         // Keep the updater running so runtime config patches can enable auto mode
         // without recreating the NIC.
         self.run_public_ipv6_addr_updater().await?;
-        self.run_vpn_route_updater().await?;
-        self.sync_vpn_exit_forwarding().await;
-        #[cfg(feature = "management")]
-        self.run_vpn_exit_forwarding_updater().await?;
 
         Ok(())
     }
 
-    #[cfg(mobile)]
+    #[cfg(any(mobile, test))]
     pub(crate) async fn mobile_tun_claims(
         global_ctx: &ArcGlobalCtx,
         packet_plane: &CorePacketPlane,
@@ -1908,23 +1632,12 @@ impl NicCtx {
         let mut claims = SharedIfConfigClaims::default();
         claims.ipv4_addresses.extend(global_ctx.get_ipv4());
         claims.ipv6_addresses.extend(global_ctx.get_ipv6());
-        for route in packet_plane.vpn_route_plan().await.0.capture_routes {
-            match route {
-                easytier_core::config::vpn::VpnCidr::V4(route) => {
-                    claims.ipv4_routes.insert(SharedIpv4Route::new(
-                        route.first_address(),
-                        route.network_length(),
-                        None,
-                    ));
-                }
-                easytier_core::config::vpn::VpnCidr::V6(route) => {
-                    claims.ipv6_routes.insert(SharedIpv6Route::new(
-                        route.first_address(),
-                        route.network_length(),
-                        None,
-                    ));
-                }
-            }
+        if let Some(diff) = packet_plane.proxy_cidr_diff(&BTreeSet::new()).await {
+            claims
+                .ipv4_routes
+                .extend(diff.current.into_iter().map(|route| {
+                    SharedIpv4Route::new(route.first_address(), route.network_length(), None)
+                }));
         }
         claims
             .ipv6_routes
@@ -1956,7 +1669,7 @@ impl NicCtx {
         }
     }
 
-    #[cfg(mobile)]
+    #[cfg(any(mobile, test))]
     async fn apply_mobile_tun_claims(
         &self,
         claims: super::shared_virtual_nic::SharedIfConfigClaims,
@@ -1965,6 +1678,16 @@ impl NicCtx {
             return Err(anyhow::anyhow!("mobile TUN requires a shared NIC").into());
         };
         member.replace_claims(claims).await
+    }
+
+    #[cfg(test)]
+    async fn configure_mobile_tun(&mut self) -> Result<(), Error> {
+        let claims = Self::mobile_tun_claims(&self.global_ctx, &self.packet_plane).await;
+        self.apply_mobile_tun_claims(claims).await?;
+        self.run_proxy_cidrs_route_updater().await?;
+        self.run_public_ipv6_route_updater().await?;
+        self.run_public_ipv6_addr_updater().await?;
+        Ok(())
     }
 
     #[cfg(mobile)]
@@ -2111,6 +1834,30 @@ mod tests {
         Arc::new(Mutex::new(HostPacketReceiver::new(receiver)))
     }
 
+    #[tokio::test]
+    async fn peer_packet_write_error_stops_the_forwarder() {
+        let channel = queued_peer_packet().await;
+        let mut sink: Pin<Box<dyn ZCPacketSink>> = Box::pin(FailingSink);
+
+        let result = NicCtx::forward_peer_packets_to_nic(channel, &mut sink).await;
+
+        assert!(matches!(
+            result,
+            Err(Error::TunnelError(TunnelError::TunError(message)))
+                if message == "write failed"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_packet_write_timeout_stops_the_forwarder() {
+        let channel = queued_peer_packet().await;
+        let mut sink: Pin<Box<dyn ZCPacketSink>> = Box::pin(StalledSink);
+
+        let result = NicCtx::forward_peer_packets_to_nic(channel, &mut sink).await;
+
+        assert!(matches!(result, Err(Error::Timeout(_))));
+    }
+
     #[cfg(target_os = "windows")]
     #[rstest::rstest]
     #[case(None)]
@@ -2214,91 +1961,156 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn ordinary_overlay_routes_do_not_recapture_local_advertised_subnets() {
-        let desired =
-            super::overlay_routes(easytier_core::config::vpn::routes::VpnRouteExclusions {
-                overlay: vec![
-                    "192.168.1.0/28".parse().unwrap(),
-                    "203.0.113.0/24".parse().unwrap(),
-                    "10.66.0.0/24".parse().unwrap(),
-                ],
-                physical: vec!["192.168.1.0/24".parse().unwrap()],
-            });
-        assert!(
-            !desired
-                .iter()
-                .any(|cidr| cidr.contains(&"192.168.1.5".parse().unwrap()))
-        );
-        assert!(
-            desired
-                .iter()
-                .any(|cidr| cidr.contains(&"203.0.113.5".parse().unwrap()))
-        );
-        assert!(
-            desired
-                .iter()
-                .any(|cidr| cidr.contains(&"10.66.0.5".parse().unwrap()))
-        );
-    }
-
+    #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn peer_packet_write_error_stops_the_forwarder() {
-        let channel = queued_peer_packet().await;
-        let mut sink: Pin<Box<dyn ZCPacketSink>> = Box::pin(FailingSink);
+    async fn mobile_configuration_registers_ipv6_and_tracks_public_updates() {
+        use std::{net::UdpSocket, process::Command, sync::Arc, time::Duration};
 
-        let result = NicCtx::forward_peer_packets_to_nic(channel, &mut sink).await;
-
-        assert!(matches!(
-            result,
-            Err(Error::TunnelError(TunnelError::TunError(message)))
-                if message == "write failed"
-        ));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn peer_packet_write_timeout_stops_the_forwarder() {
-        let channel = queued_peer_packet().await;
-        let mut sink: Pin<Box<dyn ZCPacketSink>> = Box::pin(StalledSink);
-
-        let result = NicCtx::forward_peer_packets_to_nic(channel, &mut sink).await;
-
-        assert!(matches!(result, Err(Error::Timeout(_))));
-    }
-
-    #[tokio::test]
-    async fn nic_shutdown_waits_for_route_cleanup_after_packet_io_releases_resources() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
+        use easytier_core::{
+            host::packet::{HostPacket, HostPacketChannelSink, HostPacketReceiver},
+            process_runtime::CoreProcessRuntime,
         };
-        let token = tokio_util::sync::CancellationToken::new();
-        let resource = Arc::new(tokio::sync::Mutex::new(()));
-        let cleaned = Arc::new(AtomicBool::new(false));
-        let (started, ready) = tokio::sync::oneshot::channel();
-        let mut packets = tokio::task::JoinSet::new();
-        let held = resource.clone();
-        packets.spawn(async move {
-            let _owner = held.lock().await;
-            started.send(()).unwrap();
-            futures::future::pending::<()>().await;
-        });
-        ready.await.unwrap();
-        let mut controls = tokio::task::JoinSet::new();
-        let cancellation = token.clone();
-        let completion = cleaned.clone();
-        controls.spawn(async move {
-            cancellation.cancelled().await;
-            let _route_owner = resource.lock().await;
-            tokio::task::yield_now().await;
-            completion.store(true, Ordering::SeqCst);
-        });
-        super::shutdown_nic_tasks(&token, &mut packets, &mut controls).await;
+        use futures::{FutureExt, StreamExt};
+        use smoltcp::wire::{IpProtocol, Ipv6Packet};
+        use tokio::sync::{Mutex, Notify, mpsc};
+
+        use super::{IfConfiger, NicBackend, VirtualNicConfig};
+        use crate::{
+            common::{global_ctx::GlobalCtxEvent, ifcfg::IfConfiguerTrait, netns::NetNS},
+            instance::{
+                composition::{NativeCoreInstance, runtime_core_host_adapters},
+                config::test_core_instance_config,
+                shared_virtual_nic::SharedVirtualNicRegistry,
+            },
+        };
+
+        let namespace = format!("mobile-{}", uuid::Uuid::new_v4());
         assert!(
-            cleaned.load(Ordering::SeqCst),
-            "interface destruction must follow completed route cleanup"
+            Command::new("ip")
+                .args(["netns", "add", &namespace])
+                .status()
+                .unwrap()
+                .success()
         );
-        assert!(packets.is_empty() && controls.is_empty());
+        guarden::defer! {
+            let _ = Command::new("ip")
+                .args(["netns", "del", &namespace])
+                .status();
+        }
+        let net_ns = NetNS::new(Some(namespace.clone()));
+        // Avoid DAD probes and use an unowned source to test destination claims.
+        {
+            let _guard = net_ns.guard();
+            std::fs::write("/proc/sys/net/ipv6/conf/default/accept_dad", "0").unwrap();
+            // Keep automatic link-local traffic out of the member packet streams.
+            std::fs::write("/proc/sys/net/ipv6/conf/default/addr_gen_mode", "1").unwrap();
+            let ifcfg = IfConfiger::default();
+            ifcfg.set_link_status("lo", true).await.unwrap();
+            ifcfg
+                .add_ipv6_ip("lo", "fdff::1".parse().unwrap(), 128)
+                .await
+                .unwrap();
+        }
+        let global_ctx = get_mock_global_ctx();
+        global_ctx.set_ipv4(None);
+        global_ctx.set_ipv6(Some("fd00::1/64".parse().unwrap()));
+        let (packet_sink, packet_receiver) = mpsc::channel::<HostPacket>(1);
+        let core = NativeCoreInstance::new(
+            test_core_instance_config(&global_ctx),
+            runtime_core_host_adapters(
+                global_ctx.clone(),
+                CoreProcessRuntime::new(),
+                Arc::new(HostPacketChannelSink::new(packet_sink)),
+            ),
+        )
+        .unwrap();
+        let mut registry = SharedVirtualNicRegistry::new();
+        let members = [1, 2].map(|id| {
+            registry.create_member(
+                "mobile-test".to_owned(),
+                VirtualNicConfig::new("mobile-test".to_owned(), 1500, net_ns.clone()),
+                uuid::Uuid::from_u128(id),
+                Arc::new(Notify::new()),
+            )
+        });
+        let (mut other_stream, _other_sink) = members[0].create_dev().await.unwrap().split();
+        let (mut stream, _sink) = members[1].create_dev().await.unwrap().split();
+        let mut nic = NicCtx::new_with_backend(
+            global_ctx.clone(),
+            core.packet_plane(),
+            Arc::new(Mutex::new(HostPacketReceiver::new(packet_receiver))),
+            Arc::new(Notify::new()),
+            NicBackend::Shared(members[1].clone()),
+        );
+
+        nic.configure_mobile_tun().await.unwrap();
+        // Claims are installed before start_tunnel_forwarding is called.
+        let ifname = nic.tun_ifname().await.unwrap();
+        assert!(
+            net_ns
+                .run(|| IfConfiger::list_addresses(&ifname))
+                .unwrap()
+                .contains(&"fd00::1/64".parse().unwrap())
+        );
+        // Linux completes IPv6 address activation asynchronously, even without DAD probes.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match net_ns.run(|| UdpSocket::bind("[fd00::1]:0")) {
+                    Ok(_) => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(err) => panic!("failed to bind the configured IPv6 address: {err}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let route = "2001:db8:1::/64".parse().unwrap();
+        let public_addr = "2001:db8:2::1/128".parse().unwrap();
+        for (event, source, destination) in [
+            (None, "fdff::1", "fd00::2"),
+            (
+                Some(GlobalCtxEvent::PublicIpv6RoutesUpdated(vec![route], vec![])),
+                "fdff::1",
+                "2001:db8:1::2",
+            ),
+            (
+                Some(GlobalCtxEvent::PublicIpv6Changed(None, Some(public_addr))),
+                "2001:db8:2::1",
+                "2001:db8:3::2",
+            ),
+        ] {
+            if let Some(event) = event {
+                global_ctx.issue_event(event);
+            }
+            let source = source.parse::<std::net::Ipv6Addr>().unwrap();
+            let destination = destination.parse::<std::net::Ipv6Addr>().unwrap();
+            let shared_nic = members[1].shared_nic();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    // Do not race an updater's OS change and dispatcher publication.
+                    let guard = shared_nic.lock().await;
+                    let sent = net_ns.run(|| {
+                        UdpSocket::bind((source, 0))?.send_to(b"mobile-ipv6", (destination, 12345))
+                    });
+                    drop(guard);
+                    if sent.is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let packet = stream.next().await.unwrap().unwrap();
+                let ipv6 = Ipv6Packet::new_checked(packet.payload()).unwrap();
+                assert_eq!(ipv6.src_addr(), source);
+                assert_eq!(ipv6.dst_addr(), destination);
+                assert_eq!(ipv6.next_header(), IpProtocol::Udp);
+                assert_eq!(&ipv6.payload()[8..], b"mobile-ipv6");
+            })
+            .await
+            .unwrap();
+            assert!(other_stream.next().now_or_never().is_none());
+        }
     }
 
     async fn run_test_helper() -> Result<VirtualNic, Error> {

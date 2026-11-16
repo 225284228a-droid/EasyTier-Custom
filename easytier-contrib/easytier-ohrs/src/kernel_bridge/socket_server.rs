@@ -117,8 +117,6 @@ fn sync_tun_event_receivers(receivers: &mut HashMap<String, EventBusSubscriber>)
 }
 
 fn event_needs_tun_refresh(event: &GlobalCtxEvent) -> bool {
-    // Exit liveness does not change this bridge's route inputs: virtual IPv4,
-    // manual/proxy CIDRs, and the configured exit-node mode.
     matches!(
         event,
         GlobalCtxEvent::DhcpIpv4Changed(_, _)

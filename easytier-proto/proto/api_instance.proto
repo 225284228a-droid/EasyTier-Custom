@@ -206,7 +206,6 @@ service PeerManageRpc {
   rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
   rpc ListPublicIpv6Info(ListPublicIpv6InfoRequest)
       returns (ListPublicIpv6InfoResponse);
-  rpc GetVpnStatus(GetVpnStatusRequest) returns (GetVpnStatusResponse);
   rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
   rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
   rpc ListForeignNetwork(ListForeignNetworkRequest)
@@ -436,41 +435,6 @@ service CredentialManageRpc {
   rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse);
   rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
   rpc UpsertCredential(UpsertCredentialRequest) returns (UpsertCredentialResponse);
-}
-
-// Custom subnet exit VPN status (fork feature).
-
-message VpnRuleStatus {
-  string cidr = 50001;
-  reserved 2, 3, 4, 5, 6, 7, 8, 9;
-  reserved "action", "exit", "fallback_exits", "priority", "effective_exit", "packets", "bytes", "exits";
-  string exit_addr = 50010;
-  // up | down
-  string state = 50011;
-}
-
-message GetVpnStatusRequest { InstanceIdentifier instance = 50001; }
-
-message GetVpnStatusResponse {
-  bool enabled = 50001;
-  // this node offers exit forwarding for peers
-  bool exit_enabled = 50002;
-  reserved 3, 6, 7, 10, 11, 12;
-  reserved "exits", "dns_protect", "ipv6_protect", "protected_endpoints", "system_dns_servers", "ignore_private";
-  repeated VpnRuleStatus rules = 50004;
-  reserved 5;
-  reserved "fail_mode";
-  // host-side route manager state, filled when available
-  bool routes_active = 50008;
-  uint32 routes_installed = 50009;
-  // Complete positive TUN routes, including overlay and policy capture.
-  repeated string capture_routes = 50013;
-  // Changes with policy/address context, independently of exit liveness.
-  uint64 policy_generation = 50014;
-  // Actual virtual IPv6 address and prefix, empty if IPv6 is unconfigured.
-  string ipv6_addr = 50015;
-  // Host protection or route setup error; empty after successful activation.
-  string activation_error = 50016;
 }
 
 message PeerConnFecStats {

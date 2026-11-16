@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
-import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair, type GetVpnStatusResponse } from '../types/network'
+import { NetworkInstance, type NetworkConfig, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import type { RemoteClient } from '../modules/api'
 import { useI18n } from 'vue-i18n';
-import { computed, onMounted, onUnmounted, ref, useId, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
 import { currentBandwidth, estimatedBandwidth, latencyMs, lossRate, numericValue, peerConns, tunnelProtocols, udpNatTypeName } from '../modules/statusDisplay';
-import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, Message } from 'primevue';
+import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 import VpnPortalDialog from './VpnPortalDialog.vue';
 
@@ -277,45 +277,8 @@ let prevRxSum = 0
 const txRate = ref('0')
 const rxRate = ref('0')
 
-// 控制节点详细信息的显示/隐藏
+// 控制节点详细信息chips的显示/隐藏
 const showNodeDetails = ref(false)
-const nodeDetailsId = useId()
-
-// Subnet exit VPN live status (only when the connected kernel implements the
-// fork's GetVpnStatus RPC; official kernels simply show no VPN section).
-const vpnStatus = ref<GetVpnStatusResponse | undefined>()
-
-const vpnActivationError = computed(() => {
-  const error = vpnStatus.value?.activation_error
-  return typeof error === 'string' ? error.trim() : ''
-})
-
-watch([() => props.api, () => props.api.scope, () => props.curNetworkInst?.instance_id,
-  () => props.curNetworkInst?.running], async ([api, scope, instanceId, running], _, onCleanup) => {
-  vpnStatus.value = undefined
-  if (!instanceId || !running || !api.get_vpn_status) return
-  let active = true
-  let refreshTimer: ReturnType<typeof setTimeout> | undefined
-  onCleanup(() => {
-    active = false
-    clearTimeout(refreshTimer)
-  })
-  const current = () => active && api.scope === scope
-  const refresh = async () => {
-    try {
-      const status = await api.get_vpn_status!(instanceId)
-      if (current()) vpnStatus.value = status
-    } catch (error) {
-      if (current()) {
-        console.warn('Failed to load vpn status', error)
-        vpnStatus.value = undefined
-      }
-    } finally {
-      if (current()) refreshTimer = setTimeout(refresh, 2000)
-    }
-  }
-  await refresh()
-}, { immediate: true })
 
 onMounted(() => {
   rateIntervalId = window.setInterval(() => {
@@ -424,55 +387,15 @@ function showEventLogs() {
             <!-- 展开/收起节点详细信息的divider按钮 -->
             <div class="w-full">
               <Button @click="showNodeDetails = !showNodeDetails"
-                :aria-expanded="showNodeDetails" :aria-controls="nodeDetailsId"
                 :icon="showNodeDetails ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
                 :label="showNodeDetails ? t('hide_node_details') : t('show_node_details')" severity="secondary" outlined
                 class="w-full justify-center" size="small" />
             </div>
 
-            <div v-show="showNodeDetails" :id="nodeDetailsId" class="node-details">
-              <div class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-auto">
-                <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
-                  class="mr-2 mt-2 text-sm" />
-              </div>
-
-              <section v-if="vpnStatus" class="vpn-status" :aria-label="t('vpn_status_title')">
-                <div class="vpn-status-summary">
-                  <h3 class="vpn-status-title"><i class="pi pi-shield" aria-hidden="true"></i>{{ t('vpn_status_title') }}</h3>
-                  <Tag :value="vpnStatus.enabled ? t('vpn_status_enabled') : t('vpn_status_disabled')"
-                    :severity="vpnStatus.enabled ? 'success' : 'secondary'" />
-                </div>
-                <div class="vpn-route-summary">
-                  <span>{{ t('vpn_status_routes') }}</span>
-                  <Tag :value="t(vpnStatus.routes_active ? 'vpn_status_routes_active' : 'vpn_status_routes_inactive')"
-                    :severity="vpnStatus.routes_active ? 'info' : 'secondary'" />
-                  <span>{{ t('vpn_status_routes_count', { count: vpnStatus.routes_installed }) }}</span>
-                </div>
-                <Message v-if="vpnActivationError" severity="error" :closable="false" class="vpn-activation-error">
-                  {{ vpnActivationError }}
-                </Message>
-                <div v-if="vpnStatus.rules.length" class="vpn-rules">
-                  <div class="vpn-rule-heading" aria-hidden="true">
-                    <span>{{ t('vpn_rule_cidr') }}</span><span>{{ t('vpn_rule_exit') }}</span><span>{{ t('vpn_rule_state') }}</span>
-                  </div>
-                  <ul class="vpn-rule-list">
-                    <li v-for="rule in vpnStatus.rules" :key="rule.cidr" class="vpn-rule-row">
-                      <div class="vpn-rule-destination">
-                        <span class="vpn-rule-label">{{ t('vpn_rule_cidr') }}</span><span class="vpn-rule-address">{{ rule.cidr }}</span>
-                      </div>
-                      <div class="vpn-rule-exit">
-                        <span class="vpn-rule-label">{{ t('vpn_rule_exit') }}</span><span class="vpn-rule-address">{{ rule.exit_addr || t('vpn_rule_exit_nodes') }}</span>
-                      </div>
-                      <div class="vpn-rule-state">
-                        <span class="sr-only">{{ t('vpn_rule_state') }}</span>
-                        <Tag :value="t(rule.state === 'up' ? 'vpn_exit_state_up' : 'vpn_exit_state_down')"
-                          :severity="rule.state === 'up' ? 'success' : 'danger'" />
-                      </div>
-                    </li>
-                  </ul>
-                </div>
-                <p v-else class="vpn-no-rules">{{ t('vpn_no_rules') }}</p>
-              </section>
+            <!-- 节点详细信息chips，根据showNodeDetails状态显示/隐藏 -->
+            <div v-show="showNodeDetails" class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
+              <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
+                class="mr-2 mt-2 text-sm" />
             </div>
 
             <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
@@ -561,112 +484,5 @@ function showEventLogs() {
 
 :deep(.p-datatable .p-datatable-column-title) {
   white-space: nowrap;
-}
-
-.node-details {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.vpn-status {
-  min-width: 0;
-  padding: 1rem;
-  border: 1px solid var(--p-content-border-color);
-  border-radius: var(--p-border-radius-lg, 0.75rem);
-  font-size: 0.875rem;
-}
-
-.vpn-status-summary,
-.vpn-route-summary,
-.vpn-status-title {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.vpn-status-summary {
-  justify-content: space-between;
-}
-
-.vpn-status-title {
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-}
-
-.vpn-route-summary {
-  margin-top: 0.75rem;
-  color: var(--p-text-muted-color);
-}
-
-.vpn-activation-error,
-.vpn-rules {
-  margin-top: 1rem;
-}
-
-.vpn-rule-heading,
-.vpn-rule-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(5rem, auto);
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.vpn-rule-heading {
-  padding: 0 0 0.5rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.75rem;
-}
-
-.vpn-rule-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.vpn-rule-row {
-  padding: 0.75rem 0;
-  border-top: 1px solid var(--p-content-border-color);
-}
-
-.vpn-rule-address {
-  overflow-wrap: anywhere;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-
-.vpn-rule-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-}
-
-.vpn-no-rules {
-  margin: 0.75rem 0 0;
-  color: var(--p-text-muted-color);
-}
-
-@media (max-width: 640px) {
-  .vpn-status { padding: 0.875rem; }
-  .vpn-rule-heading { display: none; }
-  .vpn-rule-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem 0.75rem; }
-  .vpn-rule-destination { grid-column: 1; grid-row: 1; }
-  .vpn-rule-exit { grid-column: 1; grid-row: 2; }
-  .vpn-rule-state { grid-column: 2; grid-row: 1 / 3; }
-  .vpn-rule-label {
-    position: static;
-    display: block;
-    width: auto;
-    height: auto;
-    overflow: visible;
-    clip: auto;
-    color: var(--p-text-muted-color);
-    font-size: 0.75rem;
-    margin-bottom: 0.125rem;
-  }
 }
 </style>

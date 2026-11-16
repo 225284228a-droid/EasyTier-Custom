@@ -189,33 +189,11 @@ impl SharedVirtualNicMemberSources {
             .ipv4_routes
             .iter()
             .filter_map(ipv4_route_to_inet)
-            .chain(
-                claims
-                    .vpn_capture_routes
-                    .iter()
-                    .filter_map(|route| match route {
-                        easytier_core::config::vpn::VpnCidr::V4(route) => {
-                            Ipv4Inet::new(route.first_address(), route.network_length()).ok()
-                        }
-                        easytier_core::config::vpn::VpnCidr::V6(_) => None,
-                    }),
-            )
             .collect::<BTreeSet<_>>();
         let ipv6_routes = claims
             .ipv6_routes
             .iter()
             .filter_map(ipv6_route_to_inet)
-            .chain(
-                claims
-                    .vpn_capture_routes
-                    .iter()
-                    .filter_map(|route| match route {
-                        easytier_core::config::vpn::VpnCidr::V4(_) => None,
-                        easytier_core::config::vpn::VpnCidr::V6(route) => {
-                            Ipv6Inet::new(route.first_address(), route.network_length()).ok()
-                        }
-                    }),
-            )
             .collect::<BTreeSet<_>>();
 
         Self {
@@ -1852,7 +1830,6 @@ mod tests {
                 })
                 .collect(),
             mtu: None,
-            ..Default::default()
         }
     }
 
@@ -2293,38 +2270,6 @@ mod tests {
             table.owner_of_destination(&ipv4_udp_packet(src, dst), &members, None),
             Some(second)
         );
-    }
-
-    #[test]
-    fn source_table_selects_vpn_capture_owner_for_both_address_families() {
-        let first = uuid::Uuid::from_u128(1);
-        let second = uuid::Uuid::from_u128(2);
-        let mut claims = member_claims(&["10.231.2.1/24"], &["fd00:2::1/64"], &[], &[]);
-        claims.vpn_capture_routes = ["203.0.113.0/24", "2001:db8:99::/64"]
-            .into_iter()
-            .map(|route| route.parse().unwrap())
-            .collect();
-        let mut table = SharedVirtualNicSourceTable::default();
-        let (first_sender, _first_receiver) = member_channel(8);
-        let (second_sender, _second_receiver) = member_channel(8);
-        let members = BTreeMap::from([(first, first_sender), (second, second_sender)]);
-        table.update_member_sources(first, member_sources(&["10.231.1.1/24"]));
-        table.update_member_sources(second, SharedVirtualNicMemberSources::from_claims(&claims));
-        for packet in [
-            ipv4_udp_packet(
-                "10.231.1.1".parse().unwrap(),
-                "203.0.113.9".parse().unwrap(),
-            ),
-            ipv6_packet(
-                "fd00:1::1".parse().unwrap(),
-                "2001:db8:99::9".parse().unwrap(),
-            ),
-        ] {
-            assert_eq!(
-                table.owner_of_destination(&packet, &members, Some(first)),
-                Some(second)
-            );
-        }
     }
 
     #[test]

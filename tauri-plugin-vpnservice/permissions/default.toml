@@ -1,9 +1,3 @@
 [default]
 description = "Default permissions for the plugin"
-permissions = [
-    "allow-ping",
-    "allow-start-vpn",
-    "allow-reconfigure-vpn",
-    "allow-complete-vpn-reconfigure",
-    "allow-get-underlying-dns-servers",
-]
+permissions = ["allow-ping", "allow-start-vpn"]

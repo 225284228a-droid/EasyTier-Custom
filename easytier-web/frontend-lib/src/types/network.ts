@@ -1,4 +1,3 @@
-import { VpnConfig as VpnConfigPb } from '../generated/proto/api_manage'
 import { v4 as uuidv4 } from 'uuid'
 import {
   NetworkConfig as NetworkConfigPb,
@@ -15,10 +14,8 @@ import type { FlagMeta } from '../generated/proto/annotations'
 import {
   VpnPortalClientState,
   VpnPortalInfo as VpnPortalInfoPb,
-  GetVpnStatusResponse as GetVpnStatusResponsePb,
   type VpnPortalClientInfo,
   type VpnPortalInfo,
-  type GetVpnStatusResponse,
 } from '../generated/proto/api_instance'
 import {
   Action as AclAction,
@@ -45,7 +42,6 @@ import { canonicalizeP2pDisguisePayload } from '../modules/p2pDisguise'
 
 export { AclAction, AclChainType, AclProtocol, CompressionAlgoPb, DnsRecordType, NatType, NetworkingMethod }
 export { VpnPortalClientState }
-export type { GetVpnStatusResponse, VpnRuleStatus } from '../generated/proto/api_instance'
 export type { Acl, AclChain, AclRule, AclV1, GroupIdentity, GroupInfo, NetworkPeerConfig, PeerFeatureFlag, PortForwardConfig, SecureModeConfig, VpnPortalClientConfig, VpnPortalClientInfo, VpnPortalConfig, VpnPortalInfo }
 
 export const PEER_PROTOCOLS: { [proto: string]: number } = {
@@ -400,17 +396,8 @@ function applyNetworkingMethod(
   config.peers = peersFromUrls(config.peer_urls, existingPeers)
 }
 
-function prepareNetworkConfigWithVpn(config: NetworkConfig): NetworkConfig {
-  const prepared = prepareNetworkConfigForProtoJson(config)
-  if (config.vpn) {
-    // Validate before the outer converter discards unknown form-only fields.
-    prepared.vpn = VpnConfigPb.fromJson(config.vpn as any)
-  }
-  return prepared
-}
-
 export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
-  const { dns, ...protoConfig } = prepareNetworkConfigWithVpn(config)
+  const { dns, ...protoConfig } = prepareNetworkConfigForProtoJson(config)
   const normalized = NetworkConfigPb.fromJson(protoConfig as any, {
     ignoreUnknownFields: true,
   }) as unknown as NetworkConfig
@@ -430,9 +417,6 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
   normalized.exit_nodes ??= []
   normalized.mapped_listeners ??= []
   normalized.port_forwards ??= []
-  if (normalized.vpn) {
-    normalized.vpn.rules ??= []
-  }
   if (normalized.vpn_portal_config) {
     normalized.vpn_portal_config.clients ??= []
     normalized.vpn_portal_config.clients.forEach((client) => {
@@ -455,7 +439,7 @@ export function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
 }
 
 export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: readonly string[]): NetworkConfig {
-  const { dns, ...protoConfig } = prepareNetworkConfigWithVpn(config)
+  const { dns, ...protoConfig } = prepareNetworkConfigForProtoJson(config)
   const backend = NetworkConfigPb.fromJson(protoConfig as any, {
     ignoreUnknownFields: true,
   })
@@ -491,10 +475,6 @@ export function toBackendNetworkConfig(config: NetworkConfig, capabilities?: rea
 
 export function normalizeVpnPortalInfo(info: unknown): VpnPortalInfo {
   return VpnPortalInfoPb.fromJson(info as any, { ignoreUnknownFields: true })
-}
-
-export function normalizeVpnStatus(info: unknown): GetVpnStatusResponse {
-  return GetVpnStatusResponsePb.fromJson(info as any, { ignoreUnknownFields: true })
 }
 
 export interface NetworkInstance {

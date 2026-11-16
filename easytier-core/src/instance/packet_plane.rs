@@ -29,16 +29,6 @@ pub struct CorePacketPlane {
 }
 
 impl CorePacketPlane {
-    pub async fn vpn_route_exclusions(&self) -> crate::config::vpn::routes::VpnRouteExclusions {
-        self.peer_manager.vpn_route_exclusions().await
-    }
-
-    pub async fn vpn_route_plan(&self) -> (crate::config::vpn::routes::VpnRoutePlan, u64) {
-        let engine = self.peer_manager.vpn_engine();
-        engine.update_exclusions(self.vpn_route_exclusions().await);
-        engine.route_plan()
-    }
-
     pub(super) fn new(
         peer_manager: Arc<PeerManagerCore>,
         runtime_config: CoreRuntimeConfigStore,

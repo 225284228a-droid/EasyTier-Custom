@@ -41,26 +41,6 @@ async fn run_delete_shell_cmd(cmd: &str) -> Result<(), Error> {
 
 #[async_trait]
 impl IfConfiguerTrait for MacIfConfiger {
-    async fn default_route(
-        &self,
-        ipv6: bool,
-        exclude_interface: Option<&str>,
-    ) -> Result<Option<super::DefaultRouteInfo>, Error> {
-        // Scan the routing table instead of `route get default`: a route
-        // lookup for 0.0.0.0 is captured by the VPN's 0.0.0.0/1 takeover
-        // route, while the physical default entry remains visible in the
-        // table itself.
-        let output = tokio::process::Command::new("netstat")
-            .arg("-rn")
-            .arg("-f")
-            .arg(if ipv6 { "inet6" } else { "inet" })
-            .output()
-            .await
-            .map_err(|e| Error::AnyhowError(anyhow::anyhow!("{e}")))?;
-        let text = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(parse_netstat_default_route(&text, exclude_interface))
-    }
-
     async fn add_ipv4_route(
         &self,
         name: &str,
@@ -213,96 +193,5 @@ impl IfConfiguerTrait for MacIfConfiger {
             .as_str(),
         )
         .await
-    }
-}
-
-/// Parses `netstat -rn` output for the default route of one family. Rows are
-/// `Destination Gateway Flags Netif [Expire]`; interface-scoped or link-level
-/// defaults whose gateway is not a plain address are skipped, as is the
-/// excluded interface (the EasyTier TUN).
-fn parse_netstat_default_route(
-    text: &str,
-    exclude_interface: Option<&str>,
-) -> Option<super::DefaultRouteInfo> {
-    for line in text.lines() {
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.first().copied() != Some("default") || tokens.len() < 4 {
-            continue;
-        }
-        let Some(gateway) = tokens[1].split('%').next().and_then(|g| g.parse().ok()) else {
-            // `link#N` gateways (interface routes) have no usable next hop.
-            continue;
-        };
-        let interface = tokens[3];
-        if let Some(exclude) = exclude_interface
-            && interface == exclude
-        {
-            continue;
-        }
-        return Some(super::DefaultRouteInfo {
-            gateway,
-            interface_name: interface.to_owned(),
-        });
-    }
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_netstat_default_route;
-
-    const MACOS_MIXED: &str = "\
-Routing tables
-
-Internet:
-Destination        Gateway            Flags               Netif Expire
-default            192.168.1.1        UGScg                 en0
-10.0.0/8           link#4             UCS                   en0
-127                127.0.0.1          UCS                   lo0
-
-Internet6:
-Destination        Gateway            Flags         Netif Expire
-default            fe80::1%en0        UGcIg            en0
-default            link#12            UCSIg            utun8
-::1                ::1                UHL              lo0
-";
-
-    #[test]
-    fn parses_v4_default_with_gateway() {
-        let route = parse_netstat_default_route(MACOS_MIXED, None).unwrap();
-        assert_eq!(
-            route.gateway,
-            "192.168.1.1".parse::<std::net::IpAddr>().unwrap()
-        );
-        assert_eq!(route.interface_name, "en0");
-    }
-
-    #[test]
-    fn v6_zone_suffix_is_stripped() {
-        let v6 = "\
-Internet6:
-Destination        Gateway            Flags         Netif Expire
-default            fe80::1%en0        UGcIg            en0
-";
-        let route = parse_netstat_default_route(v6, None).unwrap();
-        assert_eq!(
-            route.gateway,
-            "fe80::1".parse::<std::net::IpAddr>().unwrap()
-        );
-    }
-
-    #[test]
-    fn excluded_interface_is_skipped_and_link_gateways_ignored() {
-        // With en0 excluded, the v4 match must fail (only link# row remains
-        // for the other interfaces in this table).
-        let table = "\
-Internet:
-Destination        Gateway            Flags     Netif Expire
-default            192.168.1.1        UGS       en0
-default            link#9             UCSI      utun8
-";
-        assert!(parse_netstat_default_route(table, Some("en0")).is_none());
-        let route = parse_netstat_default_route(table, None).unwrap();
-        assert_eq!(route.interface_name, "en0");
     }
 }

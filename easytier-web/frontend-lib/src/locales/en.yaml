@@ -1092,24 +1092,3 @@ disable_relay_data: Disable Data Relay
 disable_relay_data_help: Do not relay data packets for other peers, so this node carries no traffic it did not originate.
 prefer_peer_relay: Prefer Peer Relay
 prefer_peer_relay_help: Prefer a credential peer that already relays to a destination over advertising another direct edge to the same destination.
-
-vpn_section: Subnet Exit VPN
-vpn_section_help: Route each destination subnet through one exit node. The longest prefix wins; mesh, subnet proxy and manual routes retain their paths. Matching traffic is dropped while its exit is unavailable.
-vpn_rules: Subnet rules
-vpn_add_rule: Add rule
-vpn_no_rules: No rules
-vpn_rule_cidr: Destination CIDR
-vpn_rule_exit: Exit virtual IP
-vpn_rule_exit_placeholder: Empty uses the exit nodes list
-vpn_rule_exit_nodes: Exit nodes list
-vpn_rule_state: Exit state
-vpn_rule_remove: Remove rule
-vpn_status_title: VPN status
-vpn_status_enabled: Enabled
-vpn_status_disabled: Disabled
-vpn_status_routes: System routes
-vpn_status_routes_active: taken over
-vpn_status_routes_inactive: not taken over
-vpn_status_routes_count: "{count} routes installed"
-vpn_exit_state_up: Available
-vpn_exit_state_down: Unavailable

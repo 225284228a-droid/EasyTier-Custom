@@ -148,9 +148,6 @@ impl CoreEventSink for GlobalCtx {
             CoreEvent::PublicIpv6RoutesChanged { added, removed } => {
                 GlobalCtxEvent::PublicIpv6RoutesUpdated(added, removed)
             }
-            CoreEvent::VpnExitLivenessUpdated(liveness) => {
-                GlobalCtxEvent::VpnExitLivenessUpdated(liveness)
-            }
             CoreEvent::VpnPortalStarted(portal) => GlobalCtxEvent::VpnPortalStarted(portal),
             CoreEvent::VpnPortalClientConnected { portal, client } => {
                 GlobalCtxEvent::VpnPortalClientConnected(portal, client)
@@ -273,7 +270,6 @@ fn configure_runtime_core_host_adapters(
         adapters.public_ipv6_host = Some(global_ctx.clone());
         adapters.public_ipv6_provider = Some(runtime_public_ipv6_provider_platform(&global_ctx));
     }
-    adapters.vpn_route_state = Some(std::sync::Arc::new(global_ctx.vpn_route_status()));
     #[cfg(feature = "wireguard")]
     if host_config.vpn_portal_enabled {
         use crate::common::config::ConfigLoader as _;

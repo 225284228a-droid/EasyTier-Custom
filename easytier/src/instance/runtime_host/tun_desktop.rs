@@ -28,20 +28,6 @@ pub(super) struct NativeTunRuntime {
 }
 
 impl NativeTunRuntime {
-    fn report_capture_unavailable(&self, reason: &str) {
-        self.global_ctx.vpn_route_status().update(
-            easytier_core::peers::vpn_policy::VpnHostRouteState {
-                activation_error: self
-                    .global_ctx
-                    .config
-                    .get_vpn()
-                    .client_active()
-                    .then(|| reason.to_owned()),
-                ..Default::default()
-            },
-        );
-    }
-
     pub(super) fn new(
         global_ctx: ArcGlobalCtx,
         cancel: CancellationToken,
@@ -105,7 +91,6 @@ impl NativeTunRuntime {
                 let result = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
-                        nic.shutdown().await;
                         Self::report_static_ip_cancelled(&mut output);
                         return;
                     }
@@ -136,12 +121,7 @@ impl NativeTunRuntime {
                 } else {
                     MagicDnsRuntime::default()
                 };
-                if let Err(error) = nic_state.install(None, nic, magic_dns).await {
-                    if let Some(output) = output.take() {
-                        let _ = output.send(Err(error.into()));
-                    }
-                    return;
-                }
+                nic_state.install(nic, magic_dns).await;
                 if let Some(output) = output.take() {
                     let _ = output.send(Ok(()));
                 }
@@ -165,10 +145,6 @@ impl NativeTunRuntime {
             && !self.global_ctx.config.get_dhcpv6()
         {
             self.start_static_ip(packet_plane).await?;
-        } else if self.global_ctx.get_flags().no_tun {
-            self.report_capture_unavailable(
-                "VPN capture unavailable: no_tun disables the native interface",
-            );
         }
         Ok(())
     }

@@ -111,13 +111,12 @@ fn web_form_omits_defaults_without_changing_effective_flags() {
     {
         input.tld_dns_zone = None;
     }
-    input.vpn = Some(manage::VpnConfig { rules: vec![] });
     input.hostname = Some(String::new());
     input.secure_mode = Some(Default::default());
 
     let generated = input.gen_config().unwrap();
     let document: toml::Table = toml::from_str(&generated.dump()).unwrap();
-    for field in ["flags", "vpn", "hostname", "secure_mode", "dhcp"] {
+    for field in ["flags", "hostname", "secure_mode", "dhcp"] {
         assert!(
             !document.contains_key(field),
             "default {field} should be omitted"
@@ -142,7 +141,6 @@ fn web_form_omits_defaults_without_changing_effective_flags() {
     );
     assert_eq!(document["flags"]["socket_mark"].as_integer(), Some(0));
     assert_eq!(document["flags"]["enable_exit_node"].as_bool(), Some(true));
-    assert!(!document.contains_key("vpn"));
     assert!(generated.get_flags().enable_exit_node);
 }
 
