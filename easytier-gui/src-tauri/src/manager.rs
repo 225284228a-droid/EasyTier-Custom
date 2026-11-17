@@ -110,13 +110,41 @@ impl WebClientHooks for GuiHooks {
     }
 
     async fn pre_run_network_instance(&self, cfg: &TomlConfigLoader) -> Result<(), String> {
-        PREPARED_PROFILES.insert(cfg.get_id(), MobileNetworkProfile::from_config(cfg)?);
+        let profile = MobileNetworkProfile::from_config(cfg).map_err(|error| {
+            tracing::error!(
+                target: "easytier_gui_vpn",
+                instance_id = %cfg.get_id(),
+                %error,
+                "pre_run hook FAILED: could not build the mobile VPN profile"
+            );
+            error
+        })?;
+        PREPARED_PROFILES.insert(cfg.get_id(), profile);
+        tracing::info!(
+            target: "easytier_gui_vpn",
+            instance_id = %cfg.get_id(),
+            no_tun = cfg.get_flags().no_tun,
+            "pre_run hook: mobile VPN profile prepared, notifying the frontend"
+        );
         self.app
             .emit("pre_run_network_instance", cfg.get_id().to_string())
-            .map_err(|e| e.to_string())
+            .map_err(|e| {
+                tracing::error!(
+                    target: "easytier_gui_vpn",
+                    instance_id = %cfg.get_id(),
+                    %e,
+                    "pre_run hook: failed to emit pre_run_network_instance"
+                );
+                e.to_string()
+            })
     }
 
     async fn post_run_network_instance(&self, instance_id: &uuid::Uuid) -> Result<(), String> {
+        tracing::info!(
+            target: "easytier_gui_vpn",
+            %instance_id,
+            "post_run hook: instance is running, notifying the frontend to reconcile the VPN"
+        );
         #[cfg(target_os = "android")]
         if let Some(instance) = self.instances.instance(*instance_id)
             && let Some(mut receiver) = subscribe_native_instance_event(&instance)
@@ -157,6 +185,11 @@ impl WebClientHooks for GuiHooks {
     }
 
     async fn post_stop_network_instances(&self, ids: &[Uuid]) -> Result<(), String> {
+        tracing::info!(
+            target: "easytier_gui_vpn",
+            ?ids,
+            "post_stop hook: instances stopped"
+        );
         for id in ids {
             PREPARED_PROFILES.remove(id);
         }
@@ -164,6 +197,11 @@ impl WebClientHooks for GuiHooks {
     }
 
     async fn post_remove_network_instances(&self, ids: &[uuid::Uuid]) -> Result<(), String> {
+        tracing::info!(
+            target: "easytier_gui_vpn",
+            ?ids,
+            "post_remove hook: instances removed"
+        );
         for id in ids {
             PREPARED_PROFILES.remove(id);
         }

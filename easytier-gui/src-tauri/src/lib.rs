@@ -11,21 +11,23 @@ use local_backend::{
     stop_local_backend_inner,
 };
 
+#[cfg(target_os = "linux")]
+mod linux_tray;
+
 use anyhow::Context;
 use easytier::instance::factory::MobileTunConfig;
 #[cfg(target_os = "android")]
 use easytier::instance::factory::subscribe_native_instance_event;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 use easytier::instance::factory::{
-    attach_mobile_tun_fd_with_generation, get_mobile_tun_config as native_mobile_tun_config,
+    attach_mobile_tun_fd, get_mobile_tun_config as native_mobile_tun_config,
 };
 use easytier::proto::api::config::{
     ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch, PatchConfigRequest,
     VpnPortalClientPatch,
 };
 use easytier::proto::api::instance::{
-    GetVpnPortalInfoRequest, GetVpnStatusRequest, GetVpnStatusResponse, InstanceIdentifier,
-    PeerManageRpc, PeerManageRpcClientFactory, VpnPortalInfo, VpnPortalRpc,
+    GetVpnPortalInfoRequest, InstanceIdentifier, VpnPortalInfo, VpnPortalRpc,
     VpnPortalRpcClientFactory, instance_identifier,
 };
 use easytier::proto::api::manage::{
@@ -173,30 +175,6 @@ async fn collect_network_info(instance_id: String) -> Result<CollectNetworkInfoR
 }
 
 #[tauri::command]
-async fn get_vpn_status(instance_id: String) -> Result<Option<GetVpnStatusResponse>, String> {
-    let instance_id = instance_id
-        .parse::<uuid::Uuid>()
-        .map_err(|e| e.to_string())?;
-    let client_manager = get_client_manager!()?;
-    let client = client_manager
-        .rpc_manager
-        .rpc_client()
-        .scoped_client::<PeerManageRpcClientFactory<BaseController>>(1, 1, "".to_string());
-    let response = client
-        .get_vpn_status(
-            BaseController::default(),
-            GetVpnStatusRequest {
-                instance: Some(InstanceIdentifier {
-                    selector: Some(instance_identifier::Selector::Id(instance_id.into())),
-                }),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(Some(response))
-}
-
-#[tauri::command]
 async fn get_vpn_portal_info(instance_id: String) -> Result<Option<VpnPortalInfo>, String> {
     let instance_id = instance_id
         .parse::<uuid::Uuid>()
@@ -282,34 +260,48 @@ async fn set_logging_level(level: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn set_tun_fd(
-    fd: i32,
-    instance_ids: Option<Vec<Uuid>>,
-    generation: Option<String>,
-) -> Result<MobileTunConfig, String> {
+async fn set_tun_fd(fd: i32, instance_ids: Option<Vec<Uuid>>) -> Result<MobileTunConfig, String> {
+    tracing::info!(
+        target: "easytier_gui_vpn",
+        fd,
+        ?instance_ids,
+        "set_tun_fd called (VPN service handed us a TUN fd)"
+    );
     let Some(instance_manager) = INSTANCE_MANAGER.read().await.clone() else {
+        tracing::error!(
+            target: "easytier_gui_vpn",
+            "set_tun_fd FAILED: INSTANCE_MANAGER is None (backend not initialized?)"
+        );
         return Err("set_tun_fd is not supported in remote mode".to_string());
     };
-    let generation = generation
-        .map(|value| {
-            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err("TUN generation must be an unsigned decimal integer".to_string());
-            }
-            value.parse::<u64>().map_err(|e| e.to_string())
-        })
-        .transpose()?;
+
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    return attach_mobile_tun_fd_with_generation(
-        instance_manager.as_ref(),
-        fd,
-        instance_ids.as_deref(),
-        generation,
-    )
-    .await
-    .map_err(|error| error.to_string());
+    {
+        let result = attach_mobile_tun_fd(instance_manager.as_ref(), fd, instance_ids.as_deref())
+            .await
+            .map_err(|error| error.to_string());
+        match &result {
+            Ok(config) => tracing::info!(
+                target: "easytier_gui_vpn",
+                attached = ?config.instance_ids,
+                addresses = ?config.addresses,
+                routes = ?config.routes,
+                dns = ?config.dns,
+                rejected = ?config.rejected,
+                "set_tun_fd attach succeeded"
+            ),
+            Err(error) => tracing::error!(
+                target: "easytier_gui_vpn",
+                error = ?error,
+                "set_tun_fd attach FAILED"
+            ),
+        }
+        return result;
+    }
+
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (instance_manager, fd, instance_ids, generation);
+        let _ = (instance_manager, fd, instance_ids);
         Err("mobile TUN attachment is unavailable on this platform".to_owned())
     }
 }
@@ -319,9 +311,24 @@ async fn get_mobile_tun_config(instance_ids: Vec<Uuid>) -> Result<MobileTunConfi
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         let Some(manager) = INSTANCE_MANAGER.read().await.clone() else {
+            tracing::error!(
+                target: "easytier_gui_vpn",
+                ?instance_ids,
+                "get_mobile_tun_config FAILED: INSTANCE_MANAGER is None"
+            );
             return Err("mobile TUN configuration is not supported in remote mode".to_owned());
         };
-        Ok(native_mobile_tun_config(manager.as_ref(), &instance_ids).await)
+        let config = native_mobile_tun_config(manager.as_ref(), &instance_ids).await;
+        tracing::info!(
+            target: "easytier_gui_vpn",
+            ?instance_ids,
+            addresses = ?config.addresses,
+            routes = ?config.routes,
+            dns = ?config.dns,
+            rejected = ?config.rejected,
+            "get_mobile_tun_config resolved"
+        );
+        Ok(config)
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -356,17 +363,50 @@ async fn mobile_network_profile(
         .parse()
         .map_err(|e: uuid::Error| e.to_string())?;
     if let Some(profile) = manager::PREPARED_PROFILES.get(&instance_id) {
+        tracing::info!(
+            target: "easytier_gui_vpn",
+            %instance_id,
+            profile = ?*profile,
+            "mobile_network_profile: hit prepared profile"
+        );
         return Ok(profile.clone());
     }
     let instances = INSTANCE_MANAGER
         .read()
         .await
         .clone()
-        .ok_or("Network profiles are only known for the local Core")?;
-    let config = instances
-        .config(instance_id)
-        .ok_or_else(|| format!("No configuration for network instance {instance_id}"))?;
-    manager::MobileNetworkProfile::from_config(&config)
+        .ok_or_else(|| {
+            tracing::error!(
+                target: "easytier_gui_vpn",
+                %instance_id,
+                "mobile_network_profile FAILED: INSTANCE_MANAGER is None"
+            );
+            "Network profiles are only known for the local Core".to_string()
+        })?;
+    let config = instances.config(instance_id).ok_or_else(|| {
+        tracing::error!(
+            target: "easytier_gui_vpn",
+            %instance_id,
+            "mobile_network_profile FAILED: no configuration for instance"
+        );
+        format!("No configuration for network instance {instance_id}")
+    })?;
+    let profile = manager::MobileNetworkProfile::from_config(&config).map_err(|error| {
+        tracing::error!(
+            target: "easytier_gui_vpn",
+            %instance_id,
+            %error,
+            "mobile_network_profile FAILED: profile conversion error"
+        );
+        error
+    })?;
+    tracing::info!(
+        target: "easytier_gui_vpn",
+        %instance_id,
+        profile = ?profile,
+        "mobile_network_profile: built from running instance manager"
+    );
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -511,6 +551,14 @@ async fn init_rpc_connection(
         || previous_retired
         || (current_config_dir.is_some() && current_config_dir != desired_config_dir)
     {
+        tracing::info!(
+            target: "easytier_gui_vpn",
+            is_normal_mode,
+            previous_retired,
+            ?current_config_dir,
+            ?desired_config_dir,
+            "init_rpc_connection: stopping the previous local backend first"
+        );
         stop_local_backend_inner().await?;
     } else {
         let client = CLIENT_MANAGER.write().await.take();
@@ -536,6 +584,10 @@ async fn init_rpc_connection(
         };
 
         let instance_manager = if let Some(im) = instance_manager_guard.as_ref() {
+            tracing::info!(
+                target: "easytier_gui_vpn",
+                "init_rpc_connection: reusing the existing instance manager"
+            );
             im.clone()
         } else {
             let manager = Arc::new(native_instance_manager_with_config_dir(Some(
@@ -544,11 +596,33 @@ async fn init_rpc_connection(
             if let Err(error) =
                 restore_managed_configs(&manager, &instance_state_store, &config_dir).await
             {
+                tracing::error!(
+                    target: "easytier_gui_vpn",
+                    error = ?error,
+                    "init_rpc_connection: failed to restore managed configs"
+                );
                 let _ = manager.retain_network_instances(&[]).await;
                 *INSTANCE_STATE_STORE.write().await = None;
                 *INSTANCE_CONFIG_DIR.write().await = None;
                 return Err(format!("Failed to restore managed configs: {error:#}"));
             }
+            let restored = manager
+                .instance_ids()
+                .into_iter()
+                .map(|id| {
+                    let state = manager
+                        .instance(id)
+                        .map(|instance| format!("{:?}", instance.state()))
+                        .unwrap_or_else(|| "missing".to_owned());
+                    format!("{id}:{state}")
+                })
+                .collect::<Vec<_>>();
+            tracing::info!(
+                target: "easytier_gui_vpn",
+                config_dir = %config_dir.display(),
+                ?restored,
+                "init_rpc_connection: managed configs restored"
+            );
             *instance_manager_guard = Some(manager.clone());
             manager
         };
@@ -928,8 +1002,46 @@ mod service {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum UserTrayUpdate {
+    Menu { show: String, quit: String },
+    RunState { running: bool },
+    Tooltip { tooltip: String },
+}
+
+#[tauri::command]
+fn update_user_tray(update: UserTrayUpdate) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_tray::update(update).map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = update;
+        Err("The tray is managed by this GUI process".to_string())
+    }
+}
+
+#[tauri::command]
+fn uses_user_tray() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux_tray::is_controlled()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run_gui() -> std::process::ExitCode {
+    #[cfg(target_os = "linux")]
+    if !elevate::Command::is_elevated() {
+        return linux_tray::run();
+    }
+
     #[cfg(not(target_os = "android"))]
     if !check_sudo() {
         use std::process;
@@ -943,14 +1055,18 @@ pub fn run_gui() -> std::process::ExitCode {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            app.webview_windows()
-                .values()
-                .next()
-                .expect("Sorry, no window found")
-                .set_focus()
-                .expect("Can't Bring Window to Focus");
-        }));
+        // The user-session tray already enforces a single GUI instance.
+        // Its elevated child must not compete for the same D-Bus name.
+        if !uses_user_tray() {
+            builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+                app.webview_windows()
+                    .values()
+                    .next()
+                    .expect("Sorry, no window found")
+                    .set_focus()
+                    .expect("Can't Bring Window to Focus");
+            }));
+        }
     }
 
     builder = builder
@@ -962,6 +1078,11 @@ pub fn run_gui() -> std::process::ExitCode {
 
     let app = builder
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            if linux_tray::is_controlled() {
+                linux_tray::listen(app.handle().clone())?;
+            }
+
             // for logging config
             let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
@@ -981,24 +1102,26 @@ pub fn run_gui() -> std::process::ExitCode {
 
             // for tray icon, menu need to be built in js
             #[cfg(not(target_os = "android"))]
-            let _tray_menu = TrayIconBuilder::with_id("main")
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        toggle_window_visibility(app);
-                    }
-                })
-                .icon(tauri::image::Image::from_bytes(include_bytes!(
-                    "../icons/icon.png"
-                ))?)
-                .icon_as_template(true)
-                .build(app)?;
+            if !uses_user_tray() {
+                let _tray_menu = TrayIconBuilder::with_id("main")
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            toggle_window_visibility(app);
+                        }
+                    })
+                    .icon(tauri::image::Image::from_bytes(include_bytes!(
+                        "../icons/icon.png"
+                    ))?)
+                    .icon_as_template(true)
+                    .build(app)?;
+            }
 
             Ok(())
         })
@@ -1010,7 +1133,6 @@ pub fn run_gui() -> std::process::ExitCode {
             parse_network_config,
             generate_network_config,
             collect_network_info,
-            get_vpn_status,
             get_vpn_portal_info,
             patch_vpn_portal_clients,
             set_logging_level,
@@ -1033,6 +1155,8 @@ pub fn run_gui() -> std::process::ExitCode {
             init_web_client,
             is_web_client_connected,
             get_log_dir_path,
+            uses_user_tray,
+            update_user_tray,
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]

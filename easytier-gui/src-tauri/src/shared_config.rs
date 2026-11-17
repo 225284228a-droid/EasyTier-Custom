@@ -77,9 +77,30 @@ pub(crate) async fn restore_managed_configs(
 
     for file in startup.files.drain(..) {
         let result = (|| -> anyhow::Result<()> {
-            manager.register_managed_config(file.config.get_id(), file.control.clone())?;
-            if state_store.is_enabled(&file.config.get_id()) {
+            let id = file.config.get_id();
+            // Precompute the Android VPN profile before the config is moved
+            // into the instance manager, so restored instances are visible to
+            // the mobile VPN reconcile even though no GUI hook runs here.
+            let profile = manager::MobileNetworkProfile::from_config(&file.config);
+            manager.register_managed_config(id, file.control.clone())?;
+            if state_store.is_enabled(&id) {
                 manager.run_network_instance(file.config, file.control)?;
+                match profile {
+                    Ok(profile) => {
+                        super::manager::PREPARED_PROFILES.insert(id, profile);
+                        tracing::info!(
+                            target: "easytier_gui_vpn",
+                            %id,
+                            "restore: enabled instance started and mobile VPN profile prepared"
+                        );
+                    }
+                    Err(error) => tracing::warn!(
+                        target: "easytier_gui_vpn",
+                        %id,
+                        %error,
+                        "restore: instance started but the mobile VPN profile is unavailable"
+                    ),
+                }
             }
             if let Some(contents) = file.original_contents.as_deref() {
                 manager
